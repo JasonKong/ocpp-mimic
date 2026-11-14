@@ -19,6 +19,13 @@ on:
       charging:
         description: Share of stations charging
         default: '0.3'
+      store:
+        description: Keep station state in SQLite, as serve --store
+        type: boolean
+        default: false
+      record_limit:
+        description: Records kept per station (empty for the default, 1000)
+        default: ''
 
 jobs:
   bench:
@@ -43,11 +50,16 @@ jobs:
           DURATION: ${{ inputs.duration }}
           RATE: ${{ inputs.rate }}
           CHARGING: ${{ inputs.charging }}
+          STORE: ${{ inputs.store }}
+          RECORD_LIMIT: ${{ inputs.record_limit }}
         run: |
           set -o pipefail
+          extra=()
+          if [ "$STORE" = "true" ]; then extra+=(--store bench-results/state.db); fi
+          if [ -n "$RECORD_LIMIT" ]; then extra+=(--record-limit "$RECORD_LIMIT"); fi
           node --cpu-prof --cpu-prof-dir=bench-results packages/cli/dist/bench-main.js \
             --stations "$STATIONS" --duration "$DURATION" --rate "$RATE" \
-            --charging "$CHARGING" --out bench-results | tee bench-results/console.txt
+            --charging "$CHARGING" --out bench-results "${extra[@]}" | tee bench-results/console.txt
       - name: Add the summary to the job summary
         if: always()
         run: |

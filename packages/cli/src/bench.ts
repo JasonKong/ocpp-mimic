@@ -44,6 +44,8 @@ export interface BenchOptions {
   out?: string;
   /** SQLite file for station state, as `serve --store`; none by default. */
   store?: string;
+  /** Records kept per station, as `serve --record-limit` (default 1000). */
+  recordLimit?: number;
   heapSnapshot: boolean;
 }
 
@@ -246,6 +248,7 @@ export async function runBench(
       port: 0,
       personaDirs: options.personaDirs,
       ...(options.store !== undefined && { storePath: options.store }),
+      ...(options.recordLimit !== undefined && { recordLimit: options.recordLimit }),
     });
     await engine.start();
     const fleet = engine.fleet;

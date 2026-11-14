@@ -233,7 +233,8 @@ export function parseCommand(argv: readonly string[]): Command {
 
     const port = parsePort(values.port, DEFAULT_PORT);
     if (port === undefined) return error(`Invalid port: ${values.port}`);
-    const recordLimit = values['record-limit'] === undefined ? undefined : Number(values['record-limit']);
+    const recordLimit =
+      values['record-limit'] === undefined ? undefined : Number(values['record-limit']);
     if (recordLimit !== undefined && !(Number.isInteger(recordLimit) && recordLimit >= 0)) {
       return error(`--record-limit needs a whole number, got ${values['record-limit']}`);
     }
