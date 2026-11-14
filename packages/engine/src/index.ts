@@ -72,3 +72,4 @@ export {
   type RunSummary,
 } from './scenario/run.js';
 export { formatScenarioResult, formatSummary } from './scenario/report.js';
+export { problemsToJUnit, toJUnit } from './scenario/junit.js';

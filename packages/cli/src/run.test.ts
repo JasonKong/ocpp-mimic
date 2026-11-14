@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -105,6 +105,27 @@ describe('ocpp-mimic run', () => {
     expect(fixed.code).toBe(0);
     expect((await run(command([join(dir, 'missing.yaml')]))).code).toBe(2);
   });
+
+  it(
+    'writes a JUnit report with --junit, also when files do not validate',
+    { timeout: 30_000 },
+    async () => {
+      const dir = await files({ 'a.yaml': PASSING, 'b.yaml': FAILING });
+      const report = join(dir, 'reports', 'junit.xml');
+      const { code, out } = await run(command([dir], { junit: report }));
+      expect(code).toBe(1);
+      expect(out.at(-1)).toBe(`JUnit report written to ${report}`);
+      const xml = await readFile(report, 'utf8');
+      expect(xml).toContain('tests="2" failures="1" errors="0"');
+      expect(xml).toContain('<testcase name="never charges"');
+      expect(xml).toContain('<failure message="step 1: expectConnector 1 status=Charging');
+
+      const invalid = await files({ 'c.yaml': 'name: broken\nsteps: []\n' });
+      const second = join(invalid, 'junit.xml');
+      expect((await run(command([invalid], { junit: second }))).code).toBe(2);
+      expect(await readFile(second, 'utf8')).toContain('<testsuite name="validation" tests="2"');
+    },
+  );
 
   it('runs the example scenarios from the command line', { timeout: 60_000 }, async () => {
     const { code, out } = await run(

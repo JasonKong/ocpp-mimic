@@ -30,7 +30,7 @@ Scenarios are YAML files of steps and expectations (see "Scenario format v1" in 
 node packages/cli/dist/main.js run scenarios/examples
 ```
 
-Each scenario runs on its own embedded engine, by default against the built-in test CSMS, and prints `PASS`, `FAIL` or `ERROR` with the failing step. Useful options: `--csms <url>` (with `--allow-csms <prefix>`) to test another CSMS, `--var NAME=value`, `--personas <dir>`, `--timeout <duration>` and `--bail`. The exit code is 0 when everything passed, 1 when something failed and 2 when a file does not validate.
+Each scenario runs on its own embedded engine, by default against the built-in test CSMS, and prints `PASS`, `FAIL` or `ERROR` with the failing step. Useful options: `--csms <url>` (with `--allow-csms <prefix>`) to test another CSMS, `--var NAME=value`, `--personas <dir>`, `--timeout <duration>`, `--bail` and `--junit <file>` for a JUnit XML report. The exit code is 0 when everything passed, 1 when something failed and 2 when a file does not validate.
 
 ## Layout
 
