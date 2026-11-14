@@ -73,3 +73,30 @@ export const CHARGE_POINT_STATUSES = [
   'Faulted',
 ] as const;
 export type ChargePointStatus = (typeof CHARGE_POINT_STATUSES)[number];
+
+/** Measurands a SampledValue can carry (OCPP 1.6). */
+export const MEASURANDS = [
+  'Energy.Active.Export.Register',
+  'Energy.Active.Import.Register',
+  'Energy.Reactive.Export.Register',
+  'Energy.Reactive.Import.Register',
+  'Energy.Active.Export.Interval',
+  'Energy.Active.Import.Interval',
+  'Energy.Reactive.Export.Interval',
+  'Energy.Reactive.Import.Interval',
+  'Power.Active.Export',
+  'Power.Active.Import',
+  'Power.Offered',
+  'Power.Reactive.Export',
+  'Power.Reactive.Import',
+  'Power.Factor',
+  'Current.Import',
+  'Current.Export',
+  'Current.Offered',
+  'Voltage',
+  'Frequency',
+  'Temperature',
+  'SoC',
+  'RPM',
+] as const;
+export type Measurand = (typeof MEASURANDS)[number];
