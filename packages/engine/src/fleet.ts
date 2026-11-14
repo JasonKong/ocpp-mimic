@@ -228,12 +228,22 @@ export function createFleet(options: FleetOptions): Fleet {
     }, options.saveBatchMs ?? 1000);
   }
 
+  // Meters advance without events, so every running station is saved every
+  // saveIntervalMs: a tenth of them each tenth of the interval, so no single
+  // transaction holds the event loop for long.
+  const SAVE_SLICES = 10;
+  let saveTick = 0;
   const saveTimer =
     options.store === undefined
       ? undefined
-      : setInterval(() => {
-          saveMany([...entries].filter(([, entry]) => entry.running).map(([id]) => id));
-        }, options.saveIntervalMs ?? 10_000);
+      : setInterval(
+          () => {
+            const slice = saveTick++ % SAVE_SLICES;
+            const running = [...entries].filter(([, entry]) => entry.running).map(([id]) => id);
+            saveMany(running.filter((_, i) => i % SAVE_SLICES === slice));
+          },
+          (options.saveIntervalMs ?? 10_000) / SAVE_SLICES,
+        );
   saveTimer?.unref();
 
   function build(

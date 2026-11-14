@@ -596,7 +596,7 @@ Collected in the engine from the wire and the transport, so they work with the E
 
 - **Benchmark first.** `pnpm bench --stations N --duration D` runs the engine in-process against `ocpp-mimic csms` in a child process and samples every 5 s: event-loop delay, CPU, RSS and heap, frames a second, connect times and late work. The baseline at 100, 500 and 1,000 stations, with CPU profiles and heap snapshots, decides what T45 changes; the numbers go into this document.
 - **Candidates**, each kept only if the baseline shows it matters: one shared scheduler (a heap of due times behind one Node timer) instead of a Node timer per timer; frames parsed once on the wire instead of by the Fault Injector, the recorder and core separately; state saves batched into one SQLite transaction a second; snapshots built only when asked for.
-- **Event Recorder.** A per-station limit: 1,000 entries for `serve`, 100 for `load`, 0 to keep none (`--record-limit`). Schema checks keep counting into metrics when nothing is kept.
+- **Event Recorder.** A per-station limit: 1,000 entries for `serve`, 10 for `load`, 0 to keep none (`--record-limit`). A load station records about 3 entries a minute, so a limit of 10 fills during the warm-up and the heap-growth threshold measures leaks rather than a buffer still filling; `--log-dir` keeps the whole log. Schema checks keep counting into metrics when nothing is kept.
 - **Events WebSocket.** A client subscribes to the stations it shows (`{ type: subscribe, stations: [...] }`): records and full snapshots go only to their subscribers, and so does the 2-second push of charging stations. Everyone gets fleet summaries (the `?view=summary` fields of changed stations), batched at most once a second.
 
 **Record & replay**

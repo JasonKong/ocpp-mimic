@@ -557,7 +557,7 @@ thresholds:
 
 - **先做基准测试。** `pnpm bench --stations N --duration D` 在同一进程里运行 engine，以子进程方式运行 `ocpp-mimic csms`，每 5 秒采样：事件循环延迟、CPU、RSS 和堆、每秒帧数、连接耗时、定时任务延迟。100、500、1,000 个桩的基线，加上 CPU profile 和堆快照，决定 T45 改什么；数字记入本文档。
 - **候选优化**，基线证明有影响才保留：所有桩共用一个调度器（一个按到期时间排序的堆，背后只有一个 Node 定时器），代替每个定时器一个 Node 定时器；帧在线路上只解析一次，不再由 Fault Injector、recorder 和 core 各解析一次；状态保存合并为每秒一个 SQLite 事务；快照只在被请求时生成。
-- **Event Recorder。** 每个桩的记录上限：`serve` 1,000 条，`load` 100 条，0 表示不保留（`--record-limit`）。不保留时 schema 检查仍计入指标。
+- **Event Recorder。** 每个桩的记录上限：`serve` 1,000 条，`load` 10 条，0 表示不保留（`--record-limit`）。压测中每个桩每分钟约产生 3 条记录，上限 10 条会在预热期内填满，这样堆增长阈值衡量的是泄漏，而不是仍在填充的缓冲；完整日志由 `--log-dir` 保存。不保留时 schema 检查仍计入指标。
 - **事件 WebSocket。** 客户端订阅它正在显示的桩（`{ type: subscribe, stations: [...] }`）：记录和完整快照只发给订阅者，充电中的桩每 2 秒的推送也是。所有客户端都收到车队摘要（有变化的桩的 `?view=summary` 字段），最多每秒一批。
 
 **录制与回放**
