@@ -57,6 +57,19 @@ describe('resolvePersonas', () => {
     expect(personas.get('base')?.warnings).toEqual([]);
   });
 
+  it('reads firmware timings and outcomes', () => {
+    const { personas } = resolveOne({
+      ...BASE,
+      firmware: { downloadTime: '2s', installTime: 3000, download: 'fail', signature: 'fail' },
+    });
+    expect(personas.get('base')?.options.firmware).toEqual({
+      downloadMs: 2000,
+      installMs: 3000,
+      download: 'fail',
+      signature: 'fail',
+    });
+  });
+
   it('merges extends: objects key by key, arrays and scalars replaced', () => {
     const child = {
       persona: 'child',

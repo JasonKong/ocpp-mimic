@@ -117,7 +117,7 @@ export function resolveCertificatePaths(scenario: Scenario, directory: string): 
   for (const station of scenario.stations) {
     const security = station.security;
     if (security === undefined) continue;
-    for (const field of ['ca', 'cert', 'key'] as const) {
+    for (const field of ['ca', 'cert', 'key', 'manufacturerRoot'] as const) {
       const value = security[field];
       if (value !== undefined) security[field] = resolveOne(value);
     }

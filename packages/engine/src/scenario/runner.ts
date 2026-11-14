@@ -127,6 +127,8 @@ function builtinCsmsOptions(scenario: Scenario): BuiltinCsmsOptions {
   const { tls, passwords } = scenario.csmsOptions ?? {};
   return {
     port: 0,
+    // The test CA signs CSRs, so certificate renewal works against the built-in CSMS.
+    certificateAuthority: { certificate: testPki('ca.crt'), key: testPki('ca.key') },
     ...(passwords !== undefined && { passwords }),
     ...(tls !== undefined && {
       tls: {

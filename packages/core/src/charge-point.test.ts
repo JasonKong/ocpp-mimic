@@ -5,7 +5,8 @@ import {
   type ChargePointTiming,
   type PersistedChargePoint,
 } from './charge-point.js';
-import type { InstalledCertificates } from './charge-point.js';
+import type { CertificateTools } from './certificates.js';
+import type { ChargePointOptions } from './charge-point.js';
 import { ManualClock } from './clock.js';
 import type { FileTransfer, FirmwareSettings } from './firmware.js';
 import { sequentialIds } from './ids.js';
@@ -31,7 +32,47 @@ interface SetupOptions {
   energyMultiplier?: number;
   firmware?: Partial<FirmwareSettings>;
   transfer?: FileTransfer;
-  certificates?: InstalledCertificates;
+  certificates?: ChargePointOptions['certificates'];
+  certificateTools?: CertificateTools;
+}
+
+/**
+ * Fake X.509 for core's tests (the real one is the engine's): a certificate
+ * is `CERT <name> BY <issuer> KEY <key>`, valid when its issuer is a trusted
+ * root, and a signature is valid when it is "good".
+ */
+const cert = (name: string, issuer = name, key = `${name}-key`) =>
+  `CERT ${name} BY ${issuer} KEY ${key}`;
+function fakeTools(): CertificateTools & { csrs: string[] } {
+  const csrs: string[] = [];
+  return {
+    csrs,
+    inspect(pem) {
+      const match = /^CERT (\S+) BY (\S+) KEY (\S+)/.exec(pem);
+      if (match === null) return undefined;
+      return {
+        hashData: {
+          hashAlgorithm: 'SHA256',
+          issuerNameHash: `name-${match[2]}`,
+          issuerKeyHash: `key-${match[2]}`,
+          serialNumber: (match[1] ?? '').toUpperCase(),
+        },
+        validFrom: 0,
+        validTo: Number.MAX_SAFE_INTEGER,
+      };
+    },
+    verifyChain(chain, roots) {
+      const issuer = /^CERT \S+ BY (\S+)/.exec(chain)?.[1];
+      return issuer !== undefined && roots.some((root) => root.startsWith(`CERT ${issuer} `));
+    },
+    createCsr(subject) {
+      const csr = `CSR CN=${subject.commonName} O=${subject.organization ?? '-'}`;
+      csrs.push(csr);
+      return { csr, privateKey: `cp-key-${csrs.length}` };
+    },
+    matchesKey: (certificate, privateKey) => certificate.endsWith(`KEY ${privateKey}`),
+    verifySignature: (_data, signature) => signature === 'good',
+  };
 }
 
 /**
@@ -62,6 +103,7 @@ function setup(options: SetupOptions = {}) {
     SecurityEventNotification: () => ({}),
     LogStatusNotification: () => ({}),
     SignedFirmwareStatusNotification: () => ({}),
+    SignCertificate: () => ({ status: 'Accepted' }),
     ...options.csms,
   };
   const cp = createChargePoint({
@@ -78,9 +120,8 @@ function setup(options: SetupOptions = {}) {
     },
     restart: (downtimeMs) => restarts.push(downtimeMs),
     reconnect: () => reconnects++,
-    ...(options.certificates !== undefined && {
-      certificates: () => options.certificates as InstalledCertificates,
-    }),
+    ...(options.certificates !== undefined && { certificates: options.certificates }),
+    ...(options.certificateTools !== undefined && { certificateTools: options.certificateTools }),
     ...(options.restore !== undefined && { restore: options.restore }),
     ...(options.behaviour !== undefined && { behaviour: options.behaviour }),
     ...(options.energyMultiplier !== undefined && { energyMultiplier: options.energyMultiplier }),
@@ -1133,7 +1174,7 @@ describe('firmware management', () => {
         downloads.push(location);
         const ok = downloadOk;
         downloadOk = true;
-        return Promise.resolve(ok);
+        return Promise.resolve(ok ? new Uint8Array([1, 2, 3]) : undefined);
       },
       upload: (location, fileName, content) => {
         uploads.push({ location, fileName, content });
@@ -1223,7 +1264,11 @@ describe('security profiles', () => {
       ],
     });
     expect(h.cp.snapshot().config).not.toHaveProperty('AuthorizationKey');
-    expect(h.cp.connectionSecurity()).toEqual({ profile: 0, authorizationKey: 'station-password' });
+    expect(h.cp.connectionSecurity()).toEqual({
+      profile: 0,
+      authorizationKey: 'station-password',
+      centralSystemRoots: [],
+    });
 
     // 16 to 40 characters.
     expect(await change(h, 'AuthorizationKey', 'too-short')).toEqual({ status: 'Rejected' });
@@ -1232,15 +1277,14 @@ describe('security profiles', () => {
     expect(await change(h, 'AuthorizationKey', KEY)).toEqual({ status: 'Accepted' });
     await h.advance(0);
     expect(h.reconnects).toBe(1);
-    expect(h.cp.connectionSecurity()).toEqual({ profile: 0, authorizationKey: KEY });
+    expect(h.cp.connectionSecurity()).toMatchObject({ profile: 0, authorizationKey: KEY });
     // The key survives a restart.
     const after = setup({ restore: h.cp.persistentState() });
     expect(after.cp.connectionSecurity().authorizationKey).toBe(KEY);
   });
 
   it('raises SecurityProfile only with its prerequisites, and reconnects', async () => {
-    const certificates = { centralSystemRoot: false, chargePoint: false };
-    const h = setup({ certificates });
+    const h = setup({ certificateTools: fakeTools(), config: { CpoName: 'Example CPO' } });
     await h.boot();
     expect(await change(h, 'SecurityProfile', '1')).toEqual({ status: 'Rejected' });
     await change(h, 'AuthorizationKey', KEY);
@@ -1256,14 +1300,34 @@ describe('security profiles', () => {
     for (const value of ['1', '0', '4', 'two']) {
       expect(await change(h, 'SecurityProfile', value)).toEqual({ status: 'Rejected' });
     }
+    // Profile 2 needs a CentralSystemRootCertificate.
     expect(await change(h, 'SecurityProfile', '2')).toEqual({ status: 'Rejected' });
-    certificates.centralSystemRoot = true;
+    expect(
+      await h.csmsCall('InstallCertificate', {
+        certificateType: 'CentralSystemRootCertificate',
+        certificate: cert('ROOT'),
+      }),
+    ).toEqual({ status: 'Accepted' });
     expect(await change(h, 'SecurityProfile', '2')).toEqual({ status: 'Accepted' });
     h.cp.disconnected();
     await h.boot();
+    expect(h.cp.connectionSecurity()).toMatchObject({ centralSystemRoots: [cert('ROOT')] });
+
+    // Profile 3 needs a ChargePointCertificate: renew one through the CSMS (A02).
     expect(await change(h, 'SecurityProfile', '3')).toEqual({ status: 'Rejected' });
-    certificates.chargePoint = true;
+    await h.csmsCall('ExtendedTriggerMessage', { requestedMessage: 'SignChargePointCertificate' });
+    await h.advance(100);
+    expect(h.lastCall('SignCertificate')?.payload).toEqual({
+      csr: 'CSR CN=AC-7 O=Example CPO',
+    });
+    expect(
+      await h.csmsCall('CertificateSigned', { certificateChain: cert('CP', 'ROOT', 'cp-key-1') }),
+    ).toEqual({ status: 'Accepted' });
     expect(await change(h, 'SecurityProfile', '3')).toEqual({ status: 'Accepted' });
+    expect(h.cp.connectionSecurity().chargePointCertificate).toEqual({
+      certificate: cert('CP', 'ROOT', 'cp-key-1'),
+      privateKey: 'cp-key-1',
+    });
     h.cp.disconnected();
     await h.boot();
     await h.advance(0);
@@ -1284,7 +1348,10 @@ describe('security profiles', () => {
   it('falls back to the previous profile when the first connection with the new one fails', async () => {
     const h = setup({
       config: { AuthorizationKey: KEY },
-      certificates: { centralSystemRoot: true, chargePoint: true },
+      certificates: {
+        centralSystemRoots: [cert('ROOT')],
+        chargePoint: { certificate: cert('CP', 'ROOT', 'k'), privateKey: 'k' },
+      },
     });
     await h.boot();
     await change(h, 'SecurityProfile', '2');
@@ -1399,7 +1466,7 @@ describe('security events and logs', () => {
   it('GetLog uploads the security log for its window, and a newer request cancels the upload', async () => {
     const uploads: { url: string; fileName: string; content: string }[] = [];
     const transfer: FileTransfer = {
-      download: () => Promise.resolve(true),
+      download: () => Promise.resolve(new Uint8Array()),
       upload: (url, fileName, content) => {
         uploads.push({ url, fileName, content });
         return Promise.resolve(true);
@@ -1488,6 +1555,273 @@ describe('security events and logs', () => {
       { status: 'UploadFailure', requestId: 3 },
     ]);
     expect(h.cp.snapshot().logStatus).toBe('Idle');
+  });
+});
+
+describe('certificate management', () => {
+  const install = (
+    h: ReturnType<typeof setup>,
+    certificate: string,
+    type = 'CentralSystemRootCertificate',
+  ) => h.csmsCall('InstallCertificate', { certificateType: type, certificate });
+  const ids = (h: ReturnType<typeof setup>, certificateType: string) =>
+    h.csmsCall('GetInstalledCertificateIds', { certificateType });
+  const hash = (name: string, issuer = name) => ({
+    hashAlgorithm: 'SHA256',
+    issuerNameHash: `name-${issuer}`,
+    issuerKeyHash: `key-${issuer}`,
+    serialNumber: name.toUpperCase(),
+  });
+
+  it('installs, lists and deletes CA certificates per M03 to M05', async () => {
+    const h = setup({ certificateTools: fakeTools(), config: { CertificateStoreMaxLength: '3' } });
+    await h.boot();
+    expect(await ids(h, 'ManufacturerRootCertificate')).toEqual({ status: 'NotFound' });
+    expect(await install(h, cert('MFR'), 'ManufacturerRootCertificate')).toEqual({
+      status: 'Accepted',
+    });
+    expect(await install(h, cert('ROOT'))).toEqual({ status: 'Accepted' });
+    // The same certificate again replaces it (M05.FR.14); garbage is Rejected (M05.FR.06).
+    expect(await install(h, cert('ROOT'))).toEqual({ status: 'Accepted' });
+    expect(await install(h, 'not a certificate')).toEqual({ status: 'Rejected' });
+    expect(await ids(h, 'CentralSystemRootCertificate')).toEqual({
+      status: 'Accepted',
+      certificateHashData: [hash('ROOT')],
+    });
+    // A full store is Rejected (M05.FR.03).
+    expect(await install(h, cert('ROOT2'))).toEqual({ status: 'Accepted' });
+    expect(await install(h, cert('ROOT3'))).toEqual({ status: 'Rejected' });
+    expect(h.cp.snapshot().certificates).toEqual({
+      centralSystemRoots: 2,
+      manufacturerRoots: 1,
+      chargePoint: false,
+    });
+
+    // CentralSystemRootCertificates cannot be deleted (M04.FR.06), others can.
+    const remove = (certificateHashData: object) =>
+      h.csmsCall('DeleteCertificate', { certificateHashData });
+    expect(await remove(hash('ROOT'))).toEqual({ status: 'Failed' });
+    expect(await remove({ ...hash('MFR'), serialNumber: '00mfr' })).toEqual({ status: 'Accepted' });
+    expect(await remove(hash('MFR'))).toEqual({ status: 'NotFound' });
+    // The store survives a restart.
+    const after = setup({ certificateTools: fakeTools(), restore: h.cp.persistentState() });
+    expect(after.cp.connectionSecurity().centralSystemRoots).toEqual([cert('ROOT'), cert('ROOT2')]);
+  });
+
+  it('keeps one root that must be signed by the old one with AdditionalRootCertificateCheck', async () => {
+    const h = setup({
+      certificateTools: fakeTools(),
+      config: { AdditionalRootCertificateCheck: 'true' },
+      certificates: { centralSystemRoots: [cert('ROOT')] },
+    });
+    await h.boot();
+    expect(await install(h, cert('OTHER'))).toEqual({ status: 'Rejected' });
+    expect(await install(h, cert('NEW', 'ROOT'))).toEqual({ status: 'Accepted' });
+    expect(h.cp.connectionSecurity().centralSystemRoots).toEqual([cert('NEW', 'ROOT')]);
+  });
+
+  it('cannot delete its own certificate, and fails without X.509 support', async () => {
+    const own = cert('CP', 'ROOT', 'k');
+    const h = setup({
+      certificateTools: fakeTools(),
+      certificates: { chargePoint: { certificate: own, privateKey: 'k' } },
+    });
+    await h.boot();
+    expect(
+      await h.csmsCall('DeleteCertificate', { certificateHashData: hash('CP', 'ROOT') }),
+    ).toEqual({ status: 'Failed' });
+
+    const plain = setup();
+    await plain.boot();
+    expect(await install(plain, cert('ROOT'))).toEqual({ status: 'Failed' });
+    expect(await ids(plain, 'CentralSystemRootCertificate')).toEqual({ status: 'NotFound' });
+    expect(
+      await plain.csmsCall('ExtendedTriggerMessage', {
+        requestedMessage: 'SignChargePointCertificate',
+      }),
+    ).toEqual({ status: 'NotImplemented' });
+  });
+
+  it('resends SignCertificate with back-off until CertificateSigned, then stops', async () => {
+    const tools = fakeTools();
+    const h = setup({
+      certificateTools: tools,
+      config: { CertSigningWaitMinimum: '10', CertSigningRepeatTimes: '2' },
+      certificates: { centralSystemRoots: [cert('ROOT')] },
+    });
+    await h.boot();
+    await h.csmsCall('ExtendedTriggerMessage', { requestedMessage: 'SignChargePointCertificate' });
+    await h.advance(100);
+    expect(h.calls('SignCertificate')).toHaveLength(1);
+    await h.advance(10_000);
+    expect(h.calls('SignCertificate')).toHaveLength(2);
+    await h.advance(20_000);
+    expect(h.calls('SignCertificate')).toHaveLength(3);
+    await h.advance(100_000);
+    expect(h.calls('SignCertificate')).toHaveLength(3);
+    // The same CSR each time, for one key.
+    expect(new Set(h.calls('SignCertificate').map((c) => c.payload.csr)).size).toBe(1);
+    expect(tools.csrs).toHaveLength(1);
+  });
+
+  it('rejects a certificate outside the CPO hierarchy or for another key, with a security event', async () => {
+    const h = setup({
+      certificateTools: fakeTools(),
+      certificates: { centralSystemRoots: [cert('ROOT')] },
+    });
+    await h.boot();
+    expect(
+      await h.csmsCall('CertificateSigned', { certificateChain: cert('CP', 'ROOT', 'cp-key-1') }),
+    ).toEqual({ status: 'Rejected' });
+    await h.csmsCall('ExtendedTriggerMessage', { requestedMessage: 'SignChargePointCertificate' });
+    await h.advance(100);
+    for (const chain of [cert('CP', 'OTHER', 'cp-key-1'), cert('CP', 'ROOT', 'cp-key-9')]) {
+      expect(await h.csmsCall('CertificateSigned', { certificateChain: chain })).toEqual({
+        status: 'Rejected',
+      });
+    }
+    await h.advance(0);
+    expect(
+      h
+        .calls('SecurityEventNotification')
+        .filter((c) => c.payload.type === 'InvalidChargePointCertificate'),
+    ).toHaveLength(3);
+    expect(h.cp.snapshot().certificates.chargePoint).toBe(false);
+  });
+
+  it('switches to a renewed certificate by reconnecting, and back to the old one if it fails', async () => {
+    const old = { certificate: cert('CP', 'ROOT', 'old'), privateKey: 'old' };
+    const h = setup({
+      certificateTools: fakeTools(),
+      config: { SecurityProfile: '3' },
+      certificates: { centralSystemRoots: [cert('ROOT')], chargePoint: old },
+    });
+    await h.boot();
+    await h.csmsCall('ExtendedTriggerMessage', { requestedMessage: 'SignChargePointCertificate' });
+    await h.advance(100);
+    const before = h.reconnects;
+    await h.csmsCall('CertificateSigned', { certificateChain: cert('CP2', 'ROOT', 'cp-key-1') });
+    await h.advance(0);
+    expect(h.reconnects).toBe(before + 1);
+    expect(h.cp.connectionSecurity().chargePointCertificate?.privateKey).toBe('cp-key-1');
+    h.cp.disconnected();
+    h.cp.connectionFailed();
+    expect(h.cp.connectionSecurity().chargePointCertificate).toEqual(old);
+    expect(h.reconnects).toBe(before + 2);
+    await h.boot();
+    expect(h.cp.snapshot().securityEvents.map((e) => e.type)).toContain(
+      'DiscardedRenewedClientCertificate',
+    );
+  });
+});
+
+describe('signed firmware update', () => {
+  const statuses = (h: ReturnType<typeof setup>, from = 0) =>
+    h.frames
+      .slice(from)
+      .filter(
+        (f): f is CallFrame => f.type === 2 && f.action === 'SignedFirmwareStatusNotification',
+      )
+      .map((f) => f.payload.status);
+  const update = (h: ReturnType<typeof setup>, firmware: Record<string, unknown> = {}) =>
+    h.csmsCall('SignedUpdateFirmware', {
+      requestId: 5,
+      firmware: {
+        location: 'ftp://fw.example.com/fw-3.1.0.bin',
+        retrieveDateTime: new Date(h.clock.now()).toISOString(),
+        signingCertificate: cert('SIGNER', 'MFR'),
+        signature: 'good',
+        ...firmware,
+      },
+    });
+  const options = (extra: Partial<SetupOptions> = {}): SetupOptions => ({
+    certificateTools: fakeTools(),
+    certificates: { manufacturerRoots: [cert('MFR')] },
+    firmware: { downloadMs: 1000, installMs: 1000 },
+    ...extra,
+  });
+
+  it('downloads, verifies the signature, installs, reboots and reports Installed with the requestId', async () => {
+    const h = setup(options());
+    await h.boot();
+    const later = new Date(h.clock.now() + 60_000).toISOString();
+    expect(await update(h, { retrieveDateTime: later, installDateTime: later })).toEqual({
+      status: 'Accepted',
+    });
+    await h.advance(62_000);
+    expect(statuses(h)).toEqual([
+      'DownloadScheduled',
+      'Downloading',
+      'Downloaded',
+      'SignatureVerified',
+      'Installing',
+      'InstallRebooting',
+    ]);
+    expect(
+      h.frames
+        .filter((f) => f.type === 2 && f.action === 'SignedFirmwareStatusNotification')
+        .every((f) => f.type === 2 && f.payload.requestId === 5),
+    ).toBe(true);
+    expect(h.restarts).toEqual([180_000]);
+    h.cp.disconnected();
+    await h.boot();
+    expect(statuses(h).at(-1)).toBe('Installed');
+    expect(h.cp.snapshot().firmwareVersion).toBe('3.1.0');
+    expect(h.calls('SecurityEventNotification').map((c) => c.payload.type)).toContain(
+      'FirmwareUpdated',
+    );
+  });
+
+  it('refuses a signing certificate not from a manufacturer root, and stops on a bad signature', async () => {
+    const h = setup(options());
+    await h.boot();
+    expect(await update(h, { signingCertificate: cert('SIGNER', 'NOBODY') })).toEqual({
+      status: 'InvalidCertificate',
+    });
+    await h.advance(0);
+    expect(h.lastCall('SecurityEventNotification')?.payload.type).toBe(
+      'InvalidFirmwareSigningCertificate',
+    );
+
+    const bad = setup(options({ firmware: { downloadMs: 1000, signature: 'fail' } }));
+    await bad.boot();
+    expect(await update(bad)).toEqual({ status: 'Accepted' });
+    await bad.advance(2000);
+    expect(statuses(bad)).toEqual(['Downloading', 'Downloaded', 'InvalidSignature']);
+    // InvalidFirmwareSignature is not critical: logged, not sent.
+    expect(bad.cp.snapshot().securityEvents.map((e) => e.type)).toContain(
+      'InvalidFirmwareSignature',
+    );
+    expect(bad.restarts).toEqual([]);
+  });
+
+  it('checks a real download against the signature', async () => {
+    const tools = fakeTools();
+    const transfer: FileTransfer = {
+      download: () => Promise.resolve(new Uint8Array([1, 2, 3])),
+      upload: () => Promise.resolve(true),
+    };
+    const h = setup(options({ certificateTools: tools, transfer }));
+    await h.boot();
+    await update(h, { location: 'https://fw.example.com/fw-3.2.0.bin', signature: 'forged' });
+    await h.advance(100);
+    expect(statuses(h)).toEqual(['Downloading', 'Downloaded', 'InvalidSignature']);
+  });
+
+  it('a newer request cancels a running update, and ExtendedTriggerMessage reports the status', async () => {
+    const h = setup(options({ firmware: { downloadMs: 5000, installMs: 1000 } }));
+    await h.boot();
+    await update(h);
+    expect(await update(h)).toEqual({ status: 'AcceptedCanceled' });
+    await h.csmsCall('ExtendedTriggerMessage', { requestedMessage: 'FirmwareStatusNotification' });
+    await h.advance(100);
+    expect(h.lastCall('SignedFirmwareStatusNotification')?.payload).toEqual({
+      status: 'Downloading',
+      requestId: 5,
+    });
+    await h.advance(7000);
+    // Only one update ran to the end.
+    expect(statuses(h).filter((s) => s === 'InstallRebooting')).toHaveLength(1);
   });
 });
 

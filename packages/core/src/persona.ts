@@ -118,6 +118,7 @@ export const PersonaSchema = object(
         download: oneOf(['succeed', 'fail']),
         install: oneOf(['succeed', 'fail']),
         upload: oneOf(['succeed', 'fail']),
+        signature: oneOf(['succeed', 'fail']),
         transfer: oneOf(['simulated', 'real']),
       },
     ),
@@ -229,6 +230,7 @@ function firmwareFrom(
     ...(firmware.download !== undefined && { download: firmware.download }),
     ...(firmware.install !== undefined && { install: firmware.install }),
     ...(firmware.upload !== undefined && { upload: firmware.upload }),
+    ...(firmware.signature !== undefined && { signature: firmware.signature }),
   };
 }
 

@@ -50,8 +50,10 @@ describe('HTTP file transfer', () => {
     const { base, received } = await listen((req) => (req.url === '/fw-2.6.0.bin' ? 200 : 404));
     const transfer = createHttpFileTransfer();
     const withUser = base.replace('http://', 'http://ops:s%3Acret@');
-    expect(await transfer.download(`${withUser}/fw-2.6.0.bin`)).toBe(true);
-    expect(await transfer.download(`${base}/missing.bin`)).toBe(false);
+    expect(await transfer.download(`${withUser}/fw-2.6.0.bin`)).toEqual(
+      new Uint8Array(Buffer.from('firmware bytes')),
+    );
+    expect(await transfer.download(`${base}/missing.bin`)).toBeUndefined();
     expect(received.map((r) => [r.method, r.url])).toEqual([
       ['GET', '/fw-2.6.0.bin'],
       ['GET', '/missing.bin'],
@@ -76,6 +78,6 @@ describe('HTTP file transfer', () => {
       },
     ]);
     expect(await transfer.upload('http://127.0.0.1:1/logs/x.log', 'x.log', '')).toBe(false);
-    expect(await transfer.download('not a url')).toBe(false);
+    expect(await transfer.download('not a url')).toBeUndefined();
   });
 });

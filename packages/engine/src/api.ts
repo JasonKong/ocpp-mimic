@@ -78,7 +78,7 @@ function securityField(value: unknown): StationSecurity {
   }
   const security = value as Record<string, unknown>;
   const unknown = Object.keys(security).filter(
-    (key) => !['profile', 'ca', 'cert', 'key'].includes(key),
+    (key) => !['profile', 'ca', 'cert', 'key', 'manufacturerRoot'].includes(key),
   );
   if (unknown.length > 0)
     throw new HttpError(400, `"security" has unknown fields: ${unknown.join(', ')}`);
@@ -92,11 +92,13 @@ function securityField(value: unknown): StationSecurity {
   const ca = stringField(security, 'ca');
   const cert = stringField(security, 'cert');
   const key = stringField(security, 'key');
+  const manufacturerRoot = stringField(security, 'manufacturerRoot');
   return {
     ...(profile !== undefined && { profile: Number(profile) }),
     ...(ca !== undefined && { ca }),
     ...(cert !== undefined && { cert }),
     ...(key !== undefined && { key }),
+    ...(manufacturerRoot !== undefined && { manufacturerRoot }),
   };
 }
 

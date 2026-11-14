@@ -21,6 +21,7 @@ import {
   type JsonObject,
 } from '@ocpp-mimic/core';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { signCsr } from '../x509.js';
 
 /** Returned by a handler to answer with a CALLERROR instead of a CALLRESULT. */
 export class CallErrorReply {
@@ -74,6 +75,12 @@ export interface BuiltinCsmsOptions {
   passwords?: Record<string, string>;
   /** Serve wss:// with TLS 1.2 or above instead of ws://. */
   tls?: BuiltinCsmsTls;
+  /**
+   * A CA (PEM certificate and key) that signs the CSRs of SignCertificate:
+   * the CSMS accepts the request and sends the signed certificate with
+   * CertificateSigned shortly after. Without it SignCertificate is Rejected.
+   */
+  certificateAuthority?: { certificate: string; key: string };
 }
 
 /** The client certificate a charge point presented over TLS. */
@@ -327,7 +334,27 @@ function createConnection(
 
 export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promise<BuiltinCsms> {
   const { port = 0, host = '127.0.0.1' } = options;
-  const handlers = { ...defaultHandlers(), ...options.handlers };
+  const authority = options.certificateAuthority;
+  const handlers: Record<string, CsmsHandler> = {
+    ...defaultHandlers(),
+    SignCertificate: (payload, connection) => {
+      if (authority === undefined) return { status: 'Rejected' };
+      let certificate: string;
+      try {
+        certificate = signCsr(String(payload.csr), authority);
+      } catch {
+        return { status: 'Rejected' };
+      }
+      // The signed certificate follows the answer, as from a CA server (A02 steps 6 to 9).
+      setTimeout(() => {
+        void connection
+          .call('CertificateSigned', { certificateChain: certificate }, 5000)
+          .catch(() => {});
+      }, 50);
+      return { status: 'Accepted' };
+    },
+    ...options.handlers,
+  };
   const connections = new Map<string, BuiltinCsmsConnection>();
   const listeners = new Set<() => void>();
   /** `${chargeBoxId} ${action}` → the reply that replaces the handler. */

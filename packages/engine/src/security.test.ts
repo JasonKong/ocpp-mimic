@@ -4,49 +4,66 @@ import { connectionSettings, securityEventFor } from './fleet.js';
 import { testPki } from './test-pki.js';
 import { createTransport, type Transport, type TransportEvent } from './transport.js';
 
-const PEM = { ca: 'CA', cert: 'CERT', key: 'KEY' };
 const KEY = 'station-key-0001';
+const CP = { certificate: 'CERT', privateKey: 'KEY' };
+const none = { centralSystemRoots: [] };
 
 describe('connection settings per Security Profile', () => {
   it('profile 0 sends a password only when one is set', () => {
-    expect(connectionSettings('ws://h/ocpp', { profile: 0 }, {})).toEqual({});
-    expect(connectionSettings('wss://h/ocpp', { profile: 0, authorizationKey: KEY }, PEM)).toEqual({
-      password: KEY,
-      tls: { ca: 'CA' },
-    });
+    expect(connectionSettings('ws://h/ocpp', { profile: 0, ...none })).toEqual({});
+    expect(
+      connectionSettings('wss://h/ocpp', {
+        profile: 0,
+        authorizationKey: KEY,
+        centralSystemRoots: ['CA'],
+      }),
+    ).toEqual({ password: KEY, tls: { ca: 'CA' } });
   });
 
   it('profile 1 needs a key and works over ws and wss', () => {
-    expect(connectionSettings('ws://h/ocpp', { profile: 1 }, {})).toEqual({
+    expect(connectionSettings('ws://h/ocpp', { profile: 1, ...none })).toEqual({
       error: 'Security Profile 1 needs an AuthorizationKey',
     });
-    expect(connectionSettings('ws://h/ocpp', { profile: 1, authorizationKey: KEY }, {})).toEqual({
+    expect(
+      connectionSettings('ws://h/ocpp', { profile: 1, authorizationKey: KEY, ...none }),
+    ).toEqual({
       password: KEY,
     });
   });
 
   it('profile 2 needs wss and a key, and checks the server with the CA over TLS 1.2+', () => {
-    expect(connectionSettings('ws://h/ocpp', { profile: 2, authorizationKey: KEY }, PEM)).toEqual({
+    const roots = { centralSystemRoots: ['CA1', 'CA2'] };
+    expect(
+      connectionSettings('ws://h/ocpp', { profile: 2, authorizationKey: KEY, ...roots }),
+    ).toEqual({
       error: 'Security Profile 2 needs a wss:// CSMS address',
     });
-    expect(connectionSettings('wss://h/ocpp', { profile: 2 }, PEM)).toEqual({
+    expect(connectionSettings('wss://h/ocpp', { profile: 2, ...roots })).toEqual({
       error: 'Security Profile 2 needs an AuthorizationKey',
     });
-    expect(connectionSettings('wss://h/ocpp', { profile: 2, authorizationKey: KEY }, PEM)).toEqual({
+    expect(
+      connectionSettings('wss://h/ocpp', { profile: 2, authorizationKey: KEY, ...roots }),
+    ).toEqual({
       password: KEY,
-      tls: { ca: 'CA', minVersion: 'TLSv1.2' },
+      tls: { ca: 'CA1\nCA2', minVersion: 'TLSv1.2' },
     });
   });
 
   it('profile 3 uses the client certificate instead of a password', () => {
+    const roots = { centralSystemRoots: ['CA'] };
     expect(
-      connectionSettings('wss://h/ocpp', { profile: 3, authorizationKey: KEY }, { ca: 'CA' }),
+      connectionSettings('wss://h/ocpp', { profile: 3, authorizationKey: KEY, ...roots }),
     ).toEqual({
       error: 'Security Profile 3 needs a client certificate and key',
     });
-    expect(connectionSettings('wss://h/ocpp', { profile: 3, authorizationKey: KEY }, PEM)).toEqual({
-      tls: { ca: 'CA', cert: 'CERT', key: 'KEY', minVersion: 'TLSv1.2' },
-    });
+    expect(
+      connectionSettings('wss://h/ocpp', {
+        profile: 3,
+        authorizationKey: KEY,
+        ...roots,
+        chargePointCertificate: CP,
+      }),
+    ).toEqual({ tls: { ca: 'CA', cert: 'CERT', key: 'KEY', minVersion: 'TLSv1.2' } });
   });
 });
 

@@ -15,7 +15,8 @@ export interface HttpFileTransferOptions {
 export function createHttpFileTransfer(options: HttpFileTransferOptions = {}): FileTransfer {
   const timeoutMs = options.timeoutMs ?? 60_000;
 
-  async function request(location: string, init: RequestInit): Promise<boolean> {
+  /** The response body, or undefined when the request failed or was not 2xx. */
+  async function request(location: string, init: RequestInit): Promise<Uint8Array | undefined> {
     try {
       const url = new URL(location);
       const headers = new Headers(init.headers);
@@ -34,23 +35,23 @@ export function createHttpFileTransfer(options: HttpFileTransferOptions = {}): F
         headers,
         signal: AbortSignal.timeout(timeoutMs),
       });
-      await response.arrayBuffer();
-      return response.ok;
+      const body = new Uint8Array(await response.arrayBuffer());
+      return response.ok ? body : undefined;
     } catch {
-      return false;
+      return undefined;
     }
   }
 
   return {
     download: (location) => request(location, { method: 'GET' }),
-    upload: (url, fileName, content) =>
-      request(url, {
+    upload: async (url, fileName, content) =>
+      (await request(url, {
         method: 'PUT',
         headers: {
           'content-type': 'text/plain; charset=utf-8',
           'content-disposition': `attachment; filename="${fileName.replace(/["\\]/g, '_')}"`,
         },
         body: content,
-      }),
+      })) !== undefined,
   };
 }
