@@ -1,0 +1,101 @@
+# Fault injection, network and protocol: each scenario injects one fault on
+# the station's wire and checks what the CSMS sees. Injected frames are marked
+# in the message log and exempt from the OCA schema check.
+name: 'latency: answers reach the CSMS late'
+station: { id: REG-FI-LATENCY, persona: regression-1.6 }
+steps:
+  - inject: { type: latency, ms: 1500, direction: sent }
+  - expectStation: { injections: { $size: 1 } }
+  - csmsCall: { action: ClearCache, payload: {}, noAnswer: 1s }
+  - csmsCall: { action: ClearCache, payload: {}, answer: { status: Accepted } }
+  - clearInjections: {}
+  - expectStation: { injections: [] }
+---
+name: 'drop: a message the station sends never arrives'
+station: { id: REG-FI-DROP, persona: regression-1.6 }
+steps:
+  - inject: { type: drop, direction: sent, action: Heartbeat, count: 1 }
+  - csmsCall:
+      {
+        action: TriggerMessage,
+        payload: { requestedMessage: Heartbeat },
+        answer: { status: Accepted },
+      }
+  - expectNo: { sent: Heartbeat, within: 2s }
+---
+name: 'flap: the connection goes down and up, and the station boots each time'
+station: { id: REG-FI-FLAP, persona: regression-1.6 }
+steps:
+  - expect: { sent: BootNotification } # the first boot; later expects find the next one
+  - inject: { type: flap, down: 500ms, up: 1s, times: 2 }
+  - expectStation: { transport: offline, within: 2s }
+  - expect: { sent: BootNotification, within: 5s }
+  - expect: { sent: BootNotification, within: 5s }
+  - expectStation: { transport: open, injections: [] }
+---
+name: 'reconnectStorm: every station reconnects at once'
+stations:
+  - { id: REG-FI-STORM-1, persona: regression-1.6 }
+  - { id: REG-FI-STORM-2, persona: regression-1.6 }
+steps:
+  - expect: { station: REG-FI-STORM-1, sent: BootNotification }
+  - expect: { station: REG-FI-STORM-2, sent: BootNotification }
+  - inject: { type: reconnectStorm }
+  - expect: { station: REG-FI-STORM-1, sent: BootNotification }
+  - expect: { station: REG-FI-STORM-2, sent: BootNotification }
+---
+name: 'malformedJson: the CSMS cannot read the answer and times out'
+station: { id: REG-FI-MALFORMED, persona: regression-1.6 }
+steps:
+  - inject: { type: malformedJson }
+  - csmsCall: { action: ClearCache, payload: {}, noAnswer: 2s }
+  - csmsCall: { action: ClearCache, payload: {}, answer: { status: Accepted } }
+---
+name: 'unknownId: the answer names a uniqueId the CSMS never sent'
+station: { id: REG-FI-UNKNOWN-ID, persona: regression-1.6 }
+steps:
+  - inject: { type: unknownId }
+  - csmsCall: { action: ClearCache, payload: {}, noAnswer: 2s }
+---
+name: 'duplicateId and outOfOrder: the station still works'
+station: { id: REG-FI-IDS, persona: regression-1.6 }
+steps:
+  - inject: { type: duplicateId }
+  - csmsCall:
+      {
+        action: TriggerMessage,
+        payload: { requestedMessage: Heartbeat },
+        answer: { status: Accepted },
+      }
+  - expect: { sent: Heartbeat }
+  - inject: { type: outOfOrder }
+  - csmsCall:
+      action: TriggerMessage
+      payload: { requestedMessage: StatusNotification, connectorId: 1 }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { connectorId: 1 } }
+  - csmsCall: { action: ClearCache, payload: {}, answer: { status: Accepted } }
+---
+name: 'noAnswer and callError: the station ignores or refuses a command'
+station: { id: REG-FI-COMMANDS, persona: regression-1.6 }
+steps:
+  - inject: { type: noAnswer, action: ClearCache }
+  - csmsCall: { action: ClearCache, payload: {}, noAnswer: 2s }
+  - inject: { type: callError, action: GetConfiguration, errorCode: InternalError, count: 1 }
+  - csmsCall: { action: GetConfiguration, payload: {}, error: InternalError }
+  - csmsCall:
+      { action: GetConfiguration, payload: {}, answer: { configurationKey: { $exists: true } } }
+  - clearInjections: {}
+  - csmsCall: { action: ClearCache, payload: {}, answer: { status: Accepted } }
+---
+name: 'schemaViolation: an extra property, exempt from the schema check'
+station: { id: REG-FI-SCHEMA, persona: regression-1.6 }
+steps:
+  - inject: { type: schemaViolation, action: Heartbeat }
+  - csmsCall:
+      {
+        action: TriggerMessage,
+        payload: { requestedMessage: Heartbeat },
+        answer: { status: Accepted },
+      }
+  - expect: { sent: Heartbeat, payload: { injected: true } }

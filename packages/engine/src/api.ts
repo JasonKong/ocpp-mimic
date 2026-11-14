@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   DEFAULT_BEHAVIOUR,
   OCPP16_SUBPROTOCOL,
+  parseInjection,
   VERSION,
   type ChargePointBehaviour,
   type Fault,
@@ -265,6 +266,28 @@ const routes: Route[] = [
   route('POST', '/api/stations/:param/online', (request, context) => {
     const station = stationOf(context, request.params[0]);
     station.transport.goOnline();
+    return station.snapshot();
+  }),
+
+  route('GET', '/api/stations/:param/injections', (request, context) => ({
+    injections: stationOf(context, request.params[0]).injector.list(),
+  })),
+
+  route('POST', '/api/stations/:param/injections', async (request, context) => {
+    const station = stationOf(context, request.params[0]);
+    const parsed = parseInjection(await request.body());
+    if (!parsed.ok) {
+      throw new HttpError(400, parsed.issues.map((i) => `${i.path}: ${i.message}`).join('; '));
+    }
+    // A reconnect storm hits every station at once.
+    if (parsed.request.injection.type === 'reconnectStorm') context.fleet.reconnectStorm();
+    else station.injector.add(parsed.request);
+    return station.snapshot();
+  }),
+
+  route('DELETE', '/api/stations/:param/injections', (request, context) => {
+    const station = stationOf(context, request.params[0]);
+    station.injector.clear();
     return station.snapshot();
   }),
 

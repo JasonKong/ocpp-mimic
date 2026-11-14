@@ -175,7 +175,7 @@ describe('scenario validation', () => {
         ],
       }),
     ).toEqual([
-      'file.yaml#1: $.steps[0].plugin: unknown step (known: plugIn, unplug, evSuspend, evResume, clearFault, presentCard, fault, offline, online, stopStation, startStation, setBehaviour, charge, expect, expectNo, csmsCall, csmsReply, http, wait, expectConnector, expectStation)',
+      'file.yaml#1: $.steps[0].plugin: unknown step (known: plugIn, unplug, evSuspend, evResume, clearFault, presentCard, fault, offline, online, stopStation, startStation, setBehaviour, charge, expect, expectNo, csmsCall, csmsReply, http, clearInjections, wait, inject, expectConnector, expectStation)',
       'file.yaml#1: $.steps[1].plugIn.connector: expected integer, got string',
       'file.yaml#1: $.steps[2].presentCard.idTag: missing required property',
       'file.yaml#1: $.steps[3].expect.sent: "RemoteStartTransaction" is not one of Authorize, BootNotification, DataTransfer, DiagnosticsStatusNotification, FirmwareStatusNotification, Heartbeat, LogStatusNotification, MeterValues, SecurityEventNotification, SignCertificate, SignedFirmwareStatusNotification, StartTransaction, StatusNotification, StopTransaction',
@@ -254,6 +254,10 @@ describe('scenario validation', () => {
         { expectConnector: { status: 'Charging', locked: true } },
         { wait: 65_000 },
         { http: { method: 'POST', url: '{{API}}/start' } },
+        { inject: { type: 'latency', ms: '2s', for: '30s' } },
+        { inject: { type: 'reconnectStorm' } },
+        { clearInjections: null },
+        { csmsCall: { action: 'ClearCache', noAnswer: '2s' } },
       ],
     });
     expect(scenario.steps.map(stepLabel)).toEqual([
@@ -264,6 +268,27 @@ describe('scenario validation', () => {
       'expectConnector 1 status=Charging locked=true',
       'wait 1m5s',
       'http POST {{API}}/start',
+      'inject latency ms=2000 direction=both for 30s',
+      'inject reconnectStorm',
+      'clearInjections',
+      'csmsCall ClearCache',
+    ]);
+    expect(scenario.steps[7]).toMatchObject({
+      kind: 'inject',
+      request: { injection: { type: 'latency', ms: 2000 }, forMs: 30_000 },
+    });
+    expect(scenario.steps[10]).toMatchObject({ kind: 'csmsCall', noAnswerMs: 2000 });
+    const invalid = parseScenario({
+      name: 'x',
+      station: { id: 'A', persona: 'p' },
+      steps: [
+        { inject: { type: 'drop' } },
+        { csmsCall: { action: 'ClearCache', noAnswer: '1s', answer: {} } },
+      ],
+    });
+    expect(invalid.ok ? [] : invalid.errors).toEqual([
+      '$.steps[0].inject.direction: missing required property',
+      '$.steps[1].csmsCall: give one of answer, error and noAnswer',
     ]);
   });
 });

@@ -179,6 +179,33 @@ describe('engine API', () => {
     expect(stops.body?.entries).toMatchObject([{ action: 'StopTransaction', messageType: 3 }]);
   });
 
+  it('adds, lists and clears fault injections, and marks injected frames in the log', async () => {
+    const { api, csmsUrl } = await start();
+    await addStation(api, csmsUrl);
+    const connection = await csms!.waitForConnection('SIM-1');
+    const added = await api('POST', '/api/stations/SIM-1/injections', {
+      type: 'callError',
+      action: 'ClearCache',
+      errorCode: 'NotSupported',
+      for: '1m',
+    });
+    expect(added.body?.injections).toMatchObject([
+      { injection: { type: 'callError', errorCode: 'NotSupported', action: 'ClearCache' } },
+    ]);
+    expect((await connection.call('ClearCache', {})).type).toBe(4);
+    const log = await api('GET', '/api/stations/SIM-1/messages?action=ClearCache');
+    expect(log.body?.entries).toMatchObject([
+      { direction: 'csms-to-cp', injected: 'callError', dropped: true },
+      { direction: 'cp-to-csms', messageType: 4, injected: 'callError' },
+    ]);
+    expect((await api('GET', '/api/stations/SIM-1/injections')).body?.injections).toHaveLength(1);
+    expect((await api('DELETE', '/api/stations/SIM-1/injections')).body?.injections).toEqual([]);
+    expect((await connection.call('ClearCache', {})).type).toBe(3);
+    expect((await api('POST', '/api/stations/SIM-1/injections', { type: 'meltdown' })).status).toBe(
+      400,
+    );
+  });
+
   it('presents cards, raises and clears faults, and takes a station offline and back', async () => {
     const { api, csmsUrl } = await start();
     await addStation(api, csmsUrl);

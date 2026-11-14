@@ -23,4 +23,18 @@ describe('recorder', () => {
     expect(garbage.schemaErrors).toBeUndefined();
     expect(checked).toEqual(['Heartbeat request', 'Heartbeat response']);
   });
+
+  it('keeps fault injection marks and skips the schema check for injected frames', () => {
+    const recorder = createRecorder({ check: () => ['$.injected: not allowed'] });
+    const injected = recorder.frame('CP', 'cp-to-csms', '[2,"1","Heartbeat",{"injected":true}]', {
+      injected: 'schemaViolation',
+    });
+    const dropped = recorder.frame('CP', 'cp-to-csms', '[2,"2","Heartbeat",{}]', {
+      injected: 'drop',
+      dropped: true,
+    });
+    expect(injected).toMatchObject({ action: 'Heartbeat', injected: 'schemaViolation' });
+    expect(injected.schemaErrors).toBeUndefined();
+    expect(dropped).toMatchObject({ injected: 'drop', dropped: true });
+  });
 });

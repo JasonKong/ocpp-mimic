@@ -279,7 +279,11 @@ export async function runScenario(
     // ---- Steps ----
     const runStep = async (step: ScenarioStep, stepStartSeq: number): Promise<void> => {
       const station =
-        step.kind === 'wait' || step.kind === 'http' ? undefined : stationOf(step.station);
+        step.kind === 'wait' ||
+        step.kind === 'http' ||
+        (step.kind === 'inject' && step.request.injection.type === 'reconnectStorm')
+          ? undefined
+          : stationOf(step.station);
       const refusal = async (act: () => void | string | Promise<void | string>) => {
         let refused: string | undefined;
         try {
@@ -365,6 +369,13 @@ export async function runScenario(
         case 'wait':
           await sleepUnlessAborted(step.durationMs);
           return;
+        case 'inject':
+          if (step.request.injection.type === 'reconnectStorm') fleet.reconnectStorm();
+          else station!.injector.add(step.request);
+          return;
+        case 'clearInjections':
+          station!.injector.clear();
+          return;
         case 'charge': {
           const target = station!;
           const running = () => connectorOf(target, step.connector).transactionId !== undefined;
@@ -409,6 +420,21 @@ export async function runScenario(
         case 'csmsCall': {
           if (csms === undefined) throw new StepFailure('needs the built-in CSMS');
           const connection = await csms.waitForConnection(station!.id, DEFAULT_WITHIN_MS);
+          if (step.noAnswerMs !== undefined) {
+            const answered = await connection
+              .call(step.action, step.payload as JsonObject, step.noAnswerMs)
+              .then(
+                (frame) => frame,
+                () => undefined,
+              );
+            if (answered !== undefined) {
+              throw new StepFailure(
+                `the station answered within ${formatDuration(step.noAnswerMs)}`,
+                [JSON.stringify(answered)],
+              );
+            }
+            return;
+          }
           const answer = await connection.call(
             step.action,
             step.payload as JsonObject,
@@ -529,6 +555,7 @@ export async function runScenario(
           f.stationId === station.id &&
           f.seq > after &&
           f.messageType === 2 &&
+          f.dropped !== true &&
           f.direction === directionOf(step) &&
           f.action === step.action,
       );

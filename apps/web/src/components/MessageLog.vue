@@ -80,6 +80,12 @@ function pretty(record: FrameRecord): string {
           }}</span>
           <span class="action">{{ entry.action ?? '?' }}</span>
           <span
+            v-if="entry.injected"
+            class="injected"
+            :title="`Fault injection: ${entry.injected}${entry.dropped ? ' (never reached the other side)' : ''}`"
+            >{{ entry.dropped ? 'dropped' : 'injected' }}: {{ entry.injected }}</span
+          >
+          <span
             v-if="entry.schemaErrors"
             class="schema"
             :title="`Breaks the official OCA schema:\n${entry.schemaErrors.join('\n')}`"
@@ -192,6 +198,10 @@ li.log {
 }
 .schema {
   color: var(--bad);
+  font-weight: 600;
+}
+.injected {
+  color: var(--warn);
   font-weight: 600;
 }
 .schema-errors {

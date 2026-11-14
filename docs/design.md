@@ -280,6 +280,8 @@ Charge point actions, the same operations the API offers:
 | `stopStation`, `startStation` | — | Disconnect or reconnect the station |
 | `setBehaviour` | `refuseRemoteStart`, `cableLock` | Test switches |
 | `wait` | a duration | Pause |
+| `inject` | `type` and its parameters, `for` | Starts a fault injection (see "Fault injection" under M3); a `reconnectStorm` hits every station |
+| `clearInjections` | — | Ends the station's fault injections |
 | `charge` | `connector`, `duration` | Wait for `duration`; fails unless the connector has a running transaction at the start and at the end |
 
 An action the engine refuses (for example unplugging a locked cable) fails the step. With `expectError: <text>` the step instead requires a refusal whose message contains the text.
@@ -299,7 +301,7 @@ CSMS steps, available only with the built-in CSMS:
 
 | Step | Arguments | Effect |
 | --- | --- | --- |
-| `csmsCall` | `action`, `payload`, `answer`, `error` | The built-in CSMS sends a CALL to the station. `answer` must match the CALLRESULT; `error` instead names the expected CALLERROR code |
+| `csmsCall` | `action`, `payload`, `answer`, `error`, `noAnswer` | The built-in CSMS sends a CALL to the station. `answer` must match the CALLRESULT; `error` instead names the expected CALLERROR code; `noAnswer: <duration>` passes only if no answer arrives that long |
 | `csmsReply` | `action`, then `payload`, `error` or `ignore: true`, and `times` | How the built-in CSMS answers the station's next `times` calls of `action` (default: all of them) |
 
 HTTP, for the system under test:
@@ -388,6 +390,13 @@ Decided for M3 (#65). M3 adds the remaining OCPP 1.6 feature profiles, the Secur
 | Power | `powerLoss` (`for`: off, then restart from the saved state: transactions end with PowerLoss, queued messages keep their timestamps), repeated with `times` |
 
 - Injected frames are recorded with the injection's type, shown in the Web UI's message log and excluded from the OCA schema check, since they are wrong on purpose.
+
+Implemented for the network and protocol layers (T30):
+
+- The Fault Injector sits on the wire between the charge point and its transport, and frames are recorded there, after it: the message log shows what really went over the connection. A frame an injection changed or made carries `injected` (the type); one that never reached the other side (dropped, or a CALL left unanswered) also carries `dropped`, and `expect` steps ignore it.
+- Parameters: `latency { ms, direction: sent | received | both }`; `drop { direction, count?, probability?, action? }`; `flap { down, up, times? }`; `malformedJson`, `duplicateId`, `unknownId`, `schemaViolation` take `count` (default 1), `schemaViolation` and `noAnswer` / `callError` an `action`, `callError` an `errorCode` (default InternalError). Each takes `for` to end it after a time; counted ones end when used up; `outOfOrder` swaps the next two frames sent (a lone one goes after 1 s). A duplicated uniqueId's answer is renamed back, so the station itself is not confused.
+- `GET`, `POST` and `DELETE /api/stations/:id/injections`; a `reconnectStorm` posted to any station hits the whole fleet. Snapshots list the active injections, and the Web UI shows them with a Clear button.
+- `csmsCall` takes `noAnswer: <duration>` to assert a CSMS-side timeout.
 
 **Security (OCPP 1.6 Security Whitepaper)**
 
