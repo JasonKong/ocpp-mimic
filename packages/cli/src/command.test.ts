@@ -3,7 +3,13 @@ import { parseCommand } from './command.js';
 
 describe('parseCommand', () => {
   it('starts the engine on the default port and loopback interface', () => {
-    expect(parseCommand(['serve'])).toEqual({ kind: 'serve', port: 7300, host: '127.0.0.1' });
+    expect(parseCommand(['serve'])).toEqual({
+      kind: 'serve',
+      port: 7300,
+      host: '127.0.0.1',
+      personas: [],
+      allowCsms: [],
+    });
   });
 
   it('takes --port and --host', () => {
@@ -11,6 +17,34 @@ describe('parseCommand', () => {
       kind: 'serve',
       port: 9000,
       host: '0.0.0.0',
+      personas: [],
+      allowCsms: [],
+    });
+  });
+
+  it('takes a store file, extra persona directories and allowed CSMS prefixes', () => {
+    expect(
+      parseCommand([
+        'serve',
+        '--store',
+        'state.db',
+        '--personas',
+        './personas',
+        '--personas',
+        './more',
+        '--allow-csms',
+        'wss://csms.example.com',
+      ]),
+    ).toEqual({
+      kind: 'serve',
+      port: 7300,
+      host: '127.0.0.1',
+      store: 'state.db',
+      personas: ['./personas', './more'],
+      allowCsms: ['wss://csms.example.com'],
+    });
+    expect(parseCommand(['serve', '--allow-csms', 'csms.example.com'])).toMatchObject({
+      kind: 'error',
     });
   });
 
