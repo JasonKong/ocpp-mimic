@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { startBuiltinCsms, type BuiltinCsms } from './csms/builtin-csms.js';
-import { connectionSettings } from './fleet.js';
+import { connectionSettings, securityEventFor } from './fleet.js';
 import { testPki } from './test-pki.js';
 import { createTransport, type Transport, type TransportEvent } from './transport.js';
 
@@ -47,6 +47,26 @@ describe('connection settings per Security Profile', () => {
     expect(connectionSettings('wss://h/ocpp', { profile: 3, authorizationKey: KEY }, PEM)).toEqual({
       tls: { ca: 'CA', cert: 'CERT', key: 'KEY', minVersion: 'TLSv1.2' },
     });
+  });
+});
+
+describe('security events for failed connections', () => {
+  it('tells refused passwords, bad certificates and old TLS versions apart', () => {
+    expect(securityEventFor('Unexpected server response: 401')).toBe(
+      'FailedToAuthenticateAtCentralSystem',
+    );
+    expect(securityEventFor('unable to verify the first certificate')).toBe(
+      'InvalidCentralSystemCertificate',
+    );
+    expect(securityEventFor('self-signed certificate in certificate chain')).toBe(
+      'InvalidCentralSystemCertificate',
+    );
+    expect(securityEventFor("Hostname/IP does not match certificate's altnames")).toBe(
+      'InvalidCentralSystemCertificate',
+    );
+    expect(securityEventFor('unsupported protocol')).toBe('InvalidTLSVersion');
+    expect(securityEventFor('connect ECONNREFUSED 127.0.0.1:1')).toBeUndefined();
+    expect(securityEventFor('Security Profile 2 needs a wss:// CSMS address')).toBeUndefined();
   });
 });
 

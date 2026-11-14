@@ -1,12 +1,13 @@
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createHttpFileTransfer, uploadUrl } from './file-transfer.js';
+import { createHttpFileTransfer } from './file-transfer.js';
 
 interface Received {
   method: string | undefined;
   url: string | undefined;
   authorization: string | undefined;
+  disposition?: string | undefined;
   body: string;
 }
 
@@ -32,6 +33,7 @@ async function listen(
         method: req.method,
         url: req.url,
         authorization: req.headers.authorization,
+        ...(req.method === 'PUT' && { disposition: req.headers['content-disposition'] }),
         body,
       });
       res.statusCode = status(req);
@@ -60,15 +62,20 @@ describe('HTTP file transfer', () => {
     expect(received[1]?.authorization).toBeUndefined();
   });
 
-  it('uploads with PUT into the location directory, and fails on errors or no server', async () => {
+  it('uploads with PUT to the given URL, naming the file, and fails on errors or no server', async () => {
     const { base, received } = await listen((req) => (req.method === 'PUT' ? 201 : 405));
     const transfer = createHttpFileTransfer({ timeoutMs: 2000 });
-    expect(await transfer.upload(`${base}/logs`, 'diagnostics-1.log', 'hello\n')).toBe(true);
+    expect(await transfer.upload(`${base}/logs/d-1.log`, 'd-1.log', 'hello\n')).toBe(true);
     expect(received).toEqual([
-      { method: 'PUT', url: '/logs/diagnostics-1.log', authorization: undefined, body: 'hello\n' },
+      {
+        method: 'PUT',
+        url: '/logs/d-1.log',
+        authorization: undefined,
+        disposition: 'attachment; filename="d-1.log"',
+        body: 'hello\n',
+      },
     ]);
-    expect(await transfer.upload('http://127.0.0.1:1/logs/', 'x.log', '')).toBe(false);
+    expect(await transfer.upload('http://127.0.0.1:1/logs/x.log', 'x.log', '')).toBe(false);
     expect(await transfer.download('not a url')).toBe(false);
-    expect(uploadUrl('ftp://h/dir/', 'a b.log')).toBe('ftp://h/dir/a%20b.log');
   });
 });

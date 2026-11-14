@@ -24,6 +24,7 @@ export * from './meter.js';
 export * from './ev.js';
 export * from './charging-profile.js';
 export * from './firmware.js';
+export * from './security-events.js';
 export * from './transaction.js';
 export * from './charge-point.js';
 export * from './persona.js';

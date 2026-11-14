@@ -178,7 +178,7 @@ describe('scenario validation', () => {
       'file.yaml#1: $.steps[0].plugin: unknown step (known: plugIn, unplug, evSuspend, evResume, clearFault, presentCard, fault, offline, online, stopStation, startStation, setBehaviour, charge, expect, expectNo, csmsCall, csmsReply, http, wait, expectConnector, expectStation)',
       'file.yaml#1: $.steps[1].plugIn.connector: expected integer, got string',
       'file.yaml#1: $.steps[2].presentCard.idTag: missing required property',
-      'file.yaml#1: $.steps[3].expect.sent: "RemoteStartTransaction" is not one of Authorize, BootNotification, DataTransfer, DiagnosticsStatusNotification, FirmwareStatusNotification, Heartbeat, MeterValues, StartTransaction, StatusNotification, StopTransaction',
+      'file.yaml#1: $.steps[3].expect.sent: "RemoteStartTransaction" is not one of Authorize, BootNotification, DataTransfer, DiagnosticsStatusNotification, FirmwareStatusNotification, Heartbeat, LogStatusNotification, MeterValues, SecurityEventNotification, SignCertificate, SignedFirmwareStatusNotification, StartTransaction, StatusNotification, StopTransaction',
       expect.stringMatching(
         /^file\.yaml#1: \$\.steps\[4\]\.expect\.received: "Heartbeat" is not one of/,
       ),

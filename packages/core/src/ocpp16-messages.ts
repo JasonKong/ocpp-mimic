@@ -1,6 +1,7 @@
 /**
- * OCPP 1.6 message definitions for M1: the Core profile plus TriggerMessage.
- * Written from the OCPP 1.6 specification (field names, types, lengths and
+ * OCPP 1.6 message definitions: every feature profile, plus the messages of
+ * the Security Whitepaper (Improved security for OCPP 1.6-J, edition 4).
+ * Written from the specification texts (field names, types, lengths and
  * enumerations); see docs/design.md, "OCPP 1.6J coverage". Each entry
  * validates at runtime and gives the TypeScript type of its payload.
  */
@@ -163,6 +164,21 @@ export type ChargingProfile = Infer<typeof ChargingProfileSchema>;
 export type StopReason = Infer<typeof StopReasonSchema>;
 
 const acceptedOrRejected = object({ status: oneOf(['Accepted', 'Rejected']) });
+
+// ---- Security Whitepaper types ----------------------------------------------
+
+export const CertificateUseSchema = oneOf([
+  'CentralSystemRootCertificate',
+  'ManufacturerRootCertificate',
+]);
+
+export const CertificateHashDataSchema = object({
+  hashAlgorithm: oneOf(['SHA256', 'SHA384', 'SHA512']),
+  issuerNameHash: string({ maxLength: 128 }),
+  issuerKeyHash: string({ maxLength: 128 }),
+  serialNumber: string({ maxLength: 40 }),
+});
+export type CertificateHashData = Infer<typeof CertificateHashDataSchema>;
 
 // ---- Messages ------------------------------------------------------------
 
@@ -420,6 +436,144 @@ export const OCPP16_MESSAGES = {
     request: object({ connectorId: integer() }),
     response: object({ status: oneOf(['Unlocked', 'UnlockFailed', 'NotSupported']) }),
   },
+
+  // Security Whitepaper (Improved security for OCPP 1.6-J, edition 4).
+  // Initiated by the charge point
+  LogStatusNotification: {
+    request: object(
+      {
+        status: oneOf([
+          'BadMessage',
+          'Idle',
+          'NotSupportedOperation',
+          'PermissionDenied',
+          'Uploaded',
+          'UploadFailure',
+          'Uploading',
+        ]),
+      },
+      { requestId: integer() },
+    ),
+    response: object({}),
+  },
+  SecurityEventNotification: {
+    request: object(
+      { type: string({ maxLength: 50 }), timestamp: dateTime() },
+      { techInfo: string({ maxLength: 255 }) },
+    ),
+    response: object({}),
+  },
+  SignCertificate: {
+    request: object({ csr: string({ maxLength: 5500 }) }),
+    response: acceptedOrRejected,
+  },
+  SignedFirmwareStatusNotification: {
+    request: object(
+      {
+        status: oneOf([
+          'Downloaded',
+          'DownloadFailed',
+          'Downloading',
+          'DownloadScheduled',
+          'DownloadPaused',
+          'Idle',
+          'InstallationFailed',
+          'Installing',
+          'Installed',
+          'InstallRebooting',
+          'InstallScheduled',
+          'InstallVerificationFailed',
+          'InvalidSignature',
+          'SignatureVerified',
+        ]),
+      },
+      { requestId: integer() },
+    ),
+    response: object({}),
+  },
+  // Initiated by the CSMS
+  CertificateSigned: {
+    request: object({ certificateChain: string({ maxLength: 10_000 }) }),
+    response: acceptedOrRejected,
+  },
+  DeleteCertificate: {
+    request: object({ certificateHashData: CertificateHashDataSchema }),
+    response: object({ status: oneOf(['Accepted', 'Failed', 'NotFound']) }),
+  },
+  ExtendedTriggerMessage: {
+    request: object(
+      {
+        requestedMessage: oneOf([
+          'BootNotification',
+          'LogStatusNotification',
+          'FirmwareStatusNotification',
+          'Heartbeat',
+          'MeterValues',
+          'SignChargePointCertificate',
+          'StatusNotification',
+        ]),
+      },
+      { connectorId: integer() },
+    ),
+    response: object({ status: oneOf(['Accepted', 'Rejected', 'NotImplemented']) }),
+  },
+  GetInstalledCertificateIds: {
+    request: object({ certificateType: CertificateUseSchema }),
+    response: object(
+      { status: oneOf(['Accepted', 'NotFound']) },
+      { certificateHashData: array(CertificateHashDataSchema, { minItems: 1 }) },
+    ),
+  },
+  GetLog: {
+    request: object(
+      {
+        log: object(
+          { remoteLocation: string({ maxLength: 512 }) },
+          { oldestTimestamp: dateTime(), latestTimestamp: dateTime() },
+        ),
+        logType: oneOf(['DiagnosticsLog', 'SecurityLog']),
+        requestId: integer(),
+      },
+      { retries: integer(), retryInterval: integer() },
+    ),
+    response: object(
+      { status: oneOf(['Accepted', 'Rejected', 'AcceptedCanceled']) },
+      { filename: string({ maxLength: 255 }) },
+    ),
+  },
+  InstallCertificate: {
+    request: object({
+      certificateType: CertificateUseSchema,
+      certificate: string({ maxLength: 5500 }),
+    }),
+    response: object({ status: oneOf(['Accepted', 'Failed', 'Rejected']) }),
+  },
+  SignedUpdateFirmware: {
+    request: object(
+      {
+        requestId: integer(),
+        firmware: object(
+          {
+            location: string({ maxLength: 512 }),
+            retrieveDateTime: dateTime(),
+            signingCertificate: string({ maxLength: 5500 }),
+            signature: string({ maxLength: 800 }),
+          },
+          { installDateTime: dateTime() },
+        ),
+      },
+      { retries: integer(), retryInterval: integer() },
+    ),
+    response: object({
+      status: oneOf([
+        'Accepted',
+        'Rejected',
+        'AcceptedCanceled',
+        'InvalidCertificate',
+        'RevokedCertificate',
+      ]),
+    }),
+  },
 } as const satisfies Record<string, { request: Schema<unknown>; response: Schema<unknown> }>;
 
 export type Ocpp16Action = keyof typeof OCPP16_MESSAGES;
@@ -434,7 +588,11 @@ export const CHARGE_POINT_ACTIONS = [
   'DiagnosticsStatusNotification',
   'FirmwareStatusNotification',
   'Heartbeat',
+  'LogStatusNotification',
   'MeterValues',
+  'SecurityEventNotification',
+  'SignCertificate',
+  'SignedFirmwareStatusNotification',
   'StartTransaction',
   'StatusNotification',
   'StopTransaction',
@@ -443,21 +601,28 @@ export const CHARGE_POINT_ACTIONS = [
 /** Actions the charge point accepts from the CSMS in M1. */
 export const CSMS_ACTIONS = [
   'CancelReservation',
+  'CertificateSigned',
   'ChangeAvailability',
   'ChangeConfiguration',
   'ClearCache',
   'ClearChargingProfile',
   'DataTransfer',
+  'DeleteCertificate',
+  'ExtendedTriggerMessage',
   'GetCompositeSchedule',
   'GetConfiguration',
   'GetDiagnostics',
+  'GetInstalledCertificateIds',
   'GetLocalListVersion',
+  'GetLog',
+  'InstallCertificate',
   'RemoteStartTransaction',
   'RemoteStopTransaction',
   'ReserveNow',
   'Reset',
   'SendLocalList',
   'SetChargingProfile',
+  'SignedUpdateFirmware',
   'TriggerMessage',
   'UnlockConnector',
   'UpdateFirmware',

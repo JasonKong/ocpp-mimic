@@ -1,0 +1,69 @@
+# Security Whitepaper messages: security events, ExtendedTriggerMessage and
+# GetLog / LogStatusNotification. Uploads are simulated with the persona's
+# timings; the real HTTP upload is covered by the core and engine tests.
+name: Security events reach the CSMS, at startup and after a reset
+station: { id: REG-SEV, persona: regression-1.6 }
+steps:
+  - expect:
+      sent: SecurityEventNotification
+      payload: { type: StartupOfTheDevice, timestamp: { $exists: true } }
+  - csmsCall: { action: Reset, payload: { type: Soft }, answer: { status: Accepted } }
+  - expect: { sent: BootNotification, within: 15s }
+  - expect:
+      { sent: SecurityEventNotification, payload: { type: ResetOrReboot, techInfo: Soft reset } }
+---
+name: ExtendedTriggerMessage sends the requested message
+station: { id: REG-ETM, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      {
+        action: ExtendedTriggerMessage,
+        payload: { requestedMessage: Heartbeat },
+        answer: { status: Accepted },
+      }
+  - expect: { sent: Heartbeat }
+  - csmsCall:
+      action: ExtendedTriggerMessage
+      payload: { requestedMessage: StatusNotification, connectorId: 1 }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { connectorId: 1, status: Available } }
+  - csmsCall:
+      action: ExtendedTriggerMessage
+      payload: { requestedMessage: LogStatusNotification }
+      answer: { status: Accepted }
+  - expect:
+      { sent: LogStatusNotification, payload: { status: Idle, requestId: { $exists: false } } }
+  - csmsCall:
+      action: ExtendedTriggerMessage
+      payload: { requestedMessage: FirmwareStatusNotification }
+      answer: { status: Accepted }
+  - expect: { sent: SignedFirmwareStatusNotification, payload: { status: Idle } }
+  - csmsCall:
+      action: ExtendedTriggerMessage
+      payload: { requestedMessage: Heartbeat, connectorId: 9 }
+      answer: { status: Rejected }
+---
+name: GetLog uploads the security log and reports each step with its requestId
+station: { id: REG-LOG, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      action: GetLog
+      payload:
+        { logType: SecurityLog, requestId: 42, log: { remoteLocation: 'ftp://logs.example.com/' } }
+      answer: { status: Accepted, filename: { $regex: '^security-\d{8}T\d{6}Z\.log$' } }
+  - expect: { sent: LogStatusNotification, payload: { status: Uploading, requestId: 42 } }
+  - expect: { sent: LogStatusNotification, payload: { status: Uploaded, requestId: 42 } }
+---
+name: A failing log upload is reported as UploadFailure
+station: { id: REG-LOG-FAIL, persona: firmware-fails-1.6 }
+steps:
+  - csmsCall:
+      action: GetLog
+      payload:
+        {
+          logType: DiagnosticsLog,
+          requestId: 43,
+          log: { remoteLocation: 'ftp://logs.example.com/' },
+        }
+      answer: { status: Accepted }
+  - expect: { sent: LogStatusNotification, payload: { status: UploadFailure, requestId: 43 } }
