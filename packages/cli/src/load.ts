@@ -8,6 +8,7 @@ import {
   reportLines,
   reportMarkdown,
   runLoadPlan,
+  type OtlpOptions,
 } from '@ocpp-mimic/engine';
 import type { LoadCommand } from './command.js';
 
@@ -19,7 +20,11 @@ export interface LoadIo {
 const CONSOLE: LoadIo = { out: console.log, err: console.error };
 
 /** 0 when every threshold passed, 1 when one failed, 2 when the plan could not run. */
-export async function runLoadCommand(command: LoadCommand, io: LoadIo = CONSOLE): Promise<number> {
+export async function runLoadCommand(
+  command: LoadCommand,
+  io: LoadIo = CONSOLE,
+  otlp?: OtlpOptions,
+): Promise<number> {
   const read = await readLoadPlan(command.plan);
   if (!read.ok) {
     for (const problem of read.problems) io.err(problem);
@@ -39,6 +44,7 @@ export async function runLoadCommand(command: LoadCommand, io: LoadIo = CONSOLE)
       ...(command.webRoot !== undefined && { webRoot: command.webRoot }),
       ...(command.recordLimit !== undefined && { recordLimit: command.recordLimit }),
       ...(command.logDir !== undefined && { logDir: command.logDir }),
+      ...(otlp !== undefined && { otlp }),
       progress: io.out,
       onStart: ({ url, csms }) => {
         io.out(`ocpp-mimic load: ${plan.name}: ${stations} stations against ${csms}`);

@@ -23,6 +23,7 @@ import { startBuiltinCsms, type BuiltinCsms } from '../csms/builtin-csms.js';
 import { createEngine, type Engine } from '../engine.js';
 import type { FleetEvent } from '../fleet.js';
 import type { MetricsSummary } from '../metrics.js';
+import type { OtlpOptions } from '../otlp.js';
 import type { StationDefinition } from '../state-store.js';
 
 export interface LoadRunOptions {
@@ -45,6 +46,8 @@ export interface LoadRunOptions {
   recordLimit?: number;
   /** Streams every frame to `<logDir>/frames.jsonl` in ocpp-mimic's log format. */
   logDir?: string;
+  /** Push metrics to an OpenTelemetry collector while the plan runs. */
+  otlp?: OtlpOptions;
 }
 
 export interface ThresholdResult {
@@ -119,6 +122,10 @@ export async function runLoadPlan(options: LoadRunOptions): Promise<LoadReport> 
     engine = createEngine({
       port: options.port ?? 0,
       recordLimit: options.recordLimit ?? 10,
+      ...(options.otlp !== undefined && {
+        otlp: options.otlp,
+        runId: `${plan.name} ${new Date().toISOString()}`,
+      }),
       ...(options.personaDirs !== undefined && { personaDirs: options.personaDirs }),
       ...(options.allowedCsms !== undefined && { allowedCsms: options.allowedCsms }),
       ...(options.webRoot !== undefined && { webRoot: options.webRoot }),

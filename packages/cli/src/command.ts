@@ -84,6 +84,8 @@ export interface LoadCommand {
   webRoot?: string;
   recordLimit?: number;
   logDir?: string;
+  otlpEndpoint?: string;
+  otlpHeaders?: Record<string, string>;
   personas: string[];
   allowCsms: string[];
 }
@@ -149,6 +151,8 @@ Options for load:
   --port <number>        Also serve the API, the Web UI and /metrics there
   --record-limit <n>     Records kept per station for the Web UI (default 10)
   --log-dir <dir>        Stream every frame to <dir>/frames.jsonl
+  --otlp-endpoint <url>, --otlp-header <k=v>
+                         Push metrics over OTLP/HTTP, as for serve
 
 Options for serve, run and load:
   --personas <dir>       Extra persona directory; repeat for more
@@ -248,6 +252,8 @@ const COMMANDS = {
     'port',
     'record-limit',
     'log-dir',
+    'otlp-endpoint',
+    'otlp-header',
     'personas',
     'allow-csms',
   ],
@@ -439,6 +445,7 @@ function parseLoad(rest: string[], values: Values): Command {
     ...(port !== undefined && { port }),
     ...(recordLimit !== undefined && { recordLimit }),
     ...(values['log-dir'] !== undefined && { logDir: values['log-dir'] }),
+    ...otlpOptions(values),
     personas: values.personas ?? [],
     allowCsms: values['allow-csms'] ?? [],
   };

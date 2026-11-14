@@ -57,10 +57,14 @@ switch (command.kind) {
     process.exitCode = await runImportCommand(command);
     break;
   case 'load':
-    process.exitCode = await runLoadCommand({
-      ...command,
-      ...(existsSync(WEB_ROOT) && { webRoot: WEB_ROOT }),
-    });
+    process.exitCode = await runLoadCommand(
+      {
+        ...command,
+        ...(existsSync(WEB_ROOT) && { webRoot: WEB_ROOT }),
+      },
+      undefined,
+      otlpOf(command).otlp,
+    );
     break;
   case 'csms': {
     let csms: Awaited<ReturnType<typeof startCsmsCommand>>;
