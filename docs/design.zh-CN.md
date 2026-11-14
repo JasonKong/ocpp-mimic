@@ -279,7 +279,7 @@ HTTP，用于调用被测系统：
 
 **模板和变量**
 
-字符串里的 `{{NAME}}` 在步骤执行前替换。取值优先级从低到高：`vars`、命令行的 `--var NAME=value`、前面步骤保存的变量。`{{env.NAME}}` 读取环境变量，这类值在输出和报告里显示为 `***`。如果整个字符串只有一个模板，替换后保留原值的类型，所以 `"{{tx}}"` 可以代表数字。未知的变量名在场景开始前就报错；保存的变量只在保存它的步骤之后才算已定义。
+字符串里的 `{{NAME}}` 在步骤执行前替换。取值优先级从低到高：`vars`、命令行的 `--var NAME=value`、前面步骤保存的变量。`{{env.NAME}}` 读取环境变量，这类值在输出和报告里显示为 `***`。如果整个字符串只有一个模板，替换后保留原值的类型，所以 `"{{tx}}"` 可以代表数字。`{{now}}`、`{{now+30m}}`、`{{now-1h}}` 给出当前时间（加减一个时长）的 ISO 8601 时间戳，例如 CSMS API 要求的未来时间。未知的变量名在场景开始前就报错；保存的变量只在保存它的步骤之后才算已定义。
 
 **时长**沿用 persona 的写法：数字表示毫秒，或以 `ms`、`s`、`m`、`h` 结尾的字符串。
 
@@ -379,6 +379,7 @@ M3 确定（#65）。M3 补齐 OCPP 1.6 其余的功能 profile、Security White
 
 - 场景通过 SteVe 的 REST API（`POST /steve/api/v1/operations/<Action>`，HTTP Basic，用 admin 用户的 API 密码）让 SteVe 发命令，用的是普通的 `http` 步骤（#63）。这些 SteVe 版本的场景放在 `scenarios/steve/`，由 SteVe workflow 运行。
 - SteVe 发命令前需要的数据（按 id 引用的充电配置文件、本地列表和预约要用的 OCPP 标签）通过它的 API 或 `tools/steve/register.sh` 创建。
+- 已实现（T39）：`scenarios/steve/features.yaml` 通过 SteVe 3.14.1 的 REST API 驱动本地列表、预约、Smart Charging、固件和诊断，以及安全白皮书的消息（这些 SteVe 都支持）。`register.sh --charging-profile` 添加充电配置文件 1001（TxDefaultProfile、Relative、3680 W），供 SetChargingProfile 使用。SteVe workflow 会和其他 SteVe 场景一起运行它们。
 
 **场景**
 

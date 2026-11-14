@@ -16,7 +16,7 @@ steps:
       json:
         chargeBoxIdList: [REG-STEVE-LOCALLIST]
         listVersion: 5
-        updateType: FULL
+        updateType: Full
         addUpdateList: [TAG-REG]
       expect: { json: { successResponses: [{ response: Accepted }] } }
   - expect:
@@ -37,7 +37,7 @@ steps:
       json:
         chargeBoxIdList: [REG-STEVE-LOCALLIST]
         listVersion: 6
-        updateType: DIFFERENTIAL
+        updateType: Differential
         deleteList: [TAG-REG]
       expect: { json: { successResponses: [{ response: Accepted }] } }
   - expect:
@@ -55,7 +55,7 @@ steps:
       url: '{{STEVE_API}}/operations/ReserveNow'
       basicAuth: &steve { user: admin, password: '{{env.STEVE_API_SECRET}}' }
       json:
-        chargeBoxId: REG-STEVE-RESERVE
+        chargeBoxIdList: [REG-STEVE-RESERVE]
         connectorId: 1
         expiry: '{{now+30m}}'
         idTag: TAG-REG
@@ -70,7 +70,7 @@ steps:
       method: POST
       url: '{{STEVE_API}}/operations/CancelReservation'
       basicAuth: *steve
-      json: { chargeBoxId: REG-STEVE-RESERVE, reservationId: '{{reservation}}' }
+      json: { chargeBoxIdList: [REG-STEVE-RESERVE], reservationId: '{{reservation}}' }
       expect: { json: { successResponses: [{ response: Accepted }] } }
   - expect: { sent: StatusNotification, payload: { connectorId: 1, status: Available } }
 ---
