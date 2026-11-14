@@ -1,126 +1,163 @@
-# ocpp-mimic 设计方案
+# ocpp-mimic design
 
-更新于 2026-11-14
+Updated 2026-11-14 · Chinese version: [design.zh-CN.md](design.zh-CN.md). This English version is the source of truth.
 
-## 概述
+## Overview
 
-ocpp-mimic 是一个独立的 OCPP 充电桩模拟平台：引擎在服务端进程里同时运行多个虚拟充电桩，每个桩按 OCPP 规范实现，再用 persona 文件复现真实桩的时序和怪癖。首个版本只做 OCPP 1.6J Core，数据模型按 2.0.1 设计。
+ocpp-mimic is a standalone OCPP charge point simulation platform: an engine runs many virtual charge points in one server process. Each charge point implements the OCPP specification, and persona files reproduce the timing and quirks of real hardware. The first release covers OCPP 1.6J Core only, with a data model shaped after 2.0.1.
 
-**定位**：引擎按“自动化回归 + 压测”的标准设计；Web UI、CLI 和 CI 脚本都只是引擎的遥控器。手动 QA 是 UI 层的一种用法，不是设计的出发点。
+**Positioning**: the engine is built to the standard of automated regression and load testing. The Web UI, the CLI and CI scripts are all remote controls for the engine. Manual QA is one way to use the UI layer, not the starting point of the design.
 
-**设计原则**
+**Design principles**
 
-- 规范与差异分离：引擎只实现 OCPP 规范，厂商和固件的差异全部写进 persona。
-- core 纯逻辑：协议、状态机、persona 解释器不做 IO，时钟从外部注入，可单测、可确定性回放、可在浏览器里运行。
-- 物理与协议分离：插枪、拔枪等是输入事件，OCPP 消息是状态机的输出。
-- 默认安全：只连接白名单里的 CSMS 地址，防止误连生产环境。
+- Separate the spec from the differences: the engine implements only the OCPP specification; everything vendor- or firmware-specific goes into personas.
+- Pure core: the protocol, state machines and persona interpreter do no IO and receive time from outside, so they are unit-testable, replay deterministically and can run in a browser.
+- Separate physics from protocol: plugging in, unplugging and so on are input events; OCPP messages are outputs of the state machine.
+- Safe by default: connect only to allow-listed CSMS addresses, so a simulator never reaches production by mistake.
 
-## 浏览器版模拟器的经验教训
+## Lessons from a browser-based simulator
 
-把模拟器写成网页组件，短期能用，长期会在下面这些地方卡住。ocpp-mimic 的设计逐条针对它们。
+A simulator written as a web page component works in the short term and gets stuck in the places below. The ocpp-mimic design answers each of them.
 
-| 浏览器版的做法 | 带来的问题 | ocpp-mimic 的做法 |
+| Browser-based approach | Problem it causes | ocpp-mimic approach |
 | --- | --- | --- |
-| 虚拟桩跑在网页组件里 | 关掉页面桩就掉线；组件卸载后定时器还在发心跳，需要大量清理代码 | 引擎独立进程，生命周期显式管理 |
-| 桩列表直接读 CSMS 数据库，靠排除名单避开生产桩 | 模拟器与被测系统耦合 | 模拟器自管桩配置，只需 CSMS URL + chargeBoxId；CSMS 地址白名单 |
-| 时序是散落在代码里的固定延时 | 真实桩的行为指纹没法复用、切换 | 抽成 persona 文件 |
-| 按 payload 的形状猜回包对应哪个请求 | 并发时会配错 | 严格按 uniqueId 关联，带超时 |
-| 不支持的消息回 `[4, id, {}]` | CallError 格式不合规 | `[4, id, "NotImplemented", "描述", {}]` |
-| 只有一个枪，只覆盖少量消息 | 测不到多枪和其余功能 | 完整 Core profile、多枪、connectorId 0 |
-| 用零散的布尔标志防竞态 | 状态是隐式的，很难测试 | 显式状态机 |
-| 只能实时运行，电表 300 秒采样一次 | 测一次完整充电要好几个小时 | 可调采样间隔 + 能量倍率 |
-| “模拟离线”就是正常关闭 socket | 真实掉线大多是半开连接（TCP 没断，只是没数据） | 同时支持正常断开和半开连接 |
+| Virtual charge points run inside a page component | Closing the page takes the charge point offline; timers keep sending heartbeats after the component unmounts, which needs a lot of cleanup code | The engine is its own process with explicitly managed lifecycles |
+| The station list is read straight from the CSMS database, with an exclusion list to avoid production stations | The simulator is coupled to the system under test | The simulator owns its station configuration and needs only a CSMS URL + chargeBoxId; CSMS addresses are allow-listed |
+| Timing is fixed delays scattered through the code | Real hardware behaviour cannot be reused or switched | Extracted into persona files |
+| Responses are matched to requests by guessing from the payload shape | Mismatches under concurrency | Strict uniqueId correlation with timeouts |
+| Unsupported messages get `[4, id, {}]` | The CallError format is not spec-compliant | `[4, id, "NotImplemented", "description", {}]` |
+| One connector, a handful of messages | Multiple connectors and other features cannot be tested | Full Core profile, multiple connectors, connectorId 0 |
+| Scattered boolean flags guard against races | State is implicit and hard to test | Explicit state machine |
+| Real time only, meter sampled every 300 s | A full charging session takes hours to test | Adjustable sampling interval + energy multiplier |
+| "Simulate offline" just closes the socket cleanly | Real outages are mostly half-open connections (TCP stays up, no data flows) | Support both a clean disconnect and a half-open connection |
 
-## 总体架构
+## Architecture
 
-![ocpp-mimic 分层架构](images/architecture.png)
+```mermaid
+flowchart TB
+  web["Web UI<br/>manual testing"]
+  cli["CLI"]
+  runner["Scenario runner<br/>CI"]
+  api["Engine API<br/>REST / WebSocket"]
+  web --> api
+  cli --> api
+  runner --> api
 
-Web UI、CLI 和场景运行器都只调用引擎 API。每个虚拟桩内部分六层：上面五层属于纯逻辑的 core 包，只有传输层做网络 IO。
+  subgraph engine["Engine process"]
+    direction TB
+    subgraph services["Shared services"]
+      direction LR
+      fleet["Fleet Manager"]
+      clock["Clock / Scheduler"]
+      events["Event Recorder / Metrics"]
+    end
+    subgraph vcp["Virtual charge point × N"]
+      direction TB
+      subgraph core["packages/core · pure logic"]
+        direction TB
+        persona["Persona<br/>vendor / firmware differences:<br/>timing, quirks, features, defaults"]
+        ev["EV / meter model<br/>battery SoC, charging curve,<br/>power limits, meter integration"]
+        device["Device model<br/>Station → EVSE → Connector state machine,<br/>config keys, authorization, offline queue"]
+        protocol["Protocol adapter<br/>domain events ↔ OCPP 1.6J messages, 2.0.1 later"]
+        rpc["RPC layer<br/>CALL / RESULT / ERROR correlation, timeouts,<br/>outbound queue, schema validation"]
+      end
+      transport["Transport · packages/engine, all IO<br/>WebSocket, TLS / Basic Auth, reconnect, fault injection"]
+    end
+  end
 
-## 服务划分与运行时
+  api --> engine
+  persona --> device
+  ev --> device
+  device --> protocol --> rpc --> transport
+  transport <-->|"OCPP-J: ws(s)://csms/ocpp/chargeBoxId"| csms[("CSMS under test")]
+```
 
-M1 只部署一个服务：Engine 进程；Web UI 和 CLI 都是它的客户端。不拆微服务：几千个虚拟桩要共用一个时钟和调度器，模块之间调用频繁，单进程更容易保证时序，也更好部署和调试。
+The Web UI, the CLI and the scenario runner only call the engine API. Each virtual charge point has six layers: the top five belong to the pure-logic core package (no IO, time injected through `Clock`, unit-testable and replayable), and only the transport layer does network IO.
 
-**运行时进程**
+## Services and runtime
 
-| 进程 | 数量 | 职责 |
+M1 deploys a single service, the engine process; the Web UI and the CLI are its clients. It is not split into microservices: thousands of virtual charge points share one clock and scheduler and the modules call each other constantly, so a single process keeps timing consistent and is easier to deploy and debug.
+
+**Runtime processes**
+
+| Process | Count | Responsibility |
 | --- | --- | --- |
-| Engine（核心服务） | 1 个 | 运行所有虚拟桩，对外提供 API，顺带托管 Web UI 的静态文件 |
-| CLI / 场景运行器 | 按需启动 | 执行场景 YAML，通过 API 驱动 Engine 并做断言，输出 JUnit 报告；也可以用内嵌模式在自己的进程里起一个 Engine，CI 里不用单独部署 |
-| Web UI | 在浏览器里运行 | 纯客户端，所有操作都调 Engine API，不含模拟逻辑 |
+| Engine (core service) | 1 | Runs all virtual charge points, serves the API, and hosts the Web UI's static files |
+| CLI / scenario runner | On demand | Runs scenario YAML, drives the engine through the API, asserts and writes a JUnit report; can also embed an engine in its own process so CI needs no separate deployment |
+| Web UI | In the browser | A pure client: every action goes through the engine API, no simulation logic |
 
-**Engine 内部模块**
+**Engine modules**
 
-| 模块 | 职责 |
+| Module | Responsibility |
 | --- | --- |
-| API Server | REST 接收命令（建桩、插枪、刷卡、触发故障或离线）；WebSocket 实时推送消息日志和状态变化 |
-| Fleet Manager | 按模板（persona + 配置）批量创建和销毁虚拟桩；管理启动、停止、重启；压测时控制加压速度 |
-| 虚拟桩实例（× N） | 主要工作负载：core 逻辑（persona、设备模型、电表、协议适配、RPC）加一条连到 CSMS 的 WebSocket |
-| Clock / Scheduler | 所有桩共用一个定时调度器，代替每个桩各自的定时器；向 core 注入时间，负责能量倍率 |
-| Persona Registry | 加载、校验 persona YAML，处理 `extends` 继承 |
-| State Store | 用 SQLite 持久化桩配置、配置项、电表读数和离线队列，Engine 重启后桩的状态还在 |
-| Event Recorder | 记录每条 OCPP 消息和状态变化，支持查询、导出，也是回放的数据来源 |
-| Metrics | 汇总 CSMS 响应延迟、超时率、错误率、Schema 违规数，暴露 Prometheus 接口 |
-| Fault Injector | 挂在传输层和 RPC 层上，由 API 控制注入延迟、断线、半开连接、畸形消息 |
+| API Server | REST for commands (create stations, plug in, swipe a card, trigger faults or outages); WebSocket push of message logs and state changes |
+| Fleet Manager | Creates and destroys virtual charge points in bulk from templates (persona + configuration); manages start, stop and restart; controls ramp-up during load tests |
+| Virtual charge point (× N) | The main workload: core logic (persona, device model, meter, protocol adapter, RPC) plus one WebSocket to the CSMS |
+| Clock / Scheduler | One timer scheduler shared by all charge points instead of a timer per charge point; injects time into core and applies the energy multiplier |
+| Persona Registry | Loads and validates persona YAML and resolves `extends` inheritance |
+| State Store | Persists station configuration, config keys, meter readings and offline queues in SQLite, so stations keep their state across engine restarts |
+| Event Recorder | Records every OCPP message and state change; supports queries and export, and is the source for replays |
+| Metrics | Aggregates CSMS response latency, timeout rate, error rate and schema violations; exposes a Prometheus endpoint |
+| Fault Injector | Hooks into the transport and RPC layers; injects delays, disconnects, half-open connections and malformed messages under API control |
 
-架构图只画了其中最主要的几个模块。
+The architecture diagram shows only the main modules.
 
-**一条命令的流向**（以 UI 上点“插枪”为例）
+**How a command flows** (clicking "Plug in" in the UI)
 
-1. Web UI 调 REST 接口，API Server 交给 Fleet Manager 找到对应的桩（如 SIM-001）。
-2. 设备模型的状态机从 Available 变为 Preparing。
-3. 协议适配生成 StatusNotification，经 RPC 层和传输层发给 CSMS。
-4. CSMS 的回复沿原路返回，RPC 层按 uniqueId 配对。
-5. Event Recorder 记录这次往来，API Server 通过 WebSocket 推送给 UI。
+1. The Web UI calls the REST API; the API Server asks the Fleet Manager for the charge point (for example SIM-001).
+2. The device model's state machine moves from Available to Preparing.
+3. The protocol adapter produces a StatusNotification and sends it to the CSMS through the RPC and transport layers.
+4. The CSMS response comes back the same way, and the RPC layer matches it by uniqueId.
+5. The Event Recorder logs the exchange, and the API Server pushes it to the UI over WebSocket.
 
-**扩展方式**（M4 之后按需）：一台机器撑不住时，起多个 Engine 实例，各自负责一部分桩，由 CLI 或一个轻量协调器分配；每个实例内部仍是单进程模型，架构不用改。
+**Scaling out** (after M4, when needed): when one machine is not enough, run several engine instances, each owning a share of the charge points, assigned by the CLI or a lightweight coordinator. Each instance stays a single-process model, so the architecture does not change.
 
-## 传输层与 RPC 层
+## Transport and RPC layers
 
-传输层负责“连得上、断得像真的”，RPC 层负责“每条消息都配对、都合规”。
+The transport layer makes sure connections work and fail realistically; the RPC layer makes sure every message is matched and compliant.
 
-**传输层**
+**Transport layer**
 
-- 子协议协商：`ocpp1.6`，预留 `ocpp2.0.1`。
-- 安全：无认证，以及 Security Profile 1–3（Basic Auth / TLS + Basic / 双向 TLS）。
-- WebSocket ping/pong 保活。
-- 断线重连：指数退避 + 随机抖动。大量桩同时重连可能压垮 CSMS，这本身就是一个测试场景。
-- 故障注入挂点：延迟、丢包、半开连接、强制断开（见故障注入一节）。
+- Subprotocol negotiation: `ocpp1.6`, with `ocpp2.0.1` reserved.
+- Security: no authentication, plus Security Profiles 1–3 (Basic Auth / TLS + Basic / mutual TLS).
+- WebSocket ping/pong keepalive.
+- Reconnect: exponential backoff with random jitter. Many charge points reconnecting at once can overwhelm a CSMS, which is a test scenario in itself.
+- Fault injection hooks: delay, packet loss, half-open connections, forced disconnects (see fault injection).
 
-**RPC 层**
+**RPC layer**
 
-- 按 uniqueId 关联请求和响应，每个 CALL 都有超时。
-- 规范要求（SHOULD）一方在上一个 CALL 得到响应或超时之前不发下一个，所以桩侧需要出站队列。
-- 用 OCA 官方 JSON Schema 校验双向消息：自己发出的消息保证合规；CSMS 发来的不合规消息直接标红，等于附带一个 CSMS 合规检查器。
-- CallError 严格按 `[4, uniqueId, errorCode, errorDescription, errorDetails]` 格式；不支持的 action 回 `NotImplemented`。
+- Requests and responses are correlated by uniqueId; every CALL has a timeout.
+- The spec says (SHOULD) a party does not send the next CALL until the previous one is answered or times out, so the charge point needs an outbound queue.
+- Messages in both directions are validated against the official OCA JSON Schemas: what we send is guaranteed compliant, and non-compliant messages from the CSMS are flagged, which doubles as a CSMS compliance checker.
+- CallError strictly follows `[4, uniqueId, errorCode, errorDescription, errorDetails]`; unsupported actions get `NotImplemented`.
 
-## 设备模型与 EV / 电表模型
+## Device model and EV / meter model
 
-设备模型决定“桩处于什么状态、该发什么消息”，EV / 电表模型决定“电量和功率怎么变”。
+The device model decides which state a charge point is in and which messages it sends; the EV / meter model decides how energy and power change.
 
-**设备模型**
+**Device model**
 
-- 层级按 2.0.1 建：Station → EVSE → Connector。1.6 只是把 connectorId 映射到 EVSE / Connector，升级 2.0.1 时不用重写。
-- 连接器状态机照 1.6 规范的状态迁移表实现：Available、Preparing、Charging、SuspendedEV、SuspendedEVSE、Finishing、Reserved、Unavailable、Faulted。可以用 XState 这类库，状态图能直接展示给 QA。
-- 输入事件：插枪、拔枪、锁枪 / 解锁、车辆就绪、车辆暂停、故障发生 / 恢复。
-- 配置项存储：区分类型和只读，支持 `RebootRequired`，重启后保留。
-- 授权：Authorize、本地授权列表、授权缓存、`AuthorizationRequired`。
-- 离线队列：交易类消息持久化，按 `TransactionMessageAttempts` / `TransactionMessageRetryInterval` 重试，重连后按原始时间戳补发。
-- 重启语义：电表累计读数保留；断电导致交易中断时，重启后补发 StopTransaction（reason=PowerLoss）。
+- The hierarchy follows 2.0.1: Station → EVSE → Connector. 1.6 just maps connectorId onto EVSE / Connector, so moving to 2.0.1 needs no rewrite.
+- The connector state machine follows the 1.6 status transition table: Available, Preparing, Charging, SuspendedEV, SuspendedEVSE, Finishing, Reserved, Unavailable, Faulted. A library such as XState could be used, and its state charts can be shown to QA directly.
+- Input events: plug in, unplug, lock / unlock, EV ready, EV paused, fault raised / cleared.
+- Config key store: typed and read-only aware, supports `RebootRequired`, survives restarts.
+- Authorization: Authorize, local authorization list, authorization cache, `AuthorizationRequired`.
+- Offline queue: transaction messages are persisted, retried per `TransactionMessageAttempts` / `TransactionMessageRetryInterval`, and resent with their original timestamps after reconnecting.
+- Restart semantics: the cumulative meter reading survives; when a power loss interrupts a transaction, StopTransaction (reason=PowerLoss) is sent after the restart.
 
-**EV / 电表模型**
+**EV / meter model**
 
-- EV 档案：电池容量（kWh）、初始 SoC、最大交流功率、相数。
-- 充电曲线：SoC 超过约 80% 后功率逐步下降，到 100% 自然进入 SuspendedEV。“充满”由模型产生，不需要专门的按钮。
-- 实际功率 = min(桩额定功率, 线缆限制, 充电配置文件限制, 车辆接受能力)，让 SetChargingProfile 有可以验证的效果。
-- 电表能量由功率积分得出，读数单调递增；测量项按 `MeterValuesSampledData` 配置，支持 Transaction.Begin / End 和整点对齐采样（`ClockAlignedDataInterval`）。
+- EV profile: battery capacity (kWh), initial SoC, maximum AC power, number of phases.
+- Charging curve: power tapers once SoC passes about 80% and the session naturally reaches SuspendedEV at 100%. "Fully charged" comes out of the model; no dedicated button is needed.
+- Actual power = min(charge point rating, cable limit, charging profile limit, what the EV accepts), so SetChargingProfile has a verifiable effect.
+- Meter energy is the integral of power and only increases; measurands follow `MeterValuesSampledData`, with Transaction.Begin / End and clock-aligned sampling (`ClockAlignedDataInterval`).
 
-## Persona 行为画像
+## Personas
 
-Persona 是一份声明式配置，描述某个厂商或固件“在规范允许的范围内具体怎么做”：消息顺序、延时、支持的功能、默认配置、故障码和已知怪癖。引擎代码只实现规范；发现真实桩的新行为时，只改 persona，不改引擎。
+A persona is a declarative configuration describing how a vendor or firmware behaves within what the spec allows: message order, delays, supported features, default configuration, fault codes and known quirks. Engine code implements only the spec; when a real charge point shows new behaviour, only the persona changes, not the engine.
 
 ```yaml
-persona: vendorX-fw2.5          # 示例值，不是真实厂商数据
+persona: vendorX-fw2.5 # example values, not real vendor data
 boot:
   vendor: VendorX
   model: AC-7
@@ -131,7 +168,7 @@ config:
   MeterValueSampleInterval: 300
   StopTransactionOnEVSideDisconnect: true
 flows:
-  remoteStop:                    # 收到 RemoteStopTransaction 之后
+  remoteStop: # after receiving RemoteStopTransaction
     - { send: StatusNotification, status: Finishing }
     - { after: 200ms, reply: Accepted }
     - { after: 800ms, send: StopTransaction, reason: Remote }
@@ -143,18 +180,18 @@ faults:
   - { errorCode: GroundFailure, info: GND_FAULT, vendorErrorCode: E101 }
 ```
 
-Persona 有三种来源：手写；从真实日志统计生成（见录制与回放）；在已有 persona 上继承并覆盖（`extends: vendorX-fw2.5`）。
+Personas come from three sources: written by hand; generated from statistics over real logs (see record & replay); or inherited from an existing persona and overridden (`extends: vendorX-fw2.5`).
 
-## 场景引擎、故障注入与录制回放
+## Scenario engine, fault injection, and record & replay
 
-这三块让 ocpp-mimic 从“能手动点的模拟器”变成“能在 CI 里跑的测试工具”。
+These three turn ocpp-mimic from a simulator you click by hand into a test tool that runs in CI.
 
-**场景引擎**
+**Scenario engine**
 
-场景由动作和断言组成，用 YAML（或 TS DSL）编写，由 CLI 运行，输出 JUnit 报告供 CI 使用。`http` 步骤可以调用被测业务系统的 API，把 App 端的操作串进同一个场景。
+Scenarios are actions plus assertions, written in YAML (or a TS DSL), run by the CLI, and reported as JUnit for CI. An `http` step can call the business system under test, so app-side actions join the same scenario.
 
 ```yaml
-name: 充电中拔枪，CSMS 应结束订单且不再发 RemoteStop
+name: Unplug while charging; the CSMS should end the session and send no RemoteStop
 station: { id: SIM-001, persona: vendorX-fw2.5 }
 steps:
   - plugIn: { connector: 1 }
@@ -166,143 +203,155 @@ steps:
   - expectNo: { receive: RemoteStopTransaction, within: 30s }
 ```
 
-**故障注入**
+**Fault injection**
 
-| 层 | 可注入的故障 |
+| Layer | Faults that can be injected |
 | --- | --- |
-| 网络 | 延迟、丢包、正常断开、半开连接、频繁闪断、重连风暴 |
-| 协议 | 畸形 JSON、错误或重复的 uniqueId、乱序、超时不回、回 CallError、不符合 Schema 的消息 |
-| 设备 | Faulted（errorCode / info / vendorErrorCode 组合）、电表回退或清零、时钟漂移、不规范的时间戳 |
-| 电力 | 断电重启、交易中断后补发 |
+| Network | Delay, packet loss, clean disconnect, half-open connection, flapping, reconnect storms |
+| Protocol | Malformed JSON, wrong or duplicate uniqueId, out-of-order messages, no response, CallError responses, schema-violating messages |
+| Device | Faulted (errorCode / info / vendorErrorCode combinations), meter rollback or reset to zero, clock drift, malformed timestamps |
+| Power | Power loss and restart, resending after an interrupted transaction |
 
-**录制与回放**
+**Record & replay**
 
-- 导入真实桩日志（方向、action、payload、时间戳），回放成场景，复现线上问题。
-- 统计日志里消息之间的间隔，自动生成或校准 persona。
-- 导入时自动脱敏 idTag、序列号等标识。
+- Import real charge point logs (direction, action, payload, timestamp) and replay them as scenarios to reproduce production issues.
+- Derive the intervals between messages from logs to generate or calibrate personas.
+- Mask idTags, serial numbers and other identifiers on import.
 
-## 观测与 UI
+## Observability and UI
 
-UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。
+The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
 
-- 消息日志：方向图标、按 action 包含 / 排除过滤、查看原始 payload、导出 JSON。
-- 时序图视图：按时间显示桩与 CSMS 之间的消息往来，标出超时和错误。
-- 状态机视图：实时高亮每个连接器的当前状态。
-- 多桩总览：在线 / 离线 / 故障数量，按 persona 或标签分组。
-- 指标：CSMS 响应延迟（p50 / p95）、超时率、错误率、Schema 违规数，通过 Prometheus 或 OpenTelemetry 导出。
+- Message log: direction icons, include / exclude by action, raw payload view, JSON export.
+- Sequence view: messages between charge point and CSMS over time, with timeouts and errors marked.
+- State machine view: the current state of each connector, highlighted live.
+- Fleet overview: online / offline / faulted counts, grouped by persona or tag.
+- Metrics: CSMS response latency (p50 / p95), timeout rate, error rate and schema violations, exported via Prometheus or OpenTelemetry.
 
-## 时间加速策略
+## Time acceleration
 
-结论：时间戳始终用真实时间；加速靠缩短采样间隔加能量倍率，不加速时钟本身。OCPP 消息带时间戳，CSMS 会用它计算时长和计费；如果时间戳也被加速，CSMS 会收到“未来时间”，很多逻辑会出错。
+Decision: timestamps always use real time. Acceleration comes from shorter sampling intervals plus an energy multiplier, never from speeding up the clock itself. OCPP messages carry timestamps that the CSMS uses for durations and billing; accelerated timestamps would reach the CSMS as "future" times and break a lot of logic.
 
-| 方案 | 做法 | 效果 | 局限 |
+| Approach | How | Effect | Limitation |
 | --- | --- | --- | --- |
-| 缩短采样间隔 | 把 `MeterValueSampleInterval` 设为 10 秒 | 更快看到电表和状态变化 | 充满仍需真实时长 |
-| 能量倍率 | 每个采样周期按 N 倍能量累加 | 几分钟完成一次完整充电；按 kWh 计费能测准 | 按时长计费、功率合理性检查测不准 |
-| 全虚拟时钟 | 时间戳也按倍率加速 | 完全压缩时间 | 只适用于 CSMS 时钟也可控的集成测试 |
+| Shorter sampling interval | Set `MeterValueSampleInterval` to 10 s | Meter and status changes show up sooner | A full charge still takes real time |
+| Energy multiplier | Add N× the energy per sampling period | A full session in minutes; kWh-based billing tests stay accurate | Time-based billing and power plausibility checks are not accurate |
+| Fully virtual clock | Timestamps accelerated too | Compresses time completely | Only for integration tests where the CSMS clock is also controlled |
 
-UI 和测试报告里要明确标出是否启用了能量倍率，避免误读结果。
+The UI and test reports must clearly show whether the energy multiplier is on, so results are not misread.
 
-## 技术选型与仓库结构
+## Tech stack and repository layout
 
-推荐 TypeScript / Node：引擎和 UI 用同一种语言，core 能直接在浏览器里运行，单进程可以撑几千个 WebSocket 连接。
+Recommended: TypeScript / Node. The engine and UI share a language, core runs directly in a browser, and a single process can hold thousands of WebSocket connections.
 
-| 方案 | 优点 | 缺点 |
+| Option | Pros | Cons |
 | --- | --- | --- |
-| TypeScript / Node（推荐） | 引擎和 UI 共用代码；ajv 做 Schema 校验；有现成的 ocpp-rpc 库；可以沿用 Vue 经验 | 上万个连接时 CPU 吃紧 |
-| Go | 压测性能最好，单个二进制文件部署 | UI 要另写，不能共享代码 |
-| Python | mobilityhouse/ocpp 成熟，写测试顺手 | 大规模并发偏弱 |
+| TypeScript / Node (recommended) | Engine and UI share code; ajv for schema validation; the existing ocpp-rpc library; Vue experience carries over | CPU gets tight at tens of thousands of connections |
+| Go | Best load-testing performance, single-binary deployment | The UI is a separate codebase with no shared code |
+| Python | mobilityhouse/ocpp is mature and pleasant for tests | Weaker at large-scale concurrency |
 
-仓库用 monorepo（pnpm workspaces）：
+The repository is a monorepo (pnpm workspaces):
 
-- `packages/core`：协议、状态机、persona 解释器，纯逻辑、无 IO。
-- `packages/engine`：运行时、持久化（先用 SQLite）、REST / WebSocket API。
-- `packages/cli`：场景运行器，命令名 `ocpp-mimic`（单独的 `mimic` 已被 Homebrew 上的一个文本转语音工具占用）。
-- `apps/web`：Vue 3 界面。
+- `packages/core`: protocol, state machines, persona interpreter; pure logic, no IO.
+- `packages/engine`: runtime, persistence (SQLite first), REST / WebSocket API.
+- `packages/cli`: scenario runner; the command is `ocpp-mimic` (a bare `mimic` is taken by a text-to-speech tool on Homebrew).
+- `apps/web`: Vue 3 UI.
 
-## 参考的开源项目与差异化
+## Open-source references and differentiation
 
-ocpp-mimic 的差异化在四点：来自真实桩经验的 persona、把场景和 CI 当作核心功能、内置 CSMS 合规检查、日志回放。动手前先研究下面的项目（以下仓库 2026-11-14 均确认在活跃维护）。
+ocpp-mimic differs in four ways: personas grounded in real charge point experience, scenarios and CI as core features, a built-in CSMS compliance checker, and log replay. Study these projects before building (all confirmed actively maintained on 2026-11-14).
 
-| 项目 | 类型 | 用途 |
+| Project | Type | Use |
 | --- | --- | --- |
-| [SAP/e-mobility-charging-stations-simulator](https://github.com/SAP/e-mobility-charging-stations-simulator) | OCPP-J 充电桩模拟器（TypeScript） | 主要参照对象，先看它缺什么 |
-| [mikuso/ocpp-rpc](https://github.com/mikuso/ocpp-rpc) | Node 的 OCPP-J RPC 库 | 可以直接用作 RPC 层 |
-| [mobilityhouse/ocpp](https://github.com/mobilityhouse/ocpp) | Python OCPP 库 | 参考消息模型和校验 |
-| [steve-community/steve](https://github.com/steve-community/steve) | 开源 CSMS（Java，1.6） | 第二个测试对象，避免只对着一个 CSMS 调出“假兼容” |
-| [citrineos/citrineos-core](https://github.com/citrineos/citrineos-core) | 开源 CSMS（2.0.1） | 2.0.1 阶段的测试对象 |
-| OCTT | OCA 官方合规测试工具（付费） | 参考测试用例 |
+| [SAP/e-mobility-charging-stations-simulator](https://github.com/SAP/e-mobility-charging-stations-simulator) | OCPP-J charging station simulator (TypeScript) | Main reference; start by finding what it lacks |
+| [mikuso/ocpp-rpc](https://github.com/mikuso/ocpp-rpc) | OCPP-J RPC library for Node | Could serve as the RPC layer directly |
+| [mobilityhouse/ocpp](https://github.com/mobilityhouse/ocpp) | Python OCPP library | Reference for the message model and validation |
+| [steve-community/steve](https://github.com/steve-community/steve) | Open-source CSMS (Java, 1.6) | A second test target, so we do not tune against one CSMS into false compatibility |
+| [citrineos/citrineos-core](https://github.com/citrineos/citrineos-core) | Open-source CSMS (2.0.1) | Test target for the 2.0.1 phase |
+| OCTT | OCA's official compliance test tool (paid) | Reference for test cases |
 
-## OCPP 1.6J 覆盖范围
+## OCPP 1.6J coverage
 
-协议部分完全以 OCPP 1.6J 为基准；persona、EV 模型、场景引擎等是项目自己的设计，规范里没有。M1 覆盖 1.6J 的 Core profile，外加 TriggerMessage。
+The protocol follows OCPP 1.6J throughout; personas, the EV model, the scenario engine and so on are this project's own design and not part of the spec. M1 covers the 1.6J Core profile plus TriggerMessage.
 
-**规范与自研的边界**
+**Spec vs. project design**
 
-| 模块 | 按 1.6J 规范实现 | 项目自己的设计 |
+| Module | Implemented per the 1.6J spec | The project's own design |
 | --- | --- | --- |
-| 传输层 | OCPP-J：WebSocket、子协议 `ocpp1.6`、URL 末尾是 chargeBoxId、用 `WebSocketPingInterval` 保活 | 重连退避、故障注入 |
-| RPC 层 | 消息类型 2/3/4、uniqueId、CallError 格式和错误码、同时只有一个未应答的 CALL、OCA 发布的 1.6 JSON Schema | 超时时长、CSMS 合规报告 |
-| 协议适配 | 全部 1.6J 消息 | — |
-| 设备模型 | 9 种连接器状态和迁移规则、connectorId 0 代表整桩、配置项语义、授权（Authorize / 授权缓存 / 本地列表）、交易消息重试、StopTransaction 的 reason | Station → EVSE → Connector 三层结构借自 2.0.1，为以后升级做准备 |
-| 电表 | 测量项、ReadingContext、`MeterValuesSampledData`、整点对齐采样、transactionData | — |
-| EV 模型 | SetChargingProfile 限功率的语义 | 电池、SoC、充电曲线（OCPP 不模拟车辆） |
-| Persona | features 对应 1.6 的 feature profile，config 对应 1.6 标准配置项，故障码用 ChargePointErrorCode | 消息之间的时序和厂商怪癖（规范只规定“发什么”，不规定“隔多久发”） |
-| 安全 | Security Profile 1–3，出自《OCPP 1.6 安全白皮书》这份扩展文档 | — |
-| 场景、回放、多桩、指标、UI、时间加速 | — | 全部是项目自己的 |
+| Transport | OCPP-J: WebSocket, `ocpp1.6` subprotocol, chargeBoxId at the end of the URL, keepalive via `WebSocketPingInterval` | Reconnect backoff, fault injection |
+| RPC | Message types 2/3/4, uniqueId, CallError format and error codes, a single unanswered CALL at a time, the 1.6 JSON Schemas published by OCA | Timeout lengths, CSMS compliance report |
+| Protocol adapter | All 1.6J messages | — |
+| Device model | The 9 connector statuses and their transitions, connectorId 0 meaning the whole charge point, config key semantics, authorization (Authorize / cache / local list), transaction message retries, StopTransaction reasons | The Station → EVSE → Connector hierarchy, borrowed from 2.0.1 to prepare for the upgrade |
+| Meter | Measurands, ReadingContext, `MeterValuesSampledData`, clock-aligned sampling, transactionData | — |
+| EV model | SetChargingProfile power-limit semantics | Battery, SoC, charging curve (OCPP does not model the vehicle) |
+| Persona | `features` maps to 1.6 feature profiles, `config` to 1.6 standard config keys, fault codes use ChargePointErrorCode | Timing between messages and vendor quirks (the spec says what to send, not how long to wait) |
+| Security | Security Profiles 1–3 from the OCPP 1.6 Security Whitepaper, an extension document | — |
+| Scenarios, replay, fleet, metrics, UI, time acceleration | — | All the project's own |
 
-**M1：桩 → CSMS 的消息**
+**M1: charge point → CSMS messages**
 
-| 消息 | 模拟器行为 |
+| Message | Simulator behaviour |
 | --- | --- |
-| BootNotification | 连上后发送；分别处理 Accepted / Pending / Rejected，按返回的 interval 开始心跳或稍后重试 |
-| Heartbeat | 按 interval 定时发送 |
-| StatusNotification | 开机被接受后，为 connectorId 0 和每个连接器各报一次；之后状态一变就报，带 errorCode / info / vendorErrorCode |
-| Authorize | 本地刷卡时发送，结果写入授权缓存 |
-| StartTransaction | 授权通过并插好枪后发送，带 meterStart；根据返回的 idTagInfo 决定继续还是停止 |
-| MeterValues | 按 `MeterValueSampleInterval` 周期发送，测量项可配置，支持整点对齐采样 |
-| StopTransaction | 远程停、刷卡停、拔枪、重启、解锁时发送，带 reason 和 transactionData |
-| DataTransfer | 由 UI 或 persona 主动发送厂商自定义数据 |
+| BootNotification | Sent after connecting; handles Accepted / Pending / Rejected, then starts heartbeats or retries later according to the returned interval |
+| Heartbeat | Sent on the interval |
+| StatusNotification | Once accepted at boot, reported once for connectorId 0 and each connector; afterwards on every status change, with errorCode / info / vendorErrorCode |
+| Authorize | Sent on a local card swipe; the result goes into the authorization cache |
+| StartTransaction | Sent once authorized and plugged in, with meterStart; the returned idTagInfo decides whether to continue or stop |
+| MeterValues | Sent every `MeterValueSampleInterval`, with configurable measurands and clock-aligned sampling |
+| StopTransaction | Sent on remote stop, card stop, unplug, restart or unlock, with reason and transactionData |
+| DataTransfer | Vendor-specific data sent from the UI or a persona |
 
-**M1：CSMS → 桩的消息**
+**M1: CSMS → charge point messages**
 
-| 消息 | 模拟器行为 |
+| Message | Simulator behaviour |
 | --- | --- |
-| RemoteStartTransaction | 先检查连接器状态和 idTag，接受后发起交易；`AuthorizeRemoteTxRequests=true` 时先发 Authorize |
-| RemoteStopTransaction | transactionId 匹配就接受，结束交易（reason=Remote） |
-| Reset | Soft / Hard：先结束交易，再断开，按 persona 设定的延时重连并重新发 BootNotification |
-| UnlockConnector | 回 Unlocked / UnlockFailed / NotSupported；有交易时先结束交易（reason=UnlockCommand） |
-| ChangeAvailability | 设为 Operative / Inoperative；有交易时回 Scheduled，等交易结束再生效 |
-| GetConfiguration | 返回配置项并标明哪些只读；不认识的 key 放进 unknownKey |
-| ChangeConfiguration | 回 Accepted / Rejected / RebootRequired / NotSupported，并且实际生效 |
-| ClearCache | 清空授权缓存 |
-| DataTransfer | 默认回 UnknownVendorId；persona 可以自定义回复 |
-| TriggerMessage | 支持 BootNotification、Heartbeat、StatusNotification、MeterValues；回 Accepted 后补发对应消息，固件和诊断类在 M3 前回 NotImplemented |
+| RemoteStartTransaction | Checks connector state and idTag, then starts a transaction; with `AuthorizeRemoteTxRequests=true` it sends Authorize first |
+| RemoteStopTransaction | Accepted when the transactionId matches; ends the transaction (reason=Remote) |
+| Reset | Soft / Hard: end the transaction, disconnect, reconnect after the persona's delay and send BootNotification again |
+| UnlockConnector | Answers Unlocked / UnlockFailed / NotSupported; ends a running transaction first (reason=UnlockCommand) |
+| ChangeAvailability | Operative / Inoperative; answers Scheduled during a transaction and applies the change when it ends |
+| GetConfiguration | Returns config keys with their read-only flag; unknown keys go into unknownKey |
+| ChangeConfiguration | Answers Accepted / Rejected / RebootRequired / NotSupported, and the change takes effect |
+| ClearCache | Clears the authorization cache |
+| DataTransfer | Answers UnknownVendorId by default; personas can define custom replies |
+| TriggerMessage | Supports BootNotification, Heartbeat, StatusNotification and MeterValues; after Accepted, sends the requested message. Firmware and diagnostics requests answer NotImplemented until M3 |
 
-TriggerMessage 属于 Remote Trigger profile，提前到 M1 是因为很多 CSMS 用它让桩补报状态或心跳，而且实现成本低。
+TriggerMessage belongs to the Remote Trigger profile. It moves into M1 because many CSMSs use it to make a charge point re-report status or heartbeats, and it is cheap to implement.
 
-**M1 的其他功能**
+**Other M1 capabilities**
 
-- 9 种状态的连接器状态机，支持多枪。
-- 1.6 标准配置项：`HeartbeatInterval`、`MeterValueSampleInterval`、`MeterValuesSampledData`、`StopTransactionOnEVSideDisconnect`、`StopTransactionOnInvalidId`、`AuthorizeRemoteTxRequests`、`AuthorizationCacheEnabled`、`TransactionMessageAttempts`、`TransactionMessageRetryInterval`、`NumberOfConnectors`、`SupportedFeatureProfiles` 等。
-- RPC 的正确性：双向 Schema 校验、单 CALL 出站队列、超时；不支持的消息回 NotImplemented，未启用的 profile 回 NotSupported。
-- 离线：交易消息排队，重连后补发；能模拟正常断开和半开连接。
-- 故障：发出 Faulted 状态（用 ChargePointErrorCode）并能恢复。
-- 电表：先用固定功率，“暂停”“充满”手动触发；M2 再换成 EV 模型。
-- 一个 persona；通过 UI 和 API 可以建桩、插拔枪、刷卡、触发故障或离线，消息日志可过滤、可看原始 payload。
+- A 9-state connector state machine with multiple connectors.
+- 1.6 standard config keys: `HeartbeatInterval`, `MeterValueSampleInterval`, `MeterValuesSampledData`, `StopTransactionOnEVSideDisconnect`, `StopTransactionOnInvalidId`, `AuthorizeRemoteTxRequests`, `AuthorizationCacheEnabled`, `TransactionMessageAttempts`, `TransactionMessageRetryInterval`, `NumberOfConnectors`, `SupportedFeatureProfiles` and more.
+- RPC correctness: schema validation in both directions, a single-CALL outbound queue, timeouts; unsupported messages get NotImplemented and disabled profiles get NotSupported.
+- Offline: transaction messages are queued and resent after reconnecting; both clean disconnects and half-open connections can be simulated.
+- Faults: report a Faulted status (using ChargePointErrorCode) and recover from it.
+- Meter: fixed power at first, with "pause" and "fully charged" triggered by hand; M2 replaces this with the EV model.
+- One persona; the UI and API can create stations, plug in and unplug, swipe cards, and trigger faults or outages; the message log can be filtered and shows raw payloads.
 
-**不在 M1 的 1.6 功能**（路线图 M3）：Firmware Management（UpdateFirmware、GetDiagnostics 及状态通知）、Local Auth List Management（SendLocalList、GetLocalListVersion）、Reservation（ReserveNow、CancelReservation）、Smart Charging（SetChargingProfile、ClearChargingProfile、GetCompositeSchedule），以及安全白皮书。
+**1.6 features outside M1** (roadmap M3): Firmware Management (UpdateFirmware, GetDiagnostics and their status notifications), Local Auth List Management (SendLocalList, GetLocalListVersion), Reservation (ReserveNow, CancelReservation), Smart Charging (SetChargingProfile, ClearChargingProfile, GetCompositeSchedule), and the Security Whitepaper.
 
-## 分阶段路线图
+## Roadmap
 
-![分阶段路线图：5 个阶段，4 条出口标准](images/roadmap.png)
+```mermaid
+flowchart TB
+  M1["<b>M1 · MVP</b><br/>Single-process engine; all OCPP 1.6J Core messages; multiple connectors; spec-compliant CallError<br/>Reconnect + offline queue; TriggerMessage; one persona; basic Web UI"]
+  G1{{"Exit: replaces the browser-based simulator; remote start/stop, unplug, fault and offline tests pass"}}
+  M2["<b>M2 · Automation</b><br/>Scenario DSL + CLI runner + assertions + JUnit report<br/>EV model: SoC, charging curve; energy multiplier"]
+  G2{{"Exit: the first regression suite passes reliably in CI"}}
+  M3["<b>M3 · Feature coverage</b><br/>Fault injection; Firmware Management, Smart Charging<br/>Reservation, LocalAuthList; 1.6 Security Whitepaper: Security Profiles 1–3"]
+  G3{{"Exit: all 1.6 feature scenarios pass against SteVe"}}
+  M4["<b>M4 · Scale</b><br/>Fleet / load-test mode; metrics export: Prometheus / OpenTelemetry<br/>Log import, replay, persona calibration"]
+  G4{{"Exit (proposed): 1,000 virtual charge points run stably on one machine"}}
+  M5["<b>M5 · OCPP 2.0.1</b><br/>OCPP 2.0.1 adapter: Device Model, TransactionEvent<br/>CitrineOS as the test target"]
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5
+```
 
-每个阶段以一条出口标准收尾，达标后再进入下一阶段。M4 的规模目标是建议值，可以按实际需求调整。
+Each phase ends with an exit criterion; the next phase starts once it is met. The M4 scale target is a proposal and can be adjusted to real needs.
 
-## 待决问题
+## Open questions
 
-- [ ] 部署形态：本地工具（CLI / 桌面），还是托管 SaaS？SaaS 要从公网连别人的 CSMS，涉及多租户和防滥用。
-- [ ] OCPP 2.0.1 何时开始：是否已有目标用户需要 2.0.1？
-- [ ] 开源还是商用：决定压测、UI、文档要做多重，以及用什么许可证。
-- [ ] 能量倍率是否默认开启，在报告里如何标注。
-- [ ] 首个 persona 参照哪一款真实桩；样本日志从哪里来（必须脱敏，且不使用客户项目的数据）。
+- [ ] Deployment: a local tool (CLI / desktop) or a hosted SaaS? A SaaS connects to other people's CSMSs over the internet, which brings multi-tenancy and abuse prevention.
+- [ ] When to start OCPP 2.0.1: do target users already need it?
+- [ ] Open source or commercial: decides how much load testing, UI and documentation to build, and which license to use.
+- [ ] Whether the energy multiplier is on by default, and how reports mark it.
+- [ ] Which real charge point the first persona is modelled on, and where sample logs come from (they must be anonymised and must not use client project data).
