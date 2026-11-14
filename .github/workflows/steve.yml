@@ -1,0 +1,60 @@
+name: SteVe
+
+# Runs the charge-point-initiated regression scenarios against SteVe, an
+# independent open-source CSMS. Manual: building SteVe takes several minutes.
+on:
+  workflow_dispatch:
+
+jobs:
+  steve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Start SteVe
+        run: docker compose -f tools/steve/docker-compose.yml up -d --build
+      - name: Wait until SteVe answers
+        run: |
+          for _ in $(seq 1 120); do
+            if curl -sf -o /dev/null http://localhost:8180/steve/manager/signin; then exit 0; fi
+            sleep 5
+          done
+          docker compose -f tools/steve/docker-compose.yml logs --tail 100 steve
+          exit 1
+      - name: Register the regression charge points and card
+        run: |
+          ids=$(grep -o 'id: REG-CP-[A-Z]*' scenarios/regression/charge-point.yaml | sed 's/id: //' | sort -u)
+          tools/steve/register.sh --charge-points $ids --tags TAG-REG
+      - name: Run the charge-point scenarios against SteVe
+        run: |
+          set -o pipefail
+          node packages/cli/dist/main.js run scenarios/regression/charge-point.yaml \
+            --personas scenarios/personas \
+            --csms ws://localhost:8180/steve/websocket/CentralSystemService \
+            --junit reports/steve.xml | tee reports-console.txt
+      - name: Add the results to the job summary
+        if: always()
+        run: |
+          {
+            echo '### Charge-point scenarios against SteVe 3.14.1'
+            echo '```'
+            cat reports-console.txt 2>/dev/null || echo 'no output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: steve-junit
+          path: reports/steve.xml
+          if-no-files-found: warn
+      - name: SteVe logs
+        if: failure()
+        run: docker compose -f tools/steve/docker-compose.yml logs --tail 200

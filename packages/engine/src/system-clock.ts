@@ -13,16 +13,18 @@ export function createSystemClock(): Clock {
     now: () => Date.now(),
     setTimer(delayMs, callback) {
       const handle = nextHandle++;
-      timers.set(
-        handle,
-        setTimeout(
-          () => {
-            timers.delete(handle);
-            callback();
-          },
-          Math.max(0, delayMs),
-        ),
+      const timer = setTimeout(
+        () => {
+          timers.delete(handle);
+          callback();
+        },
+        Math.max(0, delayMs),
       );
+      // Simulation timers (heartbeats, meter samples, reconnects) never keep the
+      // process alive on their own: `serve` stays up through its HTTP server, and
+      // `run` must exit once its scenarios are done.
+      timer.unref();
+      timers.set(handle, timer);
       return handle;
     },
     clearTimer(handle) {

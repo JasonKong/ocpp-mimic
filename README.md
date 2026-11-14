@@ -11,16 +11,17 @@ An OCPP charge point simulator: a headless engine runs many virtual charge point
 
 ## Commands
 
-| Command          | What it does                                                                     |
-| ---------------- | -------------------------------------------------------------------------------- |
-| `pnpm install`   | Install dependencies                                                             |
-| `pnpm build`     | Build all packages and the Web UI                                                |
-| `pnpm typecheck` | Type-check everything, including tests and Vue components                        |
-| `pnpm test`      | Run unit tests (against sources; no build needed)                                |
-| `pnpm lint`      | Run ESLint                                                                       |
-| `pnpm format`    | Format with Prettier                                                             |
-| `pnpm serve`     | Build everything and start the engine with the Web UI at `http://127.0.0.1:7300` |
-| `pnpm dev:web`   | Start the Web UI dev server; `/api` is proxied to the local engine               |
+| Command               | What it does                                                                     |
+| --------------------- | -------------------------------------------------------------------------------- |
+| `pnpm install`        | Install dependencies                                                             |
+| `pnpm build`          | Build all packages and the Web UI                                                |
+| `pnpm typecheck`      | Type-check everything, including tests and Vue components                        |
+| `pnpm test`           | Run unit tests (against sources; no build needed)                                |
+| `pnpm test:scenarios` | Build, then run the regression scenarios (`scenarios/regression`)                |
+| `pnpm lint`           | Run ESLint                                                                       |
+| `pnpm format`         | Format with Prettier                                                             |
+| `pnpm serve`          | Build everything and start the engine with the Web UI at `http://127.0.0.1:7300` |
+| `pnpm dev:web`        | Start the Web UI dev server; `/api` is proxied to the local engine               |
 
 ## Running scenarios
 

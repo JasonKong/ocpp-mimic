@@ -11,6 +11,7 @@
     "build": "tsc -b && pnpm --filter @ocpp-mimic/web build",
     "typecheck": "tsc -b && tsc -p tsconfig.test.json && pnpm --filter @ocpp-mimic/web typecheck",
     "test": "vitest run",
+    "test:scenarios": "pnpm build && node packages/cli/dist/main.js run scenarios/regression --personas scenarios/personas",
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",

@@ -10,18 +10,19 @@ ocpp-mimic is an OCPP charge point simulator. Read [docs/design.md](docs/design.
 
 ## Commands
 
-| Command          | What it does                                                   |
-| ---------------- | -------------------------------------------------------------- |
-| `pnpm install`   | Install dependencies                                           |
-| `pnpm build`     | `tsc -b` for the packages, then the Web UI build               |
-| `pnpm typecheck` | Packages, test files (`tsconfig.test.json`) and Vue components |
-| `pnpm test`      | Vitest over `packages/*/src/**/*.test.ts`, against sources     |
-| `pnpm lint`      | ESLint                                                         |
-| `pnpm format`    | Prettier (`docs/` is excluded on purpose)                      |
-| `pnpm serve`     | Build and start the engine on `http://127.0.0.1:7300`          |
-| `pnpm dev:web`   | Vite dev server; `/api` is proxied to the engine               |
+| Command               | What it does                                                   |
+| --------------------- | -------------------------------------------------------------- |
+| `pnpm install`        | Install dependencies                                           |
+| `pnpm build`          | `tsc -b` for the packages, then the Web UI build               |
+| `pnpm typecheck`      | Packages, test files (`tsconfig.test.json`) and Vue components |
+| `pnpm test`           | Vitest over `packages/*/src/**/*.test.ts`, against sources     |
+| `pnpm test:scenarios` | Build, then run `scenarios/regression` with the CLI            |
+| `pnpm lint`           | ESLint                                                         |
+| `pnpm format`         | Prettier (`docs/` is excluded on purpose)                      |
+| `pnpm serve`          | Build and start the engine on `http://127.0.0.1:7300`          |
+| `pnpm dev:web`        | Vite dev server; `/api` is proxied to the engine               |
 
-CI runs lint, format check, typecheck, test and build. Run the same before pushing.
+CI runs lint, format check, typecheck, test and build, and in a second job the regression scenarios. Run the same before pushing.
 
 ## Layout and rules
 
@@ -42,7 +43,7 @@ CI runs lint, format check, typecheck, test and build. Run the same before pushi
 ## Workflow
 
 1. One issue, one branch, one PR. Branch names look like `t3-device-model`.
-2. Before pushing, `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, `pnpm test` and `pnpm build` must all pass.
+2. Before pushing, `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, `pnpm test`, `pnpm build` and `pnpm test:scenarios` must all pass.
 3. The PR description has a summary and a verification section and ends with `Closes #<issue>`.
 4. Squash-merge once CI is green.
 5. A change to the design updates `docs/design.md` in the same PR.

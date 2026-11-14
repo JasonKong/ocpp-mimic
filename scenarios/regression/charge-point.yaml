@@ -1,0 +1,139 @@
+# Charge-point-initiated behaviour: the charge-point part of the M1
+# acceptance against SteVe, the cable lock (#35) and an EV session with the
+# energy multiplier. No built-in CSMS steps, so this file also runs against
+# SteVe (see .github/workflows/steve.yml); the station ids and the TAG-REG
+# card must then be registered there.
+name: Boot reports every connector
+station: { id: REG-CP-BOOT, persona: regression-1.6 }
+steps:
+  - expect: { sent: BootNotification, from: start, answer: { status: Accepted } }
+  - expect: { sent: StatusNotification, payload: { connectorId: 0, status: Available } }
+  - expect:
+      {
+        sent: StatusNotification,
+        payload: { connectorId: 1, status: Available, errorCode: NoError },
+      }
+  - expectStation: { registration: Accepted, transport: open }
+---
+name: Card session with periodic meter values
+station:
+  id: REG-CP-CARD
+  persona: regression-1.6
+  config: { MeterValueSampleInterval: 3 }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: StartTransaction
+      payload: { connectorId: 1, idTag: TAG-REG, meterStart: { $gte: 0 } }
+      save: { tx: $.answer.transactionId }
+  - expectConnector: { status: Charging, transactionId: '{{tx}}' }
+  - expect: { sent: MeterValues, payload: { connectorId: 1, transactionId: '{{tx}}' }, within: 5s }
+  - expect: { sent: MeterValues, payload: { connectorId: 1, transactionId: '{{tx}}' }, within: 5s }
+  - presentCard: { idTag: TAG-REG, result: stopping }
+  - expect:
+      sent: StopTransaction
+      payload: { transactionId: '{{tx}}', idTag: TAG-REG, reason: Local, meterStop: { $gt: 0 } }
+  - expectConnector: { status: Finishing }
+  - unplug: {}
+  - expectConnector: { status: Available }
+---
+name: Unplugging while charging stops the transaction
+station: { id: REG-CP-UNPLUG, persona: regression-1.6 }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StartTransaction }
+  - expectConnector: { status: Charging }
+  - unplug: {}
+  - expect: { sent: StopTransaction, payload: { reason: EVDisconnected } }
+  - expectConnector: { status: Available }
+---
+name: A fault ends the transaction and clearing it recovers the connector
+station: { id: REG-CP-FAULT, persona: regression-1.6 }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StartTransaction }
+  - fault: { errorCode: GroundFailure, info: GND_FAULT }
+  - expect:
+      sent: StatusNotification
+      payload: { connectorId: 1, status: Faulted, errorCode: GroundFailure, info: GND_FAULT }
+  - expect: { sent: StopTransaction, payload: { reason: Other } }
+  - clearFault: {}
+  - expect:
+      {
+        sent: StatusNotification,
+        payload: { connectorId: 1, status: Finishing, errorCode: NoError },
+      }
+  - unplug: {}
+  - expectConnector: { status: Available }
+---
+name: StopTransaction is resent after a clean outage
+station: { id: REG-CP-OUTAGE, persona: regression-1.6 }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expectConnector: { status: Charging }
+  - offline: { mode: clean }
+  - expectStation: { transport: offline }
+  - unplug: {}
+  - expectStation: { queuedMessages: 1 }
+  - online: {}
+  - expect: { sent: StopTransaction, payload: { reason: EVDisconnected }, within: 30s }
+  - expectStation: { registration: Accepted, queuedMessages: 0 }
+---
+name: StopTransaction is resent after a half-open connection
+station: { id: REG-CP-HALFOPEN, persona: regression-1.6 }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expectConnector: { status: Charging }
+  - offline: { mode: half-open }
+  - expectStation: { transport: half-open }
+  - unplug: {}
+  - expectStation: { queuedMessages: 1 }
+  - online: {}
+  - expect: { sent: StopTransaction, payload: { reason: EVDisconnected }, within: 30s }
+  - expectStation: { registration: Accepted, queuedMessages: 0 }
+---
+name: The cable lock holds the cable until the transaction ends
+station: { id: REG-CP-LOCK, persona: regression-1.6, behaviour: { cableLock: true } }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expectConnector: { status: Charging, locked: true }
+  - unplug: { expectError: locked }
+  - expectConnector: { status: Charging, plugged: true }
+  - presentCard: { idTag: TAG-REG, result: stopping }
+  - expect: { sent: StopTransaction, payload: { reason: Local } }
+  - expectConnector: { locked: false }
+  - unplug: {}
+  - expectConnector: { status: Available }
+---
+name: An EV fills up with the energy multiplier and reports its SoC
+station:
+  id: REG-CP-EV
+  persona: regression-1.6
+  energyMultiplier: 240
+  config:
+    MeterValueSampleInterval: 2
+    MeterValuesSampledData: Energy.Active.Import.Register,Power.Active.Import,SoC
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: { ev: test-5kwh }
+  - expectConnector: { status: Charging, ev: { name: test-5kwh, soc: { $gte: 70 } } }
+  - expect:
+      sent: MeterValues
+      payload:
+        meterValue:
+          - sampledValue:
+              - { measurand: Energy.Active.Import.Register }
+              - { measurand: Power.Active.Import }
+              - { measurand: SoC, unit: Percent, location: EV }
+      within: 5s
+  - expect:
+      { sent: StatusNotification, payload: { connectorId: 1, status: SuspendedEV }, within: 20s }
+  - expectConnector: { status: SuspendedEV, powerW: 0, ev: { soc: 100 } }
+  - presentCard: { idTag: TAG-REG, result: stopping }
+  - expect: { sent: StopTransaction, payload: { reason: Local, meterStop: { $gt: 1400 } } }
