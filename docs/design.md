@@ -738,6 +738,16 @@ Every number is within the exit thresholds; the heap no longer grows. The exit r
 - `ocpp-mimic calibrate <log>... [--station <id>]... [--name <id>] [--extends <persona>] [-o <persona.yaml>] [--report <report.md>]` writes the persona (extending generic-1.6 by default) with a header saying where it came from.
 - The test records a log from a persona with distinctive values (two connectors, 2-second intervals, 11 kW, 300 ms action delay, 800 ms start delay, a fault, a usage model) through the scenario runner, and calibration gives those values back within 10 % or 150 ms; the result loads as a persona.
 
+**Implemented: the exit run (T54)**
+
+- `.github/workflows/soak.yml` runs `scenarios/load/m4-exit.yaml` against `ocpp-mimic csms --delay 20ms-100ms` on the reference runner, weekly (Sunday 18:00 UTC) and by hand, and uploads the report, the JUnit file and the CSMS's summary.
+- The first run (43640951674) passed every threshold: every station accepted 0.1 s after the ramp-up, back online 0.9 s after the reconnect storm and 0.3 s after the power loss, no disconnects but the injected ones, late work p99 2 ms (max 446 ms, during the storm), event-loop delay p99 1.4 ms, RSS at most 239 MB, no timeouts, CALLERRORs or schema violations, 1,501 sessions against 1,383 expected, and CSMS latency p50 / p95 / p99 of 62 / 100 / 174 ms over 101,780 answers. The engine used 1.6 % of a core on average.
+- The heap floor grew 9.7 % (46.7 → 51.3 MB), close to the 10 % limit, while the charging sessions grew from about 300 to 540 as the fleet filled up. A 25-minute run with short sessions (steady occupancy, 12,000 sessions, a storm and a power loss) still grew 12.5 %, so something leaked; it found four things, now fixed:
+  - **csmsIds**: each charge point kept the CSMS id of every transaction it ever had, in memory and in its saved state. Ids are now forgotten once a transaction is over and has nothing left to send.
+  - **Replaced charge points**: after a power loss (and on remove) the old charge point kept its meter and EV timers running, so it was never freed and kept queuing meter values. The fleet now calls the new `chargePoint.halt()`, which clears every timer the charge point set.
+  - **The authorization cache** had no size; it now holds the 100 cards seen most recently, as a dictionary object so a fleet's different card sets do not each create a V8 hidden class.
+  - **CALLs in flight when a connection goes**: metrics and the recorder kept them waiting for answers that cannot come; they are dropped on disconnect.
+
 **Where the files go**
 
 Load plans go in `scenarios/load/`, import mappings in `scenarios/import/`, sample logs in `scenarios/logs/`, and load personas in `scenarios/personas/`. The tests validate every other file under `scenarios/` as a scenario, so `scenarios/examples/` stays scenario-only.

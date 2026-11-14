@@ -53,7 +53,7 @@ node packages/cli/dist/main.js csms --port 9102 &
 node packages/cli/dist/main.js load scenarios/load/smoke-100.yaml --personas scenarios/personas --report-dir reports/load
 ```
 
-It prints a progress line every 10 s and, at the end, every threshold with its measured value; the exit code is 0 when all pass. Options: `--csms`, `--duration`, `--report-dir` (report.json, report.md), `--junit`, `--port` (watch the run in the Web UI and `/metrics`), `--log-dir` (every frame as JSONL). Plans live in `scenarios/load/`; `m4-exit.yaml` is the M4 exit criterion. Only load-test a CSMS you operate or may test.
+It prints a progress line every 10 s and, at the end, every threshold with its measured value; the exit code is 0 when all pass. Options: `--csms`, `--duration`, `--report-dir` (report.json, report.md), `--junit`, `--port` (watch the run in the Web UI and `/metrics`), `--log-dir` (every frame as JSONL). Plans live in `scenarios/load/`; `m4-exit.yaml` is the M4 exit criterion, which the `soak` workflow runs on a GitHub-hosted runner every week and by hand. Only load-test a CSMS you operate or may test.
 
 ## Logs: export and import
 

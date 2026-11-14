@@ -551,7 +551,19 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     if (outbox[0] === entry) outbox.shift();
     waiters.get(entry.key)?.(outcome);
     waiters.delete(entry.key);
+    pruneTransactionIds();
     changed();
+  }
+
+  /**
+   * Forgets the CSMS ids of transactions that are over and have nothing left
+   * to send, so the map (and the saved state) does not grow with every session.
+   */
+  function pruneTransactionIds(): void {
+    if (csmsIds.size === 0) return;
+    const needed = new Set<string>(refs.values());
+    for (const queued of outbox) if (queued.txRef !== undefined) needed.add(queued.txRef);
+    for (const ref of csmsIds.keys()) if (!needed.has(ref)) csmsIds.delete(ref);
   }
 
   function pump(): void {

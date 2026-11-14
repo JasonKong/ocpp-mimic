@@ -34,10 +34,14 @@ export function rememberAuthorization(
   info: IdTagInfo,
 ): AuthorizationCache {
   if (!configBool(config, 'AuthorizationCacheEnabled')) return cache;
-  // Kept as entries in the order last seen: the latest card goes to the end.
+  // Kept in the order last seen: the latest card goes to the end.
   const entries = Object.entries(cache).filter(([tag]) => tag !== idTag);
   entries.push([idTag, info]);
-  return Object.fromEntries(entries.slice(-AUTHORIZATION_CACHE_SIZE));
+  // A prototype-less object is a dictionary to V8: no hidden class for every
+  // set of card ids, which would pile up across a fleet.
+  const next = Object.create(null) as Record<string, IdTagInfo>;
+  for (const [tag, value] of entries.slice(-AUTHORIZATION_CACHE_SIZE)) next[tag] = value;
+  return next;
 }
 
 /** Answers ClearCache. */
