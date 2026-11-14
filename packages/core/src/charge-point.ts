@@ -49,6 +49,7 @@ import {
   type MeterState,
 } from './meter.js';
 import type { RequestOf, ResponseOf, StopReason } from './ocpp16-messages.js';
+import type { JsonObject } from './ocppj.js';
 import {
   createRpc,
   type CallOutcome,
@@ -101,6 +102,44 @@ export type ChargePointEvent =
   /** Something observable changed (status, transaction, registration). */
   | { type: 'changed' };
 
+type TransactionAction = 'StartTransaction' | 'StopTransaction' | 'MeterValues';
+
+/** A transaction-related message waiting to be sent; kept across restarts. */
+export interface OutboxEntry {
+  key: string;
+  action: TransactionAction;
+  payload: JsonObject;
+  /** Local reference of the transaction whose CSMS id is put into payload.transactionId on sending. */
+  txRef?: string;
+  /** Failed attempts so far (TransactionMessageAttempts). */
+  attempts: number;
+}
+
+export interface PersistedTransaction {
+  connectorId: number;
+  ref: string;
+  idTag: string;
+  startedAt: number;
+  meterStartWh: number;
+  transactionId?: number;
+}
+
+/** Everything a charge point keeps across an engine restart. */
+export interface PersistedChargePoint {
+  version: 1;
+  /** When the state was taken (ms since the epoch); restored transactions end at this time. */
+  savedAt: number;
+  config: Record<string, string>;
+  /** connectorId → energy register in Wh. */
+  meters: Record<string, number>;
+  authCache: AuthorizationCache;
+  transactions: PersistedTransaction[];
+  outbox: OutboxEntry[];
+  /** Transaction reference → transactionId given by the CSMS. */
+  csmsIds: Record<string, number>;
+  sequence: number;
+}
+
 export interface ChargePointOptions {
   clock: Clock;
   ids: IdGenerator;
@@ -121,6 +160,13 @@ export interface ChargePointOptions {
   /** Asks the transport to drop the connection and reconnect after `downtimeMs` (reset). */
   restart?: (downtimeMs: number) => void;
   onEvent?: (event: ChargePointEvent) => void;
+  /**
+   * State saved by persistentState() before a restart. Configuration, meters,
+   * the authorization cache and queued messages carry over; transactions that
+   * were running end with a StopTransaction (reason PowerLoss) at the time of
+   * the save, as after a power cut.
+   */
+  restore?: PersistedChargePoint;
 }
 
 export interface ConnectorSnapshot {
@@ -141,6 +187,8 @@ export interface ChargePointSnapshot {
   station: { status: string; errorCode: string };
   connectors: ConnectorSnapshot[];
   config: Readonly<Record<string, string>>;
+  /** Transaction messages waiting to be sent. */
+  queuedMessages: number;
 }
 
 export type IdTagResult = 'stopping' | 'authorized' | 'rejected' | 'busy' | 'unknown-connector';
@@ -159,6 +207,8 @@ export interface ChargePoint {
   clearFault(connectorId: number): void;
   dataTransfer(request: RequestOf<'DataTransfer'>): Promise<CallOutcome<'DataTransfer'>>;
   snapshot(): ChargePointSnapshot;
+  /** The state to save for a restart; see ChargePointOptions.restore. */
+  persistentState(): PersistedChargePoint;
 }
 
 export function createChargePoint(options: ChargePointOptions): ChargePoint {
@@ -181,8 +231,15 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     connectors(station).map((c) => [c.connectorId, createMeter({ now: clock.now(), offeredW })]),
   );
   const transactions = new Map<number, Transaction>();
-  /** Resolves with the CSMS's transactionId (or undefined on failure) once StartTransaction is answered. */
-  const startAnswers = new Map<number, Promise<number | undefined>>();
+  /** connectorId → local reference of its running transaction. */
+  const refs = new Map<number, string>();
+  const outbox: OutboxEntry[] = [];
+  const csmsIds = new Map<string, number>();
+  const waiters = new Map<string, (outcome: CallOutcome<ChargePointAction>) => void>();
+  let sequence = options.restore?.sequence ?? 0;
+  const nextKey = (prefix: string) => `${prefix}-${++sequence}`;
+  let pumping = false;
+  let retryTimer: TimerHandle | undefined;
   /** Cards authorized at a connector whose transaction has not started yet. */
   const authorized = new Map<number, string>();
   const prepareTimers = new Map<number, TimerHandle>();
@@ -193,7 +250,6 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
   let heartbeatTimer: TimerHandle | undefined;
   let bootTimer: TimerHandle | undefined;
   let alignedTimer: TimerHandle | undefined;
-  let onlineWaiters: Array<() => void> = [];
 
   const online = () => rpc !== undefined && registration === 'Accepted';
   const now = () => clock.now();
@@ -206,11 +262,6 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
 
   // ---- Sending ------------------------------------------------------------
 
-  function whenOnline(): Promise<void> {
-    if (online()) return Promise.resolve();
-    return new Promise((resolve) => onlineWaiters.push(resolve));
-  }
-
   /** Sends now when registered; otherwise drops the message (status reports, heartbeats). */
   function sendIfOnline<A extends ChargePointAction>(
     action: A,
@@ -220,21 +271,88 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
   }
 
   /**
-   * Transaction messages are never dropped: while offline they wait for the
-   * next accepted boot, and a call cut off by a lost connection is sent again.
-   * When online, the call is queued synchronously, so ordering follows the
-   * order of calls.
+   * Transaction messages go through the outbox: sent one at a time once
+   * registered, kept while offline, retried TransactionMessageAttempts times
+   * on failure (waiting TransactionMessageRetryInterval × attempts), and
+   * persisted across restarts. When online and idle, the message is handed
+   * to the RPC layer at once, so it goes out before later status reports.
    */
-  async function transactionCall<A extends ChargePointAction>(
+  function enqueue<A extends TransactionAction>(
     action: A,
-    build: () => RequestOf<A>,
+    payload: RequestOf<A>,
+    txRef?: string,
   ): Promise<CallOutcome<A>> {
-    if (!online()) await whenOnline();
+    const key = nextKey('msg');
+    outbox.push({
+      key,
+      action,
+      payload: payload as JsonObject,
+      ...(txRef !== undefined && { txRef }),
+      attempts: 0,
+    });
+    const promise = new Promise<CallOutcome<A>>((resolve) =>
+      waiters.set(key, resolve as (outcome: CallOutcome<ChargePointAction>) => void),
+    );
+    changed();
+    pump();
+    return promise;
+  }
+
+  function settleEntry(entry: OutboxEntry, outcome: CallOutcome<ChargePointAction>): void {
+    if (outbox[0] === entry) outbox.shift();
+    waiters.get(entry.key)?.(outcome);
+    waiters.delete(entry.key);
+    changed();
+  }
+
+  function pump(): void {
+    if (pumping || retryTimer !== undefined || !online()) return;
+    const entry = outbox[0];
     const current = rpc;
-    if (current === undefined || registration !== 'Accepted') return transactionCall(action, build);
-    const outcome = await current.call(action, build());
-    if (!outcome.ok && outcome.failure.kind === 'Closed') return transactionCall(action, build);
-    return outcome;
+    if (entry === undefined || current === undefined) return;
+    let payload = entry.payload;
+    // StartTransaction obtains the id; the messages behind it carry it.
+    if (entry.txRef !== undefined && entry.action !== 'StartTransaction') {
+      const id = csmsIds.get(entry.txRef);
+      if (id === undefined) {
+        log(`${entry.action} dropped: its transaction never got an id from the CSMS`);
+        settleEntry(entry, { ok: false, failure: { kind: 'Closed' } });
+        pump();
+        return;
+      }
+      payload = { ...payload, transactionId: id };
+    }
+    pumping = true;
+    void current
+      .call(entry.action, payload as never)
+      .then((outcome: CallOutcome<ChargePointAction>) => {
+        pumping = false;
+        if (!outcome.ok) {
+          if (outcome.failure.kind === 'Closed') return; // resumes after the next accepted boot
+          if (outcome.failure.kind !== 'InvalidRequest') {
+            entry.attempts += 1;
+            if (entry.attempts < configInt(config, 'TransactionMessageAttempts')) {
+              const delayMs =
+                configInt(config, 'TransactionMessageRetryInterval') * 1000 * entry.attempts;
+              log(`${entry.action} failed (${outcome.failure.kind}); retrying in ${delayMs} ms`);
+              changed();
+              retryTimer = later(delayMs, () => {
+                retryTimer = undefined;
+                pump();
+              });
+              return;
+            }
+            log(`${entry.action} dropped after ${entry.attempts} failed attempts`);
+          }
+        } else if (entry.action === 'StartTransaction' && entry.txRef !== undefined) {
+          csmsIds.set(
+            entry.txRef,
+            (outcome.payload as ResponseOf<'StartTransaction'>).transactionId,
+          );
+        }
+        settleEntry(entry, outcome);
+        pump();
+      });
   }
 
   function applyDevice(event: DeviceEvent): ReduceResult {
@@ -279,9 +397,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     startHeartbeat();
     scheduleAligned();
     applyDevice({ type: 'ReportAll' });
-    const waiters = onlineWaiters;
-    onlineWaiters = [];
-    waiters.forEach((resolve) => resolve());
+    pump();
   }
 
   function startHeartbeat(): void {
@@ -323,7 +439,9 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     configKey: 'MeterValuesSampledData' | 'MeterValuesAlignedData',
     context: 'Sample.Periodic' | 'Sample.Clock' | 'Trigger',
   ): void {
-    const transactionId = transactions.get(connectorId)?.transactionId;
+    const transaction = transactions.get(connectorId);
+    const ref = refs.get(connectorId);
+    const transactionId = transaction?.transactionId;
     const request = meterValuesRequest({
       connectorId,
       meter: meter(connectorId),
@@ -334,8 +452,11 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       ...(transactionId !== undefined && { transactionId }),
     });
     if (request === undefined) return;
-    if (transactionId !== undefined) void transactionCall('MeterValues', () => request);
-    else void sendIfOnline('MeterValues', request);
+    if (transaction !== undefined && ref !== undefined) {
+      void enqueue('MeterValues', { ...request, transactionId: transactionId ?? 0 }, ref);
+    } else {
+      void sendIfOnline('MeterValues', request);
+    }
   }
 
   function schedulePeriodic(connectorId: number): void {
@@ -422,25 +543,24 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       config,
       now: now(),
     });
+    const ref = nextKey('tx');
     transactions.set(connectorId, started.transaction);
-    let answered: (transactionId: number | undefined) => void = () => {};
-    startAnswers.set(connectorId, new Promise((resolve) => (answered = resolve)));
+    refs.set(connectorId, ref);
     changed();
 
-    const outcome = await transactionCall('StartTransaction', () => started.request);
-    answered(outcome.ok ? outcome.payload.transactionId : undefined);
-    startAnswers.delete(connectorId);
+    const outcome = await enqueue('StartTransaction', started.request, ref);
     const stillRunning = transactions.get(connectorId) === started.transaction;
     if (!outcome.ok) {
       log(`StartTransaction failed: ${outcome.failure.kind}`);
       if (stillRunning) {
         transactions.delete(connectorId);
+        refs.delete(connectorId);
         applyDevice({ type: 'CancelPrepare', connectorId });
       }
       return;
     }
     authCache = rememberAuthorization(authCache, config, idTag, outcome.payload.idTagInfo);
-    // Stopped while waiting for the answer: endTransaction sends StopTransaction with this id.
+    // Stopped while waiting for the answer: its StopTransaction is queued behind and gets this id.
     if (!stillRunning) return;
     const applied = applyStartResponse(started.transaction, outcome.payload, config, now());
     transactions.set(connectorId, applied.transaction);
@@ -473,40 +593,25 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
   ): Promise<void> {
     const transaction = transactions.get(connectorId);
     if (transaction === undefined) return;
+    const ref = refs.get(connectorId);
     transactions.delete(connectorId);
+    refs.delete(connectorId);
     stopTimer(sampleTimers.get(connectorId));
     sampleTimers.delete(connectorId);
     const stoppedAt = now();
     const meterAtStop = meterAt(meter(connectorId), stoppedAt);
     setPower(connectorId, 0);
 
-    const known = transaction.transactionId !== undefined ? transaction : undefined;
-    const stopCall =
-      known !== undefined
-        ? transactionCall('StopTransaction', () =>
-            stopTransactionRequest({
-              transaction: known,
-              meter: meterAtStop,
-              config,
-              now: stoppedAt,
-              reason,
-              ...(idTag !== undefined && { idTag }),
-            }),
-          )
-        : // Stopped before the CSMS answered StartTransaction: wait for the id first.
-          (startAnswers.get(connectorId) ?? Promise.resolve(undefined)).then((id) => {
-            if (id === undefined) return undefined;
-            return transactionCall('StopTransaction', () =>
-              stopTransactionRequest({
-                transaction: { ...transaction, transactionId: id },
-                meter: meterAtStop,
-                config,
-                now: stoppedAt,
-                reason,
-                ...(idTag !== undefined && { idTag }),
-              }),
-            );
-          });
+    const request = stopTransactionRequest({
+      transaction: { ...transaction, transactionId: transaction.transactionId ?? 0 },
+      meter: meterAtStop,
+      config,
+      now: stoppedAt,
+      reason,
+      ...(idTag !== undefined && { idTag }),
+    });
+    // The transactionId is filled in from the StartTransaction answer when sent.
+    const stopCall = ref !== undefined ? enqueue('StopTransaction', request, ref) : undefined;
     applyDevice({ type: 'TransactionEnded', connectorId });
 
     const outcome = await stopCall;
@@ -692,6 +797,51 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     },
   };
 
+  // ---- Restore after a restart ------------------------------------------
+
+  const restored = options.restore;
+  if (restored !== undefined) {
+    try {
+      config = createConfig({
+        numberOfConnectors: options.connectors,
+        ...(options.config?.definitions !== undefined && {
+          definitions: options.config.definitions,
+        }),
+        values: { ...options.config?.values, ...restored.config },
+      });
+    } catch (error) {
+      log(
+        `restored configuration ignored: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    for (const [id, energyWh] of Object.entries(restored.meters)) {
+      const connectorId = Number(id);
+      if (meters.has(connectorId)) {
+        meters.set(connectorId, createMeter({ now: now(), offeredW, energyWh }));
+      }
+    }
+    authCache = restored.authCache;
+    outbox.push(...restored.outbox.map((entry) => ({ ...entry })));
+    for (const [ref, id] of Object.entries(restored.csmsIds)) csmsIds.set(ref, id);
+    for (const transaction of restored.transactions) {
+      if (transaction.transactionId !== undefined)
+        csmsIds.set(transaction.ref, transaction.transactionId);
+      const energy = restored.meters[String(transaction.connectorId)] ?? transaction.meterStartWh;
+      outbox.push({
+        key: nextKey('msg'),
+        action: 'StopTransaction',
+        payload: {
+          transactionId: transaction.transactionId ?? 0,
+          meterStop: Math.max(transaction.meterStartWh, Math.round(energy)),
+          timestamp: new Date(restored.savedAt).toISOString(),
+          reason: 'PowerLoss',
+        },
+        txRef: transaction.ref,
+        attempts: 0,
+      });
+    }
+  }
+
   // ---- Public interface -------------------------------------------------
 
   return {
@@ -711,8 +861,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       rpc?.close();
       rpc = undefined;
       registration = 'Offline';
-      for (const timer of [heartbeatTimer, bootTimer, alignedTimer]) stopTimer(timer);
-      heartbeatTimer = bootTimer = alignedTimer = undefined;
+      for (const timer of [heartbeatTimer, bootTimer, alignedTimer, retryTimer]) stopTimer(timer);
+      heartbeatTimer = bootTimer = alignedTimer = retryTimer = undefined;
       changed();
     },
 
@@ -827,6 +977,33 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
           };
         }),
         config: config.values,
+        queuedMessages: outbox.length,
+      };
+    },
+
+    persistentState() {
+      const savedAt = now();
+      return {
+        version: 1,
+        savedAt,
+        config: { ...config.values },
+        meters: Object.fromEntries(
+          [...meters].map(([id, value]) => [String(id), meterAt(value, savedAt).energyWh]),
+        ),
+        authCache,
+        transactions: [...transactions].map(([connectorId, transaction]) => ({
+          connectorId,
+          ref: refs.get(connectorId) ?? '',
+          idTag: transaction.idTag,
+          startedAt: transaction.startedAt,
+          meterStartWh: transaction.meterStartWh,
+          ...(transaction.transactionId !== undefined && {
+            transactionId: transaction.transactionId,
+          }),
+        })),
+        outbox: outbox.map((entry) => ({ ...entry })),
+        csmsIds: Object.fromEntries(csmsIds),
+        sequence,
       };
     },
   };
