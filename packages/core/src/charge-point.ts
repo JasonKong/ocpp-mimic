@@ -20,7 +20,9 @@ import {
 import type { Clock, TimerHandle } from './clock.js';
 import {
   changeConfiguration,
+  readableConfigValues,
   configBool,
+  configValue,
   configInt,
   configList,
   createConfig,
@@ -235,6 +237,17 @@ export interface ChargePointOptions {
   send: (text: string) => void;
   /** Asks the transport to drop the connection and reconnect after `downtimeMs` (reset). */
   restart?: (downtimeMs: number) => void;
+  /**
+   * Asks the transport to drop the connection and connect again at once with
+   * the current security settings (connectionSecurity()), after a change of
+   * AuthorizationKey or SecurityProfile.
+   */
+  reconnect?: () => void;
+  /**
+   * The certificates installed for the Security Profiles, which raising
+   * SecurityProfile requires (Security Whitepaper A05); none by default.
+   */
+  certificates?: () => InstalledCertificates;
   onEvent?: (event: ChargePointEvent) => void;
   /** Initial test switches; a restored state's switches take precedence. */
   behaviour?: Partial<ChargePointBehaviour>;
@@ -254,6 +267,22 @@ export interface ChargePointOptions {
    * the save, as after a power cut.
    */
   restore?: PersistedChargePoint;
+}
+
+/** Which certificates a station has for TLS (Security Profiles 2 and 3). */
+export interface InstalledCertificates {
+  /** A CentralSystemRootCertificate to check the CSMS's server certificate with. */
+  centralSystemRoot: boolean;
+  /** A ChargePointCertificate with its private key, for TLS client authentication. */
+  chargePoint: boolean;
+}
+
+/** What the transport needs to connect: the Security Profile and the Basic Auth password. */
+export interface ConnectionSecurity {
+  /** SecurityProfile: 0 (none configured), 1, 2 or 3. */
+  profile: number;
+  /** AuthorizationKey, when set. */
+  authorizationKey?: string;
 }
 
 /** An EV plugged into a connector: a profile, with the persona's name for it when it has one. */
@@ -329,6 +358,13 @@ export interface ChargePoint {
   snapshot(): ChargePointSnapshot;
   /** The state to save for a restart; see ChargePointOptions.restore. */
   persistentState(): PersistedChargePoint;
+  /** The Security Profile and password to connect with. */
+  connectionSecurity(): ConnectionSecurity;
+  /**
+   * A connection attempt failed before it opened. Right after a SecurityProfile
+   * change, this falls back to the previous profile and reconnects (A05.FR.08).
+   */
+  connectionFailed(): void;
 }
 
 function checkedMultiplier(value: number): number {
@@ -632,9 +668,42 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         const status = connectorStatus(c, station);
         return `connector ${c.connectorId}: ${status.status} ${status.errorCode}`;
       }),
-      ...Object.entries(config.values).map(([key, value]) => `config ${key}=${value}`),
+      // Write-only keys such as AuthorizationKey stay out of the file (A01.FR.12).
+      ...Object.entries(readableConfigValues(config)).map(
+        ([key, value]) => `config ${key}=${value}`,
+      ),
     ];
     return `${lines.join('\n')}\n`;
+  }
+
+  // ---- Security Profiles (Security Whitepaper) ----------------------------
+
+  /** The profile to fall back to while the first connection with a new one is pending. */
+  let securityFallback: number | undefined;
+
+  /** ChangeConfiguration of SecurityProfile, per Security Whitepaper A05. */
+  function changeSecurityProfile(value: string): 'Accepted' | 'Rejected' {
+    const next = /^\s*\d+\s*$/.test(value) ? Number(value) : NaN;
+    const current = configInt(config, 'SecurityProfile');
+    const reject = (reason: string) => {
+      log(`SecurityProfile ${value} rejected: ${reason}`);
+      return 'Rejected' as const;
+    };
+    if (!Number.isInteger(next) || next < 0 || next > 3) return reject('not 0 to 3');
+    const downgrade =
+      current === 3 && next === 2 && configBool(config, 'AllowSecurityProfileDowngrade');
+    if (next <= current && !downgrade) return reject(`not higher than ${current}`);
+    const installed = options.certificates?.() ?? { centralSystemRoot: false, chargePoint: false };
+    if ((next === 1 || next === 2) && (configValue(config, 'AuthorizationKey') ?? '') === '')
+      return reject('no AuthorizationKey');
+    if (next >= 2 && !installed.centralSystemRoot) return reject('no CentralSystemRootCertificate');
+    if (next === 3 && !installed.chargePoint) return reject('no ChargePointCertificate');
+    config = changeConfiguration(config, { key: 'SecurityProfile', value: String(next) }).config;
+    securityFallback = current;
+    log(`SecurityProfile ${current} -> ${next}; reconnecting`);
+    changed();
+    later(0, () => options.reconnect?.());
+    return 'Accepted';
   }
 
   // ---- Smart Charging -----------------------------------------------------
@@ -1358,7 +1427,17 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     },
 
     ChangeConfiguration(request) {
+      if (request.key === 'SecurityProfile')
+        return { status: changeSecurityProfile(request.value) };
       const result = changeConfiguration(config, request);
+      if (request.key === 'AuthorizationKey' && result.status === 'Accepted') {
+        config = result.config;
+        log('AuthorizationKey changed; reconnecting with the new key');
+        changed();
+        // Unless certificates authenticate the station, reconnect with the new password (A01).
+        if (configInt(config, 'SecurityProfile') !== 3) later(0, () => options.reconnect?.());
+        return { status: 'Accepted' };
+      }
       config = result.config;
       if (result.status === 'Accepted' || result.status === 'RebootRequired') {
         if (request.key === 'HeartbeatInterval') startHeartbeat();
@@ -1612,6 +1691,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
 
   return {
     connected() {
+      // The new Security Profile worked: no way back (A05.FR.09).
+      securityFallback = undefined;
       rpc?.close();
       rpc = createRpc({
         clock,
@@ -1823,7 +1904,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
             ),
           };
         }),
-        config: config.values,
+        config: readableConfigValues(config),
         queuedMessages: outbox.length,
         ...(firmwareVersion !== undefined && { firmwareVersion }),
         firmwareStatus,
@@ -1847,6 +1928,27 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
           stackLevel: p.profile.stackLevel,
         })),
       };
+    },
+
+    connectionSecurity() {
+      const authorizationKey = configValue(config, 'AuthorizationKey') ?? '';
+      return {
+        profile: configInt(config, 'SecurityProfile'),
+        ...(authorizationKey !== '' && { authorizationKey }),
+      };
+    },
+
+    connectionFailed() {
+      if (securityFallback === undefined) return;
+      const previous = securityFallback;
+      securityFallback = undefined;
+      config = changeConfiguration(config, {
+        key: 'SecurityProfile',
+        value: String(previous),
+      }).config;
+      log(`could not connect with the new Security Profile; back to ${previous}`);
+      changed();
+      options.reconnect?.();
     },
 
     persistentState() {

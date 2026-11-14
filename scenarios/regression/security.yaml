@@ -1,0 +1,151 @@
+# Security Profiles 1 to 3 (OCPP 1.6 Security Whitepaper) against the built-in
+# CSMS, which serves wss:// with the committed test PKI (test-pki:...) and
+# checks Basic Auth passwords when csmsOptions asks it to.
+name: 'Profile 1: Basic Auth with the AuthorizationKey, and a new key reconnects'
+csmsOptions: { passwords: { REG-SEC-1: station-key-0001 } }
+station:
+  id: REG-SEC-1
+  persona: regression-1.6
+  password: station-key-0001
+  security: { profile: 1 }
+steps:
+  - expect: { sent: BootNotification } # the first boot; later expects find the next one
+  - expectStation: { registration: Accepted, config: { SecurityProfile: '1' } }
+  - csmsCall:
+      action: GetConfiguration
+      payload: { key: [AuthorizationKey] }
+      answer:
+        {
+          configurationKey: [{ key: AuthorizationKey, readonly: false, value: { $exists: false } }],
+        }
+  - csmsCall:
+      action: ChangeConfiguration
+      payload: { key: AuthorizationKey, value: short }
+      answer: { status: Rejected }
+  - csmsCall:
+      action: ChangeConfiguration
+      payload: { key: AuthorizationKey, value: a-new-station-key-0002 }
+      answer: { status: Accepted }
+  # The station reconnects with the new key, which the CSMS now expects.
+  - expect: { sent: BootNotification }
+  - expectStation: { registration: Accepted }
+---
+name: 'Profile 1: a wrong password is refused'
+csmsOptions: { passwords: { REG-SEC-1-BAD: station-key-0001 } }
+station:
+  id: REG-SEC-1-BAD
+  persona: regression-1.6
+  password: not-the-right-key
+  security: { profile: 1 }
+  waitForBoot: false
+steps:
+  - expectStation: { connectionError: { $regex: '401' }, registration: Offline }
+---
+name: 'Profile 2: TLS checked against the CA, plus Basic Auth'
+csmsOptions: { tls: true, passwords: { REG-SEC-2: station-key-0002 } }
+station:
+  id: REG-SEC-2
+  persona: regression-1.6
+  password: station-key-0002
+  security: { profile: 2, ca: 'test-pki:ca.crt' }
+steps:
+  - expectStation: { registration: Accepted, transport: open, config: { SecurityProfile: '2' } }
+---
+name: 'Profile 2: a server certificate from another CA is refused'
+csmsOptions: { tls: true }
+station:
+  id: REG-SEC-2-BAD
+  persona: regression-1.6
+  password: station-key-0002
+  security: { profile: 2, ca: 'test-pki:other-ca.crt' }
+  waitForBoot: false
+steps:
+  - expectStation: { connectionError: { $regex: 'certificate' }, registration: Offline }
+---
+name: 'Profile 3: TLS with a client certificate, no password'
+csmsOptions: { tls: { clientCertificates: required }, passwords: { REG-SEC-3: unused-password-01 } }
+station:
+  id: REG-SEC-3
+  persona: regression-1.6
+  security:
+    profile: 3
+    ca: 'test-pki:ca.crt'
+    cert: 'test-pki:client.crt'
+    key: 'test-pki:client.key'
+steps:
+  - expectStation: { registration: Accepted, transport: open }
+---
+name: 'Profile 3: a client certificate from an untrusted CA is refused'
+csmsOptions: { tls: { clientCertificates: required } }
+station:
+  id: REG-SEC-3-BAD
+  persona: regression-1.6
+  security:
+    profile: 3
+    ca: 'test-pki:ca.crt'
+    cert: 'test-pki:other-client.crt'
+    key: 'test-pki:other-client.key'
+  waitForBoot: false
+steps:
+  - expectStation: { connectionError: { $exists: true }, registration: Offline }
+---
+name: 'Upgrade from profile 1 to 2 to 3; never back down to 1'
+csmsOptions: { tls: { clientCertificates: optional }, passwords: { REG-SEC-UP: station-key-0003 } }
+station:
+  id: REG-SEC-UP
+  persona: regression-1.6
+  password: station-key-0003
+  security:
+    profile: 1
+    ca: 'test-pki:ca.crt'
+    cert: 'test-pki:client.crt'
+    key: 'test-pki:client.key'
+steps:
+  - expect: { sent: BootNotification } # the first boot; later expects find the next one
+  - csmsCall:
+      {
+        action: ChangeConfiguration,
+        payload: { key: SecurityProfile, value: '2' },
+        answer: { status: Accepted },
+      }
+  - expect: { sent: BootNotification }
+  - expectStation: { registration: Accepted, config: { SecurityProfile: '2' } }
+  - csmsCall:
+      {
+        action: ChangeConfiguration,
+        payload: { key: SecurityProfile, value: '3' },
+        answer: { status: Accepted },
+      }
+  - expect: { sent: BootNotification }
+  - expectStation: { registration: Accepted, config: { SecurityProfile: '3' } }
+  - csmsCall:
+      {
+        action: ChangeConfiguration,
+        payload: { key: SecurityProfile, value: '1' },
+        answer: { status: Rejected },
+      }
+  - csmsCall:
+      {
+        action: ChangeConfiguration,
+        payload: { key: SecurityProfile, value: '2' },
+        answer: { status: Rejected },
+      }
+---
+name: 'A failed upgrade falls back to the previous profile'
+csmsOptions: { passwords: { REG-SEC-BACK: station-key-0004 } }
+station:
+  id: REG-SEC-BACK
+  persona: regression-1.6
+  password: station-key-0004
+  security: { profile: 1, ca: 'test-pki:ca.crt' }
+steps:
+  - expect: { sent: BootNotification } # the first boot; later expects find the next one
+  # Profile 2 needs wss://, which this CSMS does not serve: the station comes back on profile 1.
+  - csmsCall:
+      {
+        action: ChangeConfiguration,
+        payload: { key: SecurityProfile, value: '2' },
+        answer: { status: Accepted },
+      }
+  - expect: { sent: BootNotification, within: 15s }
+  - expectStation: { registration: Accepted, config: { SecurityProfile: '1' } }

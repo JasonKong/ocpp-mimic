@@ -92,6 +92,17 @@ describe('fleet', () => {
     expect(() =>
       fleet.add(
         {
+          id: 'C',
+          persona: 'generic-1.6',
+          csmsUrl: 'wss://localhost/ocpp',
+          security: { profile: 2, ca: '/nonexistent/ca.crt' },
+        },
+        { start: false },
+      ),
+    ).toThrow(/cannot read the CA certificate \/nonexistent\/ca\.crt/);
+    expect(() =>
+      fleet.add(
+        {
           id: 'B',
           persona: 'generic-1.6',
           csmsUrl: 'ws://localhost/ocpp',

@@ -253,8 +253,9 @@ steps:
 | `name` | yes | Test case name |
 | `description` | no | Free text, shown in reports |
 | `csms` | no | `builtin` (the default) or the WebSocket URL of a CSMS; the station id is appended as for any station. `--csms` on the command line overrides it |
-| `station` or `stations` | yes | One station, or a list of them. Fields: `id`, `persona`, and optionally `password`, `config` (configuration key overrides), `behaviour` (test switches), `energyMultiplier`, `waitForBoot` |
+| `station` or `stations` | yes | One station, or a list of them. Fields: `id`, `persona`, and optionally `password` (the initial `AuthorizationKey`), `config` (configuration key overrides), `behaviour` (test switches), `energyMultiplier`, `security` (`profile` and the PEM files `ca`, `cert`, `key`, relative to the scenario file; `test-pki:<file>` names a file of the committed test PKI), `waitForBoot` |
 | `vars` | no | Default values for templates |
+| `csmsOptions` | no | Settings of the built-in CSMS: `tls` (`true`, or `{ clientCertificates: none \| optional \| required }`) serves wss:// with the test PKI's server certificate; `passwords` (station id → password) makes it check Basic Auth. It takes an AuthorizationKey it changed and saw Accepted as the station's new password |
 | `timeout` | no | Limit for the whole scenario; default 5 minutes |
 | `checkSchemas` | no | Default `true`: the scenario fails if any frame broke the official OCA schema |
 
@@ -354,7 +355,7 @@ Decided for M3 (#65). M3 adds the remaining OCPP 1.6 feature profiles, the Secur
 | Reservation | `ReserveConnectorZeroSupported` (true, read-only) |
 | Smart Charging | `ChargeProfileMaxStackLevel` (10), `ChargingScheduleAllowedChargingRateUnit` (Current,Power), `ChargingScheduleMaxPeriods` (24), `MaxChargingProfilesInstalled` (20), `ConnectorSwitch3to1PhaseSupported` (false); all read-only |
 | Firmware Management | `SupportedFileTransferProtocols` (HTTP,HTTPS,FTP, read-only) |
-| Security (whitepaper) | `SecurityProfile` (0), `AuthorizationKey` (write-only), `CpoName`, `CertificateStoreMaxLength`, `CertificateSignedMaxChainSize`, `AdditionalRootCertificateCheck` |
+| Security (whitepaper) | `SecurityProfile` (0), `AuthorizationKey` (write-only, 16 to 40 characters when set by the CSMS), `AllowSecurityProfileDowngrade` (false), `CpoName` (empty), `CertificateStoreMaxLength` (10, read-only), `CertificateSignedMaxChainSize` (10000, read-only), `AdditionalRootCertificateCheck` (false, read-only) |
 
 **Local Auth List and Reservation**
 
@@ -391,7 +392,7 @@ Decided for M3 (#65). M3 adds the remaining OCPP 1.6 feature profiles, the Secur
 **Security (OCPP 1.6 Security Whitepaper)**
 
 - Stations take `security: { profile, ca?, cert?, key? }` (PEM file paths). Profile 1: Basic Auth over ws or wss with `AuthorizationKey` as the password (the station's `password`). Profile 2: wss with the server certificate checked against `ca`, plus Basic Auth. Profile 3: wss with the client certificate `cert` / `key`, no Basic Auth.
-- ChangeConfiguration of `AuthorizationKey` reconnects with the new key. `SecurityProfile` can only go up; the station reconnects with the new profile and falls back to the previous one when that fails, as the whitepaper requires.
+- ChangeConfiguration of `AuthorizationKey` reconnects with the new key (A01). `SecurityProfile` can only go up, except from 3 to 2 with `AllowSecurityProfileDowngrade`; the station reconnects with the new profile and falls back to the previous one when that fails (A05).
 - The built-in CSMS can serve TLS, require client certificates and check Basic Auth passwords (`csmsOptions` in a scenario). Tests use a fixed test PKI committed under `packages/engine/test-pki/` (CA, server and client certificates valid for 20 years, test only) with a script that regenerates it with openssl.
 - All whitepaper messages are in M3: certificate management (SignCertificate / CertificateSigned, InstallCertificate, GetInstalledCertificateIds, DeleteCertificate), SecurityEventNotification, ExtendedTriggerMessage, GetLog / LogStatusNotification and SignedUpdateFirmware / SignedFirmwareStatusNotification. CSRs need X.509 support that Node lacks, so the engine may add a library for it (core stays dependency-free). OCA's whitepaper download is checked for JSON schemas, which would ship unchanged as in #50.
 
@@ -571,6 +572,13 @@ TriggerMessage belongs to the Remote Trigger profile. It moves into M1 because m
 | GetDiagnostics | Answers with `diagnostics-<UTC time>.log`, then Uploading → Uploaded or UploadFailed, with retries |
 
 The Smart Charging limit in force becomes the power a connector offers: it caps the power drawn (with or without an EV), shows in Power.Offered / Current.Offered and in the snapshot's `limitW`, and changes at each period boundary. A ChargePointMaxProfile is split equally between the connectors with a transaction. A RemoteStartTransaction may carry a TxProfile, installed when the transaction starts; TxProfiles are deleted when their transaction ends and are not kept across restarts, other profiles are.
+
+**Security Profiles** (OCPP 1.6 Security Whitepaper, edition 4)
+
+- Stations take `security: { profile, ca, cert, key }` (PEM files) in the API, the State Store and scenarios; `password` is the initial `AuthorizationKey`. Before every connection attempt the station picks its credentials by `SecurityProfile`: 0 sends Basic Auth only if a key is set; 1 needs a key, over ws or wss; 2 needs wss, checks the server certificate against `ca` only, sends Basic Auth and uses TLS 1.2 or above; 3 needs wss and the client certificate, without Basic Auth. A missing prerequisite fails the attempt with a reason.
+- `AuthorizationKey` is write-only: GetConfiguration lists it without a value, and it stays out of snapshots and the diagnostics file (A01.FR.12). Set by ChangeConfiguration (16 to 40 characters), it is Accepted and the station reconnects with it, except on profile 3.
+- ChangeConfiguration of `SecurityProfile` follows A05: Rejected unless higher than the current value (3 to 2 only with `AllowSecurityProfileDowngrade`), Rejected without a key for 1 and 2, without `ca` for 2 and 3, without `cert` / `key` for 3. Accepted, the station reconnects; if that first attempt fails it falls back to the previous profile and reconnects. Changed values are kept across restarts.
+- Station snapshots carry `connectionError`, why the last attempt failed (e.g. `Unexpected server response: 401`, a certificate error), until a connection opens.
 
 Actions of a profile the station does not advertise in `SupportedFeatureProfiles` are answered with CALLERROR NotSupported, except the local list's own answers. Reservations are kept across restarts.
 

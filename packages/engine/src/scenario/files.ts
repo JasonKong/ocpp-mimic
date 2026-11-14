@@ -4,9 +4,10 @@
  * `.yml` files in sorted order.
  */
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { parseScenario, type Scenario } from '@ocpp-mimic/core';
 import { parseAllDocuments } from 'yaml';
+import { TEST_PKI_DIR } from '../test-pki.js';
 
 export interface ScenarioDocument {
   /** `file#n`, with n counting documents from 1. */
@@ -83,6 +84,7 @@ export async function readScenarioFile(file: string, name = file): Promise<Scena
         ? (value as { name: string }).name
         : undefined;
     const result = parseScenario(value, label);
+    if (result.ok) resolveCertificatePaths(result.scenario, dirname(file));
     documents.push({
       label,
       index,
@@ -101,4 +103,23 @@ export async function readScenarioFile(file: string, name = file): Promise<Scena
 export function displayPath(path: string, base: string = process.cwd()): string {
   const rel = relative(base, path);
   return rel.startsWith('..') ? path : rel;
+}
+
+/**
+ * Makes a station's certificate paths absolute: `test-pki:<file>` names a
+ * file of the committed test PKI, other paths are relative to the scenario file.
+ */
+export function resolveCertificatePaths(scenario: Scenario, directory: string): void {
+  const resolveOne = (path: string) =>
+    path.startsWith('test-pki:')
+      ? join(TEST_PKI_DIR, path.slice('test-pki:'.length))
+      : resolve(directory, path);
+  for (const station of scenario.stations) {
+    const security = station.security;
+    if (security === undefined) continue;
+    for (const field of ['ca', 'cert', 'key'] as const) {
+      const value = security[field];
+      if (value !== undefined) security[field] = resolveOne(value);
+    }
+  }
 }

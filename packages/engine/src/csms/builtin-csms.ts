@@ -5,8 +5,10 @@
  * default (or a custom handler, or a reply set per station with setReply),
  * records all frames, and can send CALLs to the charge point.
  */
-import { createServer, type IncomingMessage } from 'node:http';
+import { createServer, type IncomingMessage, type RequestListener } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
+import type { TLSSocket } from 'node:tls';
 import type { Duplex } from 'node:stream';
 import {
   MessageTypeId,
@@ -43,6 +45,21 @@ interface ReplyOverride {
   remaining?: number;
 }
 
+/** Serving wss:// (Security Profiles 2 and 3). */
+export interface BuiltinCsmsTls {
+  /** Server certificate and key (PEM). */
+  cert: string | Buffer;
+  key: string | Buffer;
+  /** CA certificates (PEM) that client certificates must be signed by. */
+  ca?: string | Buffer;
+  /**
+   * `none` (default): no client certificates. `optional`: asked for and
+   * reported on the connection. `required`: the TLS handshake fails without a
+   * valid one (Security Profile 3).
+   */
+  clientCertificates?: 'none' | 'optional' | 'required';
+}
+
 export interface BuiltinCsmsOptions {
   port?: number;
   host?: string;
@@ -50,6 +67,21 @@ export interface BuiltinCsmsOptions {
   handlers?: Record<string, CsmsHandler>;
   /** Accepts or refuses (HTTP 401) a connection, given its Authorization header. */
   authorize?: (chargeBoxId: string, authorization: string | undefined) => boolean;
+  /**
+   * Basic Auth passwords by chargeBoxId: a listed station must present its
+   * password or is refused with HTTP 401; other stations need none.
+   */
+  passwords?: Record<string, string>;
+  /** Serve wss:// with TLS 1.2 or above instead of ws://. */
+  tls?: BuiltinCsmsTls;
+}
+
+/** The client certificate a charge point presented over TLS. */
+export interface ClientCertificate {
+  /** Subject fields, e.g. { O: 'ocpp-mimic', CN: 'ocpp-mimic-test-cp' }. */
+  subject: Record<string, string>;
+  /** Whether it was signed by one of the CSMS's client CAs. */
+  authorized: boolean;
 }
 
 export interface BuiltinCsmsConnection {
@@ -57,6 +89,8 @@ export interface BuiltinCsmsConnection {
   readonly protocol: string;
   /** Headers of the WebSocket upgrade request. */
   readonly headers: IncomingMessage['headers'];
+  /** The client certificate, when the connection uses TLS and the station sent one. */
+  readonly clientCertificate?: ClientCertificate;
   /** WebSocket pings received from the charge point. */
   readonly pings: number;
   /** Every frame received from the charge point, in order. */
@@ -142,6 +176,8 @@ function createConnection(
   headers: IncomingMessage['headers'],
   handlers: Record<string, CsmsHandler>,
   takeOverride: (chargeBoxId: string, action: string) => CsmsReply | undefined,
+  clientCertificate: ClientCertificate | undefined,
+  onKeyChanged: (key: string) => void,
 ): BuiltinCsmsConnection {
   const received: Frame[] = [];
   let pings = 0;
@@ -162,6 +198,7 @@ function createConnection(
     chargeBoxId,
     protocol: socket.protocol,
     headers,
+    ...(clientCertificate !== undefined && { clientCertificate }),
     get pings() {
       return pings;
     },
@@ -182,15 +219,26 @@ function createConnection(
         `${action} from ${chargeBoxId}`,
       );
     },
-    call(action, payload, timeoutMs = 2000) {
+    async call(action, payload, timeoutMs = 2000) {
       const id = ids();
       send({ type: MessageTypeId.Call, id, action, payload });
-      return waitUntil(
+      const answer = await waitUntil(
         () => received.find((f) => f.type !== MessageTypeId.Call && f.id === id),
         subscribe,
         timeoutMs,
         `the answer to ${action} (${id})`,
       );
+      // Like a real CSMS, take an accepted AuthorizationKey as the new password (A01.FR.03).
+      if (
+        action === 'ChangeConfiguration' &&
+        payload.key === 'AuthorizationKey' &&
+        typeof payload.value === 'string' &&
+        answer.type === MessageTypeId.CallResult &&
+        answer.payload.status === 'Accepted'
+      ) {
+        onKeyChanged(payload.value);
+      }
+      return answer;
     },
     ping(timeoutMs = 500) {
       return new Promise((resolve) => {
@@ -297,9 +345,42 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     handleProtocols: (protocols) =>
       protocols.has(OCPP16_SUBPROTOCOL) ? OCPP16_SUBPROTOCOL : false,
   });
-  const server = createServer((_req, res) => {
+  const notFound: RequestListener = (_req, res) => {
     res.writeHead(404).end();
-  });
+  };
+  const tls = options.tls;
+  const clientCertificates = tls?.clientCertificates ?? 'none';
+  const server =
+    tls === undefined
+      ? createServer(notFound)
+      : createHttpsServer(
+          {
+            cert: tls.cert,
+            key: tls.key,
+            ...(tls.ca !== undefined && { ca: tls.ca }),
+            minVersion: 'TLSv1.2',
+            requestCert: clientCertificates !== 'none',
+            rejectUnauthorized: clientCertificates === 'required',
+          },
+          notFound,
+        );
+  const passwords: Record<string, string> = { ...options.passwords };
+  const passwordOk = (chargeBoxId: string, authorization: string | undefined) => {
+    const password = passwords[chargeBoxId];
+    if (password === undefined) return true;
+    const expected = `Basic ${Buffer.from(`${chargeBoxId}:${password}`).toString('base64')}`;
+    return authorization === expected;
+  };
+  const clientCertificateOf = (req: IncomingMessage): ClientCertificate | undefined => {
+    if (tls === undefined || clientCertificates === 'none') return undefined;
+    const socket = req.socket as TLSSocket;
+    const peer = socket.getPeerCertificate();
+    if (Object.keys(peer).length === 0) return undefined;
+    const subject = Object.fromEntries(
+      Object.entries(peer.subject).map(([key, value]) => [key, String(value)]),
+    );
+    return { subject, authorized: socket.authorized };
+  };
 
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const match = /^\/ocpp\/([^/?]+)$/.exec(new URL(req.url ?? '/', 'http://x').pathname);
@@ -308,9 +389,13 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       return;
     }
     const chargeBoxId = decodeURIComponent(match[1]);
+    const clientCertificate = clientCertificateOf(req);
+    // A trusted client certificate authenticates the station instead of a password (profile 3).
+    const certified = clientCertificate?.authorized === true;
     if (
-      options.authorize !== undefined &&
-      !options.authorize(chargeBoxId, req.headers.authorization)
+      (!certified && !passwordOk(chargeBoxId, req.headers.authorization)) ||
+      (options.authorize !== undefined &&
+        !options.authorize(chargeBoxId, req.headers.authorization))
     ) {
       socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
       return;
@@ -320,7 +405,17 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
         ws.close(1002, 'ocpp1.6 subprotocol required');
         return;
       }
-      const connection = createConnection(ws, chargeBoxId, req.headers, handlers, takeOverride);
+      const connection = createConnection(
+        ws,
+        chargeBoxId,
+        req.headers,
+        handlers,
+        takeOverride,
+        clientCertificate,
+        (key) => {
+          if (options.passwords !== undefined) passwords[chargeBoxId] = key;
+        },
+      );
       connections.set(chargeBoxId, connection);
       ws.on('close', () => {
         if (connections.get(chargeBoxId) === connection) connections.delete(chargeBoxId);
@@ -336,7 +431,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
   const { port: boundPort } = server.address() as AddressInfo;
 
   return {
-    url: `ws://${host}:${boundPort}/ocpp`,
+    url: `${tls === undefined ? 'ws' : 'wss'}://${host}:${boundPort}/ocpp`,
     waitForConnection(chargeBoxId, timeoutMs = 2000, previous) {
       return waitUntil(
         () => {

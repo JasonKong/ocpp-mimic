@@ -35,8 +35,22 @@ export interface ScenarioStation {
   config?: Record<string, string>;
   behaviour?: { refuseRemoteStart?: boolean; cableLock?: boolean };
   energyMultiplier?: number;
+  /** Security Profile and certificate files (paths relative to the scenario file). */
+  security?: { profile?: number; ca?: string; cert?: string; key?: string };
   /** Setup waits until BootNotification is Accepted. Default true. */
   waitForBoot: boolean;
+}
+
+/** How the built-in CSMS accepts connections. */
+export interface CsmsOptions {
+  /**
+   * Serve wss:// with the test PKI's server certificate. `clientCertificates`
+   * asks stations for certificates signed by the test CA: `required` refuses
+   * the TLS handshake without one (Security Profile 3).
+   */
+  tls?: { clientCertificates: 'none' | 'optional' | 'required' };
+  /** Basic Auth passwords by station id; a listed station must send its password. */
+  passwords?: Record<string, string>;
 }
 
 export type CardResult = 'authorized' | 'rejected' | 'stopping' | 'busy';
@@ -147,6 +161,8 @@ export interface Scenario {
   /** Limit for the whole scenario; the runner's default when absent. */
   timeoutMs?: number;
   checkSchemas: boolean;
+  /** Settings of the built-in CSMS. */
+  csmsOptions?: CsmsOptions;
   steps: ScenarioStep[];
 }
 
@@ -213,6 +229,26 @@ const stationSchema = object(
     behaviour: behaviourSchema,
     energyMultiplier: positive,
     waitForBoot: boolean(),
+    security: object(
+      {},
+      {
+        profile: integer({ minimum: 0, maximum: 3 }),
+        ca: nonEmpty,
+        cert: nonEmpty,
+        key: nonEmpty,
+      },
+    ),
+  },
+);
+
+const csmsOptionsSchema = object(
+  {},
+  {
+    tls: union(
+      boolean(),
+      object({}, { clientCertificates: oneOf(['none', 'optional', 'required']) }),
+    ),
+    passwords: record(string()),
   },
 );
 
@@ -226,6 +262,7 @@ const topSchema = object(
     vars: record(union(string(), number(), boolean())),
     timeout: durationSchema,
     checkSchemas: boolean(),
+    csmsOptions: csmsOptionsSchema,
   },
 );
 
@@ -660,6 +697,7 @@ export function parseScenario(document: unknown, label?: string): ScenarioResult
         'password',
         'behaviour',
         'energyMultiplier',
+        'security',
       ] as const) as Partial<ScenarioStation>),
       ...(isObject(raw.config) && {
         config: Object.fromEntries(Object.entries(raw.config).map(([k, v]) => [k, String(v)])),
@@ -716,6 +754,32 @@ export function parseScenario(document: unknown, label?: string): ScenarioResult
     });
   }
 
+  const rawOptions = isObject(document.csmsOptions) ? document.csmsOptions : undefined;
+  if (rawOptions !== undefined && csms !== 'builtin') {
+    issues.push({
+      path: '$.csmsOptions',
+      errorCode: 'FormationViolation',
+      message: 'needs the built-in CSMS (csms: builtin)',
+    });
+  }
+  const tlsOption = rawOptions?.tls;
+  const csmsOptions: CsmsOptions | undefined =
+    rawOptions === undefined
+      ? undefined
+      : {
+          ...(tlsOption === true && { tls: { clientCertificates: 'none' as const } }),
+          ...(isObject(tlsOption) && {
+            tls: {
+              clientCertificates:
+                (tlsOption.clientCertificates as 'none' | 'optional' | 'required' | undefined) ??
+                'none',
+            },
+          }),
+          ...(isObject(rawOptions.passwords) && {
+            passwords: rawOptions.passwords as Record<string, string>,
+          }),
+        };
+
   if (issues.length > 0) return { ok: false, errors: issues.map((i) => prefix(format(i))) };
   return {
     ok: true,
@@ -729,6 +793,7 @@ export function parseScenario(document: unknown, label?: string): ScenarioResult
         timeoutMs: durationMs(document.timeout, DEFAULT_SCENARIO_TIMEOUT_MS),
       }),
       checkSchemas: document.checkSchemas !== false,
+      ...(csmsOptions !== undefined && { csmsOptions }),
       steps,
     },
   };

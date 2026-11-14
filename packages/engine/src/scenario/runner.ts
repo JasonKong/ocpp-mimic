@@ -24,7 +24,12 @@ import { createEngine, type Engine } from '../engine.js';
 import { resolveEv } from '../evs.js';
 import { DEFAULT_ALLOWED_CSMS, type VirtualStation } from '../fleet.js';
 import type { FrameRecord } from '../recorder.js';
-import { startBuiltinCsms, type BuiltinCsms } from '../csms/builtin-csms.js';
+import {
+  startBuiltinCsms,
+  type BuiltinCsms,
+  type BuiltinCsmsOptions,
+} from '../csms/builtin-csms.js';
+import { testPki } from '../test-pki.js';
 import type { BackoffPolicy } from '../transport.js';
 
 export type StepStatus = 'passed' | 'failed' | 'skipped';
@@ -117,6 +122,23 @@ const describeMismatches = (mismatches: Mismatch[]) =>
   mismatches.map((m) => `${m.path}: ${m.message}`);
 const time = (iso: string) => iso.slice(11, 23);
 
+/** The built-in CSMS for a scenario: its `csmsOptions`, TLS with the test PKI. */
+function builtinCsmsOptions(scenario: Scenario): BuiltinCsmsOptions {
+  const { tls, passwords } = scenario.csmsOptions ?? {};
+  return {
+    port: 0,
+    ...(passwords !== undefined && { passwords }),
+    ...(tls !== undefined && {
+      tls: {
+        cert: testPki('server.crt'),
+        key: testPki('server.key'),
+        ca: testPki('ca.crt'),
+        clientCertificates: tls.clientCertificates,
+      },
+    }),
+  };
+}
+
 /** Runs one scenario. Never throws: problems end up in the result. */
 export async function runScenario(
   scenario: Scenario,
@@ -185,7 +207,7 @@ export async function runScenario(
 
   try {
     // ---- Setup ----
-    if (builtin) csms = await startBuiltinCsms({ port: 0 });
+    if (builtin) csms = await startBuiltinCsms(builtinCsmsOptions(scenario));
     engine = createEngine({
       port: 0,
       allowedCsms: [...DEFAULT_ALLOWED_CSMS, ...(options.allowCsms ?? [])],
@@ -205,6 +227,7 @@ export async function runScenario(
         persona: definition.persona,
         csmsUrl,
         ...(definition.password !== undefined && { password: definition.password }),
+        ...(definition.security !== undefined && { security: definition.security }),
         ...(definition.config !== undefined && { config: definition.config }),
         ...(definition.energyMultiplier !== undefined && {
           energyMultiplier: definition.energyMultiplier,

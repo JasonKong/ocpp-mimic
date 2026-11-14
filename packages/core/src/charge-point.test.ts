@@ -5,6 +5,7 @@ import {
   type ChargePointTiming,
   type PersistedChargePoint,
 } from './charge-point.js';
+import type { InstalledCertificates } from './charge-point.js';
 import { ManualClock } from './clock.js';
 import type { FileTransfer, FirmwareSettings } from './firmware.js';
 import { sequentialIds } from './ids.js';
@@ -30,6 +31,7 @@ interface SetupOptions {
   energyMultiplier?: number;
   firmware?: Partial<FirmwareSettings>;
   transfer?: FileTransfer;
+  certificates?: InstalledCertificates;
 }
 
 /**
@@ -40,6 +42,7 @@ function setup(options: SetupOptions = {}) {
   const clock = new ManualClock(options.startAt ?? T0);
   const frames: Frame[] = [];
   const restarts: number[] = [];
+  let reconnects = 0;
   let nextTransactionId = 100;
   const iso = () => new Date(clock.now()).toISOString();
   const responders: Record<string, Responder> = {
@@ -71,6 +74,10 @@ function setup(options: SetupOptions = {}) {
       if (parsed.ok) frames.push(parsed.frame);
     },
     restart: (downtimeMs) => restarts.push(downtimeMs),
+    reconnect: () => reconnects++,
+    ...(options.certificates !== undefined && {
+      certificates: () => options.certificates as InstalledCertificates,
+    }),
     ...(options.restore !== undefined && { restore: options.restore }),
     ...(options.behaviour !== undefined && { behaviour: options.behaviour }),
     ...(options.energyMultiplier !== undefined && { energyMultiplier: options.energyMultiplier }),
@@ -165,6 +172,9 @@ function setup(options: SetupOptions = {}) {
     clock,
     frames,
     restarts,
+    get reconnects() {
+      return reconnects;
+    },
     settle,
     calls,
     lastCall,
@@ -1121,7 +1131,11 @@ describe('firmware management', () => {
         return Promise.resolve(true);
       },
     };
-    const h = setup({ transfer, firmware: { installMs: 1000 } });
+    const h = setup({
+      transfer,
+      firmware: { installMs: 1000 },
+      config: { AuthorizationKey: 'secret-station-key' },
+    });
     await h.boot();
     await h.csmsCall('UpdateFirmware', {
       location: 'https://fw.example.com/fw-2.7.0.bin',
@@ -1147,6 +1161,9 @@ describe('firmware management', () => {
       },
     ]);
     expect(diagnosticsStatuses(h)).toEqual(['Uploading', 'Uploaded']);
+    // Write-only keys stay out of the file (Security Whitepaper A01.FR.12).
+    expect(uploads[0]?.content).not.toContain('secret-station-key');
+    expect(uploads[0]?.content).not.toContain('AuthorizationKey');
   });
 
   it('simulates diagnostics uploads, reports both statuses on TriggerMessage, and is NotSupported without the profile', async () => {
@@ -1177,6 +1194,107 @@ describe('firmware management', () => {
     expect(
       await plain.csmsCall('GetDiagnostics', { location: 'ftp://logs.example.com/' }),
     ).toMatchObject({ type: 4, errorCode: 'NotSupported' });
+  });
+});
+
+describe('security profiles', () => {
+  const KEY = '0123456789abcdef0123';
+  const change = (h: ReturnType<typeof setup>, key: string, value: string) =>
+    h.csmsCall('ChangeConfiguration', { key, value });
+
+  it('keeps AuthorizationKey write-only and reconnects with a new one', async () => {
+    const h = setup({ config: { AuthorizationKey: 'station-password' } });
+    await h.boot();
+    expect(
+      await h.csmsCall('GetConfiguration', { key: ['AuthorizationKey', 'SecurityProfile'] }),
+    ).toEqual({
+      configurationKey: [
+        { key: 'AuthorizationKey', readonly: false },
+        { key: 'SecurityProfile', readonly: false, value: '0' },
+      ],
+    });
+    expect(h.cp.snapshot().config).not.toHaveProperty('AuthorizationKey');
+    expect(h.cp.connectionSecurity()).toEqual({ profile: 0, authorizationKey: 'station-password' });
+
+    // 16 to 40 characters.
+    expect(await change(h, 'AuthorizationKey', 'too-short')).toEqual({ status: 'Rejected' });
+    expect(await change(h, 'AuthorizationKey', 'x'.repeat(41))).toEqual({ status: 'Rejected' });
+    expect(h.reconnects).toBe(0);
+    expect(await change(h, 'AuthorizationKey', KEY)).toEqual({ status: 'Accepted' });
+    await h.advance(0);
+    expect(h.reconnects).toBe(1);
+    expect(h.cp.connectionSecurity()).toEqual({ profile: 0, authorizationKey: KEY });
+    // The key survives a restart.
+    const after = setup({ restore: h.cp.persistentState() });
+    expect(after.cp.connectionSecurity().authorizationKey).toBe(KEY);
+  });
+
+  it('raises SecurityProfile only with its prerequisites, and reconnects', async () => {
+    const certificates = { centralSystemRoot: false, chargePoint: false };
+    const h = setup({ certificates });
+    await h.boot();
+    expect(await change(h, 'SecurityProfile', '1')).toEqual({ status: 'Rejected' });
+    await change(h, 'AuthorizationKey', KEY);
+    await h.advance(0);
+    const base = h.reconnects;
+    expect(await change(h, 'SecurityProfile', '1')).toEqual({ status: 'Accepted' });
+    await h.advance(0);
+    expect(h.reconnects).toBe(base + 1);
+    expect(h.cp.connectionSecurity().profile).toBe(1);
+    h.cp.disconnected();
+    await h.boot();
+
+    for (const value of ['1', '0', '4', 'two']) {
+      expect(await change(h, 'SecurityProfile', value)).toEqual({ status: 'Rejected' });
+    }
+    expect(await change(h, 'SecurityProfile', '2')).toEqual({ status: 'Rejected' });
+    certificates.centralSystemRoot = true;
+    expect(await change(h, 'SecurityProfile', '2')).toEqual({ status: 'Accepted' });
+    h.cp.disconnected();
+    await h.boot();
+    expect(await change(h, 'SecurityProfile', '3')).toEqual({ status: 'Rejected' });
+    certificates.chargePoint = true;
+    expect(await change(h, 'SecurityProfile', '3')).toEqual({ status: 'Accepted' });
+    h.cp.disconnected();
+    await h.boot();
+    await h.advance(0);
+    const atThree = h.reconnects;
+
+    // In profile 3 certificates authenticate the station: a new key needs no reconnect.
+    expect(await change(h, 'AuthorizationKey', `${KEY}-new`)).toEqual({ status: 'Accepted' });
+    await h.advance(0);
+    expect(h.reconnects).toBe(atThree);
+    // Down to 2 only with AllowSecurityProfileDowngrade, and never to 1.
+    expect(await change(h, 'SecurityProfile', '2')).toEqual({ status: 'Rejected' });
+    await change(h, 'AllowSecurityProfileDowngrade', 'true');
+    expect(await change(h, 'SecurityProfile', '1')).toEqual({ status: 'Rejected' });
+    expect(await change(h, 'SecurityProfile', '2')).toEqual({ status: 'Accepted' });
+    expect(h.cp.connectionSecurity().profile).toBe(2);
+  });
+
+  it('falls back to the previous profile when the first connection with the new one fails', async () => {
+    const h = setup({
+      config: { AuthorizationKey: KEY },
+      certificates: { centralSystemRoot: true, chargePoint: true },
+    });
+    await h.boot();
+    await change(h, 'SecurityProfile', '2');
+    await h.advance(0);
+    h.cp.disconnected();
+    const before = h.reconnects;
+    h.cp.connectionFailed();
+    expect(h.cp.connectionSecurity().profile).toBe(0);
+    expect(h.reconnects).toBe(before + 1);
+    expect(h.cp.snapshot().config.SecurityProfile).toBe('0');
+
+    // Once connected with the new profile, later failures change nothing.
+    await h.boot();
+    expect(await change(h, 'SecurityProfile', '1')).toEqual({ status: 'Accepted' });
+    h.cp.disconnected();
+    await h.boot();
+    h.cp.disconnected();
+    h.cp.connectionFailed();
+    expect(h.cp.connectionSecurity().profile).toBe(1);
   });
 });
 
