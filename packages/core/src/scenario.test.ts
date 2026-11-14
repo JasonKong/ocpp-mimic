@@ -153,6 +153,57 @@ describe('scenario validation', () => {
     ]);
   });
 
+  it('parses replay steps and replay stations', () => {
+    const parsed = parseScenario({
+      name: 'replay',
+      station: { id: 'R1', persona: 'generic-1.6', replay: true },
+      steps: [
+        { replay: { log: 'logs/a.jsonl', speed: 10, maxGap: '5s', compare: 'strict' } },
+        {
+          replay: {
+            frames: [
+              { at: '0s', sent: [2, '1', 'Heartbeat', {}] },
+              { at: '20ms', received: [3, '1', {}] },
+            ],
+          },
+        },
+      ],
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.scenario.stations[0]).toMatchObject({ replay: true, waitForBoot: false });
+    expect(parsed.scenario.steps[0]).toEqual({
+      kind: 'replay',
+      log: 'logs/a.jsonl',
+      speed: 10,
+      maxGapMs: 5000,
+      compare: 'strict',
+    });
+    expect(parsed.scenario.steps[1]).toMatchObject({
+      kind: 'replay',
+      frames: [
+        { atMs: 0, direction: 'cp-to-csms', frame: [2, '1', 'Heartbeat', {}] },
+        { atMs: 20, direction: 'csms-to-cp', frame: [3, '1', {}] },
+      ],
+    });
+    const bad = parseScenario({
+      name: 'bad replay',
+      station: { id: 'R1', persona: 'generic-1.6', replay: true },
+      steps: [
+        { replay: {} },
+        { replay: { log: 'a', frames: [] } },
+        { replay: { frames: [{ at: '0s' }] } },
+        { replay: { log: 'a', speed: 0 } },
+      ],
+    });
+    expect(bad.ok ? [] : bad.errors).toEqual([
+      '$.steps[0].replay: give log or frames',
+      '$.steps[1].replay: give log or frames',
+      '$.steps[2].replay.frames[0]: needs sent or received, with an OCPP-J message array',
+      '$.steps[3].replay.speed: must be above 0',
+    ]);
+  });
+
   it('names the file, the step and the field in errors', () => {
     expect(
       errors({
@@ -175,7 +226,7 @@ describe('scenario validation', () => {
         ],
       }),
     ).toEqual([
-      'file.yaml#1: $.steps[0].plugin: unknown step (known: plugIn, unplug, evSuspend, evResume, clearFault, presentCard, fault, offline, online, stopStation, startStation, setBehaviour, charge, expect, expectNo, csmsCall, csmsReply, http, clearInjections, wait, inject, expectConnector, expectStation)',
+      'file.yaml#1: $.steps[0].plugin: unknown step (known: plugIn, unplug, evSuspend, evResume, clearFault, presentCard, fault, offline, online, stopStation, startStation, setBehaviour, charge, expect, expectNo, csmsCall, csmsReply, http, clearInjections, wait, inject, replay, expectConnector, expectStation)',
       'file.yaml#1: $.steps[1].plugIn.connector: expected integer, got string',
       'file.yaml#1: $.steps[2].presentCard.idTag: missing required property',
       'file.yaml#1: $.steps[3].expect.sent: "RemoteStartTransaction" is not one of Authorize, BootNotification, DataTransfer, DiagnosticsStatusNotification, FirmwareStatusNotification, Heartbeat, LogStatusNotification, MeterValues, SecurityEventNotification, SignCertificate, SignedFirmwareStatusNotification, StartTransaction, StatusNotification, StopTransaction',

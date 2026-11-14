@@ -10,20 +10,23 @@ import {
   formatDuration,
   maskSecrets,
   matchValue,
+  parseLog,
   readPath,
   renderTemplates,
   stepLabel,
   TemplateError,
   variableProblems,
   type JsonObject,
+  type LogLine,
   type Mismatch,
   type Scenario,
   type ScenarioStep,
 } from '@ocpp-mimic/core';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createEngine, type Engine } from '../engine.js';
 import { exportLog } from '../logs/export.js';
+import { runReplay, stationLines } from '../replay/replay.js';
 import { resolveEv } from '../evs.js';
 import { DEFAULT_ALLOWED_CSMS, type VirtualStation } from '../fleet.js';
 import type { FrameRecord } from '../recorder.js';
@@ -238,6 +241,7 @@ export async function runScenario(
         ...(definition.config !== undefined && { config: definition.config }),
         ...(definition.usage !== undefined && { usage: definition.usage }),
         ...(definition.seed !== undefined && { seed: definition.seed }),
+        ...(definition.replay === true && { replay: true }),
         ...(definition.energyMultiplier !== undefined && {
           energyMultiplier: definition.energyMultiplier,
         }),
@@ -380,6 +384,34 @@ export async function runScenario(
           if (step.request.injection.type === 'reconnectStorm') fleet.reconnectStorm();
           else fleet.inject(station!.id, step.request);
           return;
+        case 'replay': {
+          const target = station!;
+          const wire = target.wire;
+          if (wire === undefined) {
+            throw new StepFailure(
+              `station ${target.id} is not a replay station (give it replay: true)`,
+            );
+          }
+          const lines = await replayLines(step, target.id);
+          await wire.whenOpen(30_000).catch((error: Error) => {
+            throw new StepFailure(error.message);
+          });
+          const outcome = await runReplay({
+            wire,
+            lines,
+            speed: step.speed,
+            maxGapMs: step.maxGapMs,
+            compare: step.compare,
+          });
+          if (outcome.differences.length > 0) {
+            const count = outcome.differences.length;
+            throw new StepFailure(
+              `${count} difference${count === 1 ? '' : 's'} from the log`,
+              outcome.differences,
+            );
+          }
+          return;
+        }
         case 'clearInjections':
           station!.injector.clear();
           return;
@@ -749,6 +781,34 @@ export async function runScenario(
     await csms?.stop().catch(() => {});
     if (options.logDir !== undefined) await writeScenarioLog(options.logDir, label, log.frames);
   }
+}
+
+/** The log lines a replay step plays: its inline frames, or its log file's station. */
+async function replayLines(
+  step: Extract<ScenarioStep, { kind: 'replay' }>,
+  stationId: string,
+): Promise<LogLine[]> {
+  if (step.frames !== undefined) {
+    return step.frames.map((f) => ({
+      at: new Date(f.atMs).toISOString(),
+      station: stationId,
+      direction: f.direction,
+      frame: f.frame,
+    }));
+  }
+  let text: string;
+  try {
+    text = await readFile(step.log ?? '', 'utf8');
+  } catch (error) {
+    throw new StepFailure(`cannot read the log: ${(error as Error).message}`);
+  }
+  const parsed = parseLog(text);
+  if (parsed.problems.length > 0) {
+    throw new StepFailure(`the log has problems: ${parsed.problems.slice(0, 3).join('; ')}`);
+  }
+  const picked = stationLines(parsed.lines, step.logStation);
+  if (!picked.ok) throw new StepFailure(picked.problem);
+  return picked.lines;
 }
 
 /** `<dir>/<file name of the label>.jsonl` with the scenario's frames, e.g. `usage.yaml-1.jsonl`. */

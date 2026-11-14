@@ -299,6 +299,46 @@ describe('parseCommand', () => {
     });
   });
 
+  it('parses replay with its options', () => {
+    expect(
+      parseCommand([
+        'replay',
+        'log.jsonl',
+        '--station',
+        'CP1',
+        '--csms',
+        'ws://localhost:9000/ocpp',
+        '--speed',
+        '10',
+        '--max-gap',
+        '5s',
+        '--compare',
+        'strict',
+        '--write',
+        'r.yaml',
+      ]),
+    ).toEqual({
+      kind: 'replay',
+      log: 'log.jsonl',
+      station: 'CP1',
+      csms: 'ws://localhost:9000/ocpp',
+      speed: 10,
+      maxGapMs: 5000,
+      compare: 'strict',
+      write: 'r.yaml',
+      personas: [],
+      allowCsms: [],
+    });
+    expect(parseCommand(['replay'])).toEqual({ kind: 'error', message: 'replay needs a log file' });
+    for (const bad of [
+      ['--speed', '0'],
+      ['--max-gap', 'soon'],
+      ['--compare', 'loose'],
+    ]) {
+      expect(parseCommand(['replay', 'l.jsonl', ...bad])).toMatchObject({ kind: 'error' });
+    }
+  });
+
   it('prints help with no command, and the version with -v', () => {
     expect(parseCommand([])).toEqual({ kind: 'help' });
     expect(parseCommand(['-v'])).toEqual({ kind: 'version' });
