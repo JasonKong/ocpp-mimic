@@ -1,0 +1,8 @@
+# How `ocpp-mimic import` reads plain log lines such as
+#   2026-11-15 09:00:00.123 [SIM-001] RECV [2,"1","Heartbeat",{}]
+# (docs/design.md, "M4 scale"). Named groups give the fields.
+format: lines
+pattern: '^(?<at>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}) \[(?<station>[^\]]+)\] (?<direction>RECV|SEND) (?<frame>\[.*\])$'
+fields:
+  at: { time: iso, timeZone: UTC }
+  direction: { values: { RECV: cp-to-csms, SEND: csms-to-cp } }
