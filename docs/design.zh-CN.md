@@ -692,6 +692,13 @@ thresholds:
 - `ocpp-mimic replay <log> [--station] [--csms] [--persona] [--speed] [--max-gap] [--compare] [--write <file>]` 直接运行（默认对内置 CSMS），像 `run` 一样报告，退出码 0、1 或 2；`--write` 改为写出场景，帧以内联形式写入，可编辑保存。
 - 日志从充电中途开始时不会补发 BootNotification：日志按原样回放，需要先 boot 的 CSMS 会在差异里体现出来。
 
+**已实现：校准（T53）**
+
+- `core/src/calibrate.ts` 从一个或多个桩的日志推导：出现最多的 BootNotification 字段（厂商、型号、固件、电表类型；不含序列号）；连接器数量；最近一次 GetConfiguration 回答中的配置（模拟器认识的键、可接受的值，不含 AuthorizationKey）；HeartbeatInterval 和 MeterValueSampleInterval（间隔中位数，电表值只取交易中的周期采样；超过中位数三倍的间隔，例如断线，排除在外）；采样的测量项；`power.offeredW`（Power.Offered 的 p95，没有时用 Power.Active.Import）；`timing.commandDelays` 和 `timing.actionDelay`（从 TriggerMessage、RemoteStopTransaction、ChangeAvailability 到它们要求的消息，persona 的延迟作用在这里而不是回答上）；`timing.startTransactionDelay`（从 Authorize 回答到 StartTransaction）；重置停机时间（从 Reset 到下一次 BootNotification）；故障目录；以及使用模型的到达频率（每个空闲连接器小时的充电次数）、停留时长（p10 到 p90）、结束方式和被拒卡的比例。
+- 每个值都列出样本数和 p10 到 p90 的范围；少于 3 个样本时不推导，并在报告中说明原因。EV 参数暂不推导：日志很少包含 SoC，persona 的 EV 保持不变。
+- `ocpp-mimic calibrate <log>... [--station <id>]... [--name <id>] [--extends <persona>] [-o <persona.yaml>] [--report <report.md>]` 写出 persona（默认继承 generic-1.6），文件头注明来源。
+- 测试通过场景 runner 用一个参数有明显特征的 persona（两个连接器、2 秒间隔、11 kW、300 毫秒动作延迟、800 毫秒启动延迟、一个故障、一个使用模型）录下日志，校准结果在 10% 或 150 毫秒以内还原这些值；结果可以作为 persona 加载。
+
 **文件放在哪里**
 
 压测计划放 `scenarios/load/`，导入映射放 `scenarios/import/`，样本日志放 `scenarios/logs/`，压测用的 persona 放 `scenarios/personas/`。测试会把 `scenarios/` 下其余所有文件当作场景校验，所以 `scenarios/examples/` 只放场景。

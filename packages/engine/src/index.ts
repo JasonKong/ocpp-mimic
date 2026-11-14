@@ -118,3 +118,4 @@ export {
 } from './load/runner.js';
 export { runReplay, stationLines, type CompareMode, type ReplayResult } from './replay/replay.js';
 export { replayScenario, replayYaml, type ReplayScenarioOptions } from './replay/scenario.js';
+export { personaYaml } from './calibrate.js';

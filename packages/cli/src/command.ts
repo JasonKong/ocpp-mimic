@@ -65,6 +65,19 @@ export interface ReplayCommand {
   allowCsms: string[];
 }
 
+export interface CalibrateCommand {
+  kind: 'calibrate';
+  logs: string[];
+  /** Only these stations (all of the logs' stations otherwise). */
+  stations: string[];
+  name?: string;
+  extends?: string;
+  /** Persona file; standard output without it. */
+  out?: string;
+  /** Markdown report of what was derived. */
+  report?: string;
+}
+
 export type ClientCertificateMode = 'none' | 'optional' | 'required';
 
 export interface CsmsCommand {
@@ -111,6 +124,7 @@ export type Command =
   | CsmsCommand
   | ImportCommand
   | ReplayCommand
+  | CalibrateCommand
   | LoadCommand
   | { kind: 'version' }
   | { kind: 'help' }
@@ -130,6 +144,7 @@ Commands:
   import <file>...       Turn logs into ocpp-mimic's log format, masked
   replay <log>           Replay a station's log against a CSMS and compare
                          its answers with the log's
+  calibrate <log>...     Derive a persona from logs of stations of one model
   load <plan>            Run a load plan and judge its thresholds
 
 Options for serve:
@@ -181,6 +196,13 @@ Options for replay:
   --compare <mode>       status (default), strict or none
   --write <file>         Write the scenario, frames inline, instead of running
 
+Options for calibrate:
+  --station <id>         Only this station; repeat for more
+  --name <id>            The persona's id (default: <model>-calibrated)
+  --extends <id>         The persona it extends (default generic-1.6)
+  -o, --out <file>       Write the persona there (default: standard output)
+  --report <file>        Write what was derived, with samples, as Markdown
+
 Options for serve, run, load and replay:
   --personas <dir>       Extra persona directory; repeat for more
   --allow-csms <prefix>  Also allow CSMS URLs starting with <prefix>; repeat
@@ -227,7 +249,10 @@ const OPTIONS = {
   'client-certificates': { type: 'string' },
   status: { type: 'string' },
   'log-dir': { type: 'string' },
-  station: { type: 'string' },
+  station: { type: 'string', multiple: true },
+  name: { type: 'string' },
+  extends: { type: 'string' },
+  report: { type: 'string' },
   persona: { type: 'string' },
   speed: { type: 'string' },
   'max-gap': { type: 'string' },
@@ -277,6 +302,7 @@ const COMMANDS = {
     'status',
   ],
   import: ['map', 'mask', 'no-mask', 'salt', 'salt-file', 'out'],
+  calibrate: ['station', 'name', 'extends', 'out', 'report'],
   replay: [
     'station',
     'csms',
@@ -340,6 +366,7 @@ export function parseCommand(argv: readonly string[]): Command {
     if (command === 'run') return parseRun(rest, values);
     if (command === 'import') return parseImport(rest, values);
     if (command === 'replay') return parseReplay(rest, values);
+    if (command === 'calibrate') return parseCalibrate(rest, values);
     if (command === 'load') return parseLoad(rest, values);
     if (rest.length > 0) return error(`Unexpected argument: ${rest[0]}`);
     if (command === 'csms') return parseCsms(values);
@@ -452,9 +479,23 @@ function parseImport(files: string[], values: Values): Command {
   };
 }
 
+function parseCalibrate(logs: string[], values: Values): Command {
+  if (logs.length === 0) return error('calibrate needs a log file');
+  return {
+    kind: 'calibrate',
+    logs,
+    stations: values.station ?? [],
+    ...(values.name !== undefined && { name: values.name }),
+    ...(values.extends !== undefined && { extends: values.extends }),
+    ...(values.out !== undefined && { out: values.out }),
+    ...(values.report !== undefined && { report: values.report }),
+  };
+}
+
 function parseReplay(rest: string[], values: Values): Command {
   const [log, extra] = rest;
   if (log === undefined) return error('replay needs a log file');
+  if ((values.station?.length ?? 0) > 1) return error('replay takes one --station');
   if (extra !== undefined) return error(`Unexpected argument: ${extra}`);
   if (
     values.csms !== undefined &&
@@ -477,7 +518,7 @@ function parseReplay(rest: string[], values: Values): Command {
   return {
     kind: 'replay',
     log,
-    ...(values.station !== undefined && { station: values.station }),
+    ...(values.station?.length === 1 && { station: values.station[0] }),
     ...(values.csms !== undefined && { csms: values.csms }),
     ...(values.persona !== undefined && { persona: values.persona }),
     ...(speed !== undefined && { speed }),

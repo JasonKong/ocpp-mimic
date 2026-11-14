@@ -731,6 +731,13 @@ Every number is within the exit thresholds; the heap no longer grows. The exit r
 - `ocpp-mimic replay <log> [--station] [--csms] [--persona] [--speed] [--max-gap] [--compare] [--write <file>]` runs it (against the built-in CSMS by default) and reports like `run`, exit code 0, 1 or 2; `--write` writes the scenario with the frames inline instead, to edit and keep.
 - A BootNotification is not added when the log starts mid-session: the log is replayed as it is, and a CSMS that needs a boot first shows it in the differences.
 
+**Implemented: calibration (T53)**
+
+- `core/src/calibrate.ts` derives, from one or more stations' logs: the most common BootNotification fields (vendor, model, firmware, meter type; no serial numbers); the connector count; configuration from the latest GetConfiguration answer (known keys with values the simulator accepts, without AuthorizationKey); HeartbeatInterval and MeterValueSampleInterval as median gaps (periodic meter values inside transactions; gaps over three times the median, such as outages, are left out); the measurands sampled; `power.offeredW` as the p95 of Power.Offered, else Power.Active.Import; `timing.commandDelays` and `timing.actionDelay` from TriggerMessage, RemoteStopTransaction and ChangeAvailability to the message each asks for (the persona's delays apply there, not to the answer); `timing.startTransactionDelay` from the Authorize answer to StartTransaction; reset downtimes from a Reset to the next BootNotification; the fault catalogue; and the usage model's arrival rate (sessions per free connector-hour), stay (p10 to p90), how sessions end and the share of refused cards.
+- Every value lists its sample count and p10 to p90 spread; under 3 samples it is not derived and the report says why. EV profiles are not derived yet: logs rarely carry SoC, and the persona's EVs stay as they are.
+- `ocpp-mimic calibrate <log>... [--station <id>]... [--name <id>] [--extends <persona>] [-o <persona.yaml>] [--report <report.md>]` writes the persona (extending generic-1.6 by default) with a header saying where it came from.
+- The test records a log from a persona with distinctive values (two connectors, 2-second intervals, 11 kW, 300 ms action delay, 800 ms start delay, a fault, a usage model) through the scenario runner, and calibration gives those values back within 10 % or 150 ms; the result loads as a persona.
+
 **Where the files go**
 
 Load plans go in `scenarios/load/`, import mappings in `scenarios/import/`, sample logs in `scenarios/logs/`, and load personas in `scenarios/personas/`. The tests validate every other file under `scenarios/` as a scenario, so `scenarios/examples/` stays scenario-only.
