@@ -136,16 +136,16 @@ describe('runReplay', () => {
       csms(2, [2, 'g1', 'GetConfiguration', {}]),
       cp(2.1, [3, 'g1', { configurationKey: [] }]),
     ];
-    let deliver: ((frame: unknown[]) => void) | undefined;
+    const csmsSide: { deliver?: (frame: unknown[]) => void } = {};
     const fake = fakeWire((frame) => {
       // While the Heartbeat is answered, the CSMS sends a Reset and an unknown CALL.
       queueMicrotask(() => {
-        deliver?.([2, 'csms-1', 'Reset', { type: 'Hard' }]);
-        deliver?.([2, 'csms-2', 'ClearCache', {}]);
+        csmsSide.deliver?.([2, 'csms-1', 'Reset', { type: 'Hard' }]);
+        csmsSide.deliver?.([2, 'csms-2', 'ClearCache', {}]);
       });
       return [3, frame[1], { currentTime: 'x' }];
     });
-    deliver = fake.deliver;
+    csmsSide.deliver = fake.deliver;
     const result = await runReplay({
       wire: fake.wire,
       lines,
