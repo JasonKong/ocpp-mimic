@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createChargePoint, type ChargePointTiming } from './charge-point.js';
+import {
+  createChargePoint,
+  type ChargePointTiming,
+  type PersistedChargePoint,
+} from './charge-point.js';
 import { ManualClock } from './clock.js';
 import { sequentialIds } from './ids.js';
 import { parseFrame, type CallFrame, type Frame, type JsonObject } from './ocppj.js';
@@ -11,7 +15,12 @@ const BOOT = { chargePointVendor: 'VendorX', chargePointModel: 'AC-7' };
 /** Answers a charge point request; undefined leaves it unanswered. */
 type Responder = (payload: JsonObject) => JsonObject | undefined;
 
+/** A responder result that makes the fake CSMS answer with a CALLERROR. */
+const callError = (errorCode: string): JsonObject => ({ __callError: errorCode });
+
 interface SetupOptions {
+  restore?: PersistedChargePoint;
+  startAt?: number;
   csms?: Record<string, Responder>;
   config?: Record<string, string>;
   timing?: Partial<ChargePointTiming>;
@@ -22,7 +31,7 @@ interface SetupOptions {
  * defaults or `csms` overrides), on a manual clock starting at T0.
  */
 function setup(options: SetupOptions = {}) {
-  const clock = new ManualClock(T0);
+  const clock = new ManualClock(options.startAt ?? T0);
   const frames: Frame[] = [];
   const restarts: number[] = [];
   let nextTransactionId = 100;
@@ -54,6 +63,7 @@ function setup(options: SetupOptions = {}) {
       if (parsed.ok) frames.push(parsed.frame);
     },
     restart: (downtimeMs) => restarts.push(downtimeMs),
+    ...(options.restore !== undefined && { restore: options.restore }),
   });
 
   let answered = 0;
@@ -72,7 +82,13 @@ function setup(options: SetupOptions = {}) {
         const frame = frames[answered++];
         if (frame?.type !== 2) continue;
         const reply = responders[frame.action]?.(frame.payload);
-        if (reply !== undefined) cp.receive(JSON.stringify([3, frame.id, reply]));
+        if (reply === undefined) continue;
+        const error = reply.__callError;
+        cp.receive(
+          JSON.stringify(
+            typeof error === 'string' ? [4, frame.id, error, '', {}] : [3, frame.id, reply],
+          ),
+        );
       }
     }
     throw new Error('the charge point never settled');
@@ -579,5 +595,85 @@ describe('personas', () => {
     }
     // Both sessions start at the same clock time, so the stop times differ by 700 ms.
     expect(stopTimes.map((t) => Date.parse(t) - Date.parse(stopTimes[0] ?? ''))).toEqual([0, 700]);
+  });
+});
+
+describe('transaction message retries', () => {
+  it('retries a failed StopTransaction, waiting TransactionMessageRetryInterval × attempts', async () => {
+    let stops = 0;
+    const h = setup({
+      config: { TransactionMessageAttempts: '3', TransactionMessageRetryInterval: '10' },
+      csms: { StopTransaction: () => (++stops < 3 ? callError('InternalError') : {}) },
+    });
+    await h.boot();
+    await h.startSession();
+    h.cp.unplug(1);
+    await h.settle();
+    expect(h.calls('StopTransaction')).toHaveLength(1);
+    await h.advance(9_999);
+    expect(h.calls('StopTransaction')).toHaveLength(1);
+    await h.advance(1);
+    expect(h.calls('StopTransaction')).toHaveLength(2);
+    await h.advance(20_000);
+    expect(h.calls('StopTransaction')).toHaveLength(3);
+    expect(h.cp.snapshot().queuedMessages).toBe(0);
+  });
+
+  it('drops a message after the last attempt and moves on', async () => {
+    const h = setup({
+      config: { TransactionMessageAttempts: '2', TransactionMessageRetryInterval: '5' },
+      csms: { StopTransaction: () => callError('InternalError') },
+    });
+    await h.boot();
+    await h.startSession();
+    h.cp.unplug(1);
+    await h.settle();
+    await h.advance(60_000);
+    expect(h.calls('StopTransaction')).toHaveLength(2);
+    expect(h.cp.snapshot().queuedMessages).toBe(0);
+  });
+});
+
+describe('persistence across restarts', () => {
+  it('ends a running transaction with PowerLoss at the time of the last save', async () => {
+    const before = setup();
+    await before.boot();
+    const transactionId = await before.startSession();
+    await before.advance(1_800_000);
+    const saved = before.cp.persistentState();
+    expect(saved.transactions).toMatchObject([{ connectorId: 1, idTag: 'TAG', transactionId }]);
+
+    const after = setup({ restore: saved, startAt: saved.savedAt + 600_000 });
+    expect(after.cp.snapshot().connectors[0]?.energyWh).toBeCloseTo(saved.meters['1'] ?? NaN, 6);
+    await after.boot();
+    expect(after.lastCall('StopTransaction')?.payload).toEqual({
+      transactionId,
+      meterStop: Math.round(saved.meters['1'] ?? NaN),
+      timestamp: new Date(saved.savedAt).toISOString(),
+      reason: 'PowerLoss',
+    });
+    expect(after.cp.snapshot().connectors[0]).toMatchObject({
+      status: 'Available',
+      plugged: false,
+    });
+  });
+
+  it('keeps configuration changes and messages queued while offline', async () => {
+    const before = setup();
+    await before.boot();
+    await before.csmsCall('ChangeConfiguration', { key: 'MeterValueSampleInterval', value: '15' });
+    await before.startSession();
+    before.cp.disconnected();
+    before.cp.unplug(1);
+    await before.settle();
+    const saved = before.cp.persistentState();
+    expect(saved.outbox.map((entry) => entry.action)).toEqual(['StopTransaction']);
+
+    const after = setup({ restore: saved });
+    expect(after.cp.snapshot().config.MeterValueSampleInterval).toBe('15');
+    await after.boot();
+    expect(after.calls('StopTransaction').map((call) => call.payload.reason)).toEqual([
+      'EVDisconnected',
+    ]);
   });
 });
