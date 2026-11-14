@@ -73,6 +73,8 @@ describe('parseCommand', () => {
         '--timeout',
         '2m',
         '--bail',
+        '--junit',
+        'reports/junit.xml',
         '--personas',
         'scenarios/personas',
         '--allow-csms',
@@ -85,6 +87,7 @@ describe('parseCommand', () => {
       vars: { TAG: 'TAG-1', URL: 'http://x/?a=b' },
       timeoutMs: 120_000,
       bail: true,
+      junit: 'reports/junit.xml',
       personas: ['scenarios/personas'],
       allowCsms: ['wss://csms.example.com'],
     });

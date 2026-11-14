@@ -24,6 +24,8 @@ export interface RunCommand {
   /** Default scenario timeout in milliseconds. */
   timeoutMs?: number;
   bail: boolean;
+  /** Where to write the JUnit XML report. */
+  junit?: string;
   personas: string[];
   allowCsms: string[];
 }
@@ -54,6 +56,7 @@ Options for run:
   --var <NAME=value>     Template variable; repeat for more
   --timeout <duration>   Timeout for scenarios without their own (default 5m)
   --bail                 Stop after the first scenario that does not pass
+  --junit <file>         Also write a JUnit XML report to <file>
 
 Options for both:
   --personas <dir>       Extra persona directory; repeat for more
@@ -77,6 +80,7 @@ export function parseCommand(argv: readonly string[]): Command {
         var: { type: 'string', multiple: true, default: [] },
         timeout: { type: 'string' },
         bail: { type: 'boolean', default: false },
+        junit: { type: 'string' },
         version: { type: 'boolean', short: 'v' },
         help: { type: 'boolean', short: 'h' },
       },
@@ -97,7 +101,7 @@ export function parseCommand(argv: readonly string[]): Command {
     }
     if (name === 'run') return parseRun(rest, values);
     if (rest.length > 0) return { kind: 'error', message: `Unexpected argument: ${rest[0]}` };
-    for (const option of ['csms', 'timeout'] as const) {
+    for (const option of ['csms', 'timeout', 'junit'] as const) {
       if (values[option] !== undefined) {
         return { kind: 'error', message: `--${option} is an option of run` };
       }
@@ -130,6 +134,7 @@ function parseRun(
     var: string[];
     timeout?: string | undefined;
     bail: boolean;
+    junit?: string | undefined;
     personas: string[];
     'allow-csms': string[];
     port?: string | undefined;
@@ -179,6 +184,7 @@ function parseRun(
     vars,
     ...(timeoutMs !== undefined && { timeoutMs }),
     bail: values.bail,
+    ...(values.junit !== undefined && { junit: values.junit }),
     personas: values.personas,
     allowCsms: values['allow-csms'],
   };

@@ -1,0 +1,55 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`JUnit report > has a suite per file and a case per scenario, with failures, errors and properties 1`] = `
+"<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="ocpp-mimic" tests="3" failures="1" errors="1" skipped="0" time="4.734">
+  <testsuite name="examples/card.yaml" tests="2" failures="1" errors="0" skipped="0" time="3.734" timestamp="2026-11-14T10:00:00">
+    <testcase name="Card session" classname="examples/card.yaml" time="1.234">
+      <properties>
+        <property name="label" value="examples/card.yaml#1"/>
+        <property name="persona" value="generic-1.6"/>
+        <property name="csms" value="builtin"/>
+      </properties>
+      <system-out>PASSED   1. presentCard TAG at connector 1 (0.012s)
+PASSED   2. plugIn connector 1 (0.003s)</system-out>
+    </testcase>
+    <testcase name="Fast EV &lt;with&gt; &quot;quotes&quot; &amp; ampersands" classname="examples/card.yaml" time="2.500">
+      <properties>
+        <property name="label" value="examples/card.yaml#2"/>
+        <property name="persona" value="generic-1.6"/>
+        <property name="csms" value="builtin"/>
+        <property name="energyMultiplier" value="×60"/>
+      </properties>
+      <failure message="step 2: expect sent StartTransaction: no matching StartTransaction sent within 2s" type="step">step 2: expect sent StartTransaction: no matching StartTransaction sent within 2s
+StartTransaction at 10:00:01.000: $.payload.idTag: expected &quot;A&quot;, found &quot;B&quot;</failure>
+      <system-out>PASSED   1. plugIn connector 1 (0.005s)
+FAILED   2. expect sent StartTransaction (2.000s) - no matching StartTransaction sent within 2s
+SKIPPED  3. unplug connector 1 (0.000s)</system-out>
+    </testcase>
+  </testsuite>
+  <testsuite name="regression/slow.yaml" tests="1" failures="0" errors="1" skipped="0" time="1.000" timestamp="2026-11-14T10:00:00">
+    <testcase name="Slow" classname="regression/slow.yaml" time="1.000">
+      <properties>
+        <property name="label" value="regression/slow.yaml#1"/>
+        <property name="persona" value="generic-1.6"/>
+        <property name="csms" value="builtin"/>
+      </properties>
+      <error message="the scenario timed out after 1s" type="error">the scenario timed out after 1s</error>
+      <system-out>FAILED   1. wait 10s (1.000s) - the scenario timed out after 1s</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>
+"
+`;
+
+exports[`JUnit report > reports validation problems as errors 1`] = `
+"<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="ocpp-mimic" tests="1" failures="0" errors="1" skipped="0" time="0.000">
+  <testsuite name="validation" tests="1" failures="0" errors="1" skipped="0" time="0.000" timestamp="2026-11-14T10:00:00">
+    <testcase name="bad.yaml#1" classname="validation" time="0.000">
+      <error message="bad.yaml#1: $.steps[0].plugin: unknown step" type="invalid"/>
+    </testcase>
+  </testsuite>
+</testsuites>
+"
+`;
