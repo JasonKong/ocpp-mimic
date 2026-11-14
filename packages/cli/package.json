@@ -16,5 +16,9 @@
   "dependencies": {
     "@ocpp-mimic/core": "workspace:*",
     "@ocpp-mimic/engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2",
+    "ws": "^8.22.1"
   }
 }

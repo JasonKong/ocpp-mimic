@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { VERSION } from '@ocpp-mimic/core';
 import { createEngine, DEFAULT_ALLOWED_CSMS } from '@ocpp-mimic/engine';
 import { USAGE, parseCommand } from './command.js';
+import { startCsmsCommand } from './csms.js';
 import { runCommand } from './run.js';
 
 /** The Web UI build in this monorepo (apps/web/dist), when it has been built. */
@@ -25,6 +26,25 @@ switch (command.kind) {
   case 'run':
     process.exitCode = await runCommand(command);
     break;
+  case 'csms': {
+    let csms: Awaited<ReturnType<typeof startCsmsCommand>>;
+    try {
+      csms = await startCsmsCommand(command);
+    } catch (error) {
+      console.error(`Could not start the CSMS: ${(error as Error).message}`);
+      process.exit(1);
+    }
+    console.log(`ocpp-mimic CSMS listening on ${csms.url}/<chargeBoxId>`);
+    const shutdown = () => {
+      void csms
+        .stop()
+        .then((text) => console.log(text))
+        .finally(() => process.exit(0));
+    };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+    break;
+  }
   case 'serve': {
     const engine = createEngine({
       port: command.port,

@@ -114,11 +114,87 @@ describe('parseCommand', () => {
     expect(parseCommand(['run', 'a.yaml', '--csms', 'http://x'])).toMatchObject({ kind: 'error' });
     expect(parseCommand(['run', 'a.yaml', '--port', '1'])).toEqual({
       kind: 'error',
-      message: '--port is an option of serve',
+      message: '--port is an option of serve and csms',
+    });
+    expect(parseCommand(['serve', '--delay', '1s'])).toEqual({
+      kind: 'error',
+      message: '--delay is an option of csms',
     });
     expect(parseCommand(['serve', '--bail'])).toEqual({
       kind: 'error',
       message: '--bail is an option of run',
+    });
+  });
+
+  it('runs the built-in CSMS on port 9100 by default', () => {
+    expect(parseCommand(['csms'])).toEqual({
+      kind: 'csms',
+      port: 9100,
+      host: '127.0.0.1',
+      heartbeatInterval: 60,
+      unknownPrefix: 'UNKNOWN-',
+      statusMs: 60_000,
+    });
+  });
+
+  it('parses csms with its options', () => {
+    expect(
+      parseCommand([
+        'csms',
+        '--port',
+        '0',
+        '--host',
+        '0.0.0.0',
+        '--delay',
+        '20ms-100ms',
+        '--heartbeat-interval',
+        '300',
+        '--unknown-prefix',
+        '',
+        '--password',
+        'secret-password',
+        '--tls-cert',
+        'server.pem',
+        '--tls-key',
+        'server.key',
+        '--tls-ca',
+        'ca.pem',
+        '--client-certificates',
+        'required',
+        '--status',
+        '0',
+      ]),
+    ).toEqual({
+      kind: 'csms',
+      port: 0,
+      host: '0.0.0.0',
+      delay: { minMs: 20, maxMs: 100 },
+      heartbeatInterval: 300,
+      unknownPrefix: '',
+      password: 'secret-password',
+      tls: { cert: 'server.pem', key: 'server.key', ca: 'ca.pem', clientCertificates: 'required' },
+      statusMs: 0,
+    });
+    expect(parseCommand(['csms', '--delay', '50ms'])).toMatchObject({
+      delay: { minMs: 50, maxMs: 50 },
+    });
+  });
+
+  it('rejects bad csms options', () => {
+    for (const args of [
+      ['--delay', '100ms-20ms'],
+      ['--delay', 'soon'],
+      ['--heartbeat-interval', '1.5'],
+      ['--status', 'often'],
+      ['--client-certificates', 'maybe'],
+      ['--tls-cert', 'server.pem'],
+      ['--client-certificates', 'required'],
+    ]) {
+      expect(parseCommand(['csms', ...args]), args.join(' ')).toMatchObject({ kind: 'error' });
+    }
+    expect(parseCommand(['csms', 'extra'])).toEqual({
+      kind: 'error',
+      message: 'Unexpected argument: extra',
     });
   });
 

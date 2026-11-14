@@ -570,6 +570,12 @@ thresholds:
 - **校准。** `ocpp-mimic calibrate <log>... [--station <id>] [--extends <persona>] [-o persona.yaml] [--report report.md]` 从同一型号的一个或多个桩推导 persona：BootNotification 字段、连接器数量、最近一次 GetConfiguration 回答中的配置、HeartbeatInterval 和 MeterValueSampleInterval（间隔的中位数）、测量项、相位和位置、供电功率、`timing`（启动交易的延迟、对每种 CSMS action 的回答延迟、重启停机时间）、故障目录（errorCode、info、vendorErrorCode）、上报 SoC 时的 EV 参数，以及使用模型（到达频率、停留时长、结束方式、未知卡）。每个值都列出样本数和离散程度；样本少于 3 个的值报告为无法推导。
 - **样本日志。** 测试使用从仓库自己的 persona 和场景录下的合成日志，规模很小，放在 `scenarios/logs/`。真实日志只来自用户自己的来源，必须脱敏，且不提交。校准测试用一个参数有明显特征的 persona 录一段日志，检查校准结果能还原这些参数。
 
+**已实现：独立运行的测试 CSMS（T42）**
+
+- `ocpp-mimic csms` 在 9100 端口运行内置 CSMS（`--port`、`--host`），不保留帧，所以长时间运行内存不会增长。`--delay 50ms` 或 `--delay 20ms-100ms` 让每个回答延迟一段固定或随机的时间；`--heartbeat-interval` 设置 BootNotification 回答里的间隔（默认 60 秒）；以 `--unknown-prefix`（默认 `UNKNOWN-`，空字符串表示不启用）开头的 idTag 在 Authorize 和 StartTransaction 中回答 Invalid；`--password` 是所有桩共用的 Basic Auth 密码；`--tls-cert`、`--tls-key`、`--tls-ca` 和 `--client-certificates` 用于 wss://。
+- 每隔 `--status`（默认 60 秒，0 表示不输出）输出一行状态：连接的打开、关闭和拒绝数，请求和回答数；收到 SIGINT 或 SIGTERM 时输出按 action 统计的请求汇总。
+- 在笔记本上实测：1,000 个连接各自每秒发一次心跳（约为出口计划流量的 50 倍），占约 4% 的 CPU 核、内存 119 MB。
+
 **文件放在哪里**
 
 压测计划放 `scenarios/load/`，导入映射放 `scenarios/import/`，样本日志放 `scenarios/logs/`，压测用的 persona 放 `scenarios/personas/`。测试会把 `scenarios/` 下其余所有文件当作场景校验，所以 `scenarios/examples/` 只放场景。
