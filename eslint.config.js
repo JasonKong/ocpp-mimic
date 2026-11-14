@@ -11,6 +11,15 @@ export default defineConfig([
   tseslint.configs.recommended,
   vue.configs['flat/recommended'],
   {
+    rules: {
+      // `const { dropped: _, ...rest } = value` is how optional properties are removed.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { ignoreRestSiblings: true, argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
+    },
+  },
+  {
     files: ['**/*.vue'],
     languageOptions: { parserOptions: { parser: tseslint.parser } },
   },

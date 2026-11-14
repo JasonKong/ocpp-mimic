@@ -15,3 +15,4 @@ export {
 /** Schema builders (`s.object`, `s.string`, ...), namespaced to keep generic names out of the root. */
 export * as s from './schema.js';
 export { VERSION } from './version.js';
+export * from './device.js';
