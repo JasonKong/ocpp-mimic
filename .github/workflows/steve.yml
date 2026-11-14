@@ -1,7 +1,9 @@
 name: SteVe
 
-# Runs the charge-point-initiated regression scenarios against SteVe, an
-# independent open-source CSMS. Manual: building SteVe takes several minutes.
+# Runs scenarios against SteVe, an independent open-source CSMS: the
+# charge-point-initiated regression scenarios, and the SteVe variants of the
+# CSMS commands (scenarios/steve), which drive SteVe through its REST API.
+# Manual: building SteVe takes several minutes.
 on:
   workflow_dispatch:
 
@@ -28,14 +30,17 @@ jobs:
           done
           docker compose -f tools/steve/docker-compose.yml logs --tail 100 steve
           exit 1
-      - name: Register the regression charge points and card
+      - name: Register the scenario charge points and card
         run: |
-          ids=$(grep -o 'id: REG-CP-[A-Z]*' scenarios/regression/charge-point.yaml | sed 's/id: //' | sort -u)
+          ids=$(grep -h -o 'id: REG-[A-Z]*-[A-Z]*' scenarios/regression/charge-point.yaml scenarios/steve/*.yaml | sed 's/id: //' | sort -u)
           tools/steve/register.sh --charge-points $ids --tags TAG-REG
-      - name: Run the charge-point scenarios against SteVe
+      - name: Run the scenarios against SteVe
+        env:
+          # Matches WEBAPI_VALUE in tools/steve/docker-compose.yml (test only).
+          STEVE_API_SECRET: ocpp-mimic-test-api-secret
         run: |
           set -o pipefail
-          node packages/cli/dist/main.js run scenarios/regression/charge-point.yaml \
+          node packages/cli/dist/main.js run scenarios/regression/charge-point.yaml scenarios/steve \
             --personas scenarios/personas \
             --csms ws://localhost:8180/steve/websocket/CentralSystemService \
             --junit reports/steve.xml | tee reports-console.txt
@@ -43,7 +48,7 @@ jobs:
         if: always()
         run: |
           {
-            echo '### Charge-point scenarios against SteVe 3.14.1'
+            echo '### Scenarios against SteVe 3.14.1'
             echo '```'
             cat reports-console.txt 2>/dev/null || echo 'no output'
             echo '```'

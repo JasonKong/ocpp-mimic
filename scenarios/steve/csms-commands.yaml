@@ -1,0 +1,127 @@
+# Commands from SteVe, sent through SteVe's REST API (/steve/api/v1/operations)
+# with http steps: the SteVe counterpart of scenarios/regression/csms-commands.yaml.
+# Needs the SteVe from tools/steve (see its README): STEVE_API_SECRET in the
+# environment, and the REG-STEVE-* charge points and TAG-REG registered.
+# The SteVe workflow (.github/workflows/steve.yml) runs it.
+name: SteVe starts and stops a session remotely
+csms: ws://localhost:8180/steve/websocket/CentralSystemService
+vars: { STEVE_API: http://localhost:8180/steve/api/v1 }
+station: { id: REG-STEVE-REMOTE, persona: regression-1.6 }
+steps:
+  - plugIn: {}
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/RemoteStartTransaction'
+      basicAuth: &steve { user: admin, password: '{{env.STEVE_API_SECRET}}' }
+      json: { chargeBoxIdList: [REG-STEVE-REMOTE], connectorId: 1, idTag: TAG-REG }
+      expect:
+        json:
+          taskFinished: true
+          successResponses: [{ chargeBoxId: REG-STEVE-REMOTE, response: Accepted }]
+  - expect: { received: RemoteStartTransaction, payload: { idTag: TAG-REG, connectorId: 1 } }
+  - expect: { sent: StartTransaction, save: { tx: $.answer.transactionId } }
+  - expectConnector: { status: Charging, transactionId: '{{tx}}' }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/RemoteStopTransaction'
+      basicAuth: *steve
+      json: { chargeBoxIdList: [REG-STEVE-REMOTE], transactionId: '{{tx}}' }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect: { sent: StopTransaction, payload: { transactionId: '{{tx}}', reason: Remote } }
+---
+name: SteVe triggers messages
+csms: ws://localhost:8180/steve/websocket/CentralSystemService
+vars: { STEVE_API: http://localhost:8180/steve/api/v1 }
+station: { id: REG-STEVE-TRIGGER, persona: regression-1.6 }
+steps:
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/TriggerMessage'
+      basicAuth: &steve { user: admin, password: '{{env.STEVE_API_SECRET}}' }
+      json: { chargeBoxIdList: [REG-STEVE-TRIGGER], triggerMessage: Heartbeat }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect: { sent: Heartbeat, from: step, within: 5s }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/TriggerMessage'
+      basicAuth: *steve
+      json:
+        { chargeBoxIdList: [REG-STEVE-TRIGGER], triggerMessage: StatusNotification, connectorId: 1 }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect: { sent: StatusNotification, payload: { connectorId: 1 }, within: 5s }
+---
+name: SteVe changes and reads the configuration
+csms: ws://localhost:8180/steve/websocket/CentralSystemService
+vars: { STEVE_API: http://localhost:8180/steve/api/v1 }
+station: { id: REG-STEVE-CONFIG, persona: regression-1.6 }
+steps:
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/ChangeConfiguration'
+      basicAuth: &steve { user: admin, password: '{{env.STEVE_API_SECRET}}' }
+      json:
+        chargeBoxIdList: [REG-STEVE-CONFIG]
+        keyType: PREDEFINED
+        confKey: MeterValueSampleInterval
+        value: '15'
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect:
+      { received: ChangeConfiguration, payload: { key: MeterValueSampleInterval, value: '15' } }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/GetConfiguration'
+      basicAuth: *steve
+      json: { chargeBoxIdList: [REG-STEVE-CONFIG], confKeyList: [MeterValueSampleInterval] }
+      expect: { json: { taskFinished: true, errorResponses: [], exceptions: [] } }
+  - expect:
+      received: GetConfiguration
+      answer: { configurationKey: [{ key: MeterValueSampleInterval, value: '15' }] }
+---
+name: SteVe unlocks a connector and changes availability
+csms: ws://localhost:8180/steve/websocket/CentralSystemService
+vars: { STEVE_API: http://localhost:8180/steve/api/v1 }
+station: { id: REG-STEVE-AVAIL, persona: regression-1.6 }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expectConnector: { status: Charging }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/UnlockConnector'
+      basicAuth: &steve { user: admin, password: '{{env.STEVE_API_SECRET}}' }
+      json: { chargeBoxIdList: [REG-STEVE-AVAIL], connectorId: 1 }
+      expect: { json: { successResponses: [{ response: Unlocked }] } }
+  - expect: { sent: StopTransaction, payload: { reason: UnlockCommand } }
+  - unplug: {}
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/ChangeAvailability'
+      basicAuth: *steve
+      json: { chargeBoxIdList: [REG-STEVE-AVAIL], connectorId: 1, availType: Inoperative }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect: { sent: StatusNotification, payload: { connectorId: 1, status: Unavailable } }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/ChangeAvailability'
+      basicAuth: *steve
+      json: { chargeBoxIdList: [REG-STEVE-AVAIL], connectorId: 1, availType: Operative }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect: { sent: StatusNotification, payload: { connectorId: 1, status: Available } }
+---
+name: SteVe resets the station
+csms: ws://localhost:8180/steve/websocket/CentralSystemService
+vars: { STEVE_API: http://localhost:8180/steve/api/v1 }
+station: { id: REG-STEVE-RESET, persona: regression-1.6 }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StartTransaction }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/Reset'
+      basicAuth: &steve { user: admin, password: '{{env.STEVE_API_SECRET}}' }
+      json: { chargeBoxIdList: [REG-STEVE-RESET], resetType: Soft }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect: { sent: StopTransaction, payload: { reason: SoftReset } }
+  - expect: { sent: BootNotification, within: 15s }
+  - expectStation: { registration: Accepted }

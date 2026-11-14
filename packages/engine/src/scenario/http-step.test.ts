@@ -82,6 +82,9 @@ describe('http step', () => {
       url: "{{APP_API}}/charges/{{charge}}"
       expect: { json: { state: charging } }
   - http: { url: "{{APP_API}}/text" }
+  - http:
+      url: "{{APP_API}}/text"
+      basicAuth: { user: admin, password: "{{env.APP_TOKEN}}" }
 `),
         'http#1',
         options(api),
@@ -96,6 +99,12 @@ describe('http step', () => {
         },
         { method: 'GET', url: '/charges/c-1', body: '' },
         { method: 'GET', url: '/text', body: '' },
+        {
+          method: 'GET',
+          url: '/text',
+          auth: `Basic ${Buffer.from('admin:s3cret-token').toString('base64')}`,
+          body: '',
+        },
       ]);
     },
   );

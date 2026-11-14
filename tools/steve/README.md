@@ -29,11 +29,19 @@ docker compose -f tools/steve/docker-compose.yml down
 - SteVe only accepts registered charge points: add the chargeBoxId under **Data Management → Charge Points** first, or run `tools/steve/register.sh --charge-points CP-1 --tags TAG-1` (inserts into SteVe's database; existing entries are kept).
 - To start a charging session from SteVe, also add an OCPP tag under **Data Management → OCPP Tags** and use **Operations → OCPP v1.6 → Remote Start Transaction**.
 
+## REST API
+
+SteVe 3.14.1 offers a REST API under `http://localhost:8180/steve/api/v1`, including `POST /operations/<Action>` for every command a CSMS sends (RemoteStartTransaction, Reset, SetChargingProfile, …). It takes `chargeBoxIdList` plus the command's parameters and answers once the charge point has replied, with `successResponses`, `errorResponses` and `exceptions`.
+
+The API uses HTTP Basic with the admin user and its API password. `docker-compose.yml` sets that password to the test-only value `ocpp-mimic-test-api-secret` (`WEBAPI_VALUE`), but SteVe only applies it when it creates the admin user on the first start. A database created before this setting keeps an admin without API access; recreate it with `docker compose -f tools/steve/docker-compose.yml down -v` (this deletes SteVe's data).
+
+Scenarios call the API with `http` steps and `basicAuth: { user: admin, password: "{{env.STEVE_API_SECRET}}" }`; see `scenarios/steve/`.
+
 ## Run the regression scenarios against SteVe
 
 ```bash
-tools/steve/register.sh --charge-points REG-CP-BOOT REG-CP-CARD REG-CP-UNPLUG REG-CP-FAULT REG-CP-OUTAGE REG-CP-HALFOPEN REG-CP-LOCK REG-CP-EV --tags TAG-REG
-node packages/cli/dist/main.js run scenarios/regression/charge-point.yaml --personas scenarios/personas --csms ws://localhost:8180/steve/websocket/CentralSystemService
+tools/steve/register.sh --charge-points $(grep -h -o 'id: REG-[A-Z]*-[A-Z]*' scenarios/regression/charge-point.yaml scenarios/steve/*.yaml | sed 's/id: //' | sort -u) --tags TAG-REG
+STEVE_API_SECRET=ocpp-mimic-test-api-secret node packages/cli/dist/main.js run scenarios/regression/charge-point.yaml scenarios/steve --personas scenarios/personas --csms ws://localhost:8180/steve/websocket/CentralSystemService
 ```
 
-Only `charge-point.yaml` runs against SteVe; `csms-commands.yaml` needs the built-in CSMS to send commands.
+`regression/charge-point.yaml` needs no CSMS commands; `scenarios/steve/` sends SteVe's commands through its REST API and is the SteVe counterpart of `regression/csms-commands.yaml`, which only the built-in CSMS can run. The SteVe workflow (`.github/workflows/steve.yml`) runs both.
