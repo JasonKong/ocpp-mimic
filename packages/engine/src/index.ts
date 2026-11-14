@@ -54,3 +54,12 @@ export {
   type StepResult,
   type StepStatus,
 } from './scenario/runner.js';
+export {
+  CallErrorReply,
+  startBuiltinCsms,
+  type BuiltinCsms,
+  type BuiltinCsmsConnection,
+  type BuiltinCsmsOptions,
+  type CsmsHandler,
+  type CsmsReply,
+} from './csms/builtin-csms.js';

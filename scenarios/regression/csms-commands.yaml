@@ -1,0 +1,194 @@
+# Commands from the CSMS: the CSMS-initiated part of the M1 acceptance
+# against SteVe, run against the built-in CSMS.
+name: RemoteStartTransaction and RemoteStopTransaction
+station: { id: REG-REMOTE, persona: regression-1.6 }
+steps:
+  - plugIn: {}
+  - csmsCall:
+      action: RemoteStartTransaction
+      payload: { idTag: REMOTE-1, connectorId: 1 }
+      answer: { status: Accepted }
+  - expect:
+      sent: StartTransaction
+      payload: { connectorId: 1, idTag: REMOTE-1, meterStart: { $gte: 0 } }
+      save: { tx: $.answer.transactionId }
+  - expectConnector: { status: Charging, transactionId: '{{tx}}' }
+  - csmsCall:
+      action: RemoteStopTransaction
+      payload: { transactionId: '{{tx}}' }
+      answer: { status: Accepted }
+  - expect: { sent: StopTransaction, payload: { transactionId: '{{tx}}', reason: Remote } }
+  - expectConnector: { status: Finishing }
+  # Unknown transactions and a busy connector are rejected.
+  - csmsCall:
+      {
+        action: RemoteStopTransaction,
+        payload: { transactionId: 999 },
+        answer: { status: Rejected },
+      }
+  - unplug: {}
+  - presentCard: { idTag: TAG-1, result: authorized }
+  - plugIn: {}
+  - expectConnector: { status: Charging }
+  - csmsCall:
+      action: RemoteStartTransaction
+      payload: { idTag: REMOTE-2, connectorId: 1 }
+      answer: { status: Rejected }
+---
+name: RemoteStartTransaction refused by the station's switch
+station: { id: REG-REFUSE, persona: regression-1.6, behaviour: { refuseRemoteStart: true } }
+steps:
+  - csmsCall:
+      action: RemoteStartTransaction
+      payload: { idTag: REMOTE-1, connectorId: 1 }
+      answer: { status: Rejected }
+  - expectNo: { sent: StartTransaction, within: 1s }
+  - setBehaviour: { refuseRemoteStart: false }
+  - csmsCall:
+      action: RemoteStartTransaction
+      payload: { idTag: REMOTE-1, connectorId: 1 }
+      answer: { status: Accepted }
+---
+name: TriggerMessage
+station: { id: REG-TRIGGER, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      {
+        action: TriggerMessage,
+        payload: { requestedMessage: Heartbeat },
+        answer: { status: Accepted },
+      }
+  - expect: { sent: Heartbeat, from: step }
+  - csmsCall:
+      {
+        action: TriggerMessage,
+        payload: { requestedMessage: BootNotification },
+        answer: { status: Accepted },
+      }
+  - expect: { sent: BootNotification, from: step, answer: { status: Accepted } }
+  - csmsCall:
+      action: TriggerMessage
+      payload: { requestedMessage: StatusNotification, connectorId: 1 }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { connectorId: 1, status: Available } }
+  - csmsCall:
+      action: TriggerMessage
+      payload: { requestedMessage: MeterValues, connectorId: 1 }
+      answer: { status: Accepted }
+  - expect: { sent: MeterValues, payload: { connectorId: 1 } }
+  - csmsCall:
+      action: TriggerMessage
+      payload: { requestedMessage: DiagnosticsStatusNotification }
+      answer: { status: NotImplemented }
+---
+name: GetConfiguration and ChangeConfiguration take effect
+station: { id: REG-CONFIG, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      action: ChangeConfiguration
+      payload: { key: MeterValueSampleInterval, value: '5' }
+      answer: { status: Accepted }
+  - csmsCall:
+      action: GetConfiguration
+      payload: { key: [MeterValueSampleInterval] }
+      answer: { configurationKey: [{ key: MeterValueSampleInterval, readonly: false, value: '5' }] }
+  # An empty key list returns every key (#32).
+  - csmsCall:
+      action: GetConfiguration
+      payload: { key: [] }
+      answer: { configurationKey: { $exists: true }, unknownKey: { $exists: false } }
+  - csmsCall:
+      action: ChangeConfiguration
+      payload: { key: NumberOfConnectors, value: '4' }
+      answer: { status: Rejected }
+  - csmsCall:
+      action: ChangeConfiguration
+      payload: { key: NoSuchKey, value: '1' }
+      answer: { status: NotSupported }
+  # The new sample interval applies to the running session.
+  - presentCard: { idTag: TAG-1, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StartTransaction }
+  - expect: { sent: MeterValues, payload: { connectorId: 1 }, within: 8s }
+  - expect: { sent: MeterValues, payload: { connectorId: 1 }, within: 8s }
+---
+name: UnlockConnector ends the transaction
+station: { id: REG-UNLOCK, persona: regression-1.6, behaviour: { cableLock: true } }
+steps:
+  - presentCard: { idTag: TAG-1, result: authorized }
+  - plugIn: {}
+  - expectConnector: { status: Charging, locked: true }
+  - unplug: { expectError: locked }
+  - csmsCall: { action: UnlockConnector, payload: { connectorId: 1 }, answer: { status: Unlocked } }
+  - expect: { sent: StopTransaction, payload: { reason: UnlockCommand } }
+  - expectConnector: { locked: false }
+  - unplug: {}
+  - expectConnector: { status: Available }
+---
+name: ChangeAvailability answers first and keeps connectorId 0 separate
+station: { id: REG-AVAIL, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      action: ChangeAvailability
+      payload: { connectorId: 1, type: Inoperative }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { connectorId: 1, status: Unavailable } }
+  - expectNo: { sent: StatusNotification, payload: { connectorId: 0 }, within: 1s }
+  - expectConnector: { connector: 0, status: Available }
+  - csmsCall:
+      action: ChangeAvailability
+      payload: { connectorId: 1, type: Operative }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { connectorId: 1, status: Available } }
+  # During a transaction the change is scheduled until it ends.
+  - presentCard: { idTag: TAG-1, result: authorized }
+  - plugIn: {}
+  - expectConnector: { status: Charging }
+  - csmsCall:
+      action: ChangeAvailability
+      payload: { connectorId: 0, type: Inoperative }
+      answer: { status: Scheduled }
+  - presentCard: { idTag: TAG-1, result: stopping }
+  - expect: { sent: StopTransaction, payload: { reason: Local } }
+  - expect: { sent: StatusNotification, payload: { connectorId: 0, status: Unavailable } }
+  - expectConnector: { status: Unavailable }
+---
+name: Soft reset during a transaction, then a hard reset
+station: { id: REG-RESET, persona: regression-1.6 }
+steps:
+  - presentCard: { idTag: TAG-1, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StartTransaction }
+  - csmsCall: { action: Reset, payload: { type: Soft }, answer: { status: Accepted } }
+  - expect: { sent: StopTransaction, payload: { reason: SoftReset } }
+  - expect: { sent: BootNotification, within: 15s }
+  - expectStation: { registration: Accepted }
+  - csmsCall: { action: Reset, payload: { type: Hard }, answer: { status: Accepted } }
+  - expectStation: { transport: { $ne: open }, within: 5s }
+  - expect: { sent: BootNotification, within: 15s }
+  - expectStation: { registration: Accepted, transport: open }
+---
+name: The station follows the CSMS's answers
+station: { id: REG-REPLIES, persona: regression-1.6 }
+steps:
+  # Invalid card.
+  - csmsReply: { action: Authorize, payload: { idTagInfo: { status: Invalid } }, times: 1 }
+  - presentCard: { idTag: BAD-1, result: rejected }
+  # The CSMS blocks the card in its StartTransaction answer: the station stops (DeAuthorized).
+  - csmsReply:
+      action: StartTransaction
+      payload: { idTagInfo: { status: Blocked }, transactionId: 4242 }
+      times: 1
+  - presentCard: { idTag: TAG-1, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StopTransaction, payload: { transactionId: 4242, reason: DeAuthorized } }
+  # Registration Pending, then Accepted on the retry.
+  - stopStation: {}
+  - csmsReply:
+      action: BootNotification
+      payload: { status: Pending, currentTime: '2026-01-01T00:00:00Z', interval: 1 }
+      times: 1
+  - startStation: {}
+  - expect: { sent: BootNotification, answer: { status: Pending } }
+  - expect: { sent: BootNotification, answer: { status: Accepted }, within: 15s }
+  - expectStation: { registration: Accepted }

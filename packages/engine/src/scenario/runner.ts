@@ -24,7 +24,7 @@ import { createEngine, type Engine } from '../engine.js';
 import { resolveEv } from '../evs.js';
 import { DEFAULT_ALLOWED_CSMS, type VirtualStation } from '../fleet.js';
 import type { FrameRecord } from '../recorder.js';
-import { startMiniCsms, type MiniCsms } from '../testing/mini-csms.js';
+import { startBuiltinCsms, type BuiltinCsms } from '../csms/builtin-csms.js';
 import type { BackoffPolicy } from '../transport.js';
 
 export type StepStatus = 'passed' | 'failed' | 'skipped';
@@ -178,14 +178,14 @@ export async function runScenario(
   /** Per station: seq of the frame the last `expect` matched. */
   const cursors = new Map<string, number>();
   let engine: Engine | undefined;
-  let csms: MiniCsms | undefined;
+  let csms: BuiltinCsms | undefined;
   let aborted = false;
 
   const timeLeft = () => deadline - Date.now();
 
   try {
     // ---- Setup ----
-    if (builtin) csms = await startMiniCsms({ port: 0 });
+    if (builtin) csms = await startBuiltinCsms({ port: 0 });
     engine = createEngine({
       port: 0,
       allowedCsms: [...DEFAULT_ALLOWED_CSMS, ...(options.allowCsms ?? [])],
@@ -232,8 +232,12 @@ export async function runScenario(
       if (station === undefined) throw new StepFailure(`no station ${String(id)}`);
       return station;
     };
+    /** A connector's snapshot; connector 0 is the whole charge point (status, errorCode). */
     const connectorOf = (station: VirtualStation, connectorId: number) => {
-      const found = station.snapshot().connectors.find((c) => c.connectorId === connectorId);
+      const snapshot = station.snapshot();
+      if (connectorId === 0)
+        return { connectorId: 0, ...snapshot.station, transactionId: undefined };
+      const found = snapshot.connectors.find((c) => c.connectorId === connectorId);
       if (found === undefined) {
         throw new StepFailure(`station ${station.id} has no connector ${connectorId}`);
       }
@@ -413,7 +417,17 @@ export async function runScenario(
           save(step.save, { answer: answer.payload });
           return;
         }
-        case 'csmsReply':
+        case 'csmsReply': {
+          if (csms === undefined) throw new StepFailure('needs the built-in CSMS');
+          const reply =
+            'payload' in step.reply
+              ? { payload: step.reply.payload as JsonObject }
+              : 'error' in step.reply
+                ? { error: step.reply.error }
+                : { ignore: true as const };
+          csms.setReply(station!.id, step.action, reply, step.times);
+          return;
+        }
         case 'http':
           throw new StepFailure(`${step.kind} is not supported yet`);
       }

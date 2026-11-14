@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createFleet, isAllowedCsms, type Fleet } from './fleet.js';
 import { loadPersonas } from './personas.js';
 import { openStateStore, type StateStore } from './state-store.js';
-import { startMiniCsms, type MiniCsms } from './testing/mini-csms.js';
+import { startBuiltinCsms, type BuiltinCsms } from './csms/builtin-csms.js';
 
-let csms: MiniCsms | undefined;
+let csms: BuiltinCsms | undefined;
 const fleets: Fleet[] = [];
 const stores: StateStore[] = [];
 const dirs: string[] = [];
@@ -53,7 +53,7 @@ describe('isAllowedCsms', () => {
 
 describe('fleet', () => {
   it('runs a station from a persona against the CSMS', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     const fleet = await fleetWith();
     const station = fleet.add({ id: 'SIM-1', persona: 'generic-1.6', csmsUrl: csms.url });
     const connection = await csms.waitForConnection('SIM-1');
@@ -103,7 +103,7 @@ describe('fleet', () => {
   });
 
   it('resends StopTransaction when the network comes back', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     const fleet = await fleetWith();
     const station = fleet.add({ id: 'SIM-1', persona: 'generic-1.6', csmsUrl: csms.url });
     const first = await csms.waitForConnection('SIM-1');
@@ -125,7 +125,7 @@ describe('fleet', () => {
   });
 
   it('keeps meter readings and ends running transactions with PowerLoss across an engine restart', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     const dir = await mkdtemp(join(tmpdir(), 'ocpp-mimic-fleet-'));
     dirs.push(dir);
     const path = join(dir, 'state.db');
@@ -177,7 +177,7 @@ describe('fleet', () => {
 
 describe('fleet shutdown', () => {
   it('writes nothing to the store after shutdown, even as connections close', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     const store = openStateStore(':memory:');
     const fleet = createFleet({ personas: await loadPersonas(), store, backoff: FAST });
     const station = fleet.add({ id: 'SIM-1', persona: 'generic-1.6', csmsUrl: csms.url });
