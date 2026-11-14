@@ -50,6 +50,8 @@ export function createEngine(options: EngineOptions = {}): Engine {
   let store: StateStore | undefined;
   const events = new WebSocketServer({ noServer: true });
   const stationUpdates = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Energy changes without events while charging, so charging stations are pushed every 2 s. */
+  let liveTimer: ReturnType<typeof setInterval> | undefined;
 
   function broadcast(event: ApiEvent): void {
     const text = JSON.stringify(event);
@@ -141,6 +143,15 @@ export function createEngine(options: EngineOptions = {}): Engine {
         },
       });
       await fleet.restore();
+      const running = fleet;
+      liveTimer = setInterval(() => {
+        for (const station of running.list()) {
+          const snapshot = station.snapshot();
+          if (snapshot.connectors.some((c) => c.powerW > 0))
+            broadcast({ type: 'station', station: snapshot });
+        }
+      }, 2000);
+      liveTimer.unref();
 
       await new Promise<void>((resolve, reject) => {
         server.once('error', reject);
@@ -154,6 +165,7 @@ export function createEngine(options: EngineOptions = {}): Engine {
     },
 
     async stop() {
+      if (liveTimer !== undefined) clearInterval(liveTimer);
       for (const timer of stationUpdates.values()) clearTimeout(timer);
       stationUpdates.clear();
       for (const client of events.clients) client.terminate();
