@@ -571,24 +571,51 @@ describe('engine API', () => {
     ).toMatchObject({ type: 3, payload: { status: 'Rejected' } });
   });
 
-  it('pushes frames and station updates over the /api/events WebSocket', async () => {
+  it('pushes fleet summaries to everyone, and records and snapshots to subscribers', async () => {
     const { url, api, csmsUrl } = await start();
-    const events: ApiEvent[] = [];
-    const socket = new WebSocket(`${url.replace('http', 'ws')}/api/events`);
-    sockets.push(socket);
-    socket.on('message', (data) => events.push(JSON.parse(data.toString()) as ApiEvent));
-    await new Promise((resolve) => socket.once('open', resolve));
+    await addStation(api, csmsUrl, 'SIM-0');
+    const connect = async () => {
+      const events: ApiEvent[] = [];
+      const socket = new WebSocket(`${url.replace('http', 'ws')}/api/events`);
+      sockets.push(socket);
+      socket.on('message', (data) => events.push(JSON.parse(data.toString()) as ApiEvent));
+      await new Promise((resolve) => socket.once('open', resolve));
+      return { socket, events };
+    };
+    const watcher = await connect();
+    const other = await connect();
+    await until(() => watcher.events.length > 0);
+    expect(watcher.events[0]).toMatchObject({
+      type: 'fleet',
+      full: true,
+      removed: [],
+      stations: [{ id: 'SIM-0', state: 'connected', registration: 'Accepted' }],
+    });
+    watcher.socket.send(JSON.stringify({ type: 'subscribe', stations: ['SIM-1'] }));
+    await sleep(50);
 
-    await addStation(api, csmsUrl);
+    await addStation(api, csmsUrl, 'SIM-1');
     await until(() =>
-      events.some(
+      watcher.events.some(
         (e) =>
           e.type === 'record' && e.entry.kind === 'frame' && e.entry.action === 'BootNotification',
       ),
     );
     await until(() =>
-      events.some((e) => e.type === 'station' && e.station.registration === 'Accepted'),
+      watcher.events.some((e) => e.type === 'station' && e.station.registration === 'Accepted'),
     );
+    await until(() =>
+      other.events.some(
+        (e) =>
+          e.type === 'fleet' &&
+          e.stations.some((s) => s.id === 'SIM-1' && s.registration === 'Accepted'),
+      ),
+    );
+    // The other client never subscribed: no records, no full snapshots.
+    expect(other.events.filter((e) => e.type !== 'fleet')).toEqual([]);
+
+    await api('DELETE', '/api/stations/SIM-0');
+    await until(() => other.events.some((e) => e.type === 'fleet' && e.removed.includes('SIM-0')));
   });
 
   it('rejects bad requests', async () => {

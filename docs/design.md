@@ -710,6 +710,12 @@ Every number is within the exit thresholds; the heap no longer grows. The exit r
 - `serve --otlp-endpoint <url>` (`/v1/metrics` is added unless the URL ends with it) and `--otlp-header name=value`, or the standard variables `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_METRIC_EXPORT_INTERVAL` (default 10 s), `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`. Resource attributes: `service.name` (default `ocpp-mimic`), `service.version`, `ocpp_mimic.run` (random per engine run unless given). It pushes on the interval and once more when the engine stops; a failing collector is reported once until it works again.
 - CI sends to an OpenTelemetry Collector (otel/opentelemetry-collector 0.120.0, debug exporter) and checks that the metrics arrive.
 
+**Implemented: the Web UI at scale (T50)**
+
+- The events WebSocket sends every client the fleet as summaries when it connects (`{ type: fleet, full: true, stations, removed: [] }`), then the changed and removed stations at most once a second. A client sends `{ type: subscribe, stations: [...] }` (up to 100 ids) and gets records and full snapshots, including the 2-second push while charging, only for those. Nothing is built for the socket while no client is connected.
+- The Web UI keeps summaries for the list and subscribes to the selected station only. The list renders just the rows in view (36 px each), with a search box and filters by connection state and group; the Add form takes a count and a group and then uses the bulk API with an id counter. A fleet panel counts stations online, offline and stopped and connectors charging and faulted, by persona or group, and shows the main numbers from `/api/metrics` every 5 s.
+- Checked in a browser with 1,000 stations (900 running the usage model): 25 rows rendered, filtering applied within a millisecond, no long tasks (over 50 ms) in 10 s of updates, 13 MB of page heap; the counts matched `/api/metrics` up to the one-second batching.
+
 **Where the files go**
 
 Load plans go in `scenarios/load/`, import mappings in `scenarios/import/`, sample logs in `scenarios/logs/`, and load personas in `scenarios/personas/`. The tests validate every other file under `scenarios/` as a scenario, so `scenarios/examples/` stays scenario-only.

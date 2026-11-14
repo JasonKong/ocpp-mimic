@@ -8,8 +8,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { AddressInfo } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { VERSION, type UsageEvent } from '@ocpp-mimic/core';
-import { WebSocketServer } from 'ws';
-import { handleApi, sendJson, type ApiEvent } from './api.js';
+import { WebSocketServer, type WebSocket } from 'ws';
+import { handleApi, sendJson, stationSummary, type ApiEvent, type StationSummary } from './api.js';
 import { createFleet, type Fleet } from './fleet.js';
 import { createMetrics, type Metrics } from './metrics.js';
 import { startOtlpExporter, type OtlpExporter, type OtlpOptions } from './otlp.js';
@@ -105,35 +105,71 @@ export function createEngine(options: EngineOptions = {}): Engine {
     },
   });
   const events = new WebSocketServer({ noServer: true });
+  /** The stations each events client shows; only they get its records and full snapshots. */
+  const subscriptions = new WeakMap<WebSocket, Set<string>>();
   const stationUpdates = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Stations whose summary changed since the last fleet batch. */
+  const changed = new Set<string>();
   /** Energy changes without events while charging, so charging stations are pushed every 2 s. */
   let liveTimer: ReturnType<typeof setInterval> | undefined;
+  let fleetTimer: ReturnType<typeof setInterval> | undefined;
 
   /** Whether anyone listens on the events WebSocket; without listeners nothing is built for it. */
   const listening = () => events.clients.size > 0;
+  const open = () => [...events.clients].filter((client) => client.readyState === client.OPEN);
+  const subscribersOf = (stationId: string) =>
+    open().filter((client) => subscriptions.get(client)?.has(stationId) === true);
 
-  function broadcast(event: ApiEvent): void {
-    if (!listening()) return;
+  function sendTo(clients: readonly WebSocket[], event: ApiEvent): void {
+    if (clients.length === 0) return;
     const text = JSON.stringify(event);
-    for (const client of events.clients) if (client.readyState === client.OPEN) client.send(text);
+    for (const client of clients) client.send(text);
   }
 
   recorder.subscribe((entry) => {
-    if (listening()) broadcast({ type: 'record', entry });
+    if (listening()) sendTo(subscribersOf(entry.stationId), { type: 'record', entry });
   });
 
-  /** Coalesces bursts of changes into one station update per 100 ms. */
+  /**
+   * A station changed: its summary goes out with the next fleet batch (at
+   * most once a second), and its subscribers get a full snapshot, coalesced
+   * per 100 ms.
+   */
   function scheduleStationUpdate(stationId: string): void {
-    if (!listening() || stationUpdates.has(stationId)) return;
+    if (!listening()) return;
+    changed.add(stationId);
+    if (stationUpdates.has(stationId) || subscribersOf(stationId).length === 0) return;
     stationUpdates.set(
       stationId,
       setTimeout(() => {
         stationUpdates.delete(stationId);
         const station = fleet?.get(stationId);
-        if (station !== undefined) broadcast({ type: 'station', station: station.snapshot() });
-        else broadcast({ type: 'station-removed', stationId });
+        if (station !== undefined) {
+          sendTo(subscribersOf(stationId), { type: 'station', station: station.snapshot() });
+        }
       }, 100),
     );
+  }
+
+  /** The station ids the last fleet batch knew, to find added and removed ones. */
+  let known = new Set<string>();
+
+  function sendFleetBatch(): void {
+    const current = new Set((fleet?.list() ?? []).map((station) => station.id));
+    const removed = [...known].filter((id) => !current.has(id));
+    for (const id of current) if (!known.has(id)) changed.add(id);
+    known = current;
+    if ((changed.size === 0 && removed.length === 0) || !listening()) {
+      changed.clear();
+      return;
+    }
+    const stations: StationSummary[] = [];
+    for (const id of changed) {
+      const station = fleet?.get(id);
+      if (station !== undefined) stations.push(stationSummary(station.snapshot()));
+    }
+    changed.clear();
+    sendTo(open(), { type: 'fleet', stations, removed });
   }
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -161,11 +197,27 @@ export function createEngine(options: EngineOptions = {}): Engine {
       return;
     }
     events.handleUpgrade(req, socket, head, (ws) => {
-      for (const station of fleet?.list() ?? []) {
-        ws.send(
-          JSON.stringify({ type: 'station', station: station.snapshot() } satisfies ApiEvent),
+      // The whole fleet as summaries; full snapshots only for subscribed stations.
+      const stations = (fleet?.list() ?? []).map((station) => stationSummary(station.snapshot()));
+      sendTo([ws], { type: 'fleet', stations, removed: [], full: true });
+      ws.on('message', (data) => {
+        let message: unknown;
+        try {
+          message = JSON.parse(data.toString());
+        } catch {
+          return;
+        }
+        const { type, stations: ids } = (message ?? {}) as { type?: unknown; stations?: unknown };
+        if (type !== 'subscribe' || !Array.isArray(ids)) return;
+        const wanted = new Set(
+          ids.filter((id): id is string => typeof id === 'string').slice(0, 100),
         );
-      }
+        subscriptions.set(ws, wanted);
+        for (const id of wanted) {
+          const station = fleet?.get(id);
+          if (station !== undefined) sendTo([ws], { type: 'station', station: station.snapshot() });
+        }
+      });
     });
   });
 
@@ -231,13 +283,17 @@ export function createEngine(options: EngineOptions = {}): Engine {
       const running = fleet;
       liveTimer = setInterval(() => {
         if (!listening()) return;
-        for (const station of running.list()) {
-          const snapshot = station.snapshot();
-          if (snapshot.connectors.some((c) => c.powerW > 0))
-            broadcast({ type: 'station', station: snapshot });
+        const watched = new Set(open().flatMap((client) => [...(subscriptions.get(client) ?? [])]));
+        for (const id of watched) {
+          const snapshot = running.get(id)?.snapshot();
+          if (snapshot?.connectors.some((c) => c.powerW > 0)) {
+            sendTo(subscribersOf(id), { type: 'station', station: snapshot });
+          }
         }
       }, 2000);
       liveTimer.unref();
+      fleetTimer = setInterval(sendFleetBatch, 1000);
+      fleetTimer.unref();
 
       await new Promise<void>((resolve, reject) => {
         server.once('error', reject);
@@ -252,6 +308,7 @@ export function createEngine(options: EngineOptions = {}): Engine {
 
     async stop() {
       if (liveTimer !== undefined) clearInterval(liveTimer);
+      if (fleetTimer !== undefined) clearInterval(fleetTimer);
       for (const timer of stationUpdates.values()) clearTimeout(timer);
       stationUpdates.clear();
       for (const client of events.clients) client.terminate();
