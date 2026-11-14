@@ -8,6 +8,8 @@ export interface ServeCommand {
   host: string;
   /** SQLite file for station state; omitted = nothing persisted. */
   store?: string;
+  /** Records kept per station (default 1000). */
+  recordLimit?: number;
   /** Extra persona directories. */
   personas: string[];
   /** CSMS URL prefixes stations may connect to, on top of loopback. */
@@ -92,6 +94,8 @@ Options for serve:
   --host <host>          Interface to bind (default 127.0.0.1)
   --store <file>         SQLite file that keeps stations across restarts
                          (default: nothing is kept)
+  --record-limit <n>     Messages and log lines kept per station for the
+                         Web UI and API (default 1000; 0 keeps none)
 
 Options for run:
   --csms <url>           Run every scenario against this CSMS instead of its
@@ -157,6 +161,7 @@ const OPTIONS = {
   'client-certificates': { type: 'string' },
   status: { type: 'string' },
   'log-dir': { type: 'string' },
+  'record-limit': { type: 'string' },
   map: { type: 'string' },
   mask: { type: 'boolean' },
   'no-mask': { type: 'boolean' },
@@ -171,7 +176,7 @@ type OptionName = keyof typeof OPTIONS;
 type Values = ReturnType<typeof parseArgs<{ options: typeof OPTIONS }>>['values'];
 
 const COMMANDS = {
-  serve: ['port', 'host', 'store', 'personas', 'allow-csms'],
+  serve: ['port', 'host', 'store', 'record-limit', 'personas', 'allow-csms'],
   run: ['csms', 'var', 'timeout', 'bail', 'junit', 'log-dir', 'personas', 'allow-csms'],
   csms: [
     'port',
@@ -228,11 +233,16 @@ export function parseCommand(argv: readonly string[]): Command {
 
     const port = parsePort(values.port, DEFAULT_PORT);
     if (port === undefined) return error(`Invalid port: ${values.port}`);
+    const recordLimit = values['record-limit'] === undefined ? undefined : Number(values['record-limit']);
+    if (recordLimit !== undefined && !(Number.isInteger(recordLimit) && recordLimit >= 0)) {
+      return error(`--record-limit needs a whole number, got ${values['record-limit']}`);
+    }
     return {
       kind: 'serve',
       port,
       host: values.host ?? '127.0.0.1',
       ...(values.store !== undefined && { store: values.store }),
+      ...(recordLimit !== undefined && { recordLimit }),
       personas: values.personas ?? [],
       allowCsms: values['allow-csms'] ?? [],
     };

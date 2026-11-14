@@ -35,6 +35,8 @@ export interface EngineOptions {
   /** Directory with the built Web UI, served at /. */
   webRoot?: string;
   backoff?: Partial<BackoffPolicy>;
+  /** Records the Event Recorder keeps per station (default 1000; 0 keeps none). */
+  recordLimit?: number;
 }
 
 export interface Engine {
@@ -67,6 +69,7 @@ export function createEngine(options: EngineOptions = {}): Engine {
   const oca = loadOcaSchemas();
   const recorder = createRecorder({
     check: (action, kind, payload) => oca.check(action, kind, payload),
+    ...(options.recordLimit !== undefined && { limit: options.recordLimit }),
   });
   let fleet: Fleet | undefined;
   let personas: PersonaRegistry | undefined;
@@ -97,16 +100,22 @@ export function createEngine(options: EngineOptions = {}): Engine {
   /** Energy changes without events while charging, so charging stations are pushed every 2 s. */
   let liveTimer: ReturnType<typeof setInterval> | undefined;
 
+  /** Whether anyone listens on the events WebSocket; without listeners nothing is built for it. */
+  const listening = () => events.clients.size > 0;
+
   function broadcast(event: ApiEvent): void {
+    if (!listening()) return;
     const text = JSON.stringify(event);
     for (const client of events.clients) if (client.readyState === client.OPEN) client.send(text);
   }
 
-  recorder.subscribe((entry) => broadcast({ type: 'record', entry }));
+  recorder.subscribe((entry) => {
+    if (listening()) broadcast({ type: 'record', entry });
+  });
 
   /** Coalesces bursts of changes into one station update per 100 ms. */
   function scheduleStationUpdate(stationId: string): void {
-    if (stationUpdates.has(stationId)) return;
+    if (!listening() || stationUpdates.has(stationId)) return;
     stationUpdates.set(
       stationId,
       setTimeout(() => {
@@ -204,6 +213,7 @@ export function createEngine(options: EngineOptions = {}): Engine {
       await fleet.restore();
       const running = fleet;
       liveTimer = setInterval(() => {
+        if (!listening()) return;
         for (const station of running.list()) {
           const snapshot = station.snapshot();
           if (snapshot.connectors.some((c) => c.powerW > 0))

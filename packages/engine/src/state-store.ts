@@ -63,6 +63,8 @@ export interface StateStore {
   deleteStations(ids: readonly string[]): void;
   loadState(id: string): PersistedChargePoint | undefined;
   saveState(id: string, state: PersistedChargePoint): void;
+  /** Saves many stations' states in one transaction. */
+  saveStates(states: Iterable<[id: string, state: PersistedChargePoint]>): void;
   close(): void;
 }
 
@@ -133,6 +135,11 @@ export function openStateStore(path: string): StateStore {
     },
     saveState: (id, state) => {
       upsertState.run(id, JSON.stringify(state), state.savedAt);
+    },
+    saveStates: (states) => {
+      transaction(() => {
+        for (const [id, state] of states) upsertState.run(id, JSON.stringify(state), state.savedAt);
+      });
     },
     close: () => db.close(),
   };
