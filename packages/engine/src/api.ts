@@ -5,10 +5,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   DEFAULT_BEHAVIOUR,
+  evProfileProblems,
   OCPP16_SUBPROTOCOL,
   VERSION,
   type ChargePointBehaviour,
+  type EvProfile,
   type Fault,
+  type PluggedEv,
 } from '@ocpp-mimic/core';
 import type { Fleet, VirtualStation } from './fleet.js';
 import type { PersonaRegistry } from './personas.js';
@@ -104,6 +107,28 @@ function behaviourChanges(body: Record<string, unknown>): Partial<ChargePointBeh
   return changes;
 }
 
+/** The EV for a plug-in: a profile name from the station's persona, or an inline profile. */
+function evOf(station: VirtualStation, value: unknown): PluggedEv | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') {
+    const profile = station.persona.definition.evs?.[value];
+    if (profile === undefined) {
+      const known = Object.keys(station.persona.definition.evs ?? {});
+      throw new HttpError(
+        400,
+        `persona ${station.persona.id} has no EV "${value}"${known.length > 0 ? ` (known: ${known.join(', ')})` : ''}`,
+      );
+    }
+    return { name: value, profile: profile as EvProfile };
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new HttpError(400, '"ev" must be an EV profile name or an EV profile');
+  }
+  const problems = evProfileProblems(value as EvProfile);
+  if (problems.length > 0) throw new HttpError(400, `invalid EV profile: ${problems.join('; ')}`);
+  return { profile: value as EvProfile };
+}
+
 /** Runs `fn` on a connector, then answers with the station's snapshot. */
 function connectorAction(
   fn: (station: VirtualStation, connectorId: number, body: Record<string, unknown>) => unknown,
@@ -130,6 +155,7 @@ const routes: Route[] = [
       connectors: persona.definition.connectors,
       boot: persona.definition.boot,
       faults: persona.definition.faults ?? [],
+      evs: persona.definition.evs ?? {},
       warnings: persona.warnings,
     })),
     errors: personas.errors,
@@ -222,7 +248,7 @@ const routes: Route[] = [
   route(
     'POST',
     '/api/stations/:param/connectors/:param/plug',
-    connectorAction((s, c) => s.chargePoint.plugIn(c)),
+    connectorAction((s, c, body) => s.chargePoint.plugIn(c, evOf(s, body.ev))),
   ),
   route(
     'POST',

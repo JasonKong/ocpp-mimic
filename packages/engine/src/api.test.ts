@@ -188,6 +188,44 @@ describe('engine API', () => {
     await csms!.waitForConnection('SIM-1', 3000, connection);
   });
 
+  it('plugs in with an EV from the persona or an inline profile', async () => {
+    const { api, csmsUrl } = await start();
+    await addStation(api, csmsUrl);
+    const personas = await api('GET', '/api/personas');
+    expect(Object.keys(personas.body?.personas[0].evs)).toEqual([
+      'compact-40kwh',
+      'sedan-75kwh',
+      'test-5kwh',
+    ]);
+
+    expect(
+      (await api('POST', '/api/stations/SIM-1/connectors/1/plug', { ev: 'nope' })).status,
+    ).toBe(400);
+    expect(
+      (await api('POST', '/api/stations/SIM-1/connectors/1/plug', { ev: { capacityKWh: 0 } }))
+        .status,
+    ).toBe(400);
+    const named = await api('POST', '/api/stations/SIM-1/connectors/1/plug', {
+      ev: 'compact-40kwh',
+    });
+    expect(named.body?.connectors[0].ev).toMatchObject({ name: 'compact-40kwh', soc: 20 });
+    await api('POST', '/api/stations/SIM-1/connectors/1/unplug');
+
+    // A 5 Wh battery is full within a few seconds of real time.
+    const tiny = { capacityKWh: 0.005, initialSoc: 0, maxPowerW: 7400, phases: 1 };
+    await api('POST', '/api/stations/SIM-1/connectors/1/id-tag', { idTag: 'TAG' });
+    await api('POST', '/api/stations/SIM-1/connectors/1/plug', { ev: tiny });
+    await until(
+      async () =>
+        (await api('GET', '/api/stations/SIM-1')).body?.connectors[0].status === 'SuspendedEV',
+      8000,
+    );
+    expect((await api('GET', '/api/stations/SIM-1')).body?.connectors[0]).toMatchObject({
+      powerW: 0,
+      ev: { soc: 100 },
+    });
+  });
+
   it('flags frames that break the official OCA schema', async () => {
     const { api, csmsUrl } = await start();
     await addStation(api, csmsUrl);

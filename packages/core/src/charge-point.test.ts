@@ -668,6 +668,98 @@ describe('transaction message retries', () => {
   });
 });
 
+describe('EV model', () => {
+  const SMALL = { capacityKWh: 10, initialSoc: 20, maxPowerW: 7400, phases: 1 as const };
+  const HOUR = 3_600_000;
+  /** Boots without heartbeats (they would time out during long advances), card in, cable in with the EV. */
+  async function charging(config: Record<string, string> = {}) {
+    const h = setup({
+      config,
+      csms: {
+        BootNotification: () => ({
+          status: 'Accepted',
+          currentTime: new Date().toISOString(),
+          interval: 0,
+        }),
+      },
+    });
+    await h.boot();
+    const card = h.cp.presentIdTag(1, 'TAG');
+    await h.settle();
+    expect(await card).toBe('authorized');
+    h.cp.plugIn(1, { name: 'small', profile: SMALL });
+    await h.advance(500);
+    const connector = () => h.cp.snapshot().connectors[0];
+    expect(connector()).toMatchObject({ status: 'Charging', powerW: 7360, ev: { name: 'small' } });
+    /** Advances in one-minute steps so the fake CSMS answers before calls time out. */
+    const run = async (ms: number) => {
+      for (let left = ms; left > 0; left -= 60_000) await h.advance(Math.min(60_000, left));
+    };
+    return { h, connector, run };
+  }
+
+  it('follows the charging curve and reports SoC in meter values', async () => {
+    const { h, connector, run } = await charging({
+      MeterValueSampleInterval: '600',
+      MeterValuesSampledData: 'Energy.Active.Import.Register,Power.Active.Import,SoC',
+    });
+    // 20 % → 80 % takes 6 kWh at 7360 W; power flows once StartTransaction is answered.
+    await run((6000 / 7360) * HOUR);
+    expect(connector()?.ev?.soc).toBeCloseTo(80, 2);
+    expect(connector()?.energyWh).toBeCloseTo(6000, 1);
+    // Above the taper point the power falls.
+    await run(600_000);
+    expect(connector()?.powerW).toBeLessThan(7360);
+    const samples = h.calls('MeterValues').map((call) => call.payload.meterValue);
+    expect(samples.length).toBeGreaterThan(4);
+    const last = JSON.stringify(samples.at(-1));
+    expect(last).toContain('"measurand":"SoC"');
+    expect(last).toContain('"unit":"Percent"');
+  });
+
+  it('moves to SuspendedEV with 0 W when the battery is full, and a full EV does not resume', async () => {
+    const { h, connector, run } = await charging();
+    const mark = h.frames.length;
+    // Full after about 1 h 30 min 24 s (see ev.test.ts).
+    await run(1.6 * HOUR);
+    expect(connector()).toMatchObject({ status: 'SuspendedEV', powerW: 0, ev: { soc: 100 } });
+    expect(connector()?.energyWh).toBeCloseTo(8000, 1);
+    expect(h.statuses(mark)).toContain('1:SuspendedEV');
+    h.cp.evResume(1);
+    expect(connector()?.status).toBe('SuspendedEV');
+
+    // Stopping reports the energy that went into the battery; unplugging takes the EV away.
+    const stop = h.cp.presentIdTag(1, 'TAG');
+    await h.settle();
+    expect(await stop).toBe('stopping');
+    expect(h.lastCall('StopTransaction')?.payload.meterStop).toBe(8000);
+    h.cp.unplug(1);
+    expect(connector()?.ev).toBeUndefined();
+  });
+
+  it('stops counting energy while the EV pauses', async () => {
+    const { h, connector } = await charging();
+    await h.advance(60_000);
+    h.cp.evSuspend(1);
+    const paused = connector()?.energyWh ?? NaN;
+    const soc = connector()?.ev?.soc ?? NaN;
+    await h.advance(600_000);
+    expect(connector()).toMatchObject({ status: 'SuspendedEV', powerW: 0 });
+    expect(connector()?.energyWh).toBe(paused);
+    expect(connector()?.ev?.soc).toBe(soc);
+    h.cp.evResume(1);
+    expect(connector()).toMatchObject({ status: 'Charging', powerW: 7360 });
+  });
+
+  it('refuses an unusable EV profile and leaves the connector alone', async () => {
+    const h = setup();
+    await h.boot();
+    expect(() => h.cp.plugIn(1, { profile: { ...SMALL, capacityKWh: 0 } })).toThrow(RangeError);
+    expect(h.cp.snapshot().connectors[0]).toMatchObject({ plugged: false });
+    expect(h.cp.snapshot().connectors[0]?.ev).toBeUndefined();
+  });
+});
+
 describe('test switches', () => {
   it('refuses remote starts while the switch is on', async () => {
     const h = setup({ behaviour: { refuseRemoteStart: true } });

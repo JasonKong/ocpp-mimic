@@ -14,6 +14,7 @@ import {
   type DelayedCommand,
 } from './charge-point.js';
 import { createConfig } from './config.js';
+import { evProfileProblems, type EvProfile } from './ev.js';
 import { ChargePointErrorCodeSchema, OCPP16_MESSAGES } from './ocpp16-messages.js';
 import {
   array,
@@ -99,6 +100,12 @@ export const PersonaSchema = object(
         resetDowntime: object({}, { soft: durationSchema, hard: durationSchema }),
         bootRetry: durationSchema,
       },
+    ),
+    evs: record(
+      object(
+        { capacityKWh: number(), initialSoc: number(), maxPowerW: number(), phases: integer() },
+        { taperSoc: number(), targetSoc: number() },
+      ),
     ),
     faults: array(
       object(
@@ -266,6 +273,13 @@ export function resolvePersonas(sources: readonly PersonaSource[]): ResolvePerso
       continue;
     }
     const definition = validated.value;
+    const evProblems = Object.entries(definition.evs ?? {}).flatMap(([name, ev]) =>
+      evProfileProblems(ev as EvProfile).map((problem) => `${source}: $.evs.${name}: ${problem}`),
+    );
+    if (evProblems.length > 0) {
+      errors.push(...evProblems);
+      continue;
+    }
     let options: PersonaChargePointOptions;
     try {
       options = personaToOptions(definition);
