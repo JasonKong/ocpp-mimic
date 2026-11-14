@@ -849,7 +849,7 @@ export function variableProblems(scenario: Scenario, provided: readonly string[]
   scenario.steps.forEach((step, index) => {
     const { kind: _kind, name: _name, ...args } = step;
     for (const ref of templateRefs(args).refs) {
-      if (!ref.env && !known.has(ref.name)) {
+      if (!ref.env && ref.offsetMs === undefined && !known.has(ref.name)) {
         problems.push(`$.steps[${index}].${step.kind}: unknown variable ${ref.name}`);
       }
     }

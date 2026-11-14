@@ -39,6 +39,25 @@ describe('templates', () => {
     );
   });
 
+  it('gives the current time, shifted by a duration, for now', () => {
+    const at = { ...context, now: () => Date.parse('2026-11-14T10:00:00Z') };
+    expect(
+      renderTemplates(
+        { a: '{{now}}', b: '{{now+90s}}', c: '{{ now - 1h }}', d: 'until {{now+1m}}' },
+        at,
+      ).value,
+    ).toEqual({
+      a: '2026-11-14T10:00:00.000Z',
+      b: '2026-11-14T10:01:30.000Z',
+      c: '2026-11-14T09:00:00.000Z',
+      d: 'until 2026-11-14T10:01:00.000Z',
+    });
+    expect(templateRefs('{{now+5s}} {{now+soon}}')).toEqual({
+      refs: [{ name: 'now', env: false, offsetMs: 5000 }],
+      invalid: ['{{now+soon}}'],
+    });
+  });
+
   it('lists references and malformed templates', () => {
     expect(templateRefs({ a: '{{A}} {{env.B}}', b: ['{{env}}', '{{1x}}', '{{ C }}'] })).toEqual({
       refs: [
