@@ -1,3 +1,17 @@
 export * from './clock.js';
+export * from './ids.js';
 export * from './ocpp16.js';
+export * from './ocpp16-messages.js';
+export * from './ocppj.js';
+export {
+  validate,
+  type Infer,
+  type ObjectOf,
+  type Schema,
+  type ValidationErrorCode,
+  type ValidationIssue,
+  type ValidationResult,
+} from './schema.js';
+/** Schema builders (`s.object`, `s.string`, ...), namespaced to keep generic names out of the root. */
+export * as s from './schema.js';
 export { VERSION } from './version.js';
