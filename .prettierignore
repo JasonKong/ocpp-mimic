@@ -1,0 +1,6 @@
+dist/
+coverage/
+pnpm-lock.yaml
+*.tsbuildinfo
+# exported from the design doc; keep it byte-for-byte as exported
+docs/

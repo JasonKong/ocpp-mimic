@@ -1,0 +1,22 @@
+{
+  "name": "@ocpp-mimic/engine",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Runtime that hosts the virtual charge points and serves the HTTP / WebSocket API.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@ocpp-mimic/core": "workspace:*"
+  }
+}

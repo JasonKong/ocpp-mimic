@@ -1,0 +1,33 @@
+{
+  "name": "ocpp-mimic",
+  "private": true,
+  "type": "module",
+  "description": "OCPP charge point simulator: a headless engine running many virtual charge points against a CSMS.",
+  "packageManager": "pnpm@12.18.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -b && pnpm --filter @ocpp-mimic/web build",
+    "typecheck": "tsc -b && tsc -p tsconfig.test.json && pnpm --filter @ocpp-mimic/web typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "serve": "tsc -b && node packages/cli/dist/main.js serve",
+    "dev:web": "pnpm --filter @ocpp-mimic/web dev"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.19.2",
+    "eslint": "^10.14.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-vue": "^10.12.0",
+    "globals": "^17.14.0",
+    "prettier": "^3.9.10",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.1.0"
+  }
+}

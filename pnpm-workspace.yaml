@@ -1,0 +1,7 @@
+packages:
+  - packages/*
+  - apps/*
+
+# Only install package versions that have been public for at least 7 days,
+# so a freshly published (possibly compromised) release is never picked up.
+minimumReleaseAge: 10080
