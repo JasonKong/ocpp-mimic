@@ -338,6 +338,111 @@ A remote engine over the HTTP API is not needed in M2: the CLI embeds its own en
 - JUnit: one `testsuite` per file and one `testcase` per scenario (classname = the file), `failure` or `error` with the failing step, durations, and `properties` such as persona, CSMS and energy multiplier.
 - Exit code 0 when every scenario passed, 1 when any failed or errored, 2 for usage errors and files that do not validate.
 
+## M3 feature coverage
+
+Decided for M3 (#65). M3 adds the remaining OCPP 1.6 feature profiles, the Security Whitepaper and fault injection. Its exit criterion is that every 1.6 feature has scenarios that pass against SteVe.
+
+**Feature profiles**
+
+- A persona's `features` decides which profiles a station advertises in `SupportedFeatureProfiles`. A message of a profile the station does not advertise is answered with CALLERROR NotSupported, so a persona can drop a profile to test how a CSMS copes. `generic-1.6` advertises every profile once it is implemented.
+- Each feature task adds its profile's messages to core's definitions; the cross-check against OCA's schemas then covers them automatically.
+- Configuration keys per profile, with the specification's names (defaults shown; personas can override them):
+
+| Profile | Keys |
+| --- | --- |
+| Local Auth List Management | `LocalAuthListEnabled` (true), `LocalAuthListMaxLength` (100, read-only), `SendLocalListMaxLength` (100, read-only) |
+| Reservation | `ReserveConnectorZeroSupported` (true, read-only) |
+| Smart Charging | `ChargeProfileMaxStackLevel` (10), `ChargingScheduleAllowedChargingRateUnit` (Current,Power), `ChargingScheduleMaxPeriods` (24), `MaxChargingProfilesInstalled` (20), `ConnectorSwitch3to1PhaseSupported` (false); all read-only |
+| Firmware Management | `SupportedFileTransferProtocols` (HTTP,HTTPS,FTP, read-only) |
+| Security (whitepaper) | `SecurityProfile` (0), `AuthorizationKey` (write-only), `CpoName`, `CertificateStoreMaxLength`, `CertificateSignedMaxChainSize`, `AdditionalRootCertificateCheck` |
+
+**Local Auth List and Reservation**
+
+- The local list sits next to the authorization cache: with `LocalAuthListEnabled` a card on the list is decided locally (online with `LocalPreAuthorize`, offline with `LocalAuthorizeOffline`), as the specification describes. The list and its version are kept across engine restarts.
+- A reservation is part of the device model: the connector reports Reserved, only the reserved idTag or its parentIdTag can start, the reservation ends at `expiryDate` or when its transaction starts, and StartTransaction carries the `reservationId`. connectorId 0 reserves any free connector when `ReserveConnectorZeroSupported` is true.
+
+**Smart Charging**
+
+- A pure model in core (`charging-profile.ts`) holds the installed profiles per connector (connectorId 0 for the whole station) and answers two questions: the limit in force at a moment, and the composite schedule over a duration.
+- Stacking: the highest `stackLevel` valid at the moment wins within a purpose; a TxProfile (only during a transaction) overrides the TxDefaultProfile; a ChargePointMaxProfile on connectorId 0 caps the station, shared equally between the connectors that are charging.
+- Absolute, Recurring (Daily / Weekly, from `startSchedule`) and Relative (from the transaction start) schedules; `validFrom` / `validTo`; limits in A or W, converted with the connector's voltage and `numberPhases` (default 3).
+- The power delivered is min(charge point rating, EV acceptance, limit in force). A timer fires at the next period boundary, so power, MeterValues and SoC follow the schedule. Profiles are kept across engine restarts.
+
+**Firmware and diagnostics**
+
+- By default nothing is transferred: the station walks through the statuses with timings from the persona (`firmware: { downloadTime, installTime, uploadTime }`) and outcomes from the persona or from fault injection (DownloadFailed, InstallationFailed, UploadFailed).
+- UpdateFirmware waits for `retrieveDate`, sends Downloading → Downloaded → Installing → Installed, then reboots. The new `firmwareVersion` in BootNotification is the version in the location's file name (`fw-2.5.1.bin` → 2.5.1), otherwise the old version with `-updated`; it is kept across restarts.
+- GetDiagnostics answers with a `fileName` and sends Uploading → Uploaded. With `firmware: { transfer: real }` in the persona, an HTTP(S) location really receives the diagnostics file (the station's recent message log) by PUT, and UpdateFirmware really downloads an HTTP(S) location. FTP is never really transferred.
+- TriggerMessage can request both status notifications.
+
+**Fault injection**
+
+- An engine Fault Injector per station, sitting in the transport and RPC layers. API: `POST /api/stations/:id/injections` with `{ type, ...parameters, for? }`, `DELETE` to clear. Scenario steps: `inject: { type, ..., for }` and `clearInjections: {}`.
+
+| Layer | Types |
+| --- | --- |
+| Network | `latency` (ms, each direction), `drop` (frames in a direction, a count or a probability), `flap` (down / up times, repeats), `reconnectStorm` (every station at once; fleet-wide) |
+| Protocol | `malformedJson` (next N frames sent), `duplicateId`, `unknownId` (answers with a uniqueId the CSMS never sent), `outOfOrder` (swaps the next two CALLs), `noAnswer` (ignores CSMS CALLs of an action), `callError` (answers them with a CALLERROR code), `schemaViolation` (an extra property in the next CALL of an action) |
+| Device | `meterRollback` (Wh), `meterReset`, `clockDrift` (ms added to every timestamp), `badTimestamp` (next N timestamps malformed) |
+| Power | `powerLoss` (`for`: off, then restart from the saved state: transactions end with PowerLoss, queued messages keep their timestamps), repeated with `times` |
+
+- Injected frames are recorded with the injection's type, shown in the Web UI's message log and excluded from the OCA schema check, since they are wrong on purpose.
+
+**Security (OCPP 1.6 Security Whitepaper)**
+
+- Stations take `security: { profile, ca?, cert?, key? }` (PEM file paths). Profile 1: Basic Auth over ws or wss with `AuthorizationKey` as the password (the station's `password`). Profile 2: wss with the server certificate checked against `ca`, plus Basic Auth. Profile 3: wss with the client certificate `cert` / `key`, no Basic Auth.
+- ChangeConfiguration of `AuthorizationKey` reconnects with the new key. `SecurityProfile` can only go up; the station reconnects with the new profile and falls back to the previous one when that fails, as the whitepaper requires.
+- The built-in CSMS can serve TLS, require client certificates and check Basic Auth passwords (`csmsOptions` in a scenario). Tests use a fixed test PKI committed under `packages/engine/test-pki/` (CA, server and client certificates valid for 20 years, test only) with a script that regenerates it with openssl.
+- All whitepaper messages are in M3: certificate management (SignCertificate / CertificateSigned, InstallCertificate, GetInstalledCertificateIds, DeleteCertificate), SecurityEventNotification, ExtendedTriggerMessage, GetLog / LogStatusNotification and SignedUpdateFirmware / SignedFirmwareStatusNotification. CSRs need X.509 support that Node lacks, so the engine may add a library for it (core stays dependency-free). OCA's whitepaper download is checked for JSON schemas, which would ship unchanged as in #50.
+
+**SteVe**
+
+- Scenarios make SteVe send commands through its REST API (`POST /steve/api/v1/operations/<Action>`, HTTP Basic with the admin user's API password) using `http` steps (#63). `scenarios/steve/` holds these SteVe variants and the SteVe workflow runs them.
+- Data SteVe needs before a command (charging profiles to reference by id, OCPP tags for the local list and reservations) is created through its API or `tools/steve/register.sh`.
+
+**Scenarios**
+
+Each feature task adds regression scenarios for the built-in CSMS (`scenarios/regression/`) and, where SteVe can send the command, a SteVe variant (`scenarios/steve/`). For example, a TxProfile capping a running session:
+
+```yaml
+name: A TxProfile caps the power of a running session
+station: { id: REG-SC-TX, persona: regression-1.6 }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: { ev: compact-40kwh }
+  - expect: { sent: StartTransaction, save: { tx: $.answer.transactionId } }
+  - expectConnector: { status: Charging, powerW: { $gt: 7000 } }
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        connectorId: 1
+        csChargingProfiles:
+          chargingProfileId: 1
+          transactionId: "{{tx}}"
+          stackLevel: 0
+          chargingProfilePurpose: TxProfile
+          chargingProfileKind: Relative
+          chargingSchedule:
+            chargingRateUnit: W
+            chargingSchedulePeriod: [{ startPeriod: 0, limit: 3680 }]
+      answer: { status: Accepted }
+  - expectConnector: { powerW: 3680 }
+```
+
+And a fault injected by a scenario:
+
+```yaml
+name: The CSMS copes with a slow, lossy connection
+station: { id: REG-FI-NET, persona: regression-1.6 }
+steps:
+  - inject: { type: latency, ms: 2000, for: 30s }
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StartTransaction, within: 15s }
+  - inject: { type: drop, direction: received, count: 1 }
+  - expect: { sent: StatusNotification, payload: { status: Charging }, within: 15s }
+```
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
@@ -451,7 +556,7 @@ TriggerMessage belongs to the Remote Trigger profile. It moves into M1 because m
 - One persona; the UI and API can create stations, plug in and unplug, swipe cards, and trigger faults or outages; the message log can be filtered and shows raw payloads.
 - Test switches per station, in the UI and API and kept across restarts: refuse remote starts, and a cable lock that holds the cable while a transaction runs. A locked cable cannot be unplugged until UnlockConnector or the end of the transaction releases it.
 
-**1.6 features outside M1** (roadmap M3): Firmware Management (UpdateFirmware, GetDiagnostics and their status notifications), Local Auth List Management (SendLocalList, GetLocalListVersion), Reservation (ReserveNow, CancelReservation), Smart Charging (SetChargingProfile, ClearChargingProfile, GetCompositeSchedule), and the Security Whitepaper.
+**1.6 features outside M1** (roadmap M3, designed in "M3 feature coverage"): Firmware Management (UpdateFirmware, GetDiagnostics and their status notifications), Local Auth List Management (SendLocalList, GetLocalListVersion), Reservation (ReserveNow, CancelReservation), Smart Charging (SetChargingProfile, ClearChargingProfile, GetCompositeSchedule), and the Security Whitepaper.
 
 ## Roadmap
 
