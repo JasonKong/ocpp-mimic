@@ -138,7 +138,7 @@ The device model decides which state a charge point is in and which messages it 
 **Device model**
 
 - The hierarchy follows 2.0.1: Station → EVSE → Connector. 1.6 just maps connectorId onto EVSE / Connector, so moving to 2.0.1 needs no rewrite.
-- The connector state machine follows the 1.6 status transition table: Available, Preparing, Charging, SuspendedEV, SuspendedEVSE, Finishing, Reserved, Unavailable, Faulted. A library such as XState could be used, and its state charts can be shown to QA directly.
+- The connector state machine covers the 1.6 statuses: Available, Preparing, Charging, SuspendedEV, SuspendedEVSE, Finishing, Reserved, Unavailable, Faulted. A pure reducer derives each status from the connector's physical and logical state (cable, transaction, EV / EVSE suspension, fault, availability) instead of storing it, so only transitions the 1.6 status table allows can happen, and it emits a StatusNotification whenever a status changes. No state-machine library: core stays dependency-free.
 - Input events: plug in, unplug, lock / unlock, EV ready, EV paused, fault raised / cleared.
 - Config key store: typed and read-only aware, supports `RebootRequired`, survives restarts.
 - Authorization: Authorize, local authorization list, authorization cache, `AuthorizationRequired`.
