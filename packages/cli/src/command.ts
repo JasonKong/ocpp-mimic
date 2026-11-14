@@ -26,8 +26,23 @@ export interface RunCommand {
   bail: boolean;
   /** Where to write the JUnit XML report. */
   junit?: string;
+  /** Where to write each scenario's frames as a JSONL log. */
+  logDir?: string;
   personas: string[];
   allowCsms: string[];
+}
+
+export interface ImportCommand {
+  kind: 'import';
+  files: string[];
+  /** The mapping file; without it the input is ocpp-mimic's own log format. */
+  map?: string;
+  /** Mask: by default for mapped input, not for ocpp-mimic's own. */
+  mask?: boolean;
+  salt?: string;
+  saltFile?: string;
+  /** Output file; standard output without it. */
+  out?: string;
 }
 
 export type ClientCertificateMode = 'none' | 'optional' | 'required';
@@ -54,6 +69,7 @@ export type Command =
   | ServeCommand
   | RunCommand
   | CsmsCommand
+  | ImportCommand
   | { kind: 'version' }
   | { kind: 'help' }
   | { kind: 'error'; message: string };
@@ -69,6 +85,7 @@ Commands:
                          .yaml / .yml files)
   csms                   Run the built-in test CSMS on its own, e.g. as the
                          target of a load test
+  import <file>...       Turn logs into ocpp-mimic's log format, masked
 
 Options for serve:
   --port <number>        Port for the HTTP API (default ${DEFAULT_PORT})
@@ -83,6 +100,16 @@ Options for run:
   --timeout <duration>   Timeout for scenarios without their own (default 5m)
   --bail                 Stop after the first scenario that does not pass
   --junit <file>         Also write a JUnit XML report to <file>
+  --log-dir <dir>        Write each scenario's frames to <dir> as JSONL logs
+
+Options for import (output on standard output unless -o):
+  --map <file>           Mapping for JSONL, CSV or log lines (without it the
+                         input is ocpp-mimic's own log format)
+  --mask / --no-mask     Mask identifiers (default: on for mapped input)
+  --salt <text>          Salt for the pseudonyms (or --salt-file, or the
+                         OCPP_MIMIC_MASK_SALT variable; random otherwise)
+  --salt-file <file>     Read the salt from a file
+  -o, --out <file>       Write the log to <file>
 
 Options for serve and run:
   --personas <dir>       Extra persona directory; repeat for more
@@ -129,6 +156,13 @@ const OPTIONS = {
   'tls-ca': { type: 'string' },
   'client-certificates': { type: 'string' },
   status: { type: 'string' },
+  'log-dir': { type: 'string' },
+  map: { type: 'string' },
+  mask: { type: 'boolean' },
+  'no-mask': { type: 'boolean' },
+  salt: { type: 'string' },
+  'salt-file': { type: 'string' },
+  out: { type: 'string', short: 'o' },
   version: { type: 'boolean', short: 'v' },
   help: { type: 'boolean', short: 'h' },
 } as const;
@@ -138,7 +172,7 @@ type Values = ReturnType<typeof parseArgs<{ options: typeof OPTIONS }>>['values'
 
 const COMMANDS = {
   serve: ['port', 'host', 'store', 'personas', 'allow-csms'],
-  run: ['csms', 'var', 'timeout', 'bail', 'junit', 'personas', 'allow-csms'],
+  run: ['csms', 'var', 'timeout', 'bail', 'junit', 'log-dir', 'personas', 'allow-csms'],
   csms: [
     'port',
     'host',
@@ -152,6 +186,7 @@ const COMMANDS = {
     'client-certificates',
     'status',
   ],
+  import: ['map', 'mask', 'no-mask', 'salt', 'salt-file', 'out'],
 } as const satisfies Record<string, readonly OptionName[]>;
 
 type CommandName = keyof typeof COMMANDS;
@@ -187,6 +222,7 @@ export function parseCommand(argv: readonly string[]): Command {
       return error(`--allow-csms needs a ws:// or wss:// prefix, got ${badPrefix}`);
     }
     if (command === 'run') return parseRun(rest, values);
+    if (command === 'import') return parseImport(rest, values);
     if (rest.length > 0) return error(`Unexpected argument: ${rest[0]}`);
     if (command === 'csms') return parseCsms(values);
 
@@ -242,8 +278,27 @@ function parseRun(paths: string[], values: Values): Command {
     ...(timeoutMs !== undefined && { timeoutMs }),
     bail: values.bail ?? false,
     ...(values.junit !== undefined && { junit: values.junit }),
+    ...(values['log-dir'] !== undefined && { logDir: values['log-dir'] }),
     personas: values.personas ?? [],
     allowCsms: values['allow-csms'] ?? [],
+  };
+}
+
+function parseImport(files: string[], values: Values): Command {
+  if (files.length === 0) return error('import needs a log file');
+  if (values.mask && values['no-mask']) return error('--mask and --no-mask contradict each other');
+  if (values.salt !== undefined && values['salt-file'] !== undefined) {
+    return error('give --salt or --salt-file, not both');
+  }
+  return {
+    kind: 'import',
+    files,
+    ...(values.map !== undefined && { map: values.map }),
+    ...(values.mask === true && { mask: true }),
+    ...(values['no-mask'] === true && { mask: false }),
+    ...(values.salt !== undefined && { salt: values.salt }),
+    ...(values['salt-file'] !== undefined && { saltFile: values['salt-file'] }),
+    ...(values.out !== undefined && { out: values.out }),
   };
 }
 

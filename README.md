@@ -44,6 +44,16 @@ node packages/cli/dist/main.js csms --delay 20ms-100ms
 
 Stations connect to `ws://127.0.0.1:9100/ocpp/<chargeBoxId>`. It accepts every station and answers every request; idTags starting with `UNKNOWN-` are Invalid (`--unknown-prefix`). Options: `--port`, `--host`, `--delay` (a fixed or random answer delay), `--heartbeat-interval`, `--password` (Basic Auth for every station), `--tls-cert` / `--tls-key` / `--tls-ca` / `--client-certificates` for wss://, and `--status` for how often it prints a status line. It keeps no frames, so memory stays flat over long runs, and prints a summary of requests by action when stopped with Ctrl-C.
 
+## Logs: export and import
+
+A station's frames download as a JSONL log from the Web UI (Export JSONL) or `GET /api/stations/<id>/messages?format=jsonl`; `run --log-dir <dir>` writes one per scenario. `ocpp-mimic import` turns other logs into that format and masks identifiers:
+
+```bash
+node packages/cli/dist/main.js import csms-export.csv --map scenarios/import/csv-mapping.yaml --salt-file salt.txt -o masked.jsonl
+```
+
+A mapping (`scenarios/import/`) says where the time, station, direction and frame are in JSONL, CSV or plain log lines. Masked logs keep stable pseudonyms for the same salt; see "M4 scale" in the design for the rules.
+
 ## Benchmark
 
 `pnpm bench` runs N stations in one process, the way `ocpp-mimic serve` runs them, against `ocpp-mimic csms` in a child process, and samples the engine every 5 s: event-loop delay, CPU, memory and frames a second, plus how late heartbeats and meter values go out.

@@ -21,6 +21,7 @@ import {
   type PluggedEv,
 } from '@ocpp-mimic/core';
 import { resolveEv } from './evs.js';
+import { exportLog } from './logs/export.js';
 import type { Fleet, StationSnapshot, VirtualStation } from './fleet.js';
 import type { Metrics } from './metrics.js';
 import type { PersonaRegistry } from './personas.js';
@@ -53,6 +54,15 @@ interface Request {
 type Handler = (request: Request, context: Context) => Promise<unknown> | unknown;
 
 const NO_CONTENT = Symbol('no content');
+
+/** A body that is not JSON, offered as a download. */
+class FileResponse {
+  constructor(
+    readonly contentType: string,
+    readonly body: string,
+    readonly filename: string,
+  ) {}
+}
 
 interface Route {
   method: string;
@@ -570,6 +580,16 @@ const routes: Route[] = [
 
   route('GET', '/api/stations/:param/messages', (request, context) => {
     const station = stationOf(context, request.params[0]);
+    const format = request.query.get('format');
+    if (format === 'jsonl') {
+      return new FileResponse(
+        'application/x-ndjson; charset=utf-8',
+        exportLog(context.recorder.query(station.id, { kind: 'frame' })),
+        `${station.id}.jsonl`,
+      );
+    }
+    if (format !== null && format !== 'json')
+      throw new HttpError(400, '"format" must be json or jsonl');
     const limit = request.query.get('limit');
     const action = request.query.get('action');
     const kind = request.query.get('kind');
@@ -642,6 +662,12 @@ export async function handleApi(
     );
     if (result === NO_CONTENT) {
       res.writeHead(204).end();
+    } else if (result instanceof FileResponse) {
+      res.writeHead(found.status ?? 200, {
+        'content-type': result.contentType,
+        'content-disposition': `attachment; filename="${result.filename.replace(/["\\]/g, '_')}"`,
+      });
+      res.end(result.body);
     } else {
       sendJson(res, found.status ?? 200, result);
     }
