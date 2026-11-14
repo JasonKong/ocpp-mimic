@@ -677,6 +677,13 @@ thresholds:
 - Web UI 用摘要显示列表，只订阅选中的桩。列表只渲染可见的行（每行 36 px），带搜索框和按连接状态、分组的过滤；添加表单可以填数量和分组，数量大于 1 时用带 id 计数器的批量 API。车队面板按 persona 或分组统计在线、离线、停止的桩，以及充电中、故障的连接器，并每 5 秒显示 `/api/metrics` 的主要数字。
 - 在浏览器里用 1,000 个桩（其中 900 个运行使用模型）检查：只渲染 25 行，过滤在 1 毫秒内生效，10 秒的持续更新中没有超过 50 毫秒的长任务，页面堆 13 MB；各项计数与 `/api/metrics` 一致，差别只来自每秒一次的批量更新。
 
+**已实现：压测命令（T49）**
+
+- 压测计划在 core 里校验（`load-plan.ts`），由 engine 运行（`engine/src/load/runner.ts`），CLI 写出报告。分组默认运行使用模型（`usage: false` 时不运行）；所有分组按计划顺序共用一个 ramp-up；`selectStations` 用运行的带种子生成器选出事件作用的比例或数量，所以同一个种子会选中同样的桩。
+- 运行时测量指标没有覆盖的部分：每个桩的 BootNotification 被接受的时间；每次批量事件后的恢复时间（从事件结束算起，所以断电的黑屏时间不计入）；贯穿整个运行的事件循环延迟直方图；每 5 秒的内存（预热后——最多 10 分钟或运行时长的四分之一——的堆底线，和最后一个窗口的堆底线）；以及每个分组的充电次数与预期次数的比较（每个连接器的周期为 1 / rate 的等待、各 step 和停留时长之和）。
+- `ocpp-mimic load <plan> [--csms <url>] [--duration <d>] [--report-dir <dir>] [--junit <file>] [--port <n>] [--record-limit <n>] [--log-dir <dir>]`：`--log-dir` 把每一帧流式写入 `frames.jsonl`；recorder 默认每个桩保留 10 条记录。所有阈值都满足时退出码为 0，有阈值不满足时为 1，计划无法运行时为 2。`--port` 在运行期间提供 API、Web UI 和 `/metrics`。
+- CI 每次改动都对 `ocpp-mimic csms` 运行 `scenarios/load/smoke-100.yaml`（100 个桩、两分钟、一次重连风暴），并把报告加到 job summary。
+
 **文件放在哪里**
 
 压测计划放 `scenarios/load/`，导入映射放 `scenarios/import/`，样本日志放 `scenarios/logs/`，压测用的 persona 放 `scenarios/personas/`。测试会把 `scenarios/` 下其余所有文件当作场景校验，所以 `scenarios/examples/` 只放场景。

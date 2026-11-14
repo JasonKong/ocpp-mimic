@@ -83,6 +83,16 @@ jobs:
           fi
           if grep -q 'OTLP export' serve-otlp.log; then cat serve-otlp.log; exit 1; fi
           docker logs otel 2>&1 | grep -m 5 'Name: ocpp_mimic'
+      - name: Run the 100-station load smoke plan
+        run: |
+          node packages/cli/dist/main.js csms --port 9102 --status 0 &
+          sleep 1
+          node packages/cli/dist/main.js load scenarios/load/smoke-100.yaml \
+            --personas scenarios/personas --junit reports/load.xml --report-dir reports/load
+      - name: Add the load report to the job summary
+        if: always()
+        run: |
+          if [ -f reports/load/report.md ]; then cat reports/load/report.md >> "$GITHUB_STEP_SUMMARY"; fi
       - name: Add the results to the job summary
         if: always()
         run: |

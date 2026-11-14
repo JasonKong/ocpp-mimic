@@ -70,11 +70,32 @@ export interface CsmsCommand {
   statusMs: number;
 }
 
+export interface LoadCommand {
+  kind: 'load';
+  /** The load plan file. */
+  plan: string;
+  csms?: string;
+  durationMs?: number;
+  reportDir?: string;
+  junit?: string;
+  /** Serve the API and Web UI here while running. */
+  port?: number;
+  /** The Web UI build to serve with --port; set by main. */
+  webRoot?: string;
+  recordLimit?: number;
+  logDir?: string;
+  otlpEndpoint?: string;
+  otlpHeaders?: Record<string, string>;
+  personas: string[];
+  allowCsms: string[];
+}
+
 export type Command =
   | ServeCommand
   | RunCommand
   | CsmsCommand
   | ImportCommand
+  | LoadCommand
   | { kind: 'version' }
   | { kind: 'help' }
   | { kind: 'error'; message: string };
@@ -91,6 +112,7 @@ Commands:
   csms                   Run the built-in test CSMS on its own, e.g. as the
                          target of a load test
   import <file>...       Turn logs into ocpp-mimic's log format, masked
+  load <plan>            Run a load plan and judge its thresholds
 
 Options for serve:
   --port <number>        Port for the HTTP API (default ${DEFAULT_PORT})
@@ -121,7 +143,18 @@ Options for import (output on standard output unless -o):
   --salt-file <file>     Read the salt from a file
   -o, --out <file>       Write the log to <file>
 
-Options for serve and run:
+Options for load:
+  --csms <url>           Run against this CSMS instead of the plan's
+  --duration <d>         Run this long instead of the plan's duration
+  --report-dir <dir>     Write report.json and report.md there
+  --junit <file>         Also write a JUnit XML report (a test case per threshold)
+  --port <number>        Also serve the API, the Web UI and /metrics there
+  --record-limit <n>     Records kept per station for the Web UI (default 10)
+  --log-dir <dir>        Stream every frame to <dir>/frames.jsonl
+  --otlp-endpoint <url>, --otlp-header <k=v>
+                         Push metrics over OTLP/HTTP, as for serve
+
+Options for serve, run and load:
   --personas <dir>       Extra persona directory; repeat for more
   --allow-csms <prefix>  Also allow CSMS URLs starting with <prefix>; repeat
                          for more (default: ${DEFAULT_ALLOWED_CSMS.slice(0, 2).join(', ')}, ...)
@@ -176,6 +209,8 @@ const OPTIONS = {
   salt: { type: 'string' },
   'salt-file': { type: 'string' },
   out: { type: 'string', short: 'o' },
+  duration: { type: 'string' },
+  'report-dir': { type: 'string' },
   version: { type: 'boolean', short: 'v' },
   help: { type: 'boolean', short: 'h' },
 } as const;
@@ -209,6 +244,19 @@ const COMMANDS = {
     'status',
   ],
   import: ['map', 'mask', 'no-mask', 'salt', 'salt-file', 'out'],
+  load: [
+    'csms',
+    'duration',
+    'report-dir',
+    'junit',
+    'port',
+    'record-limit',
+    'log-dir',
+    'otlp-endpoint',
+    'otlp-header',
+    'personas',
+    'allow-csms',
+  ],
 } as const satisfies Record<string, readonly OptionName[]>;
 
 type CommandName = keyof typeof COMMANDS;
@@ -236,7 +284,9 @@ export function parseCommand(argv: readonly string[]): Command {
       const owners = Object.entries(COMMANDS)
         .filter(([, options]) => (options as readonly string[]).includes(option))
         .map(([owner]) => owner);
-      return error(`--${option} is an option of ${owners.join(' and ')}`);
+      const list =
+        owners.length > 1 ? `${owners.slice(0, -1).join(', ')} and ${owners.at(-1)}` : owners[0];
+      return error(`--${option} is an option of ${list}`);
     }
 
     const badPrefix = values['allow-csms']?.find((prefix) => !/^wss?:\/\/.+/.test(prefix));
@@ -245,6 +295,7 @@ export function parseCommand(argv: readonly string[]): Command {
     }
     if (command === 'run') return parseRun(rest, values);
     if (command === 'import') return parseImport(rest, values);
+    if (command === 'load') return parseLoad(rest, values);
     if (rest.length > 0) return error(`Unexpected argument: ${rest[0]}`);
     if (command === 'csms') return parseCsms(values);
 
@@ -353,6 +404,50 @@ function parseImport(files: string[], values: Values): Command {
     ...(values.salt !== undefined && { salt: values.salt }),
     ...(values['salt-file'] !== undefined && { saltFile: values['salt-file'] }),
     ...(values.out !== undefined && { out: values.out }),
+  };
+}
+
+function parseLoad(rest: string[], values: Values): Command {
+  const [plan, extra] = rest;
+  if (plan === undefined) return error('load needs a load plan file');
+  if (extra !== undefined) return error(`Unexpected argument: ${extra}`);
+  if (
+    values.csms !== undefined &&
+    values.csms !== 'builtin' &&
+    !/^wss?:\/\/\S+$/.test(values.csms)
+  ) {
+    return error(`--csms must be builtin or a ws:// or wss:// URL, got ${values.csms}`);
+  }
+  let durationMs: number | undefined;
+  if (values.duration !== undefined) {
+    durationMs = parseDuration(values.duration);
+    if (durationMs === undefined || durationMs <= 0) {
+      return error(`--duration needs a duration such as 10m, got ${values.duration}`);
+    }
+  }
+  let port: number | undefined;
+  if (values.port !== undefined) {
+    port = parsePort(values.port, 0);
+    if (port === undefined) return error(`Invalid port: ${values.port}`);
+  }
+  const recordLimit =
+    values['record-limit'] === undefined ? undefined : Number(values['record-limit']);
+  if (recordLimit !== undefined && !(Number.isInteger(recordLimit) && recordLimit >= 0)) {
+    return error(`--record-limit needs a whole number, got ${values['record-limit']}`);
+  }
+  return {
+    kind: 'load',
+    plan,
+    ...(values.csms !== undefined && { csms: values.csms }),
+    ...(durationMs !== undefined && { durationMs }),
+    ...(values['report-dir'] !== undefined && { reportDir: values['report-dir'] }),
+    ...(values.junit !== undefined && { junit: values.junit }),
+    ...(port !== undefined && { port }),
+    ...(recordLimit !== undefined && { recordLimit }),
+    ...(values['log-dir'] !== undefined && { logDir: values['log-dir'] }),
+    ...otlpOptions(values),
+    personas: values.personas ?? [],
+    allowCsms: values['allow-csms'] ?? [],
   };
 }
 

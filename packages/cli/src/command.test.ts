@@ -129,7 +129,7 @@ describe('parseCommand', () => {
     expect(parseCommand(['run', 'a.yaml', '--csms', 'http://x'])).toMatchObject({ kind: 'error' });
     expect(parseCommand(['run', 'a.yaml', '--port', '1'])).toEqual({
       kind: 'error',
-      message: '--port is an option of serve and csms',
+      message: '--port is an option of serve, csms and load',
     });
     expect(parseCommand(['serve', '--delay', '1s'])).toEqual({
       kind: 'error',
@@ -250,6 +250,52 @@ describe('parseCommand', () => {
     expect(parseCommand(['run', 'a.yaml', '--log-dir', 'logs'])).toMatchObject({
       kind: 'run',
       logDir: 'logs',
+    });
+  });
+
+  it('parses load with its options', () => {
+    expect(parseCommand(['load', 'plan.yaml'])).toEqual({
+      kind: 'load',
+      plan: 'plan.yaml',
+      personas: [],
+      allowCsms: [],
+    });
+    expect(
+      parseCommand([
+        'load',
+        'plan.yaml',
+        '--csms',
+        'builtin',
+        '--duration',
+        '2m',
+        '--report-dir',
+        'out',
+        '--junit',
+        'out/load.xml',
+        '--port',
+        '0',
+        '--personas',
+        'scenarios/personas',
+      ]),
+    ).toEqual({
+      kind: 'load',
+      plan: 'plan.yaml',
+      csms: 'builtin',
+      durationMs: 120_000,
+      reportDir: 'out',
+      junit: 'out/load.xml',
+      port: 0,
+      personas: ['scenarios/personas'],
+      allowCsms: [],
+    });
+    expect(parseCommand(['load'])).toEqual({
+      kind: 'error',
+      message: 'load needs a load plan file',
+    });
+    expect(parseCommand(['load', 'p.yaml', '--duration', 'soon'])).toMatchObject({ kind: 'error' });
+    expect(parseCommand(['load', 'p.yaml', '--bail'])).toEqual({
+      kind: 'error',
+      message: '--bail is an option of run',
     });
   });
 

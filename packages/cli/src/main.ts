@@ -6,6 +6,7 @@ import { createEngine, DEFAULT_ALLOWED_CSMS, otlpFromEnvironment } from '@ocpp-m
 import { USAGE, parseCommand } from './command.js';
 import { startCsmsCommand } from './csms.js';
 import { runImportCommand } from './import.js';
+import { runLoadCommand } from './load.js';
 import { runCommand } from './run.js';
 
 /** The Web UI build in this monorepo (apps/web/dist), when it has been built. */
@@ -54,6 +55,16 @@ switch (command.kind) {
     break;
   case 'import':
     process.exitCode = await runImportCommand(command);
+    break;
+  case 'load':
+    process.exitCode = await runLoadCommand(
+      {
+        ...command,
+        ...(existsSync(WEB_ROOT) && { webRoot: WEB_ROOT }),
+      },
+      undefined,
+      otlpOf(command).otlp,
+    );
     break;
   case 'csms': {
     let csms: Awaited<ReturnType<typeof startCsmsCommand>>;
