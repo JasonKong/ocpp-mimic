@@ -174,3 +174,18 @@ describe('fleet', () => {
     expect(store.listStations()).toEqual([]);
   });
 });
+
+describe('fleet shutdown', () => {
+  it('writes nothing to the store after shutdown, even as connections close', async () => {
+    csms = await startMiniCsms();
+    const store = openStateStore(':memory:');
+    const fleet = createFleet({ personas: await loadPersonas(), store, backoff: FAST });
+    const station = fleet.add({ id: 'SIM-1', persona: 'generic-1.6', csmsUrl: csms.url });
+    await until(() => station.snapshot().registration === 'Accepted');
+    await fleet.shutdown();
+    store.close();
+    // A save scheduled by the disconnect would now throw "statement has been finalized".
+    await sleep(150);
+    expect(station.running).toBe(false);
+  });
+});
