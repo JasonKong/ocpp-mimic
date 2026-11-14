@@ -9,7 +9,12 @@ import type { Clock, IdGenerator, TimerHandle } from '@ocpp-mimic/core';
 /** setTimeout's largest delay (about 24.8 days); longer delays would fire at once. */
 const MAX_TIMER_MS = 2_147_483_647;
 
-export function createSystemClock(): Clock {
+export interface SystemClockOptions {
+  /** Called with how late (ms) each timer ran, for the work-lateness metric. */
+  onLate?: (ms: number) => void;
+}
+
+export function createSystemClock(options: SystemClockOptions = {}): Clock {
   const timers = new Map<TimerHandle, ReturnType<typeof setTimeout>>();
   let nextHandle = 1;
 
@@ -23,6 +28,7 @@ export function createSystemClock(): Clock {
           return;
         }
         timers.delete(handle);
+        options.onLate?.(Date.now() - dueAt);
         callback();
       },
       Math.min(delay, MAX_TIMER_MS),

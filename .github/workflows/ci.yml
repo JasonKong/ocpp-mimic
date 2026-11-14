@@ -43,6 +43,16 @@ jobs:
           set -o pipefail
           node packages/cli/dist/main.js run scenarios/regression \
             --personas scenarios/personas --junit reports/scenarios.xml | tee reports-console.txt
+      - name: Check the /metrics output with promtool
+        run: |
+          node packages/cli/dist/main.js csms --port 9100 --status 0 &
+          node packages/cli/dist/main.js serve --port 7300 &
+          for i in $(seq 1 50); do curl -sf localhost:7300/api/health > /dev/null && break; sleep 0.2; done
+          curl -sf -X POST localhost:7300/api/stations/bulk -H 'content-type: application/json' \
+            -d '{"count":3,"id":"PROM-{1}","persona":"generic-1.6","csmsUrl":"ws://127.0.0.1:9100/ocpp","group":"ci"}'
+          sleep 5
+          curl -sf localhost:7300/metrics | tee metrics.txt | head -20
+          docker run --rm -i --entrypoint promtool prom/prometheus:v3.5.0 check metrics < metrics.txt
       - name: Add the results to the job summary
         if: always()
         run: |

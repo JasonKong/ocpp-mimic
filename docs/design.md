@@ -578,13 +578,13 @@ Collected in the engine from the wire and the transport, so they work with the E
 | `ocpp_mimic_schema_violations_total` | counter | `direction`, action |
 | `ocpp_mimic_frames_total`, `ocpp_mimic_frame_bytes_total` | counter | `direction` |
 | `ocpp_mimic_connections_total` | counter | `outcome` (opened, failed) |
-| `ocpp_mimic_disconnects_total` | counter | `cause` (injected, stopped, remote, error) |
+| `ocpp_mimic_disconnects_total` | counter | `cause` (local, remote, error) |
 | `ocpp_mimic_transactions_total` | counter | `outcome` (started, stopped, refused) |
 | `ocpp_mimic_sessions_turned_away_total` | counter | persona, group |
 | `ocpp_mimic_energy_wh_total` | counter | persona, group |
 | `ocpp_mimic_offline_queue_messages` | gauge | — |
 | `ocpp_mimic_work_lateness_seconds` | histogram | — : scheduled work run time minus its due time |
-| `ocpp_mimic_eventloop_delay_seconds` | gauge | `quantile` (0.5, 0.99, max) |
+| `ocpp_mimic_eventloop_delay_seconds` | summary | `quantile` (0.5, 0.99, and 1 for the maximum), over the last 10 s |
 | `process_cpu_seconds_total`, `process_resident_memory_bytes`, `nodejs_heap_size_used_bytes` | — | — (the usual names, so existing dashboards fit) |
 
 - Histogram buckets (seconds): 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30. Internally latencies go into log-scaled buckets with about 2 % error, so reports give real p50 / p95 / p99; the Prometheus buckets are folded from them.
@@ -643,6 +643,15 @@ Bottlenecks, most important first:
 - The fleet's `addMany`, `startMany`, `stopMany` and `removeMany` back the bulk routes; a station stopped or removed before its ramp-up turn stays stopped. Definitions are saved and deleted in one SQLite transaction.
 - Snapshots carry `tags` and `group`. `GET /api/stations?view=summary` returns `{ id, persona, group?, tags, state, registration, connectors: [{ connectorId, status }] }`, where `state` is connected, connecting (also while waiting to reconnect), offline (taken offline, cleanly or half-open) or stopped.
 - Bulk actions refuse an empty selector; `{ all: true }` selects every station. The bulk routes sit at `/api/stations/bulk...`, so a station cannot be called `bulk`.
+
+**Implemented: metrics (T46)**
+
+- `engine/src/metrics.ts` gets each frame from the Event Recorder's record (parsed once, schema-checked once), transport events and RPC timeouts; the system clock reports how late each timer ran. `GET /metrics` serves the Prometheus text format on the engine's port; `GET /api/metrics` the summary as JSON (counts, CSMS latency p50 / p95 / p99 per action and overall in milliseconds, event-loop delay, process CPU and memory).
+- CSMS latency is measured between the frames as recorded: from the station's CALL leaving through the Fault Injector to the answer coming out of it, so an injected `latency` counts in.
+- Disconnects are `local` (the station dropped the connection itself: stopped, taken offline, an injection, a reset or reconnect), `remote` (the CSMS closed it) or `error` (it broke without a close frame); the exit criterion's unexpected disconnects are `remote` plus `error`. Connection attempts that never opened count as `failed`.
+- Transactions count as `started` or `refused` from the StartTransaction answer and `stopped` from the StopTransaction answer; `ocpp_mimic_energy_wh_total` adds meterStop − meterStart of finished transactions. Connector gauges use the last StatusNotification of each connector (not connector 0).
+- `ocpp_mimic_info{version}` names the version. `ocpp_mimic_sessions_turned_away_total` comes with the usage model (T48).
+- CI checks the output of a running engine with `promtool check metrics` (prom/prometheus v3.5.0).
 
 **Where the files go**
 

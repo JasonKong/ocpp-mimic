@@ -19,6 +19,7 @@ import {
 } from '@ocpp-mimic/core';
 import { resolveEv } from './evs.js';
 import type { Fleet, StationSnapshot, VirtualStation } from './fleet.js';
+import type { Metrics } from './metrics.js';
 import type { PersonaRegistry } from './personas.js';
 import type { RecordEntry, Recorder } from './recorder.js';
 import type { StationDefinition, StationSecurity } from './state-store.js';
@@ -36,6 +37,7 @@ interface Context {
   fleet: Fleet;
   personas: PersonaRegistry;
   recorder: Recorder;
+  metrics?: Metrics;
 }
 
 interface Request {
@@ -278,6 +280,11 @@ const routes: Route[] = [
     ocpp: [OCPP16_SUBPROTOCOL],
   })),
 
+  route('GET', '/api/metrics', (_request, { metrics }) => {
+    if (metrics === undefined) throw new HttpError(404, 'no metrics');
+    return metrics.summary();
+  }),
+
   route('GET', '/api/personas', (_request, { personas }) => ({
     personas: personas.list().map((persona) => ({
       id: persona.id,
@@ -362,7 +369,10 @@ const routes: Route[] = [
     const stations = select(context.fleet, await request.body());
     const ids = stations.map((station) => station.id);
     await context.fleet.removeMany(ids);
-    for (const id of ids) context.recorder.forget(id);
+    for (const id of ids) {
+      context.recorder.forget(id);
+      context.metrics?.forget(id);
+    }
     return { deleted: ids.length };
   }),
 
@@ -395,6 +405,7 @@ const routes: Route[] = [
     const station = stationOf(context, request.params[0]);
     await context.fleet.remove(station.id);
     context.recorder.forget(station.id);
+    context.metrics?.forget(station.id);
     return NO_CONTENT;
   }),
 
