@@ -74,7 +74,7 @@ station: { id: REG-CP-OUTAGE, persona: regression-1.6 }
 steps:
   - presentCard: { idTag: TAG-REG, result: authorized }
   - plugIn: {}
-  - expectConnector: { status: Charging }
+  - expectConnector: { status: Charging, transactionId: { $exists: true } }
   - offline: { mode: clean }
   - expectStation: { transport: offline }
   - unplug: {}
@@ -88,7 +88,7 @@ station: { id: REG-CP-HALFOPEN, persona: regression-1.6 }
 steps:
   - presentCard: { idTag: TAG-REG, result: authorized }
   - plugIn: {}
-  - expectConnector: { status: Charging }
+  - expectConnector: { status: Charging, transactionId: { $exists: true } }
   - offline: { mode: half-open }
   - expectStation: { transport: half-open }
   - unplug: {}

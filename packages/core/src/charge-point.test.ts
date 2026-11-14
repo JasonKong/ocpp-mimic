@@ -263,12 +263,31 @@ describe('local sessions', () => {
     expect(h.statuses(mark)).toEqual(['1:Preparing', '1:Charging', '1:Finishing', '1:Available']);
   });
 
-  it('counts energy from the moment the CSMS accepts the transaction', async () => {
+  it('counts energy from the start of the transaction, not from the CSMS answer', async () => {
     const h = setup();
     await h.boot();
+    // startSession: StartTransaction goes out 500 ms after plugging in, the answer at 1 s.
     await h.startSession();
     await h.advance(3_600_000);
-    expect(h.cp.snapshot().connectors[0]?.energyWh).toBeCloseTo(7360, 6);
+    expect(h.cp.snapshot().connectors[0]?.energyWh).toBeCloseTo((7360 * 3600.5) / 3600, 6);
+  });
+
+  it('charges while offline and sends StartTransaction after reconnecting', async () => {
+    const h = setup();
+    await h.boot();
+    const card = h.cp.presentIdTag(1, 'TAG');
+    await h.settle();
+    expect(await card).toBe('authorized');
+    h.cp.disconnected();
+    h.cp.plugIn(1);
+    await h.advance(1000);
+    expect(h.cp.snapshot().connectors[0]).toMatchObject({ status: 'Charging', powerW: 7360 });
+    expect(h.cp.snapshot().connectors[0]?.transactionId).toBeUndefined();
+    expect(h.cp.snapshot().queuedMessages).toBe(1);
+    h.cp.connected();
+    await h.settle();
+    expect(h.cp.snapshot().connectors[0]?.transactionId).toBe(100);
+    expect(h.cp.snapshot().queuedMessages).toBe(0);
   });
 
   it('rejects a card the CSMS does not accept', async () => {
@@ -803,8 +822,8 @@ describe('energy multiplier', () => {
     await h.startSession(1);
     const startedAt = h.clock.now();
     await h.advance(60_000);
-    // One real minute at 7360 W counts as one hour.
-    expect(h.cp.snapshot().connectors[0]?.energyWh).toBeCloseTo(7360, 0);
+    // One real minute at 7360 W counts as one hour (plus the 0.5 s before the answer).
+    expect(h.cp.snapshot().connectors[0]?.energyWh).toBeCloseTo((7360 * 60.5) / 60, 0);
     expect(h.cp.snapshot().energyMultiplier).toBe(60);
     const sample = h.lastCall('MeterValues')?.payload.meterValue as Array<{ timestamp: string }>;
     expect(Date.parse(sample[0]?.timestamp ?? '')).toBeLessThanOrEqual(h.clock.now());
@@ -909,6 +928,23 @@ describe('test switches', () => {
 });
 
 describe('persistence across restarts', () => {
+  it('keeps the local authorization list', async () => {
+    const before = setup();
+    await before.boot();
+    expect(
+      await before.csmsCall('SendLocalList', {
+        listVersion: 4,
+        updateType: 'Full',
+        localAuthorizationList: [{ idTag: 'LIST', idTagInfo: { status: 'Accepted' } }],
+      }),
+    ).toEqual({ status: 'Accepted' });
+    const saved = before.cp.persistentState();
+    const after = setup({ restore: saved });
+    await after.boot();
+    expect(after.cp.snapshot().localList).toEqual({ version: 4, size: 1 });
+    expect(await after.csmsCall('GetLocalListVersion', {})).toEqual({ listVersion: 4 });
+  });
+
   it('keeps the test switches, and defaults them for states saved without any', async () => {
     const before = setup();
     before.cp.setBehaviour({ refuseRemoteStart: true });

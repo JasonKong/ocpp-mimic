@@ -519,6 +519,15 @@ TriggerMessage 属于 Remote Trigger profile，提前到 M1 是因为很多 CSMS
 
 **不在 M1 的 1.6 功能**（路线图 M3）：Firmware Management（UpdateFirmware、GetDiagnostics 及状态通知）、Local Auth List Management（SendLocalList、GetLocalListVersion）、Reservation（ReserveNow、CancelReservation）、Smart Charging（SetChargingProfile、ClearChargingProfile、GetCompositeSchedule），以及安全白皮书。
 
+**M3：功能 profile**（已实现的部分；其余按「M3 功能覆盖」的设计进行）
+
+| 消息 | 模拟器行为 |
+| --- | --- |
+| SendLocalList | 支持 Full 和 Differential 更新及版本号；超过 `SendLocalListMaxLength` / `LocalAuthListMaxLength` 回 Failed，Differential 版本号不够新回 VersionMismatch；没声明这个 profile 时回 NotSupported |
+| GetLocalListVersion | 返回列表版本号，列表为空时为 0，没声明这个 profile 时为 -1 |
+
+本地列表里的卡先于授权缓存在本地决定（`LocalAuthListEnabled`、`LocalPreAuthorize`、`LocalAuthorizeOffline`），列表在重启后保留。交易一开始就充电，离线时也一样；StartTransaction 能发时再发，如果 CSMS 回的不是 Accepted，再停止或暂停交易。
+
 ## 分阶段路线图
 
 ![分阶段路线图：5 个阶段，4 条出口标准](images/roadmap.png)

@@ -22,6 +22,7 @@ import {
   changeConfiguration,
   configBool,
   configInt,
+  configList,
   createConfig,
   getConfiguration,
   type ConfigKeyDefinition,
@@ -50,6 +51,12 @@ import {
 } from './ev.js';
 import type { IdGenerator } from './ids.js';
 import {
+  applySendLocalList,
+  EMPTY_LOCAL_LIST,
+  localListVersion,
+  type LocalAuthList,
+} from './local-list.js';
+import {
   createMeter,
   meterAt,
   nextAlignedSample,
@@ -57,7 +64,7 @@ import {
   withPower,
   type MeterState,
 } from './meter.js';
-import type { RequestOf, ResponseOf, StopReason } from './ocpp16-messages.js';
+import type { IdTagInfo, RequestOf, ResponseOf, StopReason } from './ocpp16-messages.js';
 import type { JsonObject } from './ocppj.js';
 import {
   createRpc,
@@ -168,6 +175,8 @@ export interface PersistedChargePoint {
   behaviour?: ChargePointBehaviour;
   /** Missing in states saved before the energy multiplier existed. */
   energyMultiplier?: number;
+  /** The Local Authorization List; missing in states saved before it existed. */
+  localList?: LocalAuthList;
 }
 
 export interface ChargePointOptions {
@@ -236,6 +245,8 @@ export interface ChargePointSnapshot {
   queuedMessages: number;
   behaviour: ChargePointBehaviour;
   energyMultiplier: number;
+  /** GetLocalListVersion's answer and the number of entries. */
+  localList: { version: number; size: number };
 }
 
 export type IdTagResult = 'stopping' | 'authorized' | 'rejected' | 'busy' | 'unknown-connector';
@@ -296,6 +307,15 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     options.restore?.energyMultiplier ?? options.energyMultiplier ?? 1,
   );
   let authCache: AuthorizationCache = EMPTY_AUTHORIZATION_CACHE;
+  let localList: LocalAuthList = options.restore?.localList ?? EMPTY_LOCAL_LIST;
+  /** Whether the station advertises a feature profile in SupportedFeatureProfiles. */
+  const supports = (profile: string) =>
+    configList(config, 'SupportedFeatureProfiles').includes(profile);
+  /** Caches an IdTagInfo answer, except for cards on the local list (section 3.5.3). */
+  const remember = (idTag: string, info: IdTagInfo) => {
+    if (localList.entries[idTag] !== undefined) return;
+    authCache = rememberAuthorization(authCache, config, idTag, info);
+  };
   const meters = new Map<number, MeterState>(
     connectors(station).map((c) => [c.connectorId, createMeter({ now: clock.now(), offeredW })]),
   );
@@ -698,7 +718,11 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     const ref = nextKey('tx');
     transactions.set(connectorId, started.transaction);
     refs.set(connectorId, ref);
-    changed();
+    // Charging starts now, also offline (section 3.5.4): the transaction runs
+    // with a placeholder id until the CSMS answers StartTransaction.
+    applyDevice({ type: 'TransactionStarted', connectorId, transactionId: 0 });
+    updatePower(connectorId);
+    schedulePeriodic(connectorId);
     updateLock(connectorId);
 
     const outcome = await enqueue('StartTransaction', started.request, ref);
@@ -708,12 +732,15 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       if (stillRunning) {
         transactions.delete(connectorId);
         refs.delete(connectorId);
-        applyDevice({ type: 'CancelPrepare', connectorId });
+        stopTimer(sampleTimers.get(connectorId));
+        sampleTimers.delete(connectorId);
+        applyDevice({ type: 'TransactionEnded', connectorId });
+        updatePower(connectorId);
         updateLock(connectorId);
       }
       return;
     }
-    authCache = rememberAuthorization(authCache, config, idTag, outcome.payload.idTagInfo);
+    remember(idTag, outcome.payload.idTagInfo);
     // Stopped while waiting for the answer: its StopTransaction is queued behind and gets this id.
     if (!stillRunning) return;
     const applied = applyStartResponse(started.transaction, outcome.payload, config, now());
@@ -726,8 +753,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
 
     switch (applied.decision) {
       case 'continue':
-        updatePower(connectorId);
-        schedulePeriodic(connectorId);
+        changed();
         break;
       case 'stop':
         await endTransaction(connectorId, 'DeAuthorized');
@@ -773,19 +799,14 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
 
     const outcome = await stopCall;
     if (outcome?.ok === true && outcome.payload.idTagInfo !== undefined) {
-      authCache = rememberAuthorization(
-        authCache,
-        config,
-        transaction.idTag,
-        outcome.payload.idTagInfo,
-      );
+      remember(transaction.idTag, outcome.payload.idTagInfo);
     }
   }
 
   async function authorizeWithCsms(idTag: string): Promise<boolean> {
     const outcome = await sendIfOnline('Authorize', { idTag });
     if (outcome === undefined || !outcome.ok) return false;
-    authCache = rememberAuthorization(authCache, config, idTag, outcome.payload.idTagInfo);
+    remember(idTag, outcome.payload.idTagInfo);
     return isAccepted(outcome.payload.idTagInfo, now());
   }
 
@@ -854,6 +875,27 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
 
     GetConfiguration(request) {
       return getConfiguration(config, request);
+    },
+
+    GetLocalListVersion() {
+      // -1 tells the CSMS the station has no local list (section 5.10).
+      if (!supports('LocalAuthListManagement')) return { listVersion: -1 };
+      return { listVersion: localListVersion(localList) };
+    },
+
+    SendLocalList(request) {
+      if (!supports('LocalAuthListManagement')) return { status: 'NotSupported' };
+      const result = applySendLocalList(localList, request, {
+        sendMax: configInt(config, 'SendLocalListMaxLength'),
+        listMax: configInt(config, 'LocalAuthListMaxLength'),
+      });
+      if (result.status !== 'Accepted') {
+        log(`SendLocalList ${request.updateType} version ${request.listVersion}: ${result.status}`);
+        return { status: result.status };
+      }
+      localList = result.list;
+      changed();
+      return { status: 'Accepted' };
     },
 
     RemoteStartTransaction(request) {
@@ -1107,6 +1149,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         idTag,
         online: online(),
         now: now(),
+        localList: localList.entries,
       });
       const accepted =
         decision === 'start' || (decision === 'ask' && (await authorizeWithCsms(idTag)));
@@ -1209,6 +1252,10 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         queuedMessages: outbox.length,
         behaviour: { ...behaviour },
         energyMultiplier,
+        localList: {
+          version: localListVersion(localList),
+          size: Object.keys(localList.entries).length,
+        },
       };
     },
 
@@ -1237,6 +1284,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         sequence,
         behaviour: { ...behaviour },
         energyMultiplier,
+        localList,
       };
     },
   };

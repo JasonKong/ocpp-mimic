@@ -1,0 +1,6 @@
+# generic-1.6 advertising only the Core and RemoteTrigger profiles, to test
+# how a CSMS copes with a station that lacks the others.
+persona: core-only-1.6
+extends: regression-1.6
+description: regression-1.6 advertising only Core and RemoteTrigger
+features: [Core, RemoteTrigger]

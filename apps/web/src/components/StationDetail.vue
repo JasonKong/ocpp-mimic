@@ -82,6 +82,9 @@ function statusTone(status: string): string {
           {{ station.persona }} · {{ station.csmsUrl }} · connection {{ station.transport }} ·
           {{ station.registration }}
           <span v-if="station.queuedMessages > 0"> · {{ station.queuedMessages }} queued</span>
+          <span v-if="station.localList.size > 0">
+            · local list v{{ station.localList.version }} ({{ station.localList.size }})</span
+          >
         </p>
       </div>
       <div class="buttons">

@@ -1,0 +1,85 @@
+# Local Auth List Management (SendLocalList, GetLocalListVersion) and local
+# authorization from the list.
+name: The local list authorizes cards offline and takes priority over the cache
+station: { id: REG-LL-OFFLINE, persona: regression-1.6 }
+steps:
+  - csmsCall: { action: GetLocalListVersion, payload: {}, answer: { listVersion: 0 } }
+  - csmsCall:
+      action: SendLocalList
+      payload:
+        listVersion: 3
+        updateType: Full
+        localAuthorizationList:
+          - { idTag: TAG-LIST, idTagInfo: { status: Accepted } }
+          - { idTag: TAG-BLOCKED, idTagInfo: { status: Blocked } }
+      answer: { status: Accepted }
+  - csmsCall: { action: GetLocalListVersion, payload: {}, answer: { listVersion: 3 } }
+  - expectStation: { localList: { version: 3, size: 2 } }
+  - offline: { mode: clean }
+  - expectStation: { transport: offline }
+  - presentCard: { idTag: TAG-BLOCKED, result: rejected }
+  - presentCard: { idTag: TAG-UNKNOWN, result: rejected }
+  - presentCard: { idTag: TAG-LIST, result: authorized }
+  - plugIn: {}
+  - expectConnector: { status: Charging }
+  - online: {}
+  - expect: { sent: StartTransaction, payload: { idTag: TAG-LIST }, within: 30s }
+---
+name: Differential updates need a higher version
+station: { id: REG-LL-DIFF, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      action: SendLocalList
+      payload:
+        listVersion: 1
+        updateType: Full
+        localAuthorizationList: [{ idTag: TAG-A, idTagInfo: { status: Accepted } }]
+      answer: { status: Accepted }
+  - csmsCall:
+      action: SendLocalList
+      payload:
+        listVersion: 2
+        updateType: Differential
+        localAuthorizationList:
+          - { idTag: TAG-A }
+          - { idTag: TAG-B, idTagInfo: { status: Accepted } }
+      answer: { status: Accepted }
+  - expectStation: { localList: { version: 2, size: 1 } }
+  - csmsCall:
+      action: SendLocalList
+      payload: { listVersion: 2, updateType: Differential, localAuthorizationList: [] }
+      answer: { status: VersionMismatch }
+  - csmsCall:
+      action: SendLocalList
+      payload: { listVersion: 7, updateType: Full }
+      answer: { status: Accepted }
+  - csmsCall: { action: GetLocalListVersion, payload: {}, answer: { listVersion: 0 } }
+---
+name: A listed card starts at once online with LocalPreAuthorize
+station:
+  id: REG-LL-PREAUTH
+  persona: regression-1.6
+  config: { LocalPreAuthorize: true }
+steps:
+  - csmsCall:
+      action: SendLocalList
+      payload:
+        listVersion: 1
+        updateType: Full
+        localAuthorizationList: [{ idTag: TAG-LIST, idTagInfo: { status: Accepted } }]
+      answer: { status: Accepted }
+  - presentCard: { idTag: TAG-LIST, result: authorized }
+  - expectNo: { sent: Authorize, within: 1s }
+---
+name: A station without the profile says so
+station: { id: REG-LL-NONE, persona: core-only-1.6 }
+steps:
+  - csmsCall: { action: GetLocalListVersion, payload: {}, answer: { listVersion: -1 } }
+  - csmsCall:
+      action: SendLocalList
+      payload: { listVersion: 1, updateType: Full }
+      answer: { status: NotSupported }
+  - csmsCall:
+      action: GetConfiguration
+      payload: { key: [SupportedFeatureProfiles] }
+      answer: { configurationKey: [{ key: SupportedFeatureProfiles, value: 'Core,RemoteTrigger' }] }
