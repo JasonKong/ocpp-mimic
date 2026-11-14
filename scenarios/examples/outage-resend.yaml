@@ -5,7 +5,7 @@ station: { id: SIM-OUTAGE, persona: generic-1.6 }
 steps:
   - presentCard: { connector: 1, idTag: TAG-OUTAGE, result: authorized }
   - plugIn: { connector: 1 }
-  - expectConnector: { connector: 1, status: Charging }
+  - expectConnector: { connector: 1, status: Charging, transactionId: { $exists: true } }
   - offline: { mode: clean }
   - expectStation: { transport: offline }
   - unplug: { connector: 1 }
@@ -20,7 +20,7 @@ station: { id: SIM-HALF-OPEN, persona: generic-1.6 }
 steps:
   - presentCard: { connector: 1, idTag: TAG-OUTAGE, result: authorized }
   - plugIn: { connector: 1 }
-  - expectConnector: { connector: 1, status: Charging }
+  - expectConnector: { connector: 1, status: Charging, transactionId: { $exists: true } }
   - offline: { mode: half-open }
   - expectStation: { transport: half-open }
   - unplug: { connector: 1 }

@@ -44,6 +44,7 @@ export interface StationSnapshot {
   queuedMessages: number;
   behaviour: Behaviour;
   energyMultiplier: number;
+  localList: { version: number; size: number };
 }
 
 export interface FaultInfo {

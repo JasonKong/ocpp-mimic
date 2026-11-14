@@ -67,7 +67,11 @@ export const FEATURE_PROFILES = [
 ] as const;
 
 /** Feature profiles this version of the charge point implements. */
-export const IMPLEMENTED_FEATURE_PROFILES: readonly string[] = ['Core', 'RemoteTrigger'];
+export const IMPLEMENTED_FEATURE_PROFILES: readonly string[] = [
+  'Core',
+  'RemoteTrigger',
+  'LocalAuthListManagement',
+];
 
 export const PersonaSchema = object(
   {

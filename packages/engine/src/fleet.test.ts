@@ -112,7 +112,8 @@ describe('fleet', () => {
     await station.chargePoint.presentIdTag(1, 'TAG');
     station.chargePoint.plugIn(1);
     await first.waitForCall('StartTransaction');
-    await until(() => station.snapshot().connectors[0]?.status === 'Charging');
+    // Charging starts at once; wait for the CSMS's answer before going offline.
+    await until(() => station.snapshot().connectors[0]?.transactionId !== undefined);
 
     station.transport.goOffline('clean');
     station.chargePoint.unplug(1);

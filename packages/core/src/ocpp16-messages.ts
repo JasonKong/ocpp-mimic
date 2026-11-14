@@ -275,6 +275,21 @@ export const OCPP16_MESSAGES = {
     request: object({}),
     response: acceptedOrRejected,
   },
+  GetLocalListVersion: {
+    request: object({}),
+    response: object({ listVersion: integer() }),
+  },
+  SendLocalList: {
+    request: object(
+      { listVersion: integer(), updateType: oneOf(['Differential', 'Full']) },
+      {
+        localAuthorizationList: array(
+          object({ idTag: IdTokenSchema }, { idTagInfo: IdTagInfoSchema }),
+        ),
+      },
+    ),
+    response: object({ status: oneOf(['Accepted', 'Failed', 'NotSupported', 'VersionMismatch']) }),
+  },
   GetConfiguration: {
     request: object({}, { key: array(string({ maxLength: 50 })) }),
     response: object(
@@ -350,9 +365,11 @@ export const CSMS_ACTIONS = [
   'ClearCache',
   'DataTransfer',
   'GetConfiguration',
+  'GetLocalListVersion',
   'RemoteStartTransaction',
   'RemoteStopTransaction',
   'Reset',
+  'SendLocalList',
   'TriggerMessage',
   'UnlockConnector',
 ] as const satisfies readonly Ocpp16Action[];

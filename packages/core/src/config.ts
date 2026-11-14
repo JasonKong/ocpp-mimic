@@ -34,7 +34,8 @@ const MEASURAND_LIST: ConfigKeyDefinition = {
 };
 
 /**
- * The OCPP 1.6 configuration keys M1 supports, with their defaults.
+ * The OCPP 1.6 configuration keys supported, with their defaults: the Core
+ * profile's and those of each feature profile that is implemented.
  * NumberOfConnectors is filled in by createConfig.
  */
 export const STANDARD_CONFIG_KEYS: Readonly<Record<string, ConfigKeyDefinition>> = {
@@ -46,6 +47,8 @@ export const STANDARD_CONFIG_KEYS: Readonly<Record<string, ConfigKeyDefinition>>
   ConnectorPhaseRotation: { type: 'list', readonly: false, value: '0.Unknown' },
   GetConfigurationMaxKeys: { type: 'integer', readonly: true, value: '50' },
   HeartbeatInterval: { type: 'integer', readonly: false, value: '300', minimum: 0 },
+  LocalAuthListEnabled: { type: 'boolean', readonly: false, value: 'true' },
+  LocalAuthListMaxLength: { type: 'integer', readonly: true, value: '100', minimum: 0 },
   LocalAuthorizeOffline: { type: 'boolean', readonly: false, value: 'true' },
   LocalPreAuthorize: { type: 'boolean', readonly: false, value: 'false' },
   MeterValuesAlignedData: MEASURAND_LIST,
@@ -53,11 +56,16 @@ export const STANDARD_CONFIG_KEYS: Readonly<Record<string, ConfigKeyDefinition>>
   MeterValueSampleInterval: { type: 'integer', readonly: false, value: '60', minimum: 0 },
   NumberOfConnectors: { type: 'integer', readonly: true, value: '1' },
   ResetRetries: { type: 'integer', readonly: false, value: '1', minimum: 0 },
+  SendLocalListMaxLength: { type: 'integer', readonly: true, value: '100', minimum: 0 },
   StopTransactionOnEVSideDisconnect: { type: 'boolean', readonly: false, value: 'true' },
   StopTransactionOnInvalidId: { type: 'boolean', readonly: false, value: 'true' },
   StopTxnAlignedData: { ...MEASURAND_LIST, value: '' },
   StopTxnSampledData: MEASURAND_LIST,
-  SupportedFeatureProfiles: { type: 'list', readonly: true, value: 'Core,RemoteTrigger' },
+  SupportedFeatureProfiles: {
+    type: 'list',
+    readonly: true,
+    value: 'Core,RemoteTrigger,LocalAuthListManagement',
+  },
   TransactionMessageAttempts: { type: 'integer', readonly: false, value: '3', minimum: 0 },
   TransactionMessageRetryInterval: { type: 'integer', readonly: false, value: '60', minimum: 0 },
   UnlockConnectorOnEVSideDisconnect: { type: 'boolean', readonly: false, value: 'true' },

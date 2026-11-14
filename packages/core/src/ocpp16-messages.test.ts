@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CHARGE_POINT_ACTIONS,
   CSMS_ACTIONS,
+  OCPP16_MESSAGES,
   isOcpp16Action,
   validateRequest,
   validateResponse,
@@ -9,8 +10,10 @@ import {
 } from './ocpp16-messages.js';
 
 describe('OCPP 1.6 message definitions', () => {
-  it('covers the 18 M1 message directions', () => {
-    expect(CHARGE_POINT_ACTIONS.length + CSMS_ACTIONS.length).toBe(18);
+  it('lists every defined action in its direction (DataTransfer in both)', () => {
+    const defined = Object.keys(OCPP16_MESSAGES).sort();
+    expect([...new Set([...CHARGE_POINT_ACTIONS, ...CSMS_ACTIONS])].sort()).toEqual(defined);
+    expect(CHARGE_POINT_ACTIONS.length + CSMS_ACTIONS.length).toBe(defined.length + 1);
     expect(isOcpp16Action('BootNotification')).toBe(true);
     expect(isOcpp16Action('UpdateFirmware')).toBe(false);
     expect(isOcpp16Action('toString')).toBe(false);

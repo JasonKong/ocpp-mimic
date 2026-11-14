@@ -52,9 +52,11 @@ export function cachedAuthorization(
  * - `ask`: send Authorize and act on the answer;
  * - `reject`: refuse.
  *
- * Online, a cached Accepted answer starts at once only with LocalPreAuthorize.
- * Offline, it starts with LocalAuthorizeOffline; a card the cache does not
- * know starts only with AllowOfflineTxForUnknownId.
+ * An entry in the Local Authorization List (when LocalAuthListEnabled) takes
+ * priority over the cache. Online, a known Accepted card starts at once only
+ * with LocalPreAuthorize. Offline, it starts with LocalAuthorizeOffline; a
+ * card on the local list that is not Accepted is refused, and a card neither
+ * list nor cache knows starts only with AllowOfflineTxForUnknownId.
  */
 export function decideLocalAuthorization(input: {
   cache: AuthorizationCache;
@@ -62,8 +64,18 @@ export function decideLocalAuthorization(input: {
   idTag: string;
   online: boolean;
   now: number;
+  localList?: Readonly<Record<string, IdTagInfo>>;
 }): 'start' | 'ask' | 'reject' {
   const { config, online, now } = input;
+  const listed =
+    input.localList !== undefined && configBool(config, 'LocalAuthListEnabled')
+      ? input.localList[input.idTag]
+      : undefined;
+  if (listed !== undefined) {
+    const ok = isAccepted(listed, now);
+    if (online) return ok && configBool(config, 'LocalPreAuthorize') ? 'start' : 'ask';
+    return ok && configBool(config, 'LocalAuthorizeOffline') ? 'start' : 'reject';
+  }
   const cached = cachedAuthorization(input.cache, config, input.idTag);
   const cachedOk = cached !== undefined && isAccepted(cached, now);
   if (online) {
