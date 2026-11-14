@@ -81,6 +81,38 @@ export const OCPP16_CSMS_INITIATED = OCPP16_ACTION_NAMES.filter(
   (action) => action === 'DataTransfer' || !OCPP16_CHARGE_POINT_INITIATED.some((a) => a === action),
 );
 
+/** The feature profile each action belongs to (OCPP 1.6 section 3.1). */
+export const OCPP16_ACTION_PROFILES: Readonly<Record<Ocpp16ActionName, string>> = {
+  Authorize: 'Core',
+  BootNotification: 'Core',
+  ChangeAvailability: 'Core',
+  ChangeConfiguration: 'Core',
+  ClearCache: 'Core',
+  DataTransfer: 'Core',
+  GetConfiguration: 'Core',
+  Heartbeat: 'Core',
+  MeterValues: 'Core',
+  RemoteStartTransaction: 'Core',
+  RemoteStopTransaction: 'Core',
+  Reset: 'Core',
+  StartTransaction: 'Core',
+  StatusNotification: 'Core',
+  StopTransaction: 'Core',
+  UnlockConnector: 'Core',
+  DiagnosticsStatusNotification: 'FirmwareManagement',
+  FirmwareStatusNotification: 'FirmwareManagement',
+  GetDiagnostics: 'FirmwareManagement',
+  UpdateFirmware: 'FirmwareManagement',
+  GetLocalListVersion: 'LocalAuthListManagement',
+  SendLocalList: 'LocalAuthListManagement',
+  CancelReservation: 'Reservation',
+  ReserveNow: 'Reservation',
+  ClearChargingProfile: 'SmartCharging',
+  GetCompositeSchedule: 'SmartCharging',
+  SetChargingProfile: 'SmartCharging',
+  TriggerMessage: 'RemoteTrigger',
+};
+
 /** Connector statuses reported in StatusNotification (OCPP 1.6 ChargePointStatus). */
 export const CHARGE_POINT_STATUSES = [
   'Available',

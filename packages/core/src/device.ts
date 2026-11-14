@@ -44,6 +44,8 @@ export interface ConnectorState {
   readonly evseSuspended: boolean;
   readonly fault?: Fault;
   readonly availability: Availability;
+  /** The reservation holding this connector, while no session has begun on it. */
+  readonly reservationId?: number;
   /** Availability requested during a transaction, applied when it ends. */
   readonly scheduledAvailability?: Availability;
   readonly reported?: ReportedStatus;
@@ -74,6 +76,8 @@ export type DeviceEvent =
   | { type: 'ReportAll' }
   | { type: 'Plug' | 'Unplug' | 'Lock' | 'Unlock'; connectorId: number }
   | { type: 'Prepare' | 'CancelPrepare'; connectorId: number }
+  | { type: 'Reserve'; connectorId: number; reservationId: number }
+  | { type: 'Unreserve'; connectorId: number }
   | { type: 'TransactionStarted'; connectorId: number; transactionId: number }
   | { type: 'TransactionEnded'; connectorId: number }
   | { type: 'EvSuspend' | 'EvResume' | 'EvseSuspend' | 'EvseResume'; connectorId: number }
@@ -154,6 +158,7 @@ export function connectorStatus(connector: ConnectorState, station: StationState
   }
   if (connector.finishing) return withFault('Finishing', undefined);
   if (connector.plugged || connector.prepared) return withFault('Preparing', undefined);
+  if (connector.reservationId !== undefined) return withFault('Reserved', undefined);
   return withFault('Available', undefined);
 }
 
@@ -263,6 +268,13 @@ function applyEvent(
       return update((c) => ({ ...c, prepared: true }));
     case 'CancelPrepare':
       return update((c) => ({ ...c, prepared: false }));
+    case 'Reserve':
+      return update((c) => ({ ...c, reservationId: event.reservationId }));
+    case 'Unreserve':
+      return update((c) => {
+        const { reservationId: _ended, ...rest } = c;
+        return rest;
+      });
     case 'TransactionStarted':
       return update((c) => ({
         ...c,

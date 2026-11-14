@@ -58,6 +58,12 @@ export interface RpcOptions {
   ids: IdGenerator;
   send: (text: string) => void;
   handlers?: CsmsHandlers;
+  /**
+   * Whether the station handles an action now, for example because it
+   * advertises the action's feature profile. Unsupported actions are answered
+   * with CALLERROR NotSupported. Default: every action with a handler.
+   */
+  supports?: (action: CsmsAction) => boolean;
   /** How long to wait for an answer to a CALL. Default 30 s. */
   callTimeoutMs?: number;
   onEvent?: (event: RpcEvent) => void;
@@ -176,7 +182,7 @@ export function createRpc(options: RpcOptions): Rpc {
     const handler = CSMS_ACTION_SET.has(action)
       ? (handlers[action as CsmsAction] as ((request: unknown) => unknown) | undefined)
       : undefined;
-    if (handler === undefined) {
+    if (handler === undefined || options.supports?.(action as CsmsAction) === false) {
       sendError(id, 'NotSupported', `${action} is not supported`);
       return;
     }

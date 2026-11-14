@@ -71,6 +71,7 @@ export const IMPLEMENTED_FEATURE_PROFILES: readonly string[] = [
   'Core',
   'RemoteTrigger',
   'LocalAuthListManagement',
+  'Reservation',
 ];
 
 export const PersonaSchema = object(

@@ -82,6 +82,12 @@ function statusTone(status: string): string {
           {{ station.persona }} · {{ station.csmsUrl }} · connection {{ station.transport }} ·
           {{ station.registration }}
           <span v-if="station.queuedMessages > 0"> · {{ station.queuedMessages }} queued</span>
+          <span
+            v-for="r in station.reservations.filter((x) => x.connectorId === 0)"
+            :key="r.reservationId"
+          >
+            · reserved for {{ r.idTag }} until {{ r.expiryDate.slice(11, 16) }}</span
+          >
           <span v-if="station.localList.size > 0">
             · local list v{{ station.localList.version }} ({{ station.localList.size }})</span
           >
@@ -175,6 +181,13 @@ function statusTone(status: string): string {
           <div>
             <dt>Error</dt>
             <dd>{{ connector.errorCode }}</dd>
+          </div>
+          <div
+            v-for="r in station.reservations.filter((x) => x.connectorId === connector.connectorId)"
+            :key="r.reservationId"
+          >
+            <dt>Reserved for</dt>
+            <dd>{{ r.idTag }} until {{ r.expiryDate.slice(11, 16) }}</dd>
           </div>
           <div v-if="connector.ev">
             <dt>EV</dt>

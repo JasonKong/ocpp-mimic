@@ -275,6 +275,24 @@ export const OCPP16_MESSAGES = {
     request: object({}),
     response: acceptedOrRejected,
   },
+  CancelReservation: {
+    request: object({ reservationId: integer() }),
+    response: object({ status: oneOf(['Accepted', 'Rejected']) }),
+  },
+  ReserveNow: {
+    request: object(
+      {
+        connectorId: integer(),
+        expiryDate: dateTime(),
+        idTag: IdTokenSchema,
+        reservationId: integer(),
+      },
+      { parentIdTag: IdTokenSchema },
+    ),
+    response: object({
+      status: oneOf(['Accepted', 'Faulted', 'Occupied', 'Rejected', 'Unavailable']),
+    }),
+  },
   GetLocalListVersion: {
     request: object({}),
     response: object({ listVersion: integer() }),
@@ -360,6 +378,7 @@ export const CHARGE_POINT_ACTIONS = [
 
 /** Actions the charge point accepts from the CSMS in M1. */
 export const CSMS_ACTIONS = [
+  'CancelReservation',
   'ChangeAvailability',
   'ChangeConfiguration',
   'ClearCache',
@@ -368,6 +387,7 @@ export const CSMS_ACTIONS = [
   'GetLocalListVersion',
   'RemoteStartTransaction',
   'RemoteStopTransaction',
+  'ReserveNow',
   'Reset',
   'SendLocalList',
   'TriggerMessage',
