@@ -25,33 +25,44 @@ export const RPC_ERROR_CODES = [
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
 
 /**
- * Every action OCPP 1.6 defines, across all feature profiles. An action in
- * this list that a charge point does not handle is answered with
- * NotSupported; anything else with NotImplemented.
+ * Every action OCPP 1.6 defines, across all feature profiles, plus those the
+ * Security Whitepaper adds. An action in this list that a charge point does
+ * not handle is answered with NotSupported; anything else with NotImplemented.
  */
 export const OCPP16_ACTION_NAMES = [
   'Authorize',
   'BootNotification',
   'CancelReservation',
+  'CertificateSigned',
   'ChangeAvailability',
   'ChangeConfiguration',
   'ClearCache',
   'ClearChargingProfile',
   'DataTransfer',
+  'DeleteCertificate',
   'DiagnosticsStatusNotification',
+  'ExtendedTriggerMessage',
   'FirmwareStatusNotification',
   'GetCompositeSchedule',
   'GetConfiguration',
   'GetDiagnostics',
+  'GetInstalledCertificateIds',
   'GetLocalListVersion',
+  'GetLog',
   'Heartbeat',
+  'InstallCertificate',
+  'LogStatusNotification',
   'MeterValues',
   'RemoteStartTransaction',
   'RemoteStopTransaction',
   'ReserveNow',
   'Reset',
+  'SecurityEventNotification',
   'SendLocalList',
   'SetChargingProfile',
+  'SignCertificate',
+  'SignedFirmwareStatusNotification',
+  'SignedUpdateFirmware',
   'StartTransaction',
   'StatusNotification',
   'StopTransaction',
@@ -70,7 +81,11 @@ export const OCPP16_CHARGE_POINT_INITIATED = [
   'DiagnosticsStatusNotification',
   'FirmwareStatusNotification',
   'Heartbeat',
+  'LogStatusNotification',
   'MeterValues',
+  'SecurityEventNotification',
+  'SignCertificate',
+  'SignedFirmwareStatusNotification',
   'StartTransaction',
   'StatusNotification',
   'StopTransaction',
@@ -81,7 +96,11 @@ export const OCPP16_CSMS_INITIATED = OCPP16_ACTION_NAMES.filter(
   (action) => action === 'DataTransfer' || !OCPP16_CHARGE_POINT_INITIATED.some((a) => a === action),
 );
 
-/** The feature profile each action belongs to (OCPP 1.6 section 3.1). */
+/**
+ * The feature profile each action belongs to (OCPP 1.6 section 3.1). The
+ * Security Whitepaper's actions belong to no profile: `Security` stands for
+ * them, and a station always supports them.
+ */
 export const OCPP16_ACTION_PROFILES: Readonly<Record<Ocpp16ActionName, string>> = {
   Authorize: 'Core',
   BootNotification: 'Core',
@@ -111,6 +130,17 @@ export const OCPP16_ACTION_PROFILES: Readonly<Record<Ocpp16ActionName, string>> 
   GetCompositeSchedule: 'SmartCharging',
   SetChargingProfile: 'SmartCharging',
   TriggerMessage: 'RemoteTrigger',
+  CertificateSigned: 'Security',
+  DeleteCertificate: 'Security',
+  ExtendedTriggerMessage: 'Security',
+  GetInstalledCertificateIds: 'Security',
+  GetLog: 'Security',
+  InstallCertificate: 'Security',
+  LogStatusNotification: 'Security',
+  SecurityEventNotification: 'Security',
+  SignCertificate: 'Security',
+  SignedFirmwareStatusNotification: 'Security',
+  SignedUpdateFirmware: 'Security',
 };
 
 /** Connector statuses reported in StatusNotification (OCPP 1.6 ChargePointStatus). */

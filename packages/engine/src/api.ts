@@ -266,6 +266,16 @@ const routes: Route[] = [
     return station.snapshot();
   }),
 
+  route('POST', '/api/stations/:param/security-events', async (request, context) => {
+    const station = stationOf(context, request.params[0]);
+    const body = await request.body();
+    const type = stringField(body, 'type', true);
+    const techInfo = stringField(body, 'techInfo');
+    if (type.length > 50) throw new HttpError(400, '"type" must be at most 50 characters');
+    station.chargePoint.securityEvent(type, techInfo);
+    return station.snapshot();
+  }),
+
   route('PATCH', '/api/stations/:param/energy-multiplier', async (request, context) => {
     const station = stationOf(context, request.params[0]);
     station.chargePoint.setEnergyMultiplier(multiplierField(await request.body()));

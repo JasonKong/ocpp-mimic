@@ -135,6 +135,9 @@ function defaultHandlers(): Record<string, CsmsHandler> {
     StatusNotification: () => ({}),
     FirmwareStatusNotification: () => ({}),
     DiagnosticsStatusNotification: () => ({}),
+    SecurityEventNotification: () => ({}),
+    LogStatusNotification: () => ({}),
+    SignedFirmwareStatusNotification: () => ({}),
     MeterValues: () => ({}),
     Authorize: () => ({ idTagInfo: { status: 'Accepted' } }),
     StartTransaction: () => ({

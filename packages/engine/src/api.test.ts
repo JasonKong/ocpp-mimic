@@ -135,7 +135,12 @@ describe('engine API', () => {
     const actions = (
       messages.body?.entries as Array<{ action?: string; direction: string; messageType: number }>
     )
-      .filter((e) => e.action !== 'StatusNotification' && e.action !== 'Heartbeat')
+      .filter(
+        (e) =>
+          e.action !== 'StatusNotification' &&
+          e.action !== 'Heartbeat' &&
+          e.action !== 'SecurityEventNotification',
+      )
       .map((e) => `${e.direction}:${e.messageType}:${e.action}`);
     expect(actions).toEqual([
       'cp-to-csms:2:BootNotification',
@@ -153,6 +158,23 @@ describe('engine API', () => {
     expect(
       (messages.body?.entries as Array<{ schemaErrors?: string[] }>).filter((e) => e.schemaErrors),
     ).toEqual([]);
+    // StartupOfTheDevice reached the CSMS as a security event; one raised over the API too.
+    expect((await connection.waitForCall('SecurityEventNotification')).payload).toMatchObject({
+      type: 'StartupOfTheDevice',
+    });
+    expect(
+      (
+        await api('POST', '/api/stations/SIM-1/security-events', {
+          type: 'TamperDetectionActivated',
+          techInfo: 'door open',
+        })
+      ).body?.securityEvents.at(-1),
+    ).toMatchObject({ type: 'TamperDetectionActivated', techInfo: 'door open' });
+    expect((await connection.waitForCall('SecurityEventNotification')).payload).toMatchObject({
+      type: 'TamperDetectionActivated',
+      techInfo: 'door open',
+    });
+    expect((await api('POST', '/api/stations/SIM-1/security-events', {})).status).toBe(400);
     const stops = await api('GET', '/api/stations/SIM-1/messages?action=StopTransaction&limit=1');
     expect(stops.body?.entries).toMatchObject([{ action: 'StopTransaction', messageType: 3 }]);
   });

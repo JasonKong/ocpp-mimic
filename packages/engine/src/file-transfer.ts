@@ -1,7 +1,7 @@
 /**
- * Real file transfers for UpdateFirmware and GetDiagnostics: a firmware
- * download is an HTTP GET whose body is read and thrown away, a diagnostics
- * upload is an HTTP PUT of the file into the given directory. Credentials in
+ * Real file transfers for UpdateFirmware, GetDiagnostics and GetLog: a
+ * firmware download is an HTTP GET whose body is read and thrown away, an
+ * upload is an HTTP PUT of the file to the URL the charge point worked out. Credentials in
  * the URL (http://user:pass@host/) become Basic Auth, since fetch refuses
  * URLs that carry them. Personas opt in with `firmware.transfer: real`.
  */
@@ -43,16 +43,14 @@ export function createHttpFileTransfer(options: HttpFileTransferOptions = {}): F
 
   return {
     download: (location) => request(location, { method: 'GET' }),
-    upload: (location, fileName, content) =>
-      request(uploadUrl(location, fileName), {
+    upload: (url, fileName, content) =>
+      request(url, {
         method: 'PUT',
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
+        headers: {
+          'content-type': 'text/plain; charset=utf-8',
+          'content-disposition': `attachment; filename="${fileName.replace(/["\\]/g, '_')}"`,
+        },
         body: content,
       }),
   };
-}
-
-/** The diagnostics location is a directory: the file goes inside it. */
-export function uploadUrl(location: string, fileName: string): string {
-  return `${location.endsWith('/') ? location : `${location}/`}${encodeURIComponent(fileName)}`;
 }

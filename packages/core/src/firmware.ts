@@ -26,11 +26,27 @@ export const DEFAULT_FIRMWARE_SETTINGS: FirmwareSettings = {
 
 /**
  * Real file transfers, provided by the engine when a persona asks for them.
- * Each resolves to whether the transfer worked.
+ * Each resolves to whether the transfer worked. `upload` puts `content` at
+ * `url` exactly; `fileName` names the file in the request.
  */
 export interface FileTransfer {
   download(location: string): Promise<boolean>;
-  upload(location: string, fileName: string, content: string): Promise<boolean>;
+  upload(url: string, fileName: string, content: string): Promise<boolean>;
+}
+
+/** GetDiagnostics: the location is a directory, so the file goes inside it. */
+export function diagnosticsUploadUrl(location: string, fileName: string): string {
+  return `${location.endsWith('/') ? location : `${location}/`}${encodeURIComponent(fileName)}`;
+}
+
+/**
+ * GetLog: the file name is appended only when the location ends with a slash
+ * (Security Whitepaper N01.FR.21); otherwise the location is the file's URL.
+ */
+export function logUploadUrl(remoteLocation: string, fileName: string): string {
+  return remoteLocation.endsWith('/')
+    ? `${remoteLocation}${encodeURIComponent(fileName)}`
+    : remoteLocation;
 }
 
 /** True for the locations a FileTransfer handles: HTTP and HTTPS. */
@@ -54,7 +70,7 @@ export function firmwareVersionFrom(location: string, current: string | undefine
 }
 
 /** `diagnostics-20261114T100000Z.log` for the given moment. */
-export function diagnosticsFileName(now: number): string {
+export function diagnosticsFileName(now: number, prefix = 'diagnostics'): string {
   const stamp = new Date(now).toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
-  return `diagnostics-${stamp}.log`;
+  return `${prefix}-${stamp}.log`;
 }

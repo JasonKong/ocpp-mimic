@@ -59,6 +59,9 @@ function setup(options: SetupOptions = {}) {
     DataTransfer: () => ({ status: 'Accepted' }),
     FirmwareStatusNotification: () => ({}),
     DiagnosticsStatusNotification: () => ({}),
+    SecurityEventNotification: () => ({}),
+    LogStatusNotification: () => ({}),
+    SignedFirmwareStatusNotification: () => ({}),
     ...options.csms,
   };
   const cp = createChargePoint({
@@ -191,13 +194,19 @@ describe('registration', () => {
   it('boots, reports every connector and sends heartbeats at the interval the CSMS gives', async () => {
     const h = setup();
     await h.boot();
+    // Powering up is a critical security event, sent once the boot is accepted.
     expect(h.actions()).toEqual([
       'BootNotification',
       'StatusNotification',
       'StatusNotification',
       'StatusNotification',
+      'SecurityEventNotification',
     ]);
     expect(h.calls('BootNotification')[0]?.payload).toEqual(BOOT);
+    expect(h.lastCall('SecurityEventNotification')?.payload).toEqual({
+      type: 'StartupOfTheDevice',
+      timestamp: new Date(T0).toISOString(),
+    });
     expect(h.statuses()).toEqual(['0:Available', '1:Available', '2:Available']);
     expect(h.cp.snapshot()).toMatchObject({
       registration: 'Accepted',
@@ -1155,7 +1164,7 @@ describe('firmware management', () => {
     await h.settle();
     expect(uploads).toEqual([
       {
-        location: 'https://logs.example.com/up',
+        location: 'https://logs.example.com/up/diagnostics-20261114T100002Z.log',
         fileName: 'diagnostics-20261114T100002Z.log',
         content: expect.stringContaining('config HeartbeatInterval=') as unknown as string,
       },
@@ -1295,6 +1304,190 @@ describe('security profiles', () => {
     h.cp.disconnected();
     h.cp.connectionFailed();
     expect(h.cp.connectionSecurity().profile).toBe(1);
+  });
+});
+
+describe('security events and logs', () => {
+  const events = (h: ReturnType<typeof setup>, from = 0) =>
+    h.frames
+      .slice(from)
+      .filter((f): f is CallFrame => f.type === 2 && f.action === 'SecurityEventNotification')
+      .map((f) => f.payload.type);
+  const logStatuses = (h: ReturnType<typeof setup>, from = 0) =>
+    h.frames
+      .slice(from)
+      .filter((f): f is CallFrame => f.type === 2 && f.action === 'LogStatusNotification')
+      .map((f) => f.payload);
+
+  it('queues critical events while offline, logs every event, and keeps the log across restarts', async () => {
+    const h = setup({ config: { AuthorizationKey: 'station-key-0001' } });
+    h.cp.securityEvent('TamperDetectionActivated', 'cover opened');
+    expect(events(h)).toEqual([]);
+    await h.boot();
+    expect(events(h)).toEqual(['StartupOfTheDevice', 'TamperDetectionActivated']);
+
+    // Non-critical events only go into the log.
+    const mark = h.frames.length;
+    await h.csmsCall('ChangeConfiguration', {
+      key: 'AuthorizationKey',
+      value: 'a-new-key-0002-abcd',
+    });
+    h.cp.securityEvent('InvalidMessages');
+    await h.advance(0);
+    expect(events(h, mark)).toEqual([]);
+    expect(h.cp.snapshot().securityEvents.map((e) => e.type)).toEqual([
+      'StartupOfTheDevice',
+      'TamperDetectionActivated',
+      'ReconfigurationOfSecurityParameters',
+      'InvalidMessages',
+    ]);
+
+    // A reset is one too, sent after the reboot's boot.
+    await h.csmsCall('Reset', { type: 'Soft' });
+    await h.advance(100);
+    expect(h.restarts).toHaveLength(1);
+    h.cp.disconnected();
+    await h.boot();
+    expect(events(h, mark)).toEqual(['ResetOrReboot']);
+    expect(h.lastCall('SecurityEventNotification')?.payload).toMatchObject({
+      type: 'ResetOrReboot',
+      techInfo: 'Soft reset',
+    });
+
+    const after = setup({ restore: h.cp.persistentState() });
+    expect(after.cp.snapshot().securityEvents.map((e) => e.type)).toContain('ResetOrReboot');
+  });
+
+  it('drops security events a CSMS does not support, so transactions are not held up', async () => {
+    const h = setup({
+      csms: { SecurityEventNotification: () => callError('NotImplemented') },
+    });
+    await h.boot();
+    const txId = await h.startSession(1);
+    expect(txId).toBeDefined();
+    expect(h.calls('StartTransaction')).toHaveLength(1);
+    expect(events(h)).toEqual(['StartupOfTheDevice']);
+    expect(h.cp.snapshot().queuedMessages).toBe(0);
+  });
+
+  it('ExtendedTriggerMessage sends what it can, the signed firmware status for firmware', async () => {
+    const h = setup();
+    await h.boot();
+    const mark = h.frames.length;
+    const trigger = (requestedMessage: string, connectorId?: number) =>
+      h.csmsCall('ExtendedTriggerMessage', {
+        requestedMessage,
+        ...(connectorId !== undefined && { connectorId }),
+      });
+    expect(await trigger('Heartbeat')).toEqual({ status: 'Accepted' });
+    expect(await trigger('StatusNotification', 1)).toEqual({ status: 'Accepted' });
+    expect(await trigger('LogStatusNotification')).toEqual({ status: 'Accepted' });
+    expect(await trigger('FirmwareStatusNotification')).toEqual({ status: 'Accepted' });
+    expect(await trigger('Heartbeat', 9)).toEqual({ status: 'Rejected' });
+    await h.advance(100);
+    expect(h.actions(mark)).toEqual([
+      'Heartbeat',
+      'StatusNotification',
+      'LogStatusNotification',
+      'SignedFirmwareStatusNotification',
+    ]);
+    // No upload running: Idle without a requestId (N01.FR.14).
+    expect(h.lastCall('LogStatusNotification')?.payload).toEqual({ status: 'Idle' });
+    expect(h.lastCall('SignedFirmwareStatusNotification')?.payload).toEqual({ status: 'Idle' });
+  });
+
+  it('GetLog uploads the security log for its window, and a newer request cancels the upload', async () => {
+    const uploads: { url: string; fileName: string; content: string }[] = [];
+    const transfer: FileTransfer = {
+      download: () => Promise.resolve(true),
+      upload: (url, fileName, content) => {
+        uploads.push({ url, fileName, content });
+        return Promise.resolve(true);
+      },
+    };
+    const h = setup({ transfer, config: { AuthorizationKey: 'station-key-0001' } });
+    await h.boot();
+    await h.advance(60_000);
+    h.cp.securityEvent('TamperDetectionActivated', 'cover opened');
+    await h.csmsCall('ChangeConfiguration', {
+      key: 'AuthorizationKey',
+      value: 'a-new-key-0002-abcd',
+    });
+
+    // A location ending with a slash gets the file name appended (N01.FR.21).
+    expect(
+      await h.csmsCall('GetLog', {
+        logType: 'SecurityLog',
+        requestId: 7,
+        log: {
+          remoteLocation: 'https://logs.example.com/upload/',
+          oldestTimestamp: new Date(T0 + 30_000).toISOString(),
+        },
+      }),
+    ).toEqual({ status: 'Accepted', filename: 'security-20261114T100100Z.log' });
+    await h.settle();
+    expect(logStatuses(h)).toEqual([
+      { status: 'Uploading', requestId: 7 },
+      { status: 'Uploaded', requestId: 7 },
+    ]);
+    expect(uploads[0]?.url).toBe('https://logs.example.com/upload/security-20261114T100100Z.log');
+    // StartupOfTheDevice is older than the window; the key itself never appears.
+    expect(uploads[0]?.content).toBe(
+      '2026-11-14T10:01:00.000Z TamperDetectionActivated cover opened\n' +
+        '2026-11-14T10:01:00.000Z ReconfigurationOfSecurityParameters AuthorizationKey changed\n',
+    );
+
+    // Otherwise the location is the file's URL.
+    await h.csmsCall('GetLog', {
+      logType: 'DiagnosticsLog',
+      requestId: 8,
+      log: { remoteLocation: 'https://logs.example.com/diag.txt' },
+    });
+    await h.settle();
+    expect(uploads[1]?.url).toBe('https://logs.example.com/diag.txt');
+    expect(uploads[1]?.content).toContain('ocpp-mimic diagnostics');
+
+    const slow = setup({ firmware: { uploadMs: 5000 } });
+    await slow.boot();
+    const first = await slow.csmsCall('GetLog', {
+      logType: 'DiagnosticsLog',
+      requestId: 1,
+      log: { remoteLocation: 'ftp://logs.example.com/' },
+    });
+    expect(first).toMatchObject({ status: 'Accepted' });
+    expect(
+      await slow.csmsCall('GetLog', {
+        logType: 'SecurityLog',
+        requestId: 2,
+        log: { remoteLocation: 'ftp://logs.example.com/' },
+      }),
+    ).toMatchObject({ status: 'AcceptedCanceled' });
+    await slow.advance(6000);
+    expect(logStatuses(slow)).toEqual([
+      { status: 'Uploading', requestId: 1 },
+      { status: 'Uploading', requestId: 2 },
+      { status: 'Uploaded', requestId: 2 },
+    ]);
+  });
+
+  it('reports UploadFailure after the retries', async () => {
+    const h = setup({ firmware: { uploadMs: 1000, upload: 'fail' } });
+    await h.boot();
+    await h.csmsCall('GetLog', {
+      logType: 'SecurityLog',
+      requestId: 3,
+      retries: 1,
+      retryInterval: 2,
+      log: { remoteLocation: 'ftp://logs.example.com/' },
+    });
+    await h.advance(3000);
+    expect(logStatuses(h)).toEqual([{ status: 'Uploading', requestId: 3 }]);
+    await h.advance(1000);
+    expect(logStatuses(h)).toEqual([
+      { status: 'Uploading', requestId: 3 },
+      { status: 'UploadFailure', requestId: 3 },
+    ]);
+    expect(h.cp.snapshot().logStatus).toBe('Idle');
   });
 });
 

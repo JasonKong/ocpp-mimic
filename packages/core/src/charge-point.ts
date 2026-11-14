@@ -66,12 +66,20 @@ import {
 import {
   DEFAULT_FIRMWARE_SETTINGS,
   diagnosticsFileName,
+  diagnosticsUploadUrl,
+  logUploadUrl,
   firmwareVersionFrom,
   isHttpLocation,
   type FileTransfer,
   type FirmwareSettings,
 } from './firmware.js';
 import type { IdGenerator } from './ids.js';
+import {
+  isCriticalSecurityEvent,
+  SECURITY_LOG_LENGTH,
+  securityLogContent,
+  type SecurityLogEntry,
+} from './security-events.js';
 import { OCPP16_ACTION_PROFILES } from './ocpp16.js';
 import {
   applySendLocalList,
@@ -159,11 +167,13 @@ export type ChargePointEvent =
   | { type: 'changed' };
 
 type TransactionAction = 'StartTransaction' | 'StopTransaction' | 'MeterValues';
+/** Messages with guaranteed delivery: transaction messages and critical security events. */
+type QueuedAction = TransactionAction | 'SecurityEventNotification';
 
-/** A transaction-related message waiting to be sent; kept across restarts. */
+/** A message with guaranteed delivery waiting to be sent; kept across restarts. */
 export interface OutboxEntry {
   key: string;
-  action: TransactionAction;
+  action: QueuedAction;
   payload: JsonObject;
   /** Local reference of the transaction whose CSMS id is put into payload.transactionId on sending. */
   txRef?: string;
@@ -206,6 +216,8 @@ export interface PersistedChargePoint {
   chargingProfiles?: InstalledProfile[];
   /** The firmware version after an update; missing until one was installed. */
   firmwareVersion?: string;
+  /** The security log (Security Whitepaper A04); missing in older states. */
+  securityLog?: SecurityLogEntry[];
 }
 
 /** A ReserveNow the station holds: a connector, or any connector with connectorId 0. */
@@ -320,6 +332,10 @@ export interface ChargePointSnapshot {
   /** The firmware update and diagnostics upload in progress, or Idle. */
   firmwareStatus: string;
   diagnosticsStatus: string;
+  /** The GetLog upload in progress, or Idle. */
+  logStatus: string;
+  /** The latest security events, newest last (at most 20). */
+  securityEvents: SecurityLogEntry[];
   behaviour: ChargePointBehaviour;
   energyMultiplier: number;
   /** GetLocalListVersion's answer and the number of entries. */
@@ -360,6 +376,12 @@ export interface ChargePoint {
   persistentState(): PersistedChargePoint;
   /** The Security Profile and password to connect with. */
   connectionSecurity(): ConnectionSecurity;
+  /**
+   * Records a security event in the security log; a critical one is also
+   * sent to the CSMS (queued while offline). `type` is one of the
+   * whitepaper's events or a vendor's own.
+   */
+  securityEvent(type: string, techInfo?: string): void;
   /**
    * A connection attempt failed before it opened. Right after a SecurityProfile
    * change, this falls back to the previous profile and reconnects (A05.FR.08).
@@ -460,7 +482,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
    * persisted across restarts. When online and idle, the message is handed
    * to the RPC layer at once, so it goes out before later status reports.
    */
-  function enqueue<A extends TransactionAction>(
+  function enqueue<A extends QueuedAction>(
     action: A,
     payload: RequestOf<A>,
     txRef?: string,
@@ -512,7 +534,12 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         pumping = false;
         if (!outcome.ok) {
           if (outcome.failure.kind === 'Closed') return; // resumes after the next accepted boot
-          if (outcome.failure.kind !== 'InvalidRequest') {
+          const { failure } = outcome;
+          if (entry.action === 'SecurityEventNotification' && failure.kind === 'CallError') {
+            // A CSMS without the Security Whitepaper (NotImplemented and the like):
+            // retrying cannot help, and would hold up the transaction messages behind it.
+            log(`SecurityEventNotification dropped: the CSMS answered ${failure.errorCode}`);
+          } else if (outcome.failure.kind !== 'InvalidRequest') {
             entry.attempts += 1;
             if (entry.attempts < configInt(config, 'TransactionMessageAttempts')) {
               const delayMs =
@@ -645,7 +672,11 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     const uploaded = await withRetries(
       async () => {
         if (options.transfer !== undefined && isHttpLocation(request.location)) {
-          return options.transfer.upload(request.location, fileName, content);
+          return options.transfer.upload(
+            diagnosticsUploadUrl(request.location, fileName),
+            fileName,
+            content,
+          );
         }
         await delay(firmwareSettings.uploadMs);
         return firmwareSettings.upload === 'succeed';
@@ -676,6 +707,140 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     return `${lines.join('\n')}\n`;
   }
 
+  // ---- Security events and logs (Security Whitepaper A04, N01) -----------
+
+  let securityLog: SecurityLogEntry[] = [...(options.restore?.securityLog ?? [])];
+
+  function securityEvent(type: string, techInfo?: string): void {
+    const entry: SecurityLogEntry = {
+      type,
+      timestamp: new Date(now()).toISOString(),
+      ...(techInfo !== undefined && { techInfo: techInfo.slice(0, 255) }),
+    };
+    securityLog = [...securityLog, entry].slice(-SECURITY_LOG_LENGTH);
+    log(`security event ${type}${techInfo === undefined ? '' : ` (${techInfo})`}`);
+    if (isCriticalSecurityEvent(type)) {
+      void enqueue('SecurityEventNotification', {
+        type: type.slice(0, 50),
+        timestamp: entry.timestamp,
+        ...(entry.techInfo !== undefined && { techInfo: entry.techInfo }),
+      });
+    }
+    changed();
+  }
+
+  type LogStatus = RequestOf<'LogStatusNotification'>['status'];
+  /** The GetLog upload in progress; a newer GetLog cancels it (N01.FR.11). */
+  let logUpload: { requestId: number; cancelled: boolean } | undefined;
+  let logStatus: LogStatus = 'Idle';
+
+  function reportLog(status: LogStatus, requestId: number): void {
+    logStatus = status;
+    void sendIfOnline('LogStatusNotification', { status, requestId });
+    changed();
+  }
+
+  async function runLogUpload(request: RequestOf<'GetLog'>, fileName: string): Promise<void> {
+    const upload = { requestId: request.requestId, cancelled: false };
+    logUpload = upload;
+    const content =
+      request.logType === 'SecurityLog'
+        ? securityLogContent(securityLog, request.log)
+        : diagnosticsContent({
+            location: request.log.remoteLocation,
+            ...(request.log.oldestTimestamp !== undefined && {
+              startTime: request.log.oldestTimestamp,
+            }),
+            ...(request.log.latestTimestamp !== undefined && {
+              stopTime: request.log.latestTimestamp,
+            }),
+          });
+    reportLog('Uploading', upload.requestId);
+    const location = request.log.remoteLocation;
+    const uploaded = await withRetries(
+      async () => {
+        if (upload.cancelled) return true;
+        if (options.transfer !== undefined && isHttpLocation(location)) {
+          return options.transfer.upload(logUploadUrl(location, fileName), fileName, content);
+        }
+        await delay(firmwareSettings.uploadMs);
+        return firmwareSettings.upload === 'succeed';
+      },
+      request.retries,
+      request.retryInterval,
+    );
+    // A cancelled upload stops quietly: the newer GetLog reports for itself.
+    if (upload.cancelled) return;
+    reportLog(uploaded ? 'Uploaded' : 'UploadFailure', upload.requestId);
+    logStatus = 'Idle';
+    logUpload = undefined;
+  }
+
+  /**
+   * Sends the message a TriggerMessage or ExtendedTriggerMessage asked for,
+   * after the persona's delay; undefined when the message is not one it can send.
+   */
+  function trigger(
+    requested: string,
+    connectorId: number | undefined,
+  ): 'Accepted' | 'Rejected' | 'NotImplemented' {
+    if (
+      connectorId !== undefined &&
+      connectorId !== 0 &&
+      findConnector(station, connectorId) === undefined
+    ) {
+      return 'Rejected';
+    }
+    const targets =
+      connectorId === undefined || connectorId === 0
+        ? connectors(station).map((c) => c.connectorId)
+        : [connectorId];
+    const senders: Record<string, () => void> = {
+      BootNotification: () => void sendIfOnline('BootNotification', bootPayload()),
+      Heartbeat: () => void sendIfOnline('Heartbeat', {}),
+      StatusNotification: () => {
+        const timestamp = new Date(now()).toISOString();
+        if (connectorId === undefined || connectorId === 0) {
+          void sendIfOnline('StatusNotification', {
+            connectorId: 0,
+            ...stationStatus(station),
+            timestamp,
+          });
+        }
+        for (const id of targets) {
+          const connector = findConnector(station, id);
+          if (connector !== undefined) {
+            void sendIfOnline('StatusNotification', {
+              connectorId: id,
+              ...connectorStatus(connector, station),
+              timestamp,
+            });
+          }
+        }
+      },
+      MeterValues: () =>
+        targets.forEach((id) => sendMeterValues(id, 'MeterValuesSampledData', 'Trigger')),
+      FirmwareStatusNotification: () =>
+        void sendIfOnline('FirmwareStatusNotification', { status: firmwareStatus }),
+      DiagnosticsStatusNotification: () =>
+        void sendIfOnline('DiagnosticsStatusNotification', { status: diagnosticsStatus }),
+      // ExtendedTriggerMessage: requestId only while an upload runs (N01.FR.14).
+      LogStatusNotification: () =>
+        void sendIfOnline(
+          'LogStatusNotification',
+          logUpload === undefined
+            ? { status: 'Idle' }
+            : { status: logStatus, requestId: logUpload.requestId },
+        ),
+      SignedFirmwareStatusNotification: () =>
+        void sendIfOnline('SignedFirmwareStatusNotification', { status: 'Idle' }),
+    };
+    const send = senders[requested];
+    if (send === undefined) return 'NotImplemented';
+    later(delayFor('TriggerMessage'), send);
+    return 'Accepted';
+  }
+
   // ---- Security Profiles (Security Whitepaper) ----------------------------
 
   /** The profile to fall back to while the first connection with a new one is pending. */
@@ -701,7 +866,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     config = changeConfiguration(config, { key: 'SecurityProfile', value: String(next) }).config;
     securityFallback = current;
     log(`SecurityProfile ${current} -> ${next}; reconnecting`);
-    changed();
+    securityEvent('ReconfigurationOfSecurityParameters', `SecurityProfile ${current} to ${next}`);
     later(0, () => options.reconnect?.());
     return 'Accepted';
   }
@@ -933,6 +1098,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       installedPendingReport = false;
       reportFirmware('Installed');
       firmwareStatus = 'Idle';
+      securityEvent('FirmwareUpdated', `firmware ${firmwareVersion ?? 'unknown'}`);
     }
     pump();
   }
@@ -1279,6 +1445,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       applyDevice({ type: 'CancelPrepare', connectorId });
     }
     log(`${type} reset`);
+    securityEvent('ResetOrReboot', `${type} reset`);
     options.restart?.(timing.resetDowntimeMs[type]);
   }
 
@@ -1433,7 +1600,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       if (request.key === 'AuthorizationKey' && result.status === 'Accepted') {
         config = result.config;
         log('AuthorizationKey changed; reconnecting with the new key');
-        changed();
+        // Logged without the key itself (A01.FR.11, A01.FR.12).
+        securityEvent('ReconfigurationOfSecurityParameters', 'AuthorizationKey changed');
         // Unless certificates authenticate the station, reconnect with the new password (A01).
         if (configInt(config, 'SecurityProfile') !== 3) later(0, () => options.reconnect?.());
         return { status: 'Accepted' };
@@ -1552,65 +1720,27 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     },
 
     TriggerMessage(request) {
-      const { connectorId } = request;
-      if (
-        connectorId !== undefined &&
-        connectorId !== 0 &&
-        findConnector(station, connectorId) === undefined
-      ) {
-        return { status: 'Rejected' };
-      }
-      const targets =
-        connectorId === undefined || connectorId === 0
-          ? connectors(station).map((c) => c.connectorId)
-          : [connectorId];
-      switch (request.requestedMessage) {
-        case 'BootNotification':
-          later(delayFor('TriggerMessage'), () => sendIfOnline('BootNotification', bootPayload()));
-          return { status: 'Accepted' };
-        case 'Heartbeat':
-          later(delayFor('TriggerMessage'), () => sendIfOnline('Heartbeat', {}));
-          return { status: 'Accepted' };
-        case 'StatusNotification':
-          later(delayFor('TriggerMessage'), () => {
-            const timestamp = new Date(now()).toISOString();
-            if (connectorId === undefined || connectorId === 0) {
-              void sendIfOnline('StatusNotification', {
-                connectorId: 0,
-                ...stationStatus(station),
-                timestamp,
-              });
-            }
-            for (const id of targets) {
-              const connector = findConnector(station, id);
-              if (connector !== undefined) {
-                void sendIfOnline('StatusNotification', {
-                  connectorId: id,
-                  ...connectorStatus(connector, station),
-                  timestamp,
-                });
-              }
-            }
-          });
-          return { status: 'Accepted' };
-        case 'MeterValues':
-          later(delayFor('TriggerMessage'), () =>
-            targets.forEach((id) => sendMeterValues(id, 'MeterValuesSampledData', 'Trigger')),
-          );
-          return { status: 'Accepted' };
-        case 'FirmwareStatusNotification':
-          later(delayFor('TriggerMessage'), () =>
-            sendIfOnline('FirmwareStatusNotification', { status: firmwareStatus }),
-          );
-          return { status: 'Accepted' };
-        case 'DiagnosticsStatusNotification':
-          later(delayFor('TriggerMessage'), () =>
-            sendIfOnline('DiagnosticsStatusNotification', { status: diagnosticsStatus }),
-          );
-          return { status: 'Accepted' };
-        default:
-          return { status: 'NotImplemented' };
-      }
+      return { status: trigger(request.requestedMessage, request.connectorId) };
+    },
+
+    ExtendedTriggerMessage(request) {
+      // FirmwareStatusNotification means the signed firmware update's status here.
+      const requested =
+        request.requestedMessage === 'FirmwareStatusNotification'
+          ? 'SignedFirmwareStatusNotification'
+          : request.requestedMessage;
+      return { status: trigger(requested, request.connectorId) };
+    },
+
+    GetLog(request) {
+      const cancelled = logUpload !== undefined;
+      if (logUpload !== undefined) logUpload.cancelled = true;
+      const filename = diagnosticsFileName(
+        now(),
+        request.logType === 'SecurityLog' ? 'security' : 'diagnostics',
+      );
+      void runLogUpload(request, filename);
+      return { status: cancelled ? 'AcceptedCanceled' : 'Accepted', filename };
     },
 
     UnlockConnector(request) {
@@ -1687,6 +1817,9 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     }
   }
 
+  // Powering up is a security event, sent once the CSMS has accepted the boot.
+  securityEvent('StartupOfTheDevice');
+
   // ---- Public interface -------------------------------------------------
 
   return {
@@ -1703,6 +1836,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         supports: (action) =>
           action === 'SendLocalList' ||
           action === 'GetLocalListVersion' ||
+          OCPP16_ACTION_PROFILES[action] === 'Security' ||
           supports(OCPP16_ACTION_PROFILES[action]),
         onEvent: (event) => emit({ type: 'rpc', event }),
       });
@@ -1909,6 +2043,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         ...(firmwareVersion !== undefined && { firmwareVersion }),
         firmwareStatus,
         diagnosticsStatus,
+        logStatus,
+        securityEvents: securityLog.slice(-20).map((entry) => ({ ...entry })),
         behaviour: { ...behaviour },
         energyMultiplier,
         localList: {
@@ -1930,6 +2066,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       };
     },
 
+    securityEvent,
+
     connectionSecurity() {
       const authorizationKey = configValue(config, 'AuthorizationKey') ?? '';
       return {
@@ -1947,7 +2085,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         value: String(previous),
       }).config;
       log(`could not connect with the new Security Profile; back to ${previous}`);
-      changed();
+      securityEvent('ReconfigurationOfSecurityParameters', `SecurityProfile back to ${previous}`);
       options.reconnect?.();
     },
 
@@ -1981,6 +2119,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         chargingProfiles: chargingProfiles.map((p) => ({ ...p })),
         ...(firmwareVersion !== options.boot.firmwareVersion &&
           firmwareVersion !== undefined && { firmwareVersion }),
+        securityLog: securityLog.map((entry) => ({ ...entry })),
       };
     },
   };

@@ -28,3 +28,25 @@ Open Charge Alliance (OCA), one request and one response schema for each of the
 - To update, replace the folder with the files from a newer OCA download,
   regenerate `SHA256SUMS` (`shasum -a 256 *.json > ../SHA256SUMS` inside
   `ocpp16/`), and update the source and date above.
+
+## Security Whitepaper schemas
+
+`ocpp16-security/` holds the official JSON Schema files of the OCPP 1.6
+Security Whitepaper, one request and one response schema for each of its 11
+messages (draft-06, unlike the draft-04 files above).
+
+- **Work:** the JSON schemas of "Improved security for OCPP 1.6-J" (OCPP 1.6
+  Security Whitepaper), edition 4, 2026-02-05: `JSON_schemas.zip`, folder
+  `schema/`, inside the OCA download "OCPP 1.6 Security Whitepaper (4th
+  edition)".
+- **Source:**
+  https://openchargealliance.org/wp-content/uploads/2025/08/OCPP-1.6-security-whitepaper-edition-4.zip
+  (downloaded 2026-11-14; archive SHA-256
+  `158b883e8ee712fd80fad3610b69fad355f7831d7a0ccdd996ce6b5452ce6859`).
+- **Copyright:** © 2026 Open Charge Alliance. All rights reserved.
+- **Licence:** Creative Commons Attribution-NoDerivatives 4.0 International
+  Public License, https://creativecommons.org/licenses/by-nd/4.0/legalcode, as
+  stated in the whitepaper shipped in the same download.
+- **Changes:** none. `SHA256SUMS-security` lists their checksums
+  (`shasum -a 256 *.json > ../SHA256SUMS-security` inside `ocpp16-security/`),
+  and the same test checks them. The same rules apply.

@@ -171,6 +171,8 @@ export function createFleet(options: FleetOptions): Fleet {
     // The transport's callbacks need the charge point, which needs the transport's send().
     const holder: { chargePoint?: ChargePoint } = {};
     let connectionError: string | undefined;
+    /** Security events already recorded for this run of failed attempts (sent once, A00.FR.315). */
+    const reported = new Set<string>();
     const transport = createTransport({
       url: definition.csmsUrl,
       chargeBoxId: definition.id,
@@ -185,8 +187,18 @@ export function createFleet(options: FleetOptions): Fleet {
       onOpen: () => holder.chargePoint?.connected(),
       onClose: () => holder.chargePoint?.disconnected(),
       onEvent: (event) => {
-        if (event.type === 'error') connectionError = event.message;
-        if (event.type === 'open') connectionError = undefined;
+        if (event.type === 'error') {
+          connectionError = event.message;
+          const type = securityEventFor(event.message);
+          if (type !== undefined && !reported.has(type)) {
+            reported.add(type);
+            holder.chargePoint?.securityEvent(type, event.message);
+          }
+        }
+        if (event.type === 'open') {
+          connectionError = undefined;
+          reported.clear();
+        }
         emit({ stationId: definition.id, type: 'transport', event });
       },
     });
@@ -366,4 +378,21 @@ export function connectionSettings(
     return { error: 'Security Profile 3 needs a client certificate and key' };
   }
   return { tls: { ...ca, cert: pem.cert, key: pem.key, minVersion: 'TLSv1.2' } };
+}
+
+/**
+ * The security event a failed connection attempt stands for (Security
+ * Whitepaper A00.FR.309, A00.FR.315), judged from the error message.
+ */
+export function securityEventFor(message: string): string | undefined {
+  if (/Unexpected server response: 401/.test(message)) return 'FailedToAuthenticateAtCentralSystem';
+  if (
+    /unsupported protocol|wrong version number|protocol version|no protocols available/i.test(
+      message,
+    )
+  )
+    return 'InvalidTLSVersion';
+  if (/certificate|self[- ]signed|CERT_|altname|issuer/i.test(message))
+    return 'InvalidCentralSystemCertificate';
+  return undefined;
 }

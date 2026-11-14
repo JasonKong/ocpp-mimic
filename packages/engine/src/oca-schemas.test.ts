@@ -3,33 +3,41 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { OCPP16_MESSAGES, validate, type Ocpp16Action } from '@ocpp-mimic/core';
 import { describe, expect, it } from 'vitest';
-import { loadOcaSchemas, OCA_SCHEMAS_DIR, type PayloadKind } from './oca-schemas.js';
+import {
+  loadOcaSchemas,
+  OCA_SCHEMAS_DIR,
+  OCA_SECURITY_SCHEMAS_DIR,
+  type PayloadKind,
+} from './oca-schemas.js';
 
 const oca = loadOcaSchemas();
 
 describe('OCA schema files', () => {
-  it('are the unchanged published files listed in SHA256SUMS', () => {
-    const listed = readFileSync(join(OCA_SCHEMAS_DIR, '..', 'SHA256SUMS'), 'utf8')
+  it.each([
+    [OCA_SCHEMAS_DIR, 'SHA256SUMS', 56],
+    [OCA_SECURITY_SCHEMAS_DIR, 'SHA256SUMS-security', 22],
+  ])('in %s are the unchanged published files listed in %s', (dir, sums, count) => {
+    const listed = readFileSync(join(dir, '..', sums), 'utf8')
       .trim()
       .split('\n')
       .map((line) => {
         const [sum, file] = line.split(/\s+/);
         return { sum, file };
       });
-    const files = readdirSync(OCA_SCHEMAS_DIR).filter((name) => name.endsWith('.json'));
+    const files = readdirSync(dir).filter((name) => name.endsWith('.json'));
     expect(files.sort()).toEqual(listed.map((entry) => entry.file).sort());
-    expect(files).toHaveLength(56);
+    expect(files).toHaveLength(count);
     for (const { sum, file } of listed) {
       const actual = createHash('sha256')
-        .update(readFileSync(join(OCA_SCHEMAS_DIR, file ?? '')))
+        .update(readFileSync(join(dir, file ?? '')))
         .digest('hex');
       expect(actual, `${file} differs from the published file`).toBe(sum);
     }
   });
 
-  it('cover every OCPP 1.6 action, request and response', () => {
-    expect(oca.actions).toHaveLength(28);
-    for (const action of Object.keys(OCPP16_MESSAGES)) expect(oca.actions).toContain(action);
+  it('cover every OCPP 1.6 and Security Whitepaper action, request and response', () => {
+    expect(oca.actions).toHaveLength(39);
+    expect(Object.keys(OCPP16_MESSAGES).sort()).toEqual(oca.actions);
   });
 
   it('report problems as JSON paths, and nothing for unknown actions', () => {
@@ -42,6 +50,10 @@ describe('OCA schema files', () => {
       '$.chargePointVendor: must NOT have more than 20 characters',
     ]);
     expect(oca.check('NotAnAction', 'request', {})).toBeUndefined();
+    // A draft-06 schema of the whitepaper.
+    expect(
+      oca.check('SecurityEventNotification', 'request', { type: 'StartupOfTheDevice' }),
+    ).toEqual(["$: must have required property 'timestamp'"]);
   });
 });
 
@@ -50,6 +62,8 @@ describe('OCA schema files', () => {
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
 interface SchemaNode {
+  $ref?: string;
+  definitions?: Record<string, SchemaNode>;
   type?: string;
   properties?: Record<string, SchemaNode>;
   required?: string[];
@@ -67,7 +81,30 @@ interface Case {
 
 function readSchema(action: string, kind: PayloadKind): SchemaNode {
   const file = `${action}${kind === 'response' ? 'Response' : ''}.json`;
-  return JSON.parse(readFileSync(join(OCA_SCHEMAS_DIR, file), 'utf8')) as SchemaNode;
+  const dir = readdirSync(OCA_SCHEMAS_DIR).includes(file)
+    ? OCA_SCHEMAS_DIR
+    : OCA_SECURITY_SCHEMAS_DIR;
+  const root = JSON.parse(readFileSync(join(dir, file), 'utf8')) as SchemaNode;
+  return inline(root, root);
+}
+
+/** `node` with every `#/definitions/...` reference replaced by its definition. */
+function inline(node: SchemaNode, root: SchemaNode): SchemaNode {
+  if (node.$ref !== undefined) {
+    const name = node.$ref.replace('#/definitions/', '');
+    const target = root.definitions?.[name];
+    if (target === undefined) throw new Error(`unresolved ${node.$ref}`);
+    return inline(target, root);
+  }
+  return {
+    ...node,
+    ...(node.properties !== undefined && {
+      properties: Object.fromEntries(
+        Object.entries(node.properties).map(([key, child]) => [key, inline(child, root)]),
+      ),
+    }),
+    ...(node.items !== undefined && { items: inline(node.items, root) }),
+  };
 }
 
 /** A value the schema accepts; `full` fills every optional property and string up to maxLength. */

@@ -1,3 +1,5 @@
 # OCA's official OCPP 1.6 JSON Schemas are shipped byte-for-byte as published
 # (CC BY-ND 4.0, most files use CRLF): no line-ending conversion.
 packages/engine/oca-schemas/ocpp16/*.json -text
+# The Security Whitepaper's schemas likewise.
+packages/engine/oca-schemas/ocpp16-security/*.json -text

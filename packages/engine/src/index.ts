@@ -41,6 +41,7 @@ export type { ApiEvent } from './api.js';
 export {
   loadOcaSchemas,
   OCA_SCHEMAS_DIR,
+  OCA_SECURITY_SCHEMAS_DIR,
   type OcaSchemas,
   type PayloadKind,
 } from './oca-schemas.js';
