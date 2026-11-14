@@ -1,0 +1,259 @@
+/**
+ * A minimal CSMS for integration tests. It accepts OCPP 1.6J connections on
+ * `/ocpp/<chargeBoxId>`, answers every charge point request with a sensible
+ * default (or a custom handler), records all frames, and can send CALLs to
+ * the charge point.
+ */
+import { createServer, type IncomingMessage } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { Duplex } from 'node:stream';
+import {
+  MessageTypeId,
+  OCPP16_SUBPROTOCOL,
+  parseFrame,
+  serializeFrame,
+  sequentialIds,
+  type CallFrame,
+  type Frame,
+  type JsonObject,
+} from '@ocpp-mimic/core';
+import { WebSocketServer, type WebSocket } from 'ws';
+
+/** Returned by a handler to answer with a CALLERROR instead of a CALLRESULT. */
+export class CallErrorReply {
+  constructor(
+    readonly errorCode: string,
+    readonly errorDescription = '',
+  ) {}
+}
+
+export type CsmsHandler = (
+  payload: JsonObject,
+  connection: MiniCsmsConnection,
+) => JsonObject | CallErrorReply | Promise<JsonObject | CallErrorReply>;
+
+export interface MiniCsmsOptions {
+  port?: number;
+  host?: string;
+  /** Handlers by action; they replace the defaults for those actions. */
+  handlers?: Record<string, CsmsHandler>;
+}
+
+export interface MiniCsmsConnection {
+  readonly chargeBoxId: string;
+  readonly protocol: string;
+  /** Every frame received from the charge point, in order. */
+  readonly received: readonly Frame[];
+  /** Resolves with the next CALL of `action` not yet returned by an earlier wait. */
+  waitForCall(action: string, timeoutMs?: number): Promise<CallFrame>;
+  /** Sends a CALL and resolves with the CALLRESULT or CALLERROR frame. */
+  call(action: string, payload: JsonObject, timeoutMs?: number): Promise<Frame>;
+  close(): void;
+}
+
+export interface MiniCsms {
+  /** Base URL; a charge point connects to `${url}/<chargeBoxId>`. */
+  readonly url: string;
+  waitForConnection(chargeBoxId: string, timeoutMs?: number): Promise<MiniCsmsConnection>;
+  stop(): Promise<void>;
+}
+
+const now = () => new Date().toISOString();
+
+function defaultHandlers(): Record<string, CsmsHandler> {
+  let nextTransactionId = 1;
+  return {
+    BootNotification: () => ({ status: 'Accepted', currentTime: now(), interval: 60 }),
+    Heartbeat: () => ({ currentTime: now() }),
+    StatusNotification: () => ({}),
+    MeterValues: () => ({}),
+    Authorize: () => ({ idTagInfo: { status: 'Accepted' } }),
+    StartTransaction: () => ({
+      idTagInfo: { status: 'Accepted' },
+      transactionId: nextTransactionId++,
+    }),
+    StopTransaction: () => ({ idTagInfo: { status: 'Accepted' } }),
+    DataTransfer: () => ({ status: 'Accepted' }),
+  };
+}
+
+/** Waits for `predicate` to hold, re-checking whenever `subscribe` signals a change. */
+function waitUntil<T>(
+  check: () => T | undefined,
+  subscribe: (listener: () => void) => () => void,
+  timeoutMs: number,
+  what: string,
+): Promise<T> {
+  const found = check();
+  if (found !== undefined) return Promise.resolve(found);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      unsubscribe();
+      reject(new Error(`timed out after ${timeoutMs} ms waiting for ${what}`));
+    }, timeoutMs);
+    const unsubscribe = subscribe(() => {
+      const value = check();
+      if (value === undefined) return;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(value);
+    });
+  });
+}
+
+function createConnection(
+  socket: WebSocket,
+  chargeBoxId: string,
+  handlers: Record<string, CsmsHandler>,
+): MiniCsmsConnection {
+  const received: Frame[] = [];
+  const returned = new Set<Frame>();
+  const listeners = new Set<() => void>();
+  const ids = sequentialIds('csms-');
+  const subscribe = (listener: () => void) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
+  const send = (frame: Frame) => socket.send(serializeFrame(frame));
+
+  const connection: MiniCsmsConnection = {
+    chargeBoxId,
+    protocol: socket.protocol,
+    received,
+    waitForCall(action, timeoutMs = 2000) {
+      return waitUntil(
+        () => {
+          const frame = received.find(
+            (f): f is CallFrame =>
+              f.type === MessageTypeId.Call && f.action === action && !returned.has(f),
+          );
+          if (frame !== undefined) returned.add(frame);
+          return frame;
+        },
+        subscribe,
+        timeoutMs,
+        `${action} from ${chargeBoxId}`,
+      );
+    },
+    call(action, payload, timeoutMs = 2000) {
+      const id = ids();
+      send({ type: MessageTypeId.Call, id, action, payload });
+      return waitUntil(
+        () => received.find((f) => f.type !== MessageTypeId.Call && f.id === id),
+        subscribe,
+        timeoutMs,
+        `the answer to ${action} (${id})`,
+      );
+    },
+    close() {
+      socket.close();
+    },
+  };
+
+  socket.on('message', async (data) => {
+    const parsed = parseFrame(data.toString());
+    if (!parsed.ok) return;
+    const { frame } = parsed;
+    received.push(frame);
+    listeners.forEach((listener) => listener());
+    if (frame.type !== MessageTypeId.Call) return;
+
+    const handler = handlers[frame.action];
+    if (handler === undefined) {
+      send({
+        type: MessageTypeId.CallError,
+        id: frame.id,
+        errorCode: 'NotImplemented',
+        errorDescription: `mini CSMS has no handler for ${frame.action}`,
+        errorDetails: {},
+      });
+      return;
+    }
+    try {
+      const reply = await handler(frame.payload, connection);
+      if (reply instanceof CallErrorReply) {
+        send({
+          type: MessageTypeId.CallError,
+          id: frame.id,
+          errorCode: reply.errorCode,
+          errorDescription: reply.errorDescription,
+          errorDetails: {},
+        });
+      } else {
+        send({ type: MessageTypeId.CallResult, id: frame.id, payload: reply });
+      }
+    } catch (error) {
+      send({
+        type: MessageTypeId.CallError,
+        id: frame.id,
+        errorCode: 'InternalError',
+        errorDescription: error instanceof Error ? error.message : String(error),
+        errorDetails: {},
+      });
+    }
+  });
+
+  return connection;
+}
+
+export async function startMiniCsms(options: MiniCsmsOptions = {}): Promise<MiniCsms> {
+  const { port = 0, host = '127.0.0.1' } = options;
+  const handlers = { ...defaultHandlers(), ...options.handlers };
+  const connections = new Map<string, MiniCsmsConnection>();
+  const listeners = new Set<() => void>();
+
+  const wss = new WebSocketServer({
+    noServer: true,
+    handleProtocols: (protocols) =>
+      protocols.has(OCPP16_SUBPROTOCOL) ? OCPP16_SUBPROTOCOL : false,
+  });
+  const server = createServer((_req, res) => {
+    res.writeHead(404).end();
+  });
+
+  server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    const match = /^\/ocpp\/([^/?]+)$/.exec(new URL(req.url ?? '/', 'http://x').pathname);
+    if (match?.[1] === undefined) {
+      socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+      return;
+    }
+    const chargeBoxId = decodeURIComponent(match[1]);
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      if (ws.protocol !== OCPP16_SUBPROTOCOL) {
+        ws.close(1002, 'ocpp1.6 subprotocol required');
+        return;
+      }
+      connections.set(chargeBoxId, createConnection(ws, chargeBoxId, handlers));
+      ws.on('close', () => connections.delete(chargeBoxId));
+      listeners.forEach((listener) => listener());
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, host, () => resolve());
+  });
+  const { port: boundPort } = server.address() as AddressInfo;
+
+  return {
+    url: `ws://${host}:${boundPort}/ocpp`,
+    waitForConnection(chargeBoxId, timeoutMs = 2000) {
+      return waitUntil(
+        () => connections.get(chargeBoxId),
+        (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        timeoutMs,
+        `a connection from ${chargeBoxId}`,
+      );
+    },
+    async stop() {
+      for (const client of wss.clients) client.terminate();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    },
+  };
+}
