@@ -166,6 +166,8 @@ export interface PersistedChargePoint {
   sequence: number;
   /** Missing in states saved before the switches existed. */
   behaviour?: ChargePointBehaviour;
+  /** Missing in states saved before the energy multiplier existed. */
+  energyMultiplier?: number;
 }
 
 export interface ChargePointOptions {
@@ -190,6 +192,11 @@ export interface ChargePointOptions {
   onEvent?: (event: ChargePointEvent) => void;
   /** Initial test switches; a restored state's switches take precedence. */
   behaviour?: Partial<ChargePointBehaviour>;
+  /**
+   * Energy (and SoC) advance this many times faster than real time; every
+   * timestamp stays real. Default 1; a restored state's value takes precedence.
+   */
+  energyMultiplier?: number;
   /**
    * State saved by persistentState() before a restart. Configuration, meters,
    * the authorization cache and queued messages carry over; transactions that
@@ -228,6 +235,7 @@ export interface ChargePointSnapshot {
   /** Transaction messages waiting to be sent. */
   queuedMessages: number;
   behaviour: ChargePointBehaviour;
+  energyMultiplier: number;
 }
 
 export type IdTagResult = 'stopping' | 'authorized' | 'rejected' | 'busy' | 'unknown-connector';
@@ -249,10 +257,19 @@ export interface ChargePoint {
   clearFault(connectorId: number): void;
   /** Changes test switches; turning the cable lock on or off applies to running transactions too. */
   setBehaviour(changes: Partial<ChargePointBehaviour>): void;
+  /** Changes the energy multiplier from now on. Throws a RangeError unless it is above 0. */
+  setEnergyMultiplier(multiplier: number): void;
   dataTransfer(request: RequestOf<'DataTransfer'>): Promise<CallOutcome<'DataTransfer'>>;
   snapshot(): ChargePointSnapshot;
   /** The state to save for a restart; see ChargePointOptions.restore. */
   persistentState(): PersistedChargePoint;
+}
+
+function checkedMultiplier(value: number): number {
+  if (!(Number.isFinite(value) && value > 0)) {
+    throw new RangeError(`the energy multiplier must be a number above 0, got ${value}`);
+  }
+  return value;
 }
 
 export function createChargePoint(options: ChargePointOptions): ChargePoint {
@@ -275,6 +292,9 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     ...options.behaviour,
     ...options.restore?.behaviour,
   };
+  let energyMultiplier = checkedMultiplier(
+    options.restore?.energyMultiplier ?? options.energyMultiplier ?? 1,
+  );
   let authCache: AuthorizationCache = EMPTY_AUTHORIZATION_CACHE;
   const meters = new Map<number, MeterState>(
     connectors(station).map((c) => [c.connectorId, createMeter({ now: clock.now(), offeredW })]),
@@ -490,10 +510,10 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     const ev = evs.get(connectorId);
     let next: MeterState;
     if (ev === undefined || !ev.drawing) {
-      next = meterAt(current, now());
+      next = meterAt(current, now(), energyMultiplier);
     } else {
       const elapsed = Math.max(0, now() - current.updatedAt);
-      const step = advanceEv(ev.state, current.offeredW, elapsed);
+      const step = advanceEv(ev.state, current.offeredW, elapsed * energyMultiplier);
       ev.state = step.ev;
       next = {
         ...current,
@@ -542,8 +562,9 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     fullTimers.delete(connectorId);
     const ev = evs.get(connectorId);
     if (ev === undefined || !ev.drawing) return;
-    const ms = msUntilFull(ev.state, meter(connectorId).offeredW);
-    if (ms === undefined) return;
+    const energyMs = msUntilFull(ev.state, meter(connectorId).offeredW);
+    if (energyMs === undefined) return;
+    const ms = Math.ceil(energyMs / energyMultiplier);
     fullTimers.set(
       connectorId,
       later(ms, () => {
@@ -1143,6 +1164,15 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       changed();
     },
 
+    setEnergyMultiplier(multiplier) {
+      const next = checkedMultiplier(multiplier);
+      // Energy so far counts at the old rate.
+      for (const id of meters.keys()) syncMeter(id);
+      energyMultiplier = next;
+      for (const id of meters.keys()) scheduleFull(id);
+      changed();
+    },
+
     snapshot() {
       const station0 = stationStatus(station);
       return {
@@ -1178,6 +1208,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         config: config.values,
         queuedMessages: outbox.length,
         behaviour: { ...behaviour },
+        energyMultiplier,
       };
     },
 
@@ -1205,6 +1236,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         csmsIds: Object.fromEntries(csmsIds),
         sequence,
         behaviour: { ...behaviour },
+        energyMultiplier,
       };
     },
   };

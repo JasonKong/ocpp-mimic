@@ -90,6 +90,14 @@ function stringField(
   return value;
 }
 
+function multiplierField(body: Record<string, unknown>): number {
+  const value = body.energyMultiplier;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new HttpError(400, '"energyMultiplier" must be a number above 0');
+  }
+  return value;
+}
+
 /** Reads a partial set of behaviour switches; unknown names and non-booleans are errors. */
 function behaviourChanges(body: Record<string, unknown>): Partial<ChargePointBehaviour> {
   const changes: Partial<ChargePointBehaviour> = {};
@@ -173,6 +181,9 @@ const routes: Route[] = [
             Object.entries(config).map(([key, value]) => [key, String(value)]),
           ),
         }),
+        ...(body.energyMultiplier !== undefined && {
+          energyMultiplier: multiplierField(body),
+        }),
       };
       if (fleet.get(definition.id) !== undefined) {
         throw new HttpError(409, `station ${definition.id} already exists`);
@@ -222,6 +233,12 @@ const routes: Route[] = [
   route('POST', '/api/stations/:param/online', (request, context) => {
     const station = stationOf(context, request.params[0]);
     station.transport.goOnline();
+    return station.snapshot();
+  }),
+
+  route('PATCH', '/api/stations/:param/energy-multiplier', async (request, context) => {
+    const station = stationOf(context, request.params[0]);
+    station.chargePoint.setEnergyMultiplier(multiplierField(await request.body()));
     return station.snapshot();
   }),
 

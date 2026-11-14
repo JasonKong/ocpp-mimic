@@ -48,6 +48,11 @@ function raiseFault(connector: ConnectorSnapshot) {
   if (fault !== undefined) emit('action', 'fault', connector.connectorId, fault);
 }
 
+function setMultiplier(event: Event) {
+  const value = Number((event.target as HTMLInputElement).value);
+  if (Number.isFinite(value) && value > 0) emit('action', 'energyMultiplier', undefined, value);
+}
+
 function toggle(name: keyof Behaviour, event: Event) {
   emit('action', 'behaviour', undefined, { [name]: (event.target as HTMLInputElement).checked });
 }
@@ -68,6 +73,12 @@ function statusTone(status: string): string {
       <div>
         <h2>{{ station.id }}</h2>
         <p class="meta">
+          <span
+            v-if="station.energyMultiplier !== 1"
+            class="badge"
+            title="Energy and SoC advance faster than real time; timestamps stay real"
+            >energy ×{{ station.energyMultiplier }}</span
+          >
           {{ station.persona }} · {{ station.csmsUrl }} · connection {{ station.transport }} ·
           {{ station.registration }}
           <span v-if="station.queuedMessages > 0"> · {{ station.queuedMessages }} queued</span>
@@ -115,6 +126,18 @@ function statusTone(status: string): string {
           @change="toggle('cableLock', $event)"
         />
         Lock the cable while charging
+      </label>
+      <label title="Energy and SoC advance this many times faster; timestamps stay real">
+        Energy ×
+        <input
+          :key="station.energyMultiplier"
+          class="multiplier"
+          type="number"
+          min="0.1"
+          step="any"
+          :value="station.energyMultiplier"
+          @change="setMultiplier($event)"
+        />
       </label>
     </div>
 
@@ -250,6 +273,18 @@ h2 {
   flex-wrap: wrap;
   gap: 16px;
   font-size: 13px;
+}
+.badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--warn, #b45309);
+  color: #fff;
+  font-weight: 600;
+}
+.multiplier {
+  width: 64px;
 }
 .switches label {
   display: flex;

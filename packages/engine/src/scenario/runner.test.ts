@@ -154,6 +154,28 @@ steps:
   );
 
   it(
+    'charges an EV with the energy multiplier and reports the multiplier',
+    { timeout: 30_000 },
+    async () => {
+      const result = await runScenario(
+        scenario(`
+name: fast EV
+station: { id: SIM-1, persona: generic-1.6, energyMultiplier: 240 }
+steps:
+  - presentCard: { idTag: TAG }
+  - plugIn: { ev: test-5kwh }
+  - expectConnector: { status: Charging, ev: { soc: { $gt: 70 } } }
+  - expectConnector: { status: SuspendedEV, ev: { soc: 100 }, within: 20s }
+`),
+        'ev#1',
+        FAST,
+      );
+      expect(result.status).toBe('passed');
+      expect(result.properties.energyMultiplier).toBe('×240');
+    },
+  );
+
+  it(
     'reports errors for timeouts, unknown variables and setup problems',
     { timeout: 20_000 },
     async () => {

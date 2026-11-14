@@ -172,6 +172,9 @@ export function createFleet(options: FleetOptions): Fleet {
       config: { ...personaOptions.config, values: configValues },
       clock,
       ids,
+      ...(definition.energyMultiplier !== undefined && {
+        energyMultiplier: definition.energyMultiplier,
+      }),
       send: (text) => transport.send(text),
       restart: (downtimeMs) => transport.restartAfter(downtimeMs),
       onEvent: (event) => {

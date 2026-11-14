@@ -43,6 +43,7 @@ export interface StationSnapshot {
   config: Record<string, string>;
   queuedMessages: number;
   behaviour: Behaviour;
+  energyMultiplier: number;
 }
 
 export interface FaultInfo {
@@ -127,6 +128,8 @@ export const api = {
   offline: (id: string, mode: 'clean' | 'half-open') =>
     request<StationSnapshot>('POST', `${station(id)}/offline`, { mode }),
   online: (id: string) => request<StationSnapshot>('POST', `${station(id)}/online`),
+  setEnergyMultiplier: (id: string, energyMultiplier: number) =>
+    request<StationSnapshot>('PATCH', `${station(id)}/energy-multiplier`, { energyMultiplier }),
   setBehaviour: (id: string, changes: Partial<Behaviour>) =>
     request<StationSnapshot>('PATCH', `${station(id)}/behaviour`, changes),
   plug: (id: string, c: number, ev?: string) =>

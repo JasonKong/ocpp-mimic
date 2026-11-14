@@ -130,6 +130,15 @@ export async function runScenario(
     persona: [...new Set(scenario.stations.map((s) => s.persona))].join(', '),
     csms: csmsTarget,
   };
+  // Reports must show when energy runs faster than real time.
+  const multiplied = scenario.stations.filter((s) => (s.energyMultiplier ?? 1) !== 1);
+  if (multiplied.length > 0) {
+    properties.energyMultiplier = multiplied
+      .map((s) =>
+        scenario.stations.length > 1 ? `${s.id} ×${s.energyMultiplier}` : `×${s.energyMultiplier}`,
+      )
+      .join(', ');
+  }
   const steps: StepResult[] = scenario.steps.map((step, index) => ({
     index,
     label: stepLabel(step),
@@ -197,6 +206,9 @@ export async function runScenario(
         csmsUrl,
         ...(definition.password !== undefined && { password: definition.password }),
         ...(definition.config !== undefined && { config: definition.config }),
+        ...(definition.energyMultiplier !== undefined && {
+          energyMultiplier: definition.energyMultiplier,
+        }),
       });
       if (definition.behaviour !== undefined)
         station.chargePoint.setBehaviour(definition.behaviour);

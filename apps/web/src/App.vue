@@ -77,6 +77,8 @@ async function act(name: string, connectorId?: number, value?: unknown) {
         return api.offline(id, value as 'clean' | 'half-open');
       case 'online':
         return api.online(id);
+      case 'energyMultiplier':
+        return api.setEnergyMultiplier(id, Number(value));
       case 'behaviour':
         return api.setBehaviour(id, value as Parameters<typeof api.setBehaviour>[1]);
       case 'plug':
