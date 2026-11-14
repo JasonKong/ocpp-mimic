@@ -2,26 +2,33 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import {
   api,
-  subscribeEvents,
+  connectEvents,
+  type EventsConnection,
   type NewStation,
   type PersonaInfo,
   type RecordEntry,
   type StationSnapshot,
+  type StationSummary,
 } from './api.js';
+import FleetOverview from './components/FleetOverview.vue';
 import MessageLog from './components/MessageLog.vue';
 import StationDetail from './components/StationDetail.vue';
 import StationList from './components/StationList.vue';
 
-const stations = reactive(new Map<string, StationSnapshot>());
+/** Every station as a summary; only the selected one has its full snapshot and records. */
+const summaries = reactive(new Map<string, StationSummary>());
 const records = reactive(new Map<string, RecordEntry[]>());
 const personas = ref<PersonaInfo[]>([]);
 const selectedId = ref<string | undefined>();
+const selected = ref<StationSnapshot | undefined>();
 const error = ref<string | undefined>();
 const live = ref(false);
 const MAX_RECORDS = 1000;
+let events: EventsConnection | undefined;
 
-const stationList = computed(() => [...stations.values()].sort((a, b) => a.id.localeCompare(b.id)));
-const selected = computed(() => (selectedId.value ? stations.get(selectedId.value) : undefined));
+const stationList = computed(() =>
+  [...summaries.values()].sort((a, b) => a.id.localeCompare(b.id)),
+);
 const selectedPersona = computed(() =>
   personas.value.find((p) => p.id === selected.value?.persona),
 );
@@ -40,8 +47,14 @@ async function guard(work: () => Promise<unknown>) {
 
 async function select(id: string) {
   selectedId.value = id;
+  selected.value = undefined;
+  // Only the selected station's records and snapshots come over the socket.
+  events?.subscribe([id]);
+  records.clear();
   await guard(async () => {
-    const { entries } = await api.messages(id);
+    const [snapshot, { entries }] = await Promise.all([api.station(id), api.messages(id)]);
+    if (selectedId.value !== id) return;
+    selected.value = snapshot;
     records.set(id, entries);
   });
 }
@@ -56,8 +69,13 @@ function addRecord(entry: RecordEntry) {
 
 async function create(station: NewStation) {
   await guard(async () => {
-    const created = await api.createStation(station);
-    stations.set(created.id, created);
+    if ((station.count ?? 1) > 1) {
+      const { ids } = await api.createStations({ ...station, count: station.count ?? 1 });
+      if (ids[0] !== undefined) await select(ids[0]);
+      return;
+    }
+    const { count: _count, ...single } = station;
+    const created = await api.createStation(single);
     await select(created.id);
   });
 }
@@ -106,35 +124,40 @@ async function act(name: string, connectorId?: number, value?: unknown) {
       case 'delete':
         if (!confirm(`Delete charge point ${id}? This stops it and forgets its state.`)) return;
         await api.deleteStation(id);
-        stations.delete(id);
+        summaries.delete(id);
         records.delete(id);
-        selectedId.value = stationList.value[0]?.id;
+        selected.value = undefined;
+        selectedId.value = undefined;
+        if (stationList.value[0] !== undefined) await select(stationList.value[0].id);
         return;
     }
   });
 }
 
-let unsubscribe: (() => void) | undefined;
-
 onMounted(async () => {
-  unsubscribe = subscribeEvents(
+  events = connectEvents(
     (event) => {
-      if (event.type === 'station') stations.set(event.station.id, event.station);
-      else if (event.type === 'station-removed') stations.delete(event.stationId);
-      else addRecord(event.entry);
+      if (event.type === 'fleet') {
+        if (event.full) summaries.clear();
+        for (const summary of event.stations) summaries.set(summary.id, summary);
+        for (const id of event.removed) summaries.delete(id);
+        if (selectedId.value === undefined && stationList.value[0] !== undefined) {
+          void select(stationList.value[0].id);
+        }
+      } else if (event.type === 'station') {
+        if (event.station.id === selectedId.value) selected.value = event.station;
+      } else {
+        addRecord(event.entry);
+      }
     },
     (connected) => (live.value = connected),
   );
   await guard(async () => {
-    const [personaList, stationList] = await Promise.all([api.personas(), api.stations()]);
-    personas.value = personaList.personas;
-    for (const station of stationList.stations) stations.set(station.id, station);
-    const first = stationList.stations[0];
-    if (first !== undefined) await select(first.id);
+    personas.value = (await api.personas()).personas;
   });
 });
 
-onUnmounted(() => unsubscribe?.());
+onUnmounted(() => events?.close());
 </script>
 
 <template>
@@ -154,12 +177,13 @@ onUnmounted(() => unsubscribe?.());
         @select="select"
         @create="create"
       />
-      <div v-if="selected" class="content">
-        <StationDetail :station="selected" :persona="selectedPersona" @action="act" />
-        <MessageLog :entries="selectedRecords" :station-id="selectedId" />
-      </div>
-      <div v-else class="content placeholder">
-        <p>Add a charge point, or pick one on the left.</p>
+      <div class="content">
+        <FleetOverview :stations="stationList" />
+        <template v-if="selected">
+          <StationDetail :station="selected" :persona="selectedPersona" @action="act" />
+          <MessageLog :entries="selectedRecords" :station-id="selectedId" />
+        </template>
+        <p v-else class="placeholder">Add a charge point, or pick one on the left.</p>
       </div>
     </main>
   </div>
@@ -190,7 +214,7 @@ h1 {
 }
 main {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 280px 1fr;
   gap: 24px;
 }
 .content {

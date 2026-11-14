@@ -244,8 +244,18 @@ export function connectionState(snapshot: StationSnapshot): ConnectionState {
   return 'connecting';
 }
 
+export interface StationSummary {
+  id: string;
+  persona: string;
+  group?: string;
+  tags: string[];
+  state: ConnectionState;
+  registration: string;
+  connectors: { connectorId: number; status: string }[];
+}
+
 /** The few fields a fleet list needs. */
-export function stationSummary(snapshot: StationSnapshot) {
+export function stationSummary(snapshot: StationSnapshot): StationSummary {
   return {
     id: snapshot.id,
     persona: snapshot.persona,
@@ -678,8 +688,13 @@ export async function handleApi(
   return true;
 }
 
-/** What the /api/events WebSocket pushes. */
+/**
+ * What the /api/events WebSocket pushes. Every client gets fleet summaries
+ * (all of them on connecting, `full`, then the changed ones at most once a
+ * second); records and full snapshots go only to the clients that sent
+ * `{ "type": "subscribe", "stations": [...] }` for the station.
+ */
 export type ApiEvent =
   | { type: 'record'; entry: RecordEntry }
   | { type: 'station'; station: ReturnType<VirtualStation['snapshot']> }
-  | { type: 'station-removed'; stationId: string };
+  | { type: 'fleet'; stations: StationSummary[]; removed: string[]; full?: true };

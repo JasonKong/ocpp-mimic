@@ -671,6 +671,12 @@ thresholds:
 - 用 `serve --otlp-endpoint <url>`（URL 不以 `/v1/metrics` 结尾时自动补上）和 `--otlp-header name=value`，或标准环境变量 `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`、`OTEL_EXPORTER_OTLP_HEADERS`、`OTEL_METRIC_EXPORT_INTERVAL`（默认 10 秒）、`OTEL_SERVICE_NAME` 和 `OTEL_RESOURCE_ATTRIBUTES` 配置。资源属性有 `service.name`（默认 `ocpp-mimic`）、`service.version`、`ocpp_mimic.run`（未指定时每次运行随机生成）。按间隔推送，engine 停止时再推送一次；collector 失败时只报告一次，直到恢复正常。
 - CI 向 OpenTelemetry Collector（otel/opentelemetry-collector 0.120.0，debug exporter）推送，并检查指标确实到达。
 
+**已实现：支持上千个桩的 Web UI（T50）**
+
+- 事件 WebSocket 在客户端连接时发送整个车队的摘要（`{ type: fleet, full: true, stations, removed: [] }`），之后最多每秒发送一次有变化和被删除的桩。客户端发送 `{ type: subscribe, stations: [...] }`（最多 100 个 id）后，只收到这些桩的记录和完整快照，包括充电时每 2 秒的推送。没有客户端连接时，不为 WebSocket 构建任何内容。
+- Web UI 用摘要显示列表，只订阅选中的桩。列表只渲染可见的行（每行 36 px），带搜索框和按连接状态、分组的过滤；添加表单可以填数量和分组，数量大于 1 时用带 id 计数器的批量 API。车队面板按 persona 或分组统计在线、离线、停止的桩，以及充电中、故障的连接器，并每 5 秒显示 `/api/metrics` 的主要数字。
+- 在浏览器里用 1,000 个桩（其中 900 个运行使用模型）检查：只渲染 25 行，过滤在 1 毫秒内生效，10 秒的持续更新中没有超过 50 毫秒的长任务，页面堆 13 MB；各项计数与 `/api/metrics` 一致，差别只来自每秒一次的批量更新。
+
 **文件放在哪里**
 
 压测计划放 `scenarios/load/`，导入映射放 `scenarios/import/`，样本日志放 `scenarios/logs/`，压测用的 persona 放 `scenarios/personas/`。测试会把 `scenarios/` 下其余所有文件当作场景校验，所以 `scenarios/examples/` 只放场景。

@@ -107,6 +107,44 @@ export interface NewStation {
   persona: string;
   csmsUrl: string;
   password?: string;
+  /** More than 1: `id` holds a counter such as SIM-{001} and the stations are created in bulk. */
+  count?: number;
+  group?: string;
+}
+
+/** What a fleet list shows of a station. */
+export interface StationSummary {
+  id: string;
+  persona: string;
+  group?: string;
+  tags: string[];
+  state: 'connected' | 'connecting' | 'offline' | 'stopped';
+  registration: string;
+  connectors: { connectorId: number; status: string }[];
+}
+
+export interface LatencySummary {
+  count: number;
+  p50: number;
+  p95: number;
+  p99: number;
+  max: number;
+}
+
+/** GET /api/metrics, the parts the Web UI shows. */
+export interface MetricsSummary {
+  stations: Record<string, number>;
+  connectors: Record<string, number>;
+  csmsLatency: { overall: LatencySummary; byAction: Record<string, LatencySummary> };
+  answers: Record<string, number>;
+  callErrors: { sent: number; received: number };
+  schemaViolations: number;
+  connections: { opened: number; failed: number };
+  disconnects: Record<string, number>;
+  transactions: Record<string, number>;
+  sessionsTurnedAway: number;
+  offlineQueue: number;
+  eventLoopDelayMs: { p50: number; p99: number; max: number };
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -135,8 +173,12 @@ const connector = (id: string, connectorId: number) => `${station(id)}/connector
 export const api = {
   personas: () => request<{ personas: PersonaInfo[]; errors: string[] }>('GET', '/api/personas'),
   stations: () => request<{ stations: StationSnapshot[] }>('GET', '/api/stations'),
+  station: (id: string) => request<StationSnapshot>('GET', station(id)),
   createStation: (definition: NewStation) =>
     request<StationSnapshot>('POST', '/api/stations', definition),
+  createStations: (template: NewStation & { count: number }) =>
+    request<{ created: number; ids: string[] }>('POST', '/api/stations/bulk', template),
+  metrics: () => request<MetricsSummary>('GET', '/api/metrics'),
   deleteStation: (id: string) => request<void>('DELETE', station(id)),
   start: (id: string) => request<StationSnapshot>('POST', `${station(id)}/start`),
   stop: (id: string) => request<StationSnapshot>('POST', `${station(id)}/stop`),
@@ -169,23 +211,43 @@ export const api = {
     request<{ entries: RecordEntry[] }>('GET', `${station(id)}/messages?limit=${limit}`),
 };
 
+/**
+ * What /api/events pushes: fleet summaries to everyone (all on connecting,
+ * then changes at most once a second), records and full snapshots only for
+ * the subscribed stations.
+ */
 export type ApiEvent =
   | { type: 'record'; entry: RecordEntry }
   | { type: 'station'; station: StationSnapshot }
-  | { type: 'station-removed'; stationId: string };
+  | { type: 'fleet'; stations: StationSummary[]; removed: string[]; full?: true };
 
-/** Subscribes to /api/events, reconnecting after drops. Returns an unsubscribe function. */
-export function subscribeEvents(
+export interface EventsConnection {
+  /** The stations to get records and full snapshots for; replaces the earlier list. */
+  subscribe(stationIds: string[]): void;
+  close(): void;
+}
+
+/** Connects to /api/events, reconnecting after drops and subscribing again. */
+export function connectEvents(
   onEvent: (event: ApiEvent) => void,
   onConnection: (connected: boolean) => void,
-): () => void {
+): EventsConnection {
   let socket: WebSocket | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
+  let subscribed: string[] = [];
+  const send = () => {
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'subscribe', stations: subscribed }));
+    }
+  };
   const connect = () => {
     const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/events`;
     socket = new WebSocket(url);
-    socket.onopen = () => onConnection(true);
+    socket.onopen = () => {
+      onConnection(true);
+      send();
+    };
     socket.onmessage = (message) => onEvent(JSON.parse(String(message.data)) as ApiEvent);
     socket.onclose = () => {
       onConnection(false);
@@ -193,9 +255,15 @@ export function subscribeEvents(
     };
   };
   connect();
-  return () => {
-    closed = true;
-    if (retry !== undefined) clearTimeout(retry);
-    socket?.close();
+  return {
+    subscribe(stationIds) {
+      subscribed = stationIds;
+      send();
+    },
+    close() {
+      closed = true;
+      if (retry !== undefined) clearTimeout(retry);
+      socket?.close();
+    },
   };
 }
