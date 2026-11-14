@@ -81,3 +81,14 @@ export {
 } from './scenario/run.js';
 export { formatScenarioResult, formatSummary } from './scenario/report.js';
 export { problemsToJUnit, toJUnit } from './scenario/junit.js';
+export { exportLog, recordToLine } from './logs/export.js';
+export {
+  importMapped,
+  importText,
+  maskLines,
+  parseCsv,
+  parseMapping,
+  parseTime,
+  readMapping,
+  type ImportMapping,
+} from './logs/import.js';

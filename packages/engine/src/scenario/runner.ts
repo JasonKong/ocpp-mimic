@@ -20,7 +20,10 @@ import {
   type Scenario,
   type ScenarioStep,
 } from '@ocpp-mimic/core';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createEngine, type Engine } from '../engine.js';
+import { exportLog } from '../logs/export.js';
 import { resolveEv } from '../evs.js';
 import { DEFAULT_ALLOWED_CSMS, type VirtualStation } from '../fleet.js';
 import type { FrameRecord } from '../recorder.js';
@@ -77,6 +80,8 @@ export interface RunOptions {
   backoff?: Partial<BackoffPolicy>;
   /** Called after each step, for live output. */
   onStep?: (result: StepResult, scenario: Scenario) => void;
+  /** Writes each scenario's frames to `<logDir>/<label>.jsonl` (ocpp-mimic's log format). */
+  logDir?: string;
 }
 
 /** A step failure with details for the report. */
@@ -742,5 +747,14 @@ export async function runScenario(
     aborted = true;
     await engine?.stop().catch(() => {});
     await csms?.stop().catch(() => {});
+    if (options.logDir !== undefined) await writeScenarioLog(options.logDir, label, log.frames);
   }
+}
+
+/** `<dir>/<file name of the label>.jsonl` with the scenario's frames, e.g. `usage.yaml-1.jsonl`. */
+async function writeScenarioLog(dir: string, label: string, frames: FrameRecord[]): Promise<void> {
+  const file = label.split(/[\\/]/).pop() ?? label;
+  const name = file.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, `${name}.jsonl`), exportLog(frames, label));
 }

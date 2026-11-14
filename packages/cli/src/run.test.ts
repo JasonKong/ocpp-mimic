@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseLog } from '@ocpp-mimic/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RunCommand } from './command.js';
 import { runCommand } from './run.js';
@@ -43,6 +44,25 @@ steps:
 `;
 
 describe('ocpp-mimic run', () => {
+  it(
+    "writes each scenario's frames as a JSONL log with --log-dir",
+    { timeout: 30_000 },
+    async () => {
+      const dir = await files({ 'a.yaml': PASSING });
+      const logDir = join(dir, 'logs');
+      const { code } = await run(command([join(dir, 'a.yaml')], { logDir }));
+      expect(code).toBe(0);
+      const log = parseLog(await readFile(join(logDir, 'a.yaml-1.jsonl'), 'utf8'));
+      expect(log.problems).toEqual([]);
+      expect(log.header).toMatchObject({
+        masked: false,
+        source: expect.stringMatching(/a\.yaml#1$/),
+      });
+      expect(log.lines[0]).toMatchObject({ station: 'CLI-1', direction: 'cp-to-csms' });
+      expect(log.lines[0]?.frame?.[2]).toBe('BootNotification');
+    },
+  );
+
   it(
     'exits 0 when every scenario passes, and prints a line per scenario',
     { timeout: 30_000 },

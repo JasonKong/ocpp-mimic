@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 import type { FrameRecord, RecordEntry } from '../api.js';
 import { formatTime, messageTypeLabel, summarize } from '../format.js';
 
-const props = defineProps<{ entries: RecordEntry[] }>();
+const props = defineProps<{ entries: RecordEntry[]; stationId?: string | undefined }>();
 
 const include = ref<string[]>([]);
 const exclude = ref<string[]>(['Heartbeat']);
@@ -42,6 +42,14 @@ function pretty(record: FrameRecord): string {
     <header>
       <h2>Messages</h2>
       <label class="check"><input v-model="showLogs" type="checkbox" /> log lines</label>
+      <a
+        v-if="stationId"
+        class="export"
+        :href="`/api/stations/${encodeURIComponent(stationId)}/messages?format=jsonl`"
+        :download="`${stationId}.jsonl`"
+        title="The station's frames as a JSONL log, for import, replay and calibration"
+        >Export JSONL</a
+      >
     </header>
     <div class="filters">
       <span class="label">Only</span>
@@ -151,6 +159,11 @@ h2 {
 .check {
   font-size: 12px;
   color: var(--muted);
+  margin-left: auto;
+}
+.export {
+  font-size: 12px;
+  margin-left: 12px;
 }
 .entries {
   list-style: none;

@@ -156,7 +156,7 @@ onUnmounted(() => unsubscribe?.());
       />
       <div v-if="selected" class="content">
         <StationDetail :station="selected" :persona="selectedPersona" @action="act" />
-        <MessageLog :entries="selectedRecords" />
+        <MessageLog :entries="selectedRecords" :station-id="selectedId" />
       </div>
       <div v-else class="content placeholder">
         <p>Add a charge point, or pick one on the left.</p>

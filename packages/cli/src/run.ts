@@ -52,6 +52,7 @@ export async function runCommand(command: RunCommand, output: Output = console_)
     allowCsms: command.allowCsms,
     ...(command.csms !== undefined && { csms: command.csms }),
     ...(command.timeoutMs !== undefined && { defaultTimeoutMs: command.timeoutMs }),
+    ...(command.logDir !== undefined && { logDir: command.logDir }),
     onScenario: (result) => {
       for (const line of formatScenarioResult(result)) output.out(line);
     },

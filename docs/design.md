@@ -663,6 +663,14 @@ Bottlenecks, most important first:
 - Driver events go into the station's log (`usage: a driver arrives at connector 1 with LOAD-0042 and EV compact-40kwh`) and `ocpp_mimic_sessions_turned_away_total`.
 - `load-ac-1.6` carries a usage model; `scenarios/regression/usage.yaml` runs sessions that end with the card and by unplugging.
 
+**Implemented: log export, import and masking (T51)**
+
+- The log format lives in core (`log-format.ts`: `logLine`, `formatLog`, `parseLog`). `GET /api/stations/:id/messages?format=jsonl` downloads a station's frames (what the recorder holds); the Web UI's message log has an Export JSONL link; `run --log-dir <dir>` writes each scenario's frames to `<dir>/<file>-<n>.jsonl`. `load --log-dir` comes with the load command (T49).
+- `ocpp-mimic import <file>... [--map <mapping.yaml>] [--mask | --no-mask] [--salt <s> | --salt-file <f>] [-o <out>]` writes ocpp-mimic's format to standard output or a file, in time order. Without `--map` the input is ocpp-mimic's own format. Exit code 1 when some lines could not be read (they are listed and the rest is written), 2 for an unreadable file or mapping.
+- Mappings (`engine/src/logs/import.ts`): `format: jsonl | csv | lines`; `fields.at | station | direction | frame` each name a `column` (CSV, by header name or index), a `path` (JSONL, dotted) or a `group` (lines; by default the field's own name); `fields.at.time` is `iso`, `epoch-s` or `epoch-ms`, and `timeZone` (IANA, default UTC) applies to ISO times without an offset, daylight saving included; `fields.direction.values` maps the log's words. A `frame` may be the OCPP-J text or an array. CSV fields may be quoted, with doubled quotes and line breaks.
+- Masking (`core/src/mask.ts`, HMAC-SHA-256 in the engine): pseudonyms are a prefix and 10 base-32 characters: `CP-` for stations, `T` for `idTag` and `parentIdTag` (wherever they occur, local lists included), `S` for serial numbers, `SIM` for `iccid` and `imsi`, `X` for paths added by the mapping. Answers are matched to their CALL, so a DataTransfer answer's `data` goes too. Text that is not a message is removed, since it may hold anything. The salt comes from `--salt`, `--salt-file` or `OCPP_MIMIC_MASK_SALT`; without one a random salt is used and a warning printed. A log already marked masked is not masked again.
+- `scenarios/logs/` holds three synthetic sample logs recorded from the repository's scenarios.
+
 **Where the files go**
 
 Load plans go in `scenarios/load/`, import mappings in `scenarios/import/`, sample logs in `scenarios/logs/`, and load personas in `scenarios/personas/`. The tests validate every other file under `scenarios/` as a scenario, so `scenarios/examples/` stays scenario-only.

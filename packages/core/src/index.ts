@@ -34,4 +34,6 @@ export * from './template.js';
 export * from './match.js';
 export * from './scenario.js';
 export * from './fleet-template.js';
+export * from './log-format.js';
+export * from './mask.js';
 export * from './usage.js';

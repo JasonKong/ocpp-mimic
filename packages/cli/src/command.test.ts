@@ -198,6 +198,46 @@ describe('parseCommand', () => {
     });
   });
 
+  it('parses import with its options, and run with --log-dir', () => {
+    expect(
+      parseCommand([
+        'import',
+        'a.csv',
+        'b.csv',
+        '--map',
+        'm.yaml',
+        '--salt',
+        's',
+        '-o',
+        'out.jsonl',
+      ]),
+    ).toEqual({
+      kind: 'import',
+      files: ['a.csv', 'b.csv'],
+      map: 'm.yaml',
+      salt: 's',
+      out: 'out.jsonl',
+    });
+    expect(parseCommand(['import', 'a.jsonl', '--mask', '--salt-file', 'salt.txt'])).toEqual({
+      kind: 'import',
+      files: ['a.jsonl'],
+      mask: true,
+      saltFile: 'salt.txt',
+    });
+    expect(parseCommand(['import', 'a.csv', '--map', 'm.yaml', '--no-mask'])).toMatchObject({
+      mask: false,
+    });
+    expect(parseCommand(['import'])).toEqual({ kind: 'error', message: 'import needs a log file' });
+    expect(parseCommand(['import', 'a', '--mask', '--no-mask'])).toMatchObject({ kind: 'error' });
+    expect(parseCommand(['import', 'a', '--salt', 'x', '--salt-file', 'y'])).toMatchObject({
+      kind: 'error',
+    });
+    expect(parseCommand(['run', 'a.yaml', '--log-dir', 'logs'])).toMatchObject({
+      kind: 'run',
+      logDir: 'logs',
+    });
+  });
+
   it('prints help with no command, and the version with -v', () => {
     expect(parseCommand([])).toEqual({ kind: 'help' });
     expect(parseCommand(['-v'])).toEqual({ kind: 'version' });
