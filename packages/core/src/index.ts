@@ -19,3 +19,5 @@ export * from './device.js';
 export * from './rpc.js';
 export * from './config.js';
 export * from './auth.js';
+export * from './meter.js';
+export * from './transaction.js';
