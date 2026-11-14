@@ -5,14 +5,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   DEFAULT_BEHAVIOUR,
-  evProfileProblems,
   OCPP16_SUBPROTOCOL,
   VERSION,
   type ChargePointBehaviour,
-  type EvProfile,
   type Fault,
   type PluggedEv,
 } from '@ocpp-mimic/core';
+import { resolveEv } from './evs.js';
 import type { Fleet, VirtualStation } from './fleet.js';
 import type { PersonaRegistry } from './personas.js';
 import type { RecordEntry, Recorder } from './recorder.js';
@@ -107,26 +106,13 @@ function behaviourChanges(body: Record<string, unknown>): Partial<ChargePointBeh
   return changes;
 }
 
-/** The EV for a plug-in: a profile name from the station's persona, or an inline profile. */
+/** The EV for a plug-in, with lookup errors as 400. */
 function evOf(station: VirtualStation, value: unknown): PluggedEv | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === 'string') {
-    const profile = station.persona.definition.evs?.[value];
-    if (profile === undefined) {
-      const known = Object.keys(station.persona.definition.evs ?? {});
-      throw new HttpError(
-        400,
-        `persona ${station.persona.id} has no EV "${value}"${known.length > 0 ? ` (known: ${known.join(', ')})` : ''}`,
-      );
-    }
-    return { name: value, profile: profile as EvProfile };
+  try {
+    return resolveEv(station, value);
+  } catch (error) {
+    throw new HttpError(400, error instanceof Error ? error.message : String(error));
   }
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new HttpError(400, '"ev" must be an EV profile name or an EV profile');
-  }
-  const problems = evProfileProblems(value as EvProfile);
-  if (problems.length > 0) throw new HttpError(400, `invalid EV profile: ${problems.join('; ')}`);
-  return { profile: value as EvProfile };
 }
 
 /** Runs `fn` on a connector, then answers with the station's snapshot. */

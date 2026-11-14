@@ -45,3 +45,12 @@ export {
   type ScenarioDocument,
   type ScenarioFile,
 } from './scenario/files.js';
+export { resolveEv } from './evs.js';
+export {
+  runScenario,
+  type RunOptions,
+  type ScenarioRunResult,
+  type ScenarioStatus,
+  type StepResult,
+  type StepStatus,
+} from './scenario/runner.js';
