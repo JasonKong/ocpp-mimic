@@ -12,6 +12,17 @@ import type { PersistedChargePoint } from '@ocpp-mimic/core';
 const sqlite = () => process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
 /** What the fleet needs to recreate a virtual charge point. */
+/** A station's Security Profile settings; certificates are PEM file paths. */
+export interface StationSecurity {
+  /** The initial SecurityProfile (0 to 3); the saved state keeps later changes. */
+  profile?: number;
+  /** CentralSystemRootCertificate: the CA to check the CSMS's server certificate with. */
+  ca?: string;
+  /** ChargePointCertificate and its private key, for Security Profile 3. */
+  cert?: string;
+  key?: string;
+}
+
 export interface StationDefinition {
   /** The chargeBoxId. */
   id: string;
@@ -19,8 +30,10 @@ export interface StationDefinition {
   persona: string;
   /** The CSMS's OCPP-J URL; the chargeBoxId is appended. */
   csmsUrl: string;
-  /** Basic Auth password, if the CSMS requires one. */
+  /** Basic Auth password, if the CSMS requires one; the initial AuthorizationKey. */
   password?: string;
+  /** Security Profile and the certificates for TLS (Security Whitepaper). */
+  security?: StationSecurity;
   /** Configuration values on top of the persona's. */
   config?: Record<string, string>;
   /** Initial energy multiplier; the saved charge point state keeps later changes. */

@@ -20,7 +20,13 @@ export {
   type StationSnapshot,
   type VirtualStation,
 } from './fleet.js';
-export { openStateStore, type StateStore, type StationDefinition } from './state-store.js';
+export {
+  openStateStore,
+  type StateStore,
+  type StationDefinition,
+  type StationSecurity,
+} from './state-store.js';
+export { TEST_PKI_DIR, testPki } from './test-pki.js';
 export { createSystemClock, randomIds } from './system-clock.js';
 export {
   createRecorder,

@@ -199,6 +199,50 @@ describe('transport', () => {
     expect(t.events).toContainEqual({ type: 'reconnect-scheduled', delayMs: 150 });
   });
 
+  it('reads the connection settings before every attempt and reports failed attempts', async () => {
+    csms = await startBuiltinCsms({ passwords: { 'CP-1': 'right-password' } });
+    let password = 'wrong-password';
+    let failures = 0;
+    const t = open({
+      url: csms.url,
+      connectionSettings: () => ({ password }),
+      onConnectFailed: () => {
+        failures += 1;
+        // The callback may reconnect at once; that must replace the scheduled retry.
+        if (failures === 1) {
+          password = 'right-password';
+          t.transport.restartAfter(0);
+        }
+      },
+    });
+    await until(() => t.opens === 1);
+    expect(failures).toBe(1);
+    const connection = await csms.waitForConnection('CP-1');
+    expect(connection.headers.authorization).toBe(
+      `Basic ${Buffer.from('CP-1:right-password').toString('base64')}`,
+    );
+    // No second socket from a leaked retry timer.
+    await sleep(150);
+    expect(t.opens).toBe(1);
+    expect(t.events.filter((e) => e.type === 'connecting')).toHaveLength(2);
+  });
+
+  it('refuses to connect when the settings say why, and keeps retrying', async () => {
+    let failures = 0;
+    const t = open({
+      url: 'ws://127.0.0.1:1/ocpp',
+      connectionSettings: () => ({ error: 'Security Profile 2 needs a wss:// CSMS address' }),
+      onConnectFailed: () => {
+        failures += 1;
+      },
+    });
+    await until(() => failures >= 2);
+    expect(t.events).toContainEqual({
+      type: 'error',
+      message: 'Security Profile 2 needs a wss:// CSMS address',
+    });
+  });
+
   it('stop() closes the connection for good', async () => {
     csms = await startBuiltinCsms();
     const t = open({ url: csms.url });

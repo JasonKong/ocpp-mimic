@@ -3,6 +3,7 @@
  * its CSMS through a transport, starts and stops them, and keeps their state
  * in the State Store so they survive an engine restart.
  */
+import { readFileSync } from 'node:fs';
 import {
   configInt,
   createChargePoint,
@@ -11,17 +12,19 @@ import {
   type ChargePointEvent,
   type ChargePointSnapshot,
   type Clock,
+  type ConnectionSecurity,
   type IdGenerator,
   type PersistedChargePoint,
   type ResolvedPersona,
 } from '@ocpp-mimic/core';
 import { createHttpFileTransfer } from './file-transfer.js';
 import type { PersonaRegistry } from './personas.js';
-import type { StateStore, StationDefinition } from './state-store.js';
+import type { StateStore, StationDefinition, StationSecurity } from './state-store.js';
 import { createSystemClock, randomIds } from './system-clock.js';
 import {
   createTransport,
   type BackoffPolicy,
+  type ConnectionSettings,
   type Transport,
   type TransportEvent,
   type TransportState,
@@ -47,6 +50,8 @@ export interface StationSnapshot extends ChargePointSnapshot {
   csmsUrl: string;
   running: boolean;
   transport: TransportState;
+  /** Why the last connection attempt failed, until a connection opens. */
+  connectionError?: string;
 }
 
 export interface VirtualStation {
@@ -148,7 +153,15 @@ export function createFleet(options: FleetOptions): Fleet {
     const persona = options.personas.get(definition.persona);
     if (persona === undefined) throw new Error(`unknown persona ${definition.persona}`);
     const { options: personaOptions } = persona;
-    const configValues = { ...personaOptions.config?.values, ...definition.config };
+    const configValues: Record<string, string> = {
+      ...personaOptions.config?.values,
+      ...(definition.password !== undefined && { AuthorizationKey: definition.password }),
+      ...(definition.security?.profile !== undefined && {
+        SecurityProfile: String(definition.security.profile),
+      }),
+      ...definition.config,
+    };
+    const pem = readStationCertificates(definition.security);
     // Throws on invalid overrides, before anything starts.
     const config = createConfig({
       numberOfConnectors: personaOptions.connectors,
@@ -157,16 +170,25 @@ export function createFleet(options: FleetOptions): Fleet {
 
     // The transport's callbacks need the charge point, which needs the transport's send().
     const holder: { chargePoint?: ChargePoint } = {};
+    let connectionError: string | undefined;
     const transport = createTransport({
       url: definition.csmsUrl,
       chargeBoxId: definition.id,
-      ...(definition.password !== undefined && { password: definition.password }),
+      connectionSettings: () =>
+        holder.chargePoint === undefined
+          ? {}
+          : connectionSettings(definition.csmsUrl, holder.chargePoint.connectionSecurity(), pem),
+      onConnectFailed: () => holder.chargePoint?.connectionFailed(),
       pingIntervalMs: configInt(config, 'WebSocketPingInterval') * 1000,
       ...(options.backoff !== undefined && { backoff: options.backoff }),
       onText: (text) => holder.chargePoint?.receive(text),
       onOpen: () => holder.chargePoint?.connected(),
       onClose: () => holder.chargePoint?.disconnected(),
-      onEvent: (event) => emit({ stationId: definition.id, type: 'transport', event }),
+      onEvent: (event) => {
+        if (event.type === 'error') connectionError = event.message;
+        if (event.type === 'open') connectionError = undefined;
+        emit({ stationId: definition.id, type: 'transport', event });
+      },
     });
     const cp = createChargePoint({
       ...personaOptions,
@@ -181,6 +203,11 @@ export function createFleet(options: FleetOptions): Fleet {
       }),
       send: (text) => transport.send(text),
       restart: (downtimeMs) => transport.restartAfter(downtimeMs),
+      reconnect: () => transport.restartAfter(0),
+      certificates: () => ({
+        centralSystemRoot: pem.ca !== undefined,
+        chargePoint: pem.cert !== undefined && pem.key !== undefined,
+      }),
       onEvent: (event) => {
         if (event.type === 'changed') scheduleSave(definition.id);
         emit({ stationId: definition.id, type: 'charge-point', event });
@@ -205,6 +232,7 @@ export function createFleet(options: FleetOptions): Fleet {
         csmsUrl: definition.csmsUrl,
         running: station.running,
         transport: transport.state,
+        ...(connectionError !== undefined && { connectionError }),
       }),
     };
     entries.set(definition.id, { station, running: false });
@@ -271,4 +299,71 @@ export function createFleet(options: FleetOptions): Fleet {
       for (const id of entries.keys()) save(id);
     },
   };
+}
+
+/** The PEM contents of a station's certificate files. */
+interface StationCertificates {
+  ca?: string;
+  cert?: string;
+  key?: string;
+}
+
+function readStationCertificates(security: StationSecurity | undefined): StationCertificates {
+  const read = (path: string | undefined, what: string) => {
+    if (path === undefined) return undefined;
+    try {
+      return readFileSync(path, 'utf8');
+    } catch (error) {
+      throw new Error(
+        `cannot read the ${what} ${path}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+  };
+  const ca = read(security?.ca, 'CA certificate');
+  const cert = read(security?.cert, 'client certificate');
+  const key = read(security?.key, 'client key');
+  return {
+    ...(ca !== undefined && { ca }),
+    ...(cert !== undefined && { cert }),
+    ...(key !== undefined && { key }),
+  };
+}
+
+/**
+ * How a station authenticates per Security Profile (Security Whitepaper 2.3 to
+ * 2.5). 0: Basic Auth only if a password is set. 1: Basic Auth over ws or wss.
+ * 2: wss with the server certificate checked against `ca`, plus Basic Auth.
+ * 3: wss with the client certificate, no Basic Auth. Profiles 2 and 3 need
+ * TLS 1.2 or above.
+ */
+export function connectionSettings(
+  csmsUrl: string,
+  security: ConnectionSecurity,
+  pem: StationCertificates,
+): ConnectionSettings {
+  const { profile, authorizationKey } = security;
+  const ca = pem.ca !== undefined ? { ca: pem.ca } : {};
+  if (profile <= 1) {
+    if (profile === 1 && authorizationKey === undefined) {
+      return { error: 'Security Profile 1 needs an AuthorizationKey' };
+    }
+    return {
+      ...(authorizationKey !== undefined && { password: authorizationKey }),
+      ...(pem.ca !== undefined && { tls: ca }),
+    };
+  }
+  if (!csmsUrl.startsWith('wss://')) {
+    return { error: `Security Profile ${profile} needs a wss:// CSMS address` };
+  }
+  if (profile === 2) {
+    if (authorizationKey === undefined) {
+      return { error: 'Security Profile 2 needs an AuthorizationKey' };
+    }
+    return { password: authorizationKey, tls: { ...ca, minVersion: 'TLSv1.2' } };
+  }
+  if (pem.cert === undefined || pem.key === undefined) {
+    return { error: 'Security Profile 3 needs a client certificate and key' };
+  }
+  return { tls: { ...ca, cert: pem.cert, key: pem.key, minVersion: 'TLSv1.2' } };
 }

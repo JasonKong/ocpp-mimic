@@ -15,7 +15,7 @@ import { resolveEv } from './evs.js';
 import type { Fleet, VirtualStation } from './fleet.js';
 import type { PersonaRegistry } from './personas.js';
 import type { RecordEntry, Recorder } from './recorder.js';
-import type { StationDefinition } from './state-store.js';
+import type { StationDefinition, StationSecurity } from './state-store.js';
 
 export class HttpError extends Error {
   constructor(
@@ -69,6 +69,35 @@ function connectorIdOf(station: VirtualStation, value: string | undefined): numb
     throw new HttpError(404, `station ${station.id} has no connector ${String(value)}`);
   }
   return connectorId;
+}
+
+/** A station's `security`: profile 0 to 3 and PEM file paths on the engine's machine. */
+function securityField(value: unknown): StationSecurity {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new HttpError(400, '"security" must be an object');
+  }
+  const security = value as Record<string, unknown>;
+  const unknown = Object.keys(security).filter(
+    (key) => !['profile', 'ca', 'cert', 'key'].includes(key),
+  );
+  if (unknown.length > 0)
+    throw new HttpError(400, `"security" has unknown fields: ${unknown.join(', ')}`);
+  const { profile } = security;
+  if (
+    profile !== undefined &&
+    !(Number.isInteger(profile) && Number(profile) >= 0 && Number(profile) <= 3)
+  ) {
+    throw new HttpError(400, '"security.profile" must be 0, 1, 2 or 3');
+  }
+  const ca = stringField(security, 'ca');
+  const cert = stringField(security, 'cert');
+  const key = stringField(security, 'key');
+  return {
+    ...(profile !== undefined && { profile: Number(profile) }),
+    ...(ca !== undefined && { ca }),
+    ...(cert !== undefined && { cert }),
+    ...(key !== undefined && { key }),
+  };
 }
 
 function stringField(body: Record<string, unknown>, name: string, required: true): string;
@@ -184,6 +213,7 @@ const routes: Route[] = [
         ...(body.energyMultiplier !== undefined && {
           energyMultiplier: multiplierField(body),
         }),
+        ...(body.security !== undefined && { security: securityField(body.security) }),
       };
       if (fleet.get(definition.id) !== undefined) {
         throw new HttpError(409, `station ${definition.id} already exists`);

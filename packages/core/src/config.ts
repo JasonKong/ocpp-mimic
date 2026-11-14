@@ -15,6 +15,13 @@ export interface ConfigKeyDefinition {
   value: string;
   /** For integers: the smallest allowed value. */
   minimum?: number;
+  /** For integers: the largest allowed value. */
+  maximum?: number;
+  /** For strings set by ChangeConfiguration: the allowed length in characters. */
+  minLength?: number;
+  maxLength?: number;
+  /** GetConfiguration lists the key without its value (e.g. AuthorizationKey). */
+  writeOnly?: boolean;
   /** For lists: the allowed items. Any item is allowed when absent. */
   allowedItems?: readonly string[];
   /** Changing the key is answered with RebootRequired; the new value is stored anyway. */
@@ -39,9 +46,21 @@ const MEASURAND_LIST: ConfigKeyDefinition = {
  * NumberOfConnectors is filled in by createConfig.
  */
 export const STANDARD_CONFIG_KEYS: Readonly<Record<string, ConfigKeyDefinition>> = {
+  AdditionalRootCertificateCheck: { type: 'boolean', readonly: true, value: 'false' },
   AllowOfflineTxForUnknownId: { type: 'boolean', readonly: false, value: 'false' },
+  AllowSecurityProfileDowngrade: { type: 'boolean', readonly: false, value: 'false' },
   AuthorizationCacheEnabled: { type: 'boolean', readonly: false, value: 'true' },
+  AuthorizationKey: {
+    type: 'string',
+    readonly: false,
+    value: '',
+    writeOnly: true,
+    minLength: 16,
+    maxLength: 40,
+  },
   AuthorizeRemoteTxRequests: { type: 'boolean', readonly: false, value: 'false' },
+  CertificateSignedMaxChainSize: { type: 'integer', readonly: true, value: '10000', minimum: 0 },
+  CertificateStoreMaxLength: { type: 'integer', readonly: true, value: '10', minimum: 0 },
   ChargeProfileMaxStackLevel: { type: 'integer', readonly: true, value: '10', minimum: 0 },
   ChargingScheduleAllowedChargingRateUnit: { type: 'list', readonly: true, value: 'Current,Power' },
   ChargingScheduleMaxPeriods: { type: 'integer', readonly: true, value: '24', minimum: 1 },
@@ -49,6 +68,7 @@ export const STANDARD_CONFIG_KEYS: Readonly<Record<string, ConfigKeyDefinition>>
   ConnectionTimeOut: { type: 'integer', readonly: false, value: '60', minimum: 0 },
   ConnectorPhaseRotation: { type: 'list', readonly: false, value: '0.Unknown' },
   ConnectorSwitch3to1PhaseSupported: { type: 'boolean', readonly: true, value: 'false' },
+  CpoName: { type: 'string', readonly: false, value: '' },
   GetConfigurationMaxKeys: { type: 'integer', readonly: true, value: '50' },
   HeartbeatInterval: { type: 'integer', readonly: false, value: '300', minimum: 0 },
   LocalAuthListEnabled: { type: 'boolean', readonly: false, value: 'true' },
@@ -62,6 +82,7 @@ export const STANDARD_CONFIG_KEYS: Readonly<Record<string, ConfigKeyDefinition>>
   NumberOfConnectors: { type: 'integer', readonly: true, value: '1' },
   ReserveConnectorZeroSupported: { type: 'boolean', readonly: true, value: 'true' },
   ResetRetries: { type: 'integer', readonly: false, value: '1', minimum: 0 },
+  SecurityProfile: { type: 'integer', readonly: false, value: '0', minimum: 0, maximum: 3 },
   SendLocalListMaxLength: { type: 'integer', readonly: true, value: '100', minimum: 0 },
   StopTransactionOnEVSideDisconnect: { type: 'boolean', readonly: false, value: 'true' },
   StopTransactionOnInvalidId: { type: 'boolean', readonly: false, value: 'true' },
@@ -124,6 +145,7 @@ function normalizeValue(definition: ConfigKeyDefinition, value: string): string 
       const number = Number(value);
       if (!Number.isSafeInteger(number)) return undefined;
       if (definition.minimum !== undefined && number < definition.minimum) return undefined;
+      if (definition.maximum !== undefined && number > definition.maximum) return undefined;
       return String(number);
     }
     case 'list': {
@@ -187,7 +209,11 @@ export function getConfiguration(
     if (definition === undefined || value === undefined) {
       unknownKey.push(key);
     } else {
-      configurationKey.push({ key, readonly: definition.readonly, value });
+      configurationKey.push({
+        key,
+        readonly: definition.readonly,
+        ...(definition.writeOnly !== true && { value }),
+      });
     }
   }
   return {
@@ -196,9 +222,16 @@ export function getConfiguration(
   };
 }
 
+/** The values a CSMS may read: every key except the write-only ones. */
+export function readableConfigValues(config: ConfigState): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(config.values).filter(([key]) => config.definitions[key]?.writeOnly !== true),
+  );
+}
+
 /**
  * Answers ChangeConfiguration. An unknown key is NotSupported; a read-only key
- * or an invalid value is Rejected; otherwise the value is stored and the
+ * or an invalid value (outside its range or length) is Rejected; otherwise the value is stored and the
  * answer is Accepted, or RebootRequired for keys that need a reboot.
  */
 export function changeConfiguration(
@@ -210,6 +243,13 @@ export function changeConfiguration(
   if (definition.readonly) return { config, status: 'Rejected' };
   const normalized = normalizeValue(definition, request.value);
   if (normalized === undefined) return { config, status: 'Rejected' };
+  const length = [...normalized].length;
+  if (
+    (definition.minLength !== undefined && length < definition.minLength) ||
+    (definition.maxLength !== undefined && length > definition.maxLength)
+  ) {
+    return { config, status: 'Rejected' };
+  }
   return {
     config: { ...config, values: { ...config.values, [request.key]: normalized } },
     status: definition.rebootRequired === true ? 'RebootRequired' : 'Accepted',

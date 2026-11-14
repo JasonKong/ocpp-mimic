@@ -38,6 +38,25 @@ export type TransportEvent =
   | { type: 'reconnect-scheduled'; delayMs: number }
   | { type: 'state'; state: TransportState };
 
+/** TLS settings for wss://. */
+export interface TlsSettings {
+  /** Whether to verify the server certificate (default true). */
+  rejectUnauthorized?: boolean;
+  /** CA certificates (PEM) to verify the server with, instead of the system's. */
+  ca?: string | Buffer;
+  /** Client certificate and key (PEM), for Security Profile 3. */
+  cert?: string | Buffer;
+  key?: string | Buffer;
+  minVersion?: 'TLSv1.2' | 'TLSv1.3';
+}
+
+/** How to authenticate one connection attempt; `error` refuses to connect at all. */
+export interface ConnectionSettings {
+  password?: string;
+  tls?: TlsSettings;
+  error?: string;
+}
+
 export interface TransportOptions {
   /** The CSMS's OCPP-J URL; the chargeBoxId is appended as the last path segment. */
   url: string;
@@ -48,7 +67,14 @@ export interface TransportOptions {
   pingIntervalMs?: number;
   backoff?: Partial<BackoffPolicy>;
   /** For wss://: whether to verify the server certificate, and extra CA certificates. */
-  tls?: { rejectUnauthorized?: boolean; ca?: string | Buffer };
+  tls?: TlsSettings;
+  /**
+   * Read before every connection attempt; replaces `password` and `tls`, so a
+   * changed AuthorizationKey or Security Profile applies to the next attempt.
+   */
+  connectionSettings?: () => ConnectionSettings;
+  /** A connection attempt failed before it opened. */
+  onConnectFailed?: () => void;
   random?: () => number;
   /** A text frame from the CSMS. */
   onText: (text: string) => void;
@@ -128,6 +154,7 @@ export function createTransport(options: TransportOptions): Transport {
   }
 
   function scheduleReconnect(delayMs: number): void {
+    if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
     setState('waiting');
     emit({ type: 'reconnect-scheduled', delayMs });
     reconnectTimer = setTimeout(() => {
@@ -145,20 +172,34 @@ export function createTransport(options: TransportOptions): Transport {
   function connect(): void {
     setState('connecting');
     emit({ type: 'connecting', url: target });
+    const settings: ConnectionSettings = options.connectionSettings?.() ?? {
+      ...(options.password !== undefined && { password: options.password }),
+      ...(options.tls !== undefined && { tls: options.tls }),
+    };
+    if (settings.error !== undefined) {
+      emit({ type: 'error', message: settings.error });
+      // Report after scheduling the retry, so a reconnect from the callback replaces it.
+      connectionLost();
+      options.onConnectFailed?.();
+      return;
+    }
     const headers: Record<string, string> = {};
-    if (options.password !== undefined) {
-      const token = Buffer.from(`${options.chargeBoxId}:${options.password}`).toString('base64');
+    if (settings.password !== undefined) {
+      const token = Buffer.from(`${options.chargeBoxId}:${settings.password}`).toString('base64');
       headers.Authorization = `Basic ${token}`;
     }
+    const tls = settings.tls ?? {};
     const ws = new WebSocket(target, [OCPP16_SUBPROTOCOL], {
       headers,
       autoPong: false,
-      ...(options.tls?.rejectUnauthorized !== undefined && {
-        rejectUnauthorized: options.tls.rejectUnauthorized,
-      }),
-      ...(options.tls?.ca !== undefined && { ca: options.tls.ca }),
+      ...(tls.rejectUnauthorized !== undefined && { rejectUnauthorized: tls.rejectUnauthorized }),
+      ...(tls.ca !== undefined && { ca: tls.ca }),
+      ...(tls.cert !== undefined && { cert: tls.cert }),
+      ...(tls.key !== undefined && { key: tls.key }),
+      ...(tls.minVersion !== undefined && { minVersion: tls.minVersion }),
     });
     socket = ws;
+    let opened = false;
 
     ws.on('open', () => {
       if (ws.protocol !== OCPP16_SUBPROTOCOL) {
@@ -167,8 +208,10 @@ export function createTransport(options: TransportOptions): Transport {
           message: `server did not accept the ${OCPP16_SUBPROTOCOL} subprotocol`,
         });
         connectionLost();
+        options.onConnectFailed?.();
         return;
       }
+      opened = true;
       attempt = 0;
       setState('open');
       emit({ type: 'open', protocol: ws.protocol });
@@ -192,6 +235,7 @@ export function createTransport(options: TransportOptions): Transport {
       if (ws !== socket) return;
       emit({ type: 'close', code, reason: reason.toString() });
       connectionLost();
+      if (!opened) options.onConnectFailed?.();
     });
   }
 

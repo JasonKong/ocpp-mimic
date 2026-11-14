@@ -94,6 +94,12 @@ describe('engine API', () => {
       error: 'unknown persona nope',
     });
     expect((await api('POST', '/api/stations', { persona: 'generic-1.6' })).status).toBe(400);
+    for (const security of [{ profile: 4 }, { profile: 1, pin: '1234' }, 'profile 2']) {
+      expect(
+        (await api('POST', '/api/stations', { id: 'S', persona: 'generic-1.6', csmsUrl, security }))
+          .status,
+      ).toBe(400);
+    }
     expect((await api('GET', '/api/stations/NOPE')).status).toBe(404);
     expect((await api('DELETE', '/api/stations/SIM-1')).status).toBe(204);
     expect((await api('GET', '/api/stations')).body?.stations).toEqual([]);
