@@ -671,6 +671,25 @@ Bottlenecks, most important first:
 - Masking (`core/src/mask.ts`, HMAC-SHA-256 in the engine): pseudonyms are a prefix and 10 base-32 characters: `CP-` for stations, `T` for `idTag` and `parentIdTag` (wherever they occur, local lists included), `S` for serial numbers, `SIM` for `iccid` and `imsi`, `X` for paths added by the mapping. Answers are matched to their CALL, so a DataTransfer answer's `data` goes too. Text that is not a message is removed, since it may hold anything. The salt comes from `--salt`, `--salt-file` or `OCPP_MIMIC_MASK_SALT`; without one a random salt is used and a warning printed. A log already marked masked is not masked again.
 - `scenarios/logs/` holds three synthetic sample logs recorded from the repository's scenarios.
 
+**Implemented: the engine at 1,000 stations (T45)**
+
+The baseline's two bottlenecks, plus one the baseline did not cover:
+
+- **Nothing is built for nobody.** Without a client on the events WebSocket the engine builds no snapshot and serializes no record for it, and the 2-second push of charging stations is skipped.
+- **Recorder limit.** `serve --record-limit <n>` (default 1000, 0 keeps none); load runs keep 10 per station (T49).
+- **State saves.** With `--store`, each station's state was saved in its own SQLite transaction: 50 ms after every change, and every station every 10 s. At 1,000 stations the 10-second save held the event loop for about 300 ms. Changes are now collected for a second and written in one transaction, and the periodic save writes a tenth of the stations every second, so every station is still saved every 10 s but no transaction holds the loop for long.
+- **Not changed**, as the baseline showed no need: the shared scheduler, and parsing each frame once.
+
+Measured with `pnpm bench`, 1,000 stations of `load-ac-1.6` with `--store`, 20 started a second, 30 % charging, 5 minutes, on the same laptop as the baseline:
+
+| | Before | After |
+| --- | --- | --- |
+| Engine CPU after the ramp-up, mean / max (% of a core) | 9.8 / 13.9 | 4.0 / 6.2 |
+| Event-loop delay, worst 5-second p99 / max (ms) | 14 / 372 | 15 / 46 |
+| Heartbeats late, p99 / max (ms) | 19 / 45 | 10 / 42 |
+| Meter values late, p99 / max (ms) | 7 / 24 | 8 / 20 |
+| RSS peak (MB) | 249 | 183 |
+
 **Where the files go**
 
 Load plans go in `scenarios/load/`, import mappings in `scenarios/import/`, sample logs in `scenarios/logs/`, and load personas in `scenarios/personas/`. The tests validate every other file under `scenarios/` as a scenario, so `scenarios/examples/` stays scenario-only.
