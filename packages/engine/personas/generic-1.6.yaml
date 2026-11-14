@@ -9,7 +9,7 @@ boot:
 connectors: 1
 power:
   offeredW: 7360
-features: [Core, RemoteTrigger, LocalAuthListManagement]
+features: [Core, RemoteTrigger, LocalAuthListManagement, Reservation]
 config:
   HeartbeatInterval: 300
   MeterValueSampleInterval: 60

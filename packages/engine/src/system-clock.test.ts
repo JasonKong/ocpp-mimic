@@ -34,6 +34,18 @@ describe('system clock', () => {
     expect(spy.ref).toBe(false);
   });
 
+  it('does not fire timers longer than setTimeout allows at once', async () => {
+    const clock = createSystemClock();
+    let fired = false;
+    // 2099 is far beyond setTimeout's 24.8-day limit, which would fire after 1 ms.
+    const handle = clock.setTimer(Date.parse('2099-01-01T00:00:00Z') - Date.now(), () => {
+      fired = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(fired).toBe(false);
+    clock.clearTimer(handle);
+  });
+
   it('generates 36-character unique ids', () => {
     const ids = new Set(Array.from({ length: 100 }, () => randomIds()));
     expect(ids.size).toBe(100);

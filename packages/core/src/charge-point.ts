@@ -50,6 +50,7 @@ import {
   type EvState,
 } from './ev.js';
 import type { IdGenerator } from './ids.js';
+import { OCPP16_ACTION_PROFILES } from './ocpp16.js';
 import {
   applySendLocalList,
   EMPTY_LOCAL_LIST,
@@ -177,6 +178,18 @@ export interface PersistedChargePoint {
   energyMultiplier?: number;
   /** The Local Authorization List; missing in states saved before it existed. */
   localList?: LocalAuthList;
+  /** Reservations not yet used or expired; missing in states saved before they existed. */
+  reservations?: Reservation[];
+}
+
+/** A ReserveNow the station holds: a connector, or any connector with connectorId 0. */
+export interface Reservation {
+  reservationId: number;
+  connectorId: number;
+  idTag: string;
+  parentIdTag?: string;
+  /** expiryDate, as ms since the epoch. */
+  expiresAt: number;
 }
 
 export interface ChargePointOptions {
@@ -247,6 +260,7 @@ export interface ChargePointSnapshot {
   energyMultiplier: number;
   /** GetLocalListVersion's answer and the number of entries. */
   localList: { version: number; size: number };
+  reservations: { reservationId: number; connectorId: number; idTag: string; expiryDate: string }[];
 }
 
 export type IdTagResult = 'stopping' | 'authorized' | 'rejected' | 'busy' | 'unknown-connector';
@@ -457,6 +471,107 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     for (const message of result.messages) void sendIfOnline('StatusNotification', message);
     changed();
     return result;
+  }
+
+  // ---- Reservations -------------------------------------------------------
+
+  const reservations = new Map<number, Reservation>();
+  const reservationTimers = new Map<number, TimerHandle>();
+  /** connectorId → the reservation a presented card is using, until its transaction starts. */
+  const sessionReservations = new Map<number, number>();
+
+  function scheduleExpiry(reservation: Reservation): void {
+    stopTimer(reservationTimers.get(reservation.reservationId));
+    reservationTimers.set(
+      reservation.reservationId,
+      later(Math.max(0, reservation.expiresAt - now()), () =>
+        endReservation(reservation.reservationId, 'expired'),
+      ),
+    );
+  }
+
+  function endReservation(reservationId: number, why: string): void {
+    const reservation = reservations.get(reservationId);
+    if (reservation === undefined) return;
+    reservations.delete(reservationId);
+    stopTimer(reservationTimers.get(reservationId));
+    reservationTimers.delete(reservationId);
+    for (const [connectorId, id] of sessionReservations) {
+      if (id === reservationId) sessionReservations.delete(connectorId);
+    }
+    if (reservation.connectorId !== 0) {
+      applyDevice({ type: 'Unreserve', connectorId: reservation.connectorId });
+    }
+    log(`reservation ${reservationId} ${why}`);
+    changed();
+  }
+
+  /** A reservation ends when its connector (or, for connectorId 0, the station) becomes Faulted or Unavailable. */
+  function checkReservations(): void {
+    for (const reservation of [...reservations.values()]) {
+      const status =
+        reservation.connectorId === 0
+          ? stationStatus(station).status
+          : connectorStatus(
+              findConnector(station, reservation.connectorId) ?? connectors(station)[0]!,
+              station,
+            ).status;
+      if (status === 'Faulted' || status === 'Unavailable') {
+        endReservation(reservation.reservationId, `ended: ${status}`);
+      }
+    }
+  }
+
+  /** The parent of an idTag as far as the local list or the cache know it. */
+  const parentOf = (idTag: string) =>
+    localList.entries[idTag]?.parentIdTag ??
+    cachedAuthorization(authCache, config, idTag)?.parentIdTag;
+
+  const belongsTo = (reservation: Reservation, idTag: string) =>
+    idTag === reservation.idTag ||
+    (reservation.parentIdTag !== undefined && parentOf(idTag) === reservation.parentIdTag);
+
+  /** Connectors free for a new session: Available, so neither in use nor reserved. */
+  const freeConnectors = () =>
+    connectors(station)
+      .filter((c) => connectorStatus(c, station).status === 'Available')
+      .map((c) => c.connectorId);
+
+  /**
+   * Whether a card may use a connector given the reservations: a reserved
+   * connector only takes its reservation's idTag (or parentIdTag); each
+   * reservation on connectorId 0 keeps one free connector for its card.
+   */
+  function reservationCheck(
+    connectorId: number,
+    idTag: string,
+  ): { ok: boolean; reservationId?: number } {
+    const own = [...reservations.values()].find((r) => r.connectorId === connectorId);
+    if (own !== undefined) {
+      return belongsTo(own, idTag) ? { ok: true, reservationId: own.reservationId } : { ok: false };
+    }
+    const anywhere = [...reservations.values()].filter((r) => r.connectorId === 0);
+    const mine = anywhere.find((r) => belongsTo(r, idTag));
+    if (mine !== undefined) return { ok: true, reservationId: mine.reservationId };
+    const othersFree = freeConnectors().filter((id) => id !== connectorId).length;
+    return { ok: othersFree >= anywhere.length };
+  }
+
+  async function reservationAllows(
+    connectorId: number,
+    idTag: string,
+  ): Promise<{ ok: boolean; reservationId?: number }> {
+    const own = [...reservations.values()].find((r) => r.connectorId === connectorId);
+    // The parent may only be known after asking the CSMS (section 5.13).
+    if (
+      own !== undefined &&
+      !belongsTo(own, idTag) &&
+      own.parentIdTag !== undefined &&
+      parentOf(idTag) === undefined
+    ) {
+      await authorizeWithCsms(idTag);
+    }
+    return reservationCheck(connectorId, idTag);
   }
 
   /** Locks or releases the cable as the switch and the running transaction require. */
@@ -707,6 +822,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     }
     authorized.delete(connectorId);
     clearPrepare(connectorId);
+    const reservationId = sessionReservations.get(connectorId);
     const started = startTransaction({
       connectorId,
       idTag,
@@ -714,7 +830,10 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       config,
       now: now(),
       extras: extras(connectorId),
+      ...(reservationId !== undefined && { reservationId }),
     });
+    // A reservation ends when its transaction starts; StartTransaction carries its id.
+    if (reservationId !== undefined) endReservation(reservationId, `used by ${idTag}`);
     const ref = nextKey('tx');
     transactions.set(connectorId, started.transaction);
     refs.set(connectorId, ref);
@@ -834,6 +953,51 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
   }
 
   const handlers: CsmsHandlers = {
+    ReserveNow(request) {
+      const { connectorId, reservationId } = request;
+      const existing = reservations.get(reservationId);
+      if (connectorId === 0) {
+        if (!configBool(config, 'ReserveConnectorZeroSupported')) return { status: 'Rejected' };
+        const status = stationStatus(station).status;
+        if (status === 'Faulted') return { status: 'Faulted' };
+        if (status === 'Unavailable') return { status: 'Unavailable' };
+        const others = [...reservations.values()].filter(
+          (r) => r.connectorId === 0 && r.reservationId !== reservationId,
+        ).length;
+        const free =
+          freeConnectors().length + (existing !== undefined && existing.connectorId !== 0 ? 1 : 0);
+        if (free <= others) return { status: 'Occupied' };
+      } else {
+        const connector = findConnector(station, connectorId);
+        if (connector === undefined) return { status: 'Rejected' };
+        const status = connectorStatus(connector, station).status;
+        if (status === 'Faulted') return { status: 'Faulted' };
+        if (status === 'Unavailable') return { status: 'Unavailable' };
+        const ownReservation = connector.reservationId === reservationId;
+        if (status !== 'Available' && !ownReservation) return { status: 'Occupied' };
+      }
+      // The same reservationId replaces the earlier reservation.
+      if (existing !== undefined) endReservation(reservationId, 'replaced');
+      const reservation: Reservation = {
+        reservationId,
+        connectorId,
+        idTag: request.idTag,
+        ...(request.parentIdTag !== undefined && { parentIdTag: request.parentIdTag }),
+        expiresAt: Date.parse(request.expiryDate),
+      };
+      reservations.set(reservationId, reservation);
+      if (connectorId !== 0) applyDevice({ type: 'Reserve', connectorId, reservationId });
+      scheduleExpiry(reservation);
+      changed();
+      return { status: 'Accepted' };
+    },
+
+    CancelReservation(request) {
+      if (!reservations.has(request.reservationId)) return { status: 'Rejected' };
+      endReservation(request.reservationId, 'cancelled');
+      return { status: 'Accepted' };
+    },
+
     ChangeAvailability(request) {
       if (request.connectorId !== 0 && findConnector(station, request.connectorId) === undefined) {
         return { status: 'Rejected' };
@@ -847,7 +1011,10 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       // StatusNotification follows the CALLRESULT as on real charge points.
       const preview = reduce(station, event, now());
       if (preview.error !== undefined) return { status: 'Rejected' };
-      later(delayFor('ChangeAvailability'), () => applyDevice(event));
+      later(delayFor('ChangeAvailability'), () => {
+        applyDevice(event);
+        checkReservations();
+      });
       return { status: preview.changeAvailability ?? 'Rejected' };
     },
 
@@ -903,16 +1070,33 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         log('remote start refused: the refuse-remote-start switch is on');
         return { status: 'Rejected' };
       }
+      // A connector reserved for this idTag counts as free for it.
+      const usable = (id: number) => {
+        const connector = findConnector(station, id);
+        const reservedForMe =
+          connector?.reservationId !== undefined &&
+          !transactions.has(id) &&
+          connectorStatus(connector, station).status === 'Reserved' &&
+          reservationCheck(id, request.idTag).ok;
+        return (idle(id) || reservedForMe) && reservationCheck(id, request.idTag).ok;
+      };
+      const reservedForIdTag = [...reservations.values()].find(
+        (r) => r.connectorId !== 0 && belongsTo(r, request.idTag),
+      )?.connectorId;
       const connectorId =
-        request.connectorId ?? connectors(station).find((c) => idle(c.connectorId))?.connectorId;
+        request.connectorId ??
+        reservedForIdTag ??
+        connectors(station).find((c) => usable(c.connectorId))?.connectorId;
       if (
         connectorId === undefined ||
         connectorId === 0 ||
-        !idle(connectorId) ||
+        !usable(connectorId) ||
         authorized.has(connectorId)
       ) {
         return { status: 'Rejected' };
       }
+      const reservationId = reservationCheck(connectorId, request.idTag).reservationId;
+      if (reservationId !== undefined) sessionReservations.set(connectorId, reservationId);
       later(delayFor('RemoteStartTransaction'), async () => {
         if (
           configBool(config, 'AuthorizeRemoteTxRequests') &&
@@ -1008,6 +1192,22 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
   // ---- Restore after a restart ------------------------------------------
 
   const restored = options.restore;
+  for (const reservation of restored?.reservations ?? []) {
+    if (reservation.expiresAt <= now()) continue;
+    reservations.set(reservation.reservationId, { ...reservation });
+    if (reservation.connectorId !== 0) {
+      station = reduce(
+        station,
+        {
+          type: 'Reserve',
+          connectorId: reservation.connectorId,
+          reservationId: reservation.reservationId,
+        },
+        now(),
+      ).state;
+    }
+    scheduleExpiry(reservation);
+  }
   if (restored !== undefined) {
     try {
       config = createConfig({
@@ -1060,6 +1260,11 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         ids,
         send: options.send,
         handlers,
+        // The local list answers for itself without the profile (NotSupported, -1).
+        supports: (action) =>
+          action === 'SendLocalList' ||
+          action === 'GetLocalListVersion' ||
+          supports(OCPP16_ACTION_PROFILES[action]),
         onEvent: (event) => emit({ type: 'rpc', event }),
       });
       void boot();
@@ -1143,6 +1348,11 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         void endTransaction(connectorId, 'Local', idTag);
         return 'stopping';
       }
+      const reserved = await reservationAllows(connectorId, idTag);
+      if (!reserved.ok) {
+        log(`connector ${connectorId}: ${idTag} refused, the connector is reserved`);
+        return 'rejected';
+      }
       const decision = decideLocalAuthorization({
         cache: authCache,
         config,
@@ -1156,6 +1366,9 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       if (!accepted) {
         log(`connector ${connectorId}: ${idTag} rejected`);
         return 'rejected';
+      }
+      if (reserved.reservationId !== undefined) {
+        sessionReservations.set(connectorId, reserved.reservationId);
       }
       authorizeConnector(connectorId, idTag);
       return 'authorized';
@@ -1188,6 +1401,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
             ? [connectorId]
             : [];
       affected.forEach((id) => void endTransaction(id, 'Other'));
+      checkReservations();
     },
 
     clearFault(connectorId) {
@@ -1256,6 +1470,12 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
           version: localListVersion(localList),
           size: Object.keys(localList.entries).length,
         },
+        reservations: [...reservations.values()].map((r) => ({
+          reservationId: r.reservationId,
+          connectorId: r.connectorId,
+          idTag: r.idTag,
+          expiryDate: new Date(r.expiresAt).toISOString(),
+        })),
       };
     },
 
@@ -1285,6 +1505,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         behaviour: { ...behaviour },
         energyMultiplier,
         localList,
+        reservations: [...reservations.values()].map((r) => ({ ...r })),
       };
     },
   };

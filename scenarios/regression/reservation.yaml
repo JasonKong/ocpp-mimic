@@ -1,0 +1,67 @@
+# Reservation (ReserveNow, CancelReservation). The reservations expire far in
+# the future and end by use or by CancelReservation; expiry itself is covered
+# by the core tests.
+name: A reserved connector only takes its card, and StartTransaction carries the reservation
+station: { id: REG-RES-USE, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        { connectorId: 1, expiryDate: '2099-01-01T00:00:00Z', idTag: TAG-RES, reservationId: 11 }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { connectorId: 1, status: Reserved } }
+  - expectStation: { reservations: [{ reservationId: 11, connectorId: 1, idTag: TAG-RES }] }
+  - presentCard: { idTag: TAG-OTHER, result: rejected }
+  - presentCard: { idTag: TAG-RES, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StartTransaction, payload: { idTag: TAG-RES, reservationId: 11 } }
+  - expectStation: { reservations: [] }
+---
+name: CancelReservation frees the connector, and an occupied connector cannot be reserved
+station: { id: REG-RES-CANCEL, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        { connectorId: 1, expiryDate: '2099-01-01T00:00:00Z', idTag: TAG-RES, reservationId: 21 }
+      answer: { status: Accepted }
+  - csmsCall:
+      { action: CancelReservation, payload: { reservationId: 21 }, answer: { status: Accepted } }
+  - expect: { sent: StatusNotification, payload: { connectorId: 1, status: Available } }
+  - csmsCall:
+      { action: CancelReservation, payload: { reservationId: 21 }, answer: { status: Rejected } }
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expectConnector: { status: Charging }
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        { connectorId: 1, expiryDate: '2099-01-01T00:00:00Z', idTag: TAG-RES, reservationId: 22 }
+      answer: { status: Occupied }
+---
+name: A remote start uses the connector reserved for its idTag
+station: { id: REG-RES-REMOTE, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        { connectorId: 1, expiryDate: '2099-01-01T00:00:00Z', idTag: TAG-RES, reservationId: 31 }
+      answer: { status: Accepted }
+  - csmsCall:
+      action: RemoteStartTransaction
+      payload: { idTag: TAG-OTHER, connectorId: 1 }
+      answer: { status: Rejected }
+  - csmsCall:
+      { action: RemoteStartTransaction, payload: { idTag: TAG-RES }, answer: { status: Accepted } }
+  - plugIn: {}
+  - expect:
+      { sent: StartTransaction, payload: { connectorId: 1, idTag: TAG-RES, reservationId: 31 } }
+---
+name: A station without the Reservation profile refuses ReserveNow
+station: { id: REG-RES-NONE, persona: core-only-1.6 }
+steps:
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        { connectorId: 1, expiryDate: '2099-01-01T00:00:00Z', idTag: TAG-RES, reservationId: 41 }
+      error: NotSupported

@@ -55,6 +55,7 @@ export const STANDARD_CONFIG_KEYS: Readonly<Record<string, ConfigKeyDefinition>>
   MeterValuesSampledData: MEASURAND_LIST,
   MeterValueSampleInterval: { type: 'integer', readonly: false, value: '60', minimum: 0 },
   NumberOfConnectors: { type: 'integer', readonly: true, value: '1' },
+  ReserveConnectorZeroSupported: { type: 'boolean', readonly: true, value: 'true' },
   ResetRetries: { type: 'integer', readonly: false, value: '1', minimum: 0 },
   SendLocalListMaxLength: { type: 'integer', readonly: true, value: '100', minimum: 0 },
   StopTransactionOnEVSideDisconnect: { type: 'boolean', readonly: false, value: 'true' },
@@ -64,7 +65,7 @@ export const STANDARD_CONFIG_KEYS: Readonly<Record<string, ConfigKeyDefinition>>
   SupportedFeatureProfiles: {
     type: 'list',
     readonly: true,
-    value: 'Core,RemoteTrigger,LocalAuthListManagement',
+    value: 'Core,RemoteTrigger,LocalAuthListManagement,Reservation',
   },
   TransactionMessageAttempts: { type: 'integer', readonly: false, value: '3', minimum: 0 },
   TransactionMessageRetryInterval: { type: 'integer', readonly: false, value: '60', minimum: 0 },

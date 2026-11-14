@@ -800,6 +800,146 @@ describe('EV model', () => {
   });
 });
 
+describe('reservations', () => {
+  const inMinutes = (h: ReturnType<typeof setup>, minutes: number) =>
+    new Date(h.clock.now() + minutes * 60_000).toISOString();
+  const reserve = (h: ReturnType<typeof setup>, payload: Record<string, unknown>) =>
+    h.csmsCall('ReserveNow', {
+      expiryDate: inMinutes(h, 10),
+      idTag: 'RES',
+      reservationId: 1,
+      ...payload,
+    });
+  const card = async (h: ReturnType<typeof setup>, connectorId: number, idTag: string) => {
+    const result = h.cp.presentIdTag(connectorId, idTag);
+    await h.settle();
+    return result;
+  };
+
+  it('holds a connector for its idTag and hands the reservationId to StartTransaction', async () => {
+    const h = setup();
+    await h.boot();
+    const mark = h.frames.length;
+    expect(await reserve(h, { connectorId: 1 })).toEqual({ status: 'Accepted' });
+    expect(h.statuses(mark)).toEqual(['1:Reserved']);
+    expect(await card(h, 1, 'OTHER')).toBe('rejected');
+    expect(await card(h, 1, 'RES')).toBe('authorized');
+    h.cp.plugIn(1);
+    await h.advance(1000);
+    expect(h.lastCall('StartTransaction')?.payload).toMatchObject({
+      idTag: 'RES',
+      reservationId: 1,
+    });
+    expect(h.cp.snapshot().reservations).toEqual([]);
+    expect(h.cp.snapshot().connectors[0]?.status).toBe('Charging');
+  });
+
+  it('ends at expiryDate or on CancelReservation, freeing the connector', async () => {
+    const h = setup();
+    await h.boot();
+    await reserve(h, { connectorId: 1, expiryDate: inMinutes(h, 1) });
+    const mark = h.frames.length;
+    await h.advance(60_000);
+    expect(h.statuses(mark)).toEqual(['1:Available']);
+    expect(h.cp.snapshot().reservations).toEqual([]);
+    await reserve(h, { connectorId: 2, reservationId: 2 });
+    expect(await h.csmsCall('CancelReservation', { reservationId: 2 })).toEqual({
+      status: 'Accepted',
+    });
+    expect(await h.csmsCall('CancelReservation', { reservationId: 2 })).toEqual({
+      status: 'Rejected',
+    });
+    expect(h.cp.snapshot().connectors[1]?.status).toBe('Available');
+  });
+
+  it('answers Occupied, Faulted, Unavailable or Rejected when it cannot reserve', async () => {
+    const h = setup();
+    await h.boot();
+    await h.startSession(1);
+    expect(await reserve(h, { connectorId: 1 })).toEqual({ status: 'Occupied' });
+    h.cp.raiseFault(2, { errorCode: 'GroundFailure' });
+    expect(await reserve(h, { connectorId: 2 })).toEqual({ status: 'Faulted' });
+    h.cp.clearFault(2);
+    await h.csmsCall('ChangeAvailability', { connectorId: 2, type: 'Inoperative' });
+    await h.advance(100);
+    expect(await reserve(h, { connectorId: 2 })).toEqual({ status: 'Unavailable' });
+    expect(await reserve(h, { connectorId: 9 })).toEqual({ status: 'Rejected' });
+    const noZero = setup({ config: { ReserveConnectorZeroSupported: 'false' } });
+    await noZero.boot();
+    expect(await reserve(noZero, { connectorId: 0 })).toEqual({ status: 'Rejected' });
+  });
+
+  it('keeps one connector free for a reservation on connectorId 0', async () => {
+    const h = setup();
+    await h.boot();
+    expect(await reserve(h, { connectorId: 0 })).toEqual({ status: 'Accepted' });
+    expect(h.cp.snapshot().connectors.map((c) => c.status)).toEqual(['Available', 'Available']);
+    expect(await card(h, 1, 'A')).toBe('authorized');
+    h.cp.plugIn(1);
+    await h.advance(1000);
+    // Connector 2 is the last free one: only the reserved card may use it.
+    expect(await card(h, 2, 'B')).toBe('rejected');
+    expect(await card(h, 2, 'RES')).toBe('authorized');
+    h.cp.plugIn(2);
+    await h.advance(1000);
+    expect(h.lastCall('StartTransaction')?.payload).toMatchObject({
+      connectorId: 2,
+      reservationId: 1,
+    });
+  });
+
+  it('accepts a card whose parentIdTag matches, asking the CSMS for the parent', async () => {
+    const h = setup({
+      csms: { Authorize: () => ({ idTagInfo: { status: 'Accepted', parentIdTag: 'FLEET' } }) },
+    });
+    await h.boot();
+    await reserve(h, { connectorId: 1, parentIdTag: 'FLEET' });
+    expect(await card(h, 1, 'DRIVER-7')).toBe('authorized');
+    expect(h.calls('Authorize').map((c) => c.payload.idTag)).toContain('DRIVER-7');
+  });
+
+  it('ends when the connector faults, and lets a remote start use it for its idTag only', async () => {
+    const h = setup();
+    await h.boot();
+    await reserve(h, { connectorId: 1 });
+    expect(await h.csmsCall('RemoteStartTransaction', { idTag: 'OTHER', connectorId: 1 })).toEqual({
+      status: 'Rejected',
+    });
+    expect(await h.csmsCall('RemoteStartTransaction', { idTag: 'RES' })).toEqual({
+      status: 'Accepted',
+    });
+    h.cp.plugIn(1);
+    await h.advance(2000);
+    expect(h.lastCall('StartTransaction')?.payload).toMatchObject({
+      connectorId: 1,
+      reservationId: 1,
+    });
+
+    await reserve(h, { connectorId: 2, reservationId: 5 });
+    h.cp.raiseFault(2, { errorCode: 'GroundFailure' });
+    expect(h.cp.snapshot().reservations).toEqual([]);
+  });
+
+  it('survives a restart, and is NotSupported without the Reservation profile', async () => {
+    const before = setup();
+    await before.boot();
+    await reserve(before, { connectorId: 1 });
+    const after = setup({ restore: before.cp.persistentState() });
+    await after.boot();
+    expect(after.statuses()).toContain('1:Reserved');
+    expect(after.cp.snapshot().reservations).toMatchObject([
+      { reservationId: 1, connectorId: 1, idTag: 'RES' },
+    ]);
+
+    const plain = setup({ config: { SupportedFeatureProfiles: 'Core,RemoteTrigger' } });
+    await plain.boot();
+    expect(await reserve(plain, { connectorId: 1 })).toMatchObject({
+      type: 4,
+      errorCode: 'NotSupported',
+    });
+  });
+});
+
 describe('energy multiplier', () => {
   const quiet = {
     BootNotification: () => ({

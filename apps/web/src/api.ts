@@ -45,6 +45,7 @@ export interface StationSnapshot {
   behaviour: Behaviour;
   energyMultiplier: number;
   localList: { version: number; size: number };
+  reservations: { reservationId: number; connectorId: number; idTag: string; expiryDate: string }[];
 }
 
 export interface FaultInfo {
