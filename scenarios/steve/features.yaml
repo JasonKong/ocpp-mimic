@@ -1,0 +1,288 @@
+# The M3 feature profiles and the Security Whitepaper, driven from SteVe's
+# REST API (/steve/api/v1/operations): the SteVe counterparts of the
+# regression scenarios for local lists, reservations, Smart Charging,
+# firmware and the whitepaper messages. Needs the SteVe from tools/steve
+# with STEVE_API_SECRET, the REG-STEVE-* charge points and TAG-REG registered,
+# and charging profile 1001 (tools/steve/register.sh --charging-profile).
+name: SteVe sends and checks the local authorization list
+csms: ws://localhost:8180/steve/websocket/CentralSystemService
+vars: { STEVE_API: http://localhost:8180/steve/api/v1 }
+station: { id: REG-STEVE-LOCALLIST, persona: regression-1.6 }
+steps:
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/SendLocalList'
+      basicAuth: &steve { user: admin, password: '{{env.STEVE_API_SECRET}}' }
+      json:
+        chargeBoxIdList: [REG-STEVE-LOCALLIST]
+        listVersion: 5
+        updateType: Full
+        addUpdateList: [TAG-REG]
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect:
+      received: SendLocalList
+      payload: { listVersion: 5, updateType: Full, localAuthorizationList: [{ idTag: TAG-REG }] }
+      answer: { status: Accepted }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/GetLocalListVersion'
+      basicAuth: *steve
+      json: { chargeBoxIdList: [REG-STEVE-LOCALLIST] }
+      expect: { json: { successResponses: [{ response: 5 }] } }
+  - expect: { received: GetLocalListVersion, answer: { listVersion: 5 } }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/SendLocalList'
+      basicAuth: *steve
+      json:
+        chargeBoxIdList: [REG-STEVE-LOCALLIST]
+        listVersion: 6
+        updateType: Differential
+        deleteList: [TAG-REG]
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect:
+      received: SendLocalList
+      payload: { listVersion: 6, updateType: Differential }
+      answer: { status: Accepted }
+---
+name: SteVe reserves a connector and cancels the reservation
+csms: ws://localhost:8180/steve/websocket/CentralSystemService
+vars: { STEVE_API: http://localhost:8180/steve/api/v1 }
+station: { id: REG-STEVE-RESERVE, persona: regression-1.6 }
+steps:
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/ReserveNow'
+      basicAuth: &steve { user: admin, password: '{{env.STEVE_API_SECRET}}' }
+      json:
+        chargeBoxIdList: [REG-STEVE-RESERVE]
+        connectorId: 1
+        expiry: '{{now+30m}}'
+        idTag: TAG-REG
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect:
+      received: ReserveNow
+      payload: { connectorId: 1, idTag: TAG-REG }
+      answer: { status: Accepted }
+      save: { reservation: $.payload.reservationId }
+  - expect: { sent: StatusNotification, payload: { connectorId: 1, status: Reserved } }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/CancelReservation'
+      basicAuth: *steve
+      json: { chargeBoxIdList: [REG-STEVE-RESERVE], reservationId: '{{reservation}}' }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect: { sent: StatusNotification, payload: { connectorId: 1, status: Available } }
+---
+name: SteVe sets, reads and clears a charging profile
+csms: ws://localhost:8180/steve/websocket/CentralSystemService
+vars: { STEVE_API: http://localhost:8180/steve/api/v1 }
+station: { id: REG-STEVE-PROFILES, persona: regression-1.6 }
+steps:
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/SetChargingProfile'
+      basicAuth: &steve { user: admin, password: '{{env.STEVE_API_SECRET}}' }
+      json: { chargeBoxIdList: [REG-STEVE-PROFILES], connectorId: 1, chargingProfilePk: 1001 }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect:
+      received: SetChargingProfile
+      payload:
+        connectorId: 1
+        csChargingProfiles:
+          { chargingProfilePurpose: TxDefaultProfile, chargingProfileKind: Relative }
+      answer: { status: Accepted }
+  - expectStation: { chargingProfiles: { $size: 1 } }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/GetCompositeSchedule'
+      basicAuth: *steve
+      json:
+        {
+          chargeBoxIdList: [REG-STEVE-PROFILES],
+          connectorId: 1,
+          durationInSeconds: 300,
+          chargingRateUnit: W,
+        }
+      expect: { json: { errorResponses: [], exceptions: [] } }
+  - expect: { received: GetCompositeSchedule, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/ClearChargingProfile'
+      basicAuth: *steve
+      json:
+        {
+          chargeBoxIdList: [REG-STEVE-PROFILES],
+          filterType: ChargingProfileId,
+          chargingProfilePk: 1001,
+        }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expectStation: { chargingProfiles: [] }
+---
+name: SteVe updates the firmware and fetches diagnostics
+csms: ws://localhost:8180/steve/websocket/CentralSystemService
+vars: { STEVE_API: http://localhost:8180/steve/api/v1 }
+station: { id: REG-STEVE-FIRMWARE, persona: regression-1.6 }
+steps:
+  - expect: { sent: BootNotification } # the first boot; later expects find the next one
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/UpdateFirmware'
+      basicAuth: &steve { user: admin, password: '{{env.STEVE_API_SECRET}}' }
+      json:
+        chargeBoxIdList: [REG-STEVE-FIRMWARE]
+        location: 'ftp://fw.example.com/fw-2.6.0.bin'
+        retrieveDateTime: '{{now+3s}}'
+        retries: 1
+        retryInterval: 1
+      expect: { json: { errorResponses: [], exceptions: [] } }
+  - expect: { received: UpdateFirmware, payload: { location: 'ftp://fw.example.com/fw-2.6.0.bin' } }
+  - expect: { sent: FirmwareStatusNotification, payload: { status: Downloading }, within: 15s }
+  - expect: { sent: FirmwareStatusNotification, payload: { status: Installing }, within: 15s }
+  - expect: { sent: BootNotification, payload: { firmwareVersion: 2.6.0 }, within: 15s }
+  - expect: { sent: FirmwareStatusNotification, payload: { status: Installed }, answer: {} }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/GetDiagnostics'
+      basicAuth: *steve
+      json: { chargeBoxIdList: [REG-STEVE-FIRMWARE], location: 'ftp://logs.example.com/' }
+      expect: { json: { errorResponses: [], exceptions: [] } }
+  - expect: { received: GetDiagnostics, answer: { fileName: { $regex: '^diagnostics-' } } }
+  - expect: { sent: DiagnosticsStatusNotification, payload: { status: Uploaded }, answer: {} }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/TriggerMessage'
+      basicAuth: *steve
+      json: { chargeBoxIdList: [REG-STEVE-FIRMWARE], triggerMessage: FirmwareStatusNotification }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect: { sent: FirmwareStatusNotification, payload: { status: Idle } }
+---
+name: SteVe uses the Security Whitepaper messages
+csms: ws://localhost:8180/steve/websocket/CentralSystemService
+station: { id: REG-STEVE-SECURITY, persona: regression-1.6 }
+vars:
+  STEVE_API: http://localhost:8180/steve/api/v1
+  root: |
+    -----BEGIN CERTIFICATE-----
+    MIIDVTCCAj2gAwIBAgIUZb9vbkRcFsvPPncUmRdG+gSCWXswDQYJKoZIhvcNAQEL
+    BQAwMjETMBEGA1UECgwKb2NwcC1taW1pYzEbMBkGA1UEAwwSb2NwcC1taW1pYyBU
+    ZXN0IENBMB4XDTI2MTExNDA4MzgxMVoXDTQ2MTEwOTA4MzgxMVowMjETMBEGA1UE
+    CgwKb2NwcC1taW1pYzEbMBkGA1UEAwwSb2NwcC1taW1pYyBUZXN0IENBMIIBIjAN
+    BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw1k+E2LfcV53kFqJAxEUsjZ24aVG
+    VIEL7lgmsPyTg/SjgIEiXoNkhLVuuCyC0UtU6hITIYXS92Dp6EgEk6PMTqV6B0Zl
+    daMuRmQ2Yw9HeC29ojcOM4t8mbNMxonbRKvYsEpOBpYcNWsLGP/yLuZv7KpBlBSl
+    Zy5FAOPUWhIll2ZTSShH54cUgj2Mva69UuDiHreELa55P3Cv5wQvvkhZG3rJGv0F
+    7XGzgc4lY7pt8ZNbmtSc6KO3HsUdvSm520ED3MKXWeBWTHMbnXNRwJbIDon2cghk
+    2hL6bf6POOTmK1SqTrpQVvlwPWSpBFfl4GzBtvc5vsIAW/sXAVvvkOmIowIDAQAB
+    o2MwYTAdBgNVHQ4EFgQUSmIdVuGLCkFevQ4k1FVaxWfLcNMwHwYDVR0jBBgwFoAU
+    SmIdVuGLCkFevQ4k1FVaxWfLcNMwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8E
+    BAMCAQYwDQYJKoZIhvcNAQELBQADggEBAIlhh24Lng2IBre6gJ/za3CAfdV/CdYj
+    LLDGVe/C2IQa6I86l/g129AtlkjojCL5Zyw0DnUG2oiK3fzsOdw3GE0GYp3f8fJd
+    co4ysD2KYnMKhNYpBGTJWRMo5deeH0C/MNuESZBcew5TSphKn8zmGRqqsqjlyn1M
+    0fIHB8n+MZstOehWpbGM5T9jwrrNIxdsGS+7WfqO2nsuGBIvIsoKVRXfyXjHR747
+    AnA7GpyvvZAr0KXUXkz6Pe4Lx718Z7l6ws1mQ7a9qhugZN7R4CWLNTs4aw9cl5uM
+    siVqyWDb6Xt6Tpdaapz5hLemjus7AUhoA2mrPAsHHg5kufhfAuktqio=
+    -----END CERTIFICATE-----
+  signer: |
+    -----BEGIN CERTIFICATE-----
+    MIIDWTCCAkGgAwIBAgIJANpl6eJKs6qVMA0GCSqGSIb3DQEBCwUAMDIxEzARBgNV
+    BAoMCm9jcHAtbWltaWMxGzAZBgNVBAMMEm9jcHAtbWltaWMgVGVzdCBDQTAeFw0y
+    NjExMTQwODM4MTFaFw00NjExMDkwODM4MTFaMDIxEzARBgNVBAoMCm9jcHAtbWlt
+    aWMxGzAZBgNVBAMMEm9jcHAtbWltaWMtdGVzdC1jcDCCASIwDQYJKoZIhvcNAQEB
+    BQADggEPADCCAQoCggEBAN6I+NGA1+retm1S4nowAKGLUK/5RVnShvlY0xQh6Drp
+    T7hKw35PAJDzuhNnoUzX38aLpBlPKv6iRG+yxJliCcO8/O9oUdE7EZLmO6uX8pnB
+    kDh0ePZDUzxEqxOa8kcl8cPDQqmEhuaY4xYe0palTfYc/HIIq4ZGPMh/BCo/uIKy
+    f98QPHkHsPVusvgM5HNgwYlgsIkEo0zMiUyGGWuMRWz1S4cBsZLKq03Kp2dKEd5M
+    kip0n3dm9qoVgS9eZx9NKCcWf6TzQen33BODCYOAVXOfpUfGdFGmwEVgQUXkGti0
+    4E8/+Q5hLaoa3CW5lPtlwpvgJLgRQdGQK3Rs48KCKOMCAwEAAaNyMHAwCQYDVR0T
+    BAIwADAOBgNVHQ8BAf8EBAMCBaAwEwYDVR0lBAwwCgYIKwYBBQUHAwIwHQYDVR0O
+    BBYEFB5b/9tnBfTff5j3Ri+RUFl0CCPfMB8GA1UdIwQYMBaAFEpiHVbhiwpBXr0O
+    JNRVWsVny3DTMA0GCSqGSIb3DQEBCwUAA4IBAQAzqarRB+DQimUpUSSetDP5elLp
+    jSCexpo+yShSk+QtoZmjXEeFXS8KQ4iO3YIykb3xSopONmCHokGnFUvJR/XqptNf
+    8i8wLn6jtwC8HccSnA4O0zwPhwAt5iMupsWFa8uuISwTySYXAZ6lfIcYZFhkvJrY
+    VMhHS71bJPAr9nsfQmb9lyDw15P0rHHy2AFAzSW7/dXIhfJaRuAeKaiWWUL7DDKs
+    mTY6kyvSMMAWwaHNoVW7RC0Tsm6hT64Cm4H4QtfbrX1dcMHObwpczis17HonKnYY
+    FL4HbuetfXOl/1nTdnHLobDKk7V+moH2FFQcdPCiiKzmhtw3EPQGEzPSl31Q
+    -----END CERTIFICATE-----
+steps:
+  - expect: { sent: SecurityEventNotification, payload: { type: StartupOfTheDevice }, answer: {} }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/ExtendedTriggerMessage'
+      basicAuth: &steve { user: admin, password: '{{env.STEVE_API_SECRET}}' }
+      json: { chargeBoxIdList: [REG-STEVE-SECURITY], triggerMessage: Heartbeat }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect: { sent: Heartbeat, from: step, within: 5s }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/GetLog'
+      basicAuth: *steve
+      json:
+        {
+          chargeBoxIdList: [REG-STEVE-SECURITY],
+          logType: SecurityLog,
+          location: 'ftp://logs.example.com/',
+        }
+      expect: { json: { errorResponses: [], exceptions: [] } }
+  - expect:
+      { received: GetLog, answer: { status: Accepted }, save: { request: $.payload.requestId } }
+  - expect:
+      {
+        sent: LogStatusNotification,
+        payload: { status: Uploaded, requestId: '{{request}}' },
+        answer: {},
+      }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/InstallCertificate'
+      basicAuth: *steve
+      json:
+        {
+          chargeBoxIdList: [REG-STEVE-SECURITY],
+          certificateType: ManufacturerRootCertificate,
+          certificate: '{{root}}',
+        }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/GetInstalledCertificateIds'
+      basicAuth: *steve
+      json: { chargeBoxIdList: [REG-STEVE-SECURITY], certificateType: ManufacturerRootCertificate }
+      expect: { json: { errorResponses: [], exceptions: [] } }
+  - expect:
+      received: GetInstalledCertificateIds
+      answer: { status: Accepted, certificateHashData: { $size: 1 } }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/SignedUpdateFirmware'
+      basicAuth: *steve
+      json:
+        chargeBoxIdList: [REG-STEVE-SECURITY]
+        location: 'ftp://fw.example.com/fw-4.0.0.bin'
+        retrieveDateTime: '{{now+3s}}'
+        signature: c2lnbmF0dXJl
+        signingCertificate: '{{signer}}'
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect:
+      {
+        sent: SignedFirmwareStatusNotification,
+        payload: { status: SignatureVerified },
+        within: 15s,
+      }
+  - expect:
+      {
+        sent: SignedFirmwareStatusNotification,
+        payload: { status: Installed },
+        within: 15s,
+        answer: {},
+      }
+  - http:
+      method: POST
+      url: '{{STEVE_API}}/operations/ExtendedTriggerMessage'
+      basicAuth: *steve
+      json: { chargeBoxIdList: [REG-STEVE-SECURITY], triggerMessage: SignChargePointCertificate }
+      expect: { json: { successResponses: [{ response: Accepted }] } }
+  - expect:
+      sent: SignCertificate
+      payload: { csr: { $regex: '^-----BEGIN CERTIFICATE REQUEST-----' } }
+      answer: { status: { $exists: true } }

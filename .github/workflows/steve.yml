@@ -33,7 +33,7 @@ jobs:
       - name: Register the scenario charge points and card
         run: |
           ids=$(grep -h -o 'id: REG-[A-Z]*-[A-Z]*' scenarios/regression/charge-point.yaml scenarios/steve/*.yaml | sed 's/id: //' | sort -u)
-          tools/steve/register.sh --charge-points $ids --tags TAG-REG
+          tools/steve/register.sh --charge-points $ids --tags TAG-REG --charging-profile
       - name: Run the scenarios against SteVe
         env:
           # Matches WEBAPI_VALUE in tools/steve/docker-compose.yml (test only).

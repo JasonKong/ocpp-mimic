@@ -40,8 +40,8 @@ Scenarios call the API with `http` steps and `basicAuth: { user: admin, password
 ## Run the regression scenarios against SteVe
 
 ```bash
-tools/steve/register.sh --charge-points $(grep -h -o 'id: REG-[A-Z]*-[A-Z]*' scenarios/regression/charge-point.yaml scenarios/steve/*.yaml | sed 's/id: //' | sort -u) --tags TAG-REG
+tools/steve/register.sh --charge-points $(grep -h -o 'id: REG-[A-Z]*-[A-Z]*' scenarios/regression/charge-point.yaml scenarios/steve/*.yaml | sed 's/id: //' | sort -u) --tags TAG-REG --charging-profile
 STEVE_API_SECRET=ocpp-mimic-test-api-secret node packages/cli/dist/main.js run scenarios/regression/charge-point.yaml scenarios/steve --personas scenarios/personas --csms ws://localhost:8180/steve/websocket/CentralSystemService
 ```
 
-`regression/charge-point.yaml` needs no CSMS commands; `scenarios/steve/` sends SteVe's commands through its REST API and is the SteVe counterpart of `regression/csms-commands.yaml`, which only the built-in CSMS can run. The SteVe workflow (`.github/workflows/steve.yml`) runs both.
+`regression/charge-point.yaml` needs no CSMS commands; `scenarios/steve/` sends SteVe's commands through its REST API: `csms-commands.yaml` is the SteVe counterpart of `regression/csms-commands.yaml`, and `features.yaml` covers the M3 feature profiles and the Security Whitepaper (local list, reservations, Smart Charging, firmware, certificates, logs), which the other regression files run against the built-in CSMS only. `--charging-profile` adds the charging profile 1001 that `features.yaml` sets. The SteVe workflow (`.github/workflows/steve.yml`) runs all of them.
