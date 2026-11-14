@@ -16,3 +16,4 @@ export {
 export * as s from './schema.js';
 export { VERSION } from './version.js';
 export * from './device.js';
+export * from './rpc.js';

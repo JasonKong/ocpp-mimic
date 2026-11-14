@@ -24,6 +24,42 @@ export const RPC_ERROR_CODES = [
 ] as const;
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
 
+/**
+ * Every action OCPP 1.6 defines, across all feature profiles. An action in
+ * this list that a charge point does not handle is answered with
+ * NotSupported; anything else with NotImplemented.
+ */
+export const OCPP16_ACTION_NAMES = [
+  'Authorize',
+  'BootNotification',
+  'CancelReservation',
+  'ChangeAvailability',
+  'ChangeConfiguration',
+  'ClearCache',
+  'ClearChargingProfile',
+  'DataTransfer',
+  'DiagnosticsStatusNotification',
+  'FirmwareStatusNotification',
+  'GetCompositeSchedule',
+  'GetConfiguration',
+  'GetDiagnostics',
+  'GetLocalListVersion',
+  'Heartbeat',
+  'MeterValues',
+  'RemoteStartTransaction',
+  'RemoteStopTransaction',
+  'ReserveNow',
+  'Reset',
+  'SendLocalList',
+  'SetChargingProfile',
+  'StartTransaction',
+  'StatusNotification',
+  'StopTransaction',
+  'TriggerMessage',
+  'UnlockConnector',
+  'UpdateFirmware',
+] as const;
+
 /** Connector statuses reported in StatusNotification (OCPP 1.6 ChargePointStatus). */
 export const CHARGE_POINT_STATUSES = [
   'Available',
