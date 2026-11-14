@@ -39,6 +39,15 @@ import {
   type ReduceResult,
   type StationState,
 } from './device.js';
+import {
+  acceptedPowerW,
+  advanceEv,
+  createEv,
+  evPowerW as evDrawW,
+  msUntilFull,
+  type EvProfile,
+  type EvState,
+} from './ev.js';
 import type { IdGenerator } from './ids.js';
 import {
   createMeter,
@@ -190,6 +199,12 @@ export interface ChargePointOptions {
   restore?: PersistedChargePoint;
 }
 
+/** An EV plugged into a connector: a profile, with the persona's name for it when it has one. */
+export interface PluggedEv {
+  name?: string;
+  profile: EvProfile;
+}
+
 export interface ConnectorSnapshot {
   connectorId: number;
   status: string;
@@ -200,6 +215,8 @@ export interface ConnectorSnapshot {
   idTag?: string;
   energyWh: number;
   powerW: number;
+  /** The plugged-in EV, when the cable was plugged in with one. */
+  ev?: { name?: string; soc: number; profile: EvProfile };
 }
 
 export interface ChargePointSnapshot {
@@ -220,7 +237,8 @@ export interface ChargePoint {
   connected(): void;
   disconnected(): void;
   receive(text: string): void;
-  plugIn(connectorId: number): void;
+  /** Cable in; with an EV, power and SoC follow the EV model instead of a fixed power. */
+  plugIn(connectorId: number, ev?: PluggedEv): void;
   /** Takes the cable out, unless the cable lock holds it. */
   unplug(connectorId: number): UnplugResult;
   /** A card presented at `connectorId`: starts, or stops the transaction the card started. */
@@ -262,6 +280,9 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     connectors(station).map((c) => [c.connectorId, createMeter({ now: clock.now(), offeredW })]),
   );
   const transactions = new Map<number, Transaction>();
+  /** Plugged-in EVs; `drawing` says whether the meter's power currently flows into the battery. */
+  const evs = new Map<number, { name?: string; state: EvState; drawing: boolean }>();
+  const fullTimers = new Map<number, TimerHandle>();
   /** connectorId → local reference of its running transaction. */
   const refs = new Map<number, string>();
   const outbox: OutboxEntry[] = [];
@@ -459,8 +480,43 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     return value;
   }
 
+  /**
+   * Brings the meter (and the EV's SoC) up to now and returns it. Without an
+   * EV the power is constant between changes; with one the energy comes from
+   * the EV model, so the power follows the charging curve.
+   */
+  function syncMeter(connectorId: number): MeterState {
+    const current = meter(connectorId);
+    const ev = evs.get(connectorId);
+    let next: MeterState;
+    if (ev === undefined || !ev.drawing) {
+      next = meterAt(current, now());
+    } else {
+      const elapsed = Math.max(0, now() - current.updatedAt);
+      const step = advanceEv(ev.state, current.offeredW, elapsed);
+      ev.state = step.ev;
+      next = {
+        ...current,
+        energyWh: current.energyWh + step.energyWh,
+        powerW: step.powerW,
+        updatedAt: Math.max(now(), current.updatedAt),
+      };
+    }
+    meters.set(connectorId, next);
+    return next;
+  }
+
+  /** Readings outside the meter for samples: the EV's SoC. */
+  function extras(connectorId: number): { socPercent?: number } {
+    const ev = evs.get(connectorId);
+    return ev === undefined ? {} : { socPercent: ev.state.soc };
+  }
+
   function setPower(connectorId: number, powerW: number): void {
-    meters.set(connectorId, withPower(meter(connectorId), now(), powerW));
+    meters.set(connectorId, withPower(syncMeter(connectorId), now(), powerW));
+    const ev = evs.get(connectorId);
+    if (ev !== undefined) ev.drawing = powerW > 0;
+    scheduleFull(connectorId);
   }
 
   /** Power the EV draws on a connector, given its transaction and suspension state. */
@@ -471,7 +527,40 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       connector.plugged &&
       !connector.evSuspended &&
       !connector.evseSuspended;
-    setPower(connectorId, running ? evPowerW : 0);
+    const ev = evs.get(connectorId);
+    if (ev === undefined) {
+      setPower(connectorId, running ? evPowerW : 0);
+      return;
+    }
+    const current = syncMeter(connectorId);
+    setPower(connectorId, running ? evDrawW(ev.state, current.offeredW) : 0);
+  }
+
+  /** While an EV draws power, a timer moves the connector to SuspendedEV when the battery is full. */
+  function scheduleFull(connectorId: number): void {
+    stopTimer(fullTimers.get(connectorId));
+    fullTimers.delete(connectorId);
+    const ev = evs.get(connectorId);
+    if (ev === undefined || !ev.drawing) return;
+    const ms = msUntilFull(ev.state, meter(connectorId).offeredW);
+    if (ms === undefined) return;
+    fullTimers.set(
+      connectorId,
+      later(ms, () => {
+        fullTimers.delete(connectorId);
+        syncMeter(connectorId);
+        // Real timers can fire a moment early; wait for the rest.
+        const rest = msUntilFull(ev.state, meter(connectorId).offeredW) ?? 0;
+        if (rest > 0) {
+          scheduleFull(connectorId);
+          return;
+        }
+        log(`connector ${connectorId}: the EV is full`);
+        if (applyDevice({ type: 'EvSuspend', connectorId }).error === undefined) {
+          updatePower(connectorId);
+        }
+      }),
+    );
   }
 
   function sendMeterValues(
@@ -484,11 +573,12 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     const transactionId = transaction?.transactionId;
     const request = meterValuesRequest({
       connectorId,
-      meter: meter(connectorId),
+      meter: syncMeter(connectorId),
       config,
       now: now(),
       configKey,
       context,
+      extras: extras(connectorId),
       ...(transactionId !== undefined && { transactionId }),
     });
     if (request === undefined) return;
@@ -579,9 +669,10 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     const started = startTransaction({
       connectorId,
       idTag,
-      meter: meter(connectorId),
+      meter: syncMeter(connectorId),
       config,
       now: now(),
+      extras: extras(connectorId),
     });
     const ref = nextKey('tx');
     transactions.set(connectorId, started.transaction);
@@ -641,7 +732,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     stopTimer(sampleTimers.get(connectorId));
     sampleTimers.delete(connectorId);
     const stoppedAt = now();
-    const meterAtStop = meterAt(meter(connectorId), stoppedAt);
+    const meterAtStop = syncMeter(connectorId);
+    const extrasAtStop = extras(connectorId);
     setPower(connectorId, 0);
 
     const request = stopTransactionRequest({
@@ -650,6 +742,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       config,
       now: stoppedAt,
       reason,
+      extras: extrasAtStop,
       ...(idTag !== undefined && { idTag }),
     });
     // The transactionId is filled in from the StartTransaction answer when sent.
@@ -922,7 +1015,21 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       rpc?.receive(text);
     },
 
-    plugIn(connectorId) {
+    plugIn(connectorId, ev) {
+      if (findConnector(station, connectorId) === undefined) {
+        log(`Plug: unknown connector ${connectorId}`);
+        return;
+      }
+      if (ev !== undefined) {
+        // Throws a RangeError for an unusable profile, before anything changes.
+        const state = createEv(ev.profile);
+        syncMeter(connectorId);
+        evs.set(connectorId, {
+          ...(ev.name !== undefined && { name: ev.name }),
+          state,
+          drawing: false,
+        });
+      }
       if (applyDevice({ type: 'Plug', connectorId }).error !== undefined) return;
       if (authorized.has(connectorId)) {
         clearPrepare(connectorId);
@@ -935,16 +1042,27 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         log(`connector ${connectorId}: the cable is locked`);
         return 'locked';
       }
-      if (applyDevice({ type: 'Unplug', connectorId }).error !== undefined) {
+      if (findConnector(station, connectorId) === undefined) {
+        log(`Unplug: unknown connector ${connectorId}`);
         return 'unknown-connector';
       }
+      syncMeter(connectorId);
+      applyDevice({ type: 'Unplug', connectorId });
       authorized.delete(connectorId);
       clearPrepare(connectorId);
-      if (!transactions.has(connectorId)) return 'unplugged';
-      if (configBool(config, 'StopTransactionOnEVSideDisconnect')) {
-        void endTransaction(connectorId, 'EVDisconnected');
-      } else {
-        updatePower(connectorId);
+      if (transactions.has(connectorId)) {
+        if (configBool(config, 'StopTransactionOnEVSideDisconnect')) {
+          void endTransaction(connectorId, 'EVDisconnected');
+        } else {
+          updatePower(connectorId);
+        }
+      }
+      // The EV leaves with the cable.
+      if (evs.has(connectorId)) {
+        setPower(connectorId, 0);
+        evs.delete(connectorId);
+        scheduleFull(connectorId);
+        changed();
       }
       return 'unplugged';
     },
@@ -985,6 +1103,14 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     },
 
     evResume(connectorId) {
+      const ev = evs.get(connectorId);
+      if (ev !== undefined) {
+        syncMeter(connectorId);
+        if (acceptedPowerW(ev.state.profile, ev.state.soc) === 0) {
+          log(`connector ${connectorId}: the EV is full and does not resume`);
+          return;
+        }
+      }
       if (applyDevice({ type: 'EvResume', connectorId }).error === undefined)
         updatePower(connectorId);
     },
@@ -1025,7 +1151,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         station: { status: station0.status, errorCode: station0.errorCode },
         connectors: connectors(station).map((connector) => {
           const status = connectorStatus(connector, station);
-          const reading = meterAt(meter(connector.connectorId), now());
+          const reading = syncMeter(connector.connectorId);
+          const ev = evs.get(connector.connectorId);
           const transaction = transactions.get(connector.connectorId);
           return {
             connectorId: connector.connectorId,
@@ -1039,6 +1166,13 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
             ...(transaction !== undefined && { idTag: transaction.idTag }),
             energyWh: reading.energyWh,
             powerW: reading.powerW,
+            ...(ev !== undefined && {
+              ev: {
+                ...(ev.name !== undefined && { name: ev.name }),
+                soc: ev.state.soc,
+                profile: ev.state.profile,
+              },
+            }),
           };
         }),
         config: config.values,
@@ -1054,7 +1188,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         savedAt,
         config: { ...config.values },
         meters: Object.fromEntries(
-          [...meters].map(([id, value]) => [String(id), meterAt(value, savedAt).energyWh]),
+          [...meters.keys()].map((id) => [String(id), syncMeter(id).energyWh]),
         ),
         authCache,
         transactions: [...transactions].map(([connectorId, transaction]) => ({

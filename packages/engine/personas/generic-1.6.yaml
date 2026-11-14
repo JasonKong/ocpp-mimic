@@ -21,6 +21,12 @@ timing:
     soft: 30s
     hard: 3m
   bootRetry: 60s
+# Made-up EV profiles for plugging in with an EV (power and SoC follow the
+# charging curve). test-5kwh fills up within minutes for quick tests.
+evs:
+  compact-40kwh: { capacityKWh: 40, initialSoc: 20, maxPowerW: 7400, phases: 1 }
+  sedan-75kwh: { capacityKWh: 75, initialSoc: 30, maxPowerW: 11000, phases: 3 }
+  test-5kwh: { capacityKWh: 5, initialSoc: 70, maxPowerW: 7400, phases: 1 }
 faults:
   - { name: Ground fault, errorCode: GroundFailure }
   - { name: Over temperature, errorCode: HighTemperature }

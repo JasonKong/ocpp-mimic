@@ -19,6 +19,15 @@ const emit = defineEmits<{
 
 const idTags = reactive<Record<number, string>>({});
 const faults = reactive<Record<number, number>>({});
+/** EV picked for the next plug-in, per connector; '' plugs in without an EV (fixed power). */
+const evChoice = reactive<Record<number, string>>({});
+
+const evNames = (): string[] => Object.keys(props.persona?.evs ?? {});
+
+function plugIn(connector: ConnectorSnapshot) {
+  const ev = evChoice[connector.connectorId] ?? '';
+  emit('action', 'plug', connector.connectorId, ev === '' ? undefined : ev);
+}
 
 const faultCatalogue = (): FaultInfo[] =>
   props.persona?.faults.length
@@ -141,16 +150,31 @@ function statusTone(status: string): string {
             <dt>Error</dt>
             <dd>{{ connector.errorCode }}</dd>
           </div>
+          <div v-if="connector.ev">
+            <dt>EV</dt>
+            <dd>
+              {{ connector.ev.name ?? 'custom' }} · {{ connector.ev.profile.capacityKWh }} kWh
+            </dd>
+          </div>
+          <div v-if="connector.ev">
+            <dt>SoC</dt>
+            <dd>{{ Math.floor(connector.ev.soc) }} %</dd>
+          </div>
         </dl>
 
         <div class="row">
-          <button
-            v-if="!connector.plugged"
-            class="primary"
-            @click="emit('action', 'plug', connector.connectorId)"
-          >
-            Plug in
-          </button>
+          <template v-if="!connector.plugged">
+            <select
+              v-if="evNames().length > 0"
+              :value="evChoice[connector.connectorId] ?? ''"
+              title="EV to plug in"
+              @change="evChoice[connector.connectorId] = ($event.target as HTMLSelectElement).value"
+            >
+              <option value="">No EV (fixed power)</option>
+              <option v-for="name in evNames()" :key="name" :value="name">{{ name }}</option>
+            </select>
+            <button class="primary" @click="plugIn(connector)">Plug in</button>
+          </template>
           <button
             v-else
             :disabled="connector.locked"

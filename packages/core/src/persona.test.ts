@@ -114,6 +114,19 @@ describe('resolvePersonas', () => {
     ]);
   });
 
+  it('keeps named EV profiles and rejects unusable ones', () => {
+    const ev = { capacityKWh: 40, initialSoc: 20, maxPowerW: 7400, phases: 1 };
+    const ok = resolveOne({ ...BASE, evs: { compact: ev } });
+    expect(ok.errors).toEqual([]);
+    expect(ok.personas.get('base')?.definition.evs).toEqual({ compact: ev });
+    expect(resolveOne({ ...BASE, evs: { broken: { ...ev, initialSoc: 150 } } }).errors).toEqual([
+      'test.yaml: $.evs.broken: initialSoc must be between 0 and 100',
+    ]);
+    expect(resolveOne({ ...BASE, evs: { broken: { capacityKWh: 40 } } }).errors[0]).toMatch(
+      /^test\.yaml: \$\.evs\.broken\.initialSoc: /,
+    );
+  });
+
   it('warns about feature profiles that are not implemented yet', () => {
     const { personas } = resolveOne({ ...BASE, features: ['Core', 'SmartCharging'] });
     expect(personas.get('base')?.warnings).toEqual([

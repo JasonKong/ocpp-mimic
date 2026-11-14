@@ -5,7 +5,7 @@
  */
 import { isAccepted } from './auth.js';
 import { configBool, configList, type ConfigState } from './config.js';
-import { meterAt, registerWh, sampleMeter, type MeterState } from './meter.js';
+import { meterAt, registerWh, sampleMeter, type MeterState, type SampleExtras } from './meter.js';
 import type {
   MeterValue,
   ReadingContext,
@@ -38,6 +38,8 @@ export function startTransaction(input: {
   config: ConfigState;
   now: number;
   reservationId?: number;
+  /** Readings outside the meter, such as the EV's SoC. */
+  extras?: SampleExtras;
 }): StartedTransaction {
   const meter = meterAt(input.meter, input.now);
   const meterStartWh = registerWh(meter);
@@ -46,6 +48,7 @@ export function startTransaction(input: {
     input.now,
     configList(input.config, 'StopTxnSampledData'),
     'Transaction.Begin',
+    input.extras,
   );
   return {
     transaction: {
@@ -101,6 +104,7 @@ export function stopTransactionRequest(input: {
   reason: StopReason;
   /** The idTag that stopped the transaction, when it was stopped by a card. */
   idTag?: string;
+  extras?: SampleExtras;
 }): RequestOf<'StopTransaction'> {
   const { transaction, now } = input;
   if (transaction.transactionId === undefined) {
@@ -112,6 +116,7 @@ export function stopTransactionRequest(input: {
     now,
     configList(input.config, 'StopTxnSampledData'),
     'Transaction.End',
+    input.extras,
   );
   const transactionData = [transaction.beginSample, endSample].filter(
     (sample): sample is MeterValue => sample !== undefined,
@@ -139,12 +144,14 @@ export function meterValuesRequest(input: {
   configKey: 'MeterValuesSampledData' | 'MeterValuesAlignedData';
   context: ReadingContext;
   transactionId?: number;
+  extras?: SampleExtras;
 }): RequestOf<'MeterValues'> | undefined {
   const sample = sampleMeter(
     input.meter,
     input.now,
     configList(input.config, input.configKey),
     input.context,
+    input.extras,
   );
   if (sample === undefined) return undefined;
   return {

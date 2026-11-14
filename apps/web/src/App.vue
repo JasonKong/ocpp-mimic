@@ -80,7 +80,7 @@ async function act(name: string, connectorId?: number, value?: unknown) {
       case 'behaviour':
         return api.setBehaviour(id, value as Parameters<typeof api.setBehaviour>[1]);
       case 'plug':
-        return api.plug(id, c);
+        return api.plug(id, c, typeof value === 'string' ? value : undefined);
       case 'unplug':
         return api.unplug(id, c);
       case 'evSuspend':

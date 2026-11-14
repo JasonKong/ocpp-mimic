@@ -13,6 +13,15 @@ export interface ConnectorSnapshot {
   idTag?: string;
   energyWh: number;
   powerW: number;
+  ev?: { name?: string; soc: number; profile: EvProfile };
+}
+export interface EvProfile {
+  capacityKWh: number;
+  initialSoc: number;
+  maxPowerW: number;
+  phases: number;
+  taperSoc?: number;
+  targetSoc?: number;
 }
 
 /** Test switches; see ChargePointBehaviour in core. */
@@ -48,6 +57,7 @@ export interface PersonaInfo {
   description?: string;
   connectors: number;
   faults: FaultInfo[];
+  evs: Record<string, EvProfile>;
   warnings: string[];
 }
 
@@ -119,7 +129,8 @@ export const api = {
   online: (id: string) => request<StationSnapshot>('POST', `${station(id)}/online`),
   setBehaviour: (id: string, changes: Partial<Behaviour>) =>
     request<StationSnapshot>('PATCH', `${station(id)}/behaviour`, changes),
-  plug: (id: string, c: number) => request<StationSnapshot>('POST', `${connector(id, c)}/plug`),
+  plug: (id: string, c: number, ev?: string) =>
+    request<StationSnapshot>('POST', `${connector(id, c)}/plug`, ev !== undefined ? { ev } : {}),
   unplug: (id: string, c: number) => request<StationSnapshot>('POST', `${connector(id, c)}/unplug`),
   idTag: (id: string, c: number, idTag: string) =>
     request<{ result: string; station: StationSnapshot }>('POST', `${connector(id, c)}/id-tag`, {
