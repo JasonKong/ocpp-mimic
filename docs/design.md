@@ -305,10 +305,10 @@ The protocol follows OCPP 1.6J throughout; personas, the EV model, the scenario 
 
 | Message | Simulator behaviour |
 | --- | --- |
-| RemoteStartTransaction | Checks connector state and idTag, then starts a transaction; with `AuthorizeRemoteTxRequests=true` it sends Authorize first |
+| RemoteStartTransaction | Checks connector state and idTag, then starts a transaction; with `AuthorizeRemoteTxRequests=true` it sends Authorize first. Answers Rejected while the station's refuse-remote-start switch is on |
 | RemoteStopTransaction | Accepted when the transactionId matches; ends the transaction (reason=Remote) |
 | Reset | Soft / Hard: end the transaction, disconnect, reconnect after the persona's delay and send BootNotification again |
-| UnlockConnector | Answers Unlocked / UnlockFailed / NotSupported; ends a running transaction first (reason=UnlockCommand) |
+| UnlockConnector | Answers Unlocked / UnlockFailed / NotSupported; ends a running transaction first (reason=UnlockCommand) and releases the cable lock |
 | ChangeAvailability | Operative / Inoperative; answers first and reports the new status after the persona's command delay; answers Scheduled during a transaction and applies the change when it ends. connectorId 0 changes only through a request for connectorId 0, not when every connector has been changed one by one |
 | GetConfiguration | Returns config keys with their read-only flag; unknown keys go into unknownKey |
 | ChangeConfiguration | Answers Accepted / Rejected / RebootRequired / NotSupported, and the change takes effect |
@@ -327,6 +327,7 @@ TriggerMessage belongs to the Remote Trigger profile. It moves into M1 because m
 - Faults: report a Faulted status (using ChargePointErrorCode) and recover from it.
 - Meter: fixed power at first, with "pause" and "fully charged" triggered by hand; M2 replaces this with the EV model.
 - One persona; the UI and API can create stations, plug in and unplug, swipe cards, and trigger faults or outages; the message log can be filtered and shows raw payloads.
+- Test switches per station, in the UI and API and kept across restarts: refuse remote starts, and a cable lock that holds the cable while a transaction runs. A locked cable cannot be unplugged until UnlockConnector or the end of the transaction releases it.
 
 **1.6 features outside M1** (roadmap M3): Firmware Management (UpdateFirmware, GetDiagnostics and their status notifications), Local Auth List Management (SendLocalList, GetLocalListVersion), Reservation (ReserveNow, CancelReservation), Smart Charging (SetChargingProfile, ClearChargingProfile, GetCompositeSchedule), and the Security Whitepaper.
 

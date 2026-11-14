@@ -97,6 +97,22 @@ export const DEFAULT_TIMING: ChargePointTiming = {
 
 export type Registration = 'Offline' | 'Booting' | 'Pending' | 'Rejected' | 'Accepted';
 
+/** Test switches a station can flip at run time. */
+export interface ChargePointBehaviour {
+  /** Answer every RemoteStartTransaction with Rejected, to test how the CSMS handles it. */
+  refuseRemoteStart: boolean;
+  /**
+   * Lock the cable while a transaction runs. A locked cable cannot be
+   * unplugged; UnlockConnector or the end of the transaction releases it.
+   */
+  cableLock: boolean;
+}
+
+export const DEFAULT_BEHAVIOUR: ChargePointBehaviour = {
+  refuseRemoteStart: false,
+  cableLock: false,
+};
+
 export type ChargePointEvent =
   | { type: 'rpc'; event: RpcEvent }
   | { type: 'log'; message: string }
@@ -139,6 +155,8 @@ export interface PersistedChargePoint {
   /** Transaction reference → transactionId given by the CSMS. */
   csmsIds: Record<string, number>;
   sequence: number;
+  /** Missing in states saved before the switches existed. */
+  behaviour?: ChargePointBehaviour;
 }
 
 export interface ChargePointOptions {
@@ -161,6 +179,8 @@ export interface ChargePointOptions {
   /** Asks the transport to drop the connection and reconnect after `downtimeMs` (reset). */
   restart?: (downtimeMs: number) => void;
   onEvent?: (event: ChargePointEvent) => void;
+  /** Initial test switches; a restored state's switches take precedence. */
+  behaviour?: Partial<ChargePointBehaviour>;
   /**
    * State saved by persistentState() before a restart. Configuration, meters,
    * the authorization cache and queued messages carry over; transactions that
@@ -190,22 +210,27 @@ export interface ChargePointSnapshot {
   config: Readonly<Record<string, string>>;
   /** Transaction messages waiting to be sent. */
   queuedMessages: number;
+  behaviour: ChargePointBehaviour;
 }
 
 export type IdTagResult = 'stopping' | 'authorized' | 'rejected' | 'busy' | 'unknown-connector';
+export type UnplugResult = 'unplugged' | 'locked' | 'unknown-connector';
 
 export interface ChargePoint {
   connected(): void;
   disconnected(): void;
   receive(text: string): void;
   plugIn(connectorId: number): void;
-  unplug(connectorId: number): void;
+  /** Takes the cable out, unless the cable lock holds it. */
+  unplug(connectorId: number): UnplugResult;
   /** A card presented at `connectorId`: starts, or stops the transaction the card started. */
   presentIdTag(connectorId: number, idTag: string): Promise<IdTagResult>;
   evSuspend(connectorId: number): void;
   evResume(connectorId: number): void;
   raiseFault(connectorId: number, fault: Fault): void;
   clearFault(connectorId: number): void;
+  /** Changes test switches; turning the cable lock on or off applies to running transactions too. */
+  setBehaviour(changes: Partial<ChargePointBehaviour>): void;
   dataTransfer(request: RequestOf<'DataTransfer'>): Promise<CallOutcome<'DataTransfer'>>;
   snapshot(): ChargePointSnapshot;
   /** The state to save for a restart; see ChargePointOptions.restore. */
@@ -227,6 +252,11 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     ...(options.config?.values !== undefined && { values: options.config.values }),
   });
   let station: StationState = createStation(options.connectors);
+  let behaviour: ChargePointBehaviour = {
+    ...DEFAULT_BEHAVIOUR,
+    ...options.behaviour,
+    ...options.restore?.behaviour,
+  };
   let authCache: AuthorizationCache = EMPTY_AUTHORIZATION_CACHE;
   const meters = new Map<number, MeterState>(
     connectors(station).map((c) => [c.connectorId, createMeter({ now: clock.now(), offeredW })]),
@@ -366,6 +396,15 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     for (const message of result.messages) void sendIfOnline('StatusNotification', message);
     changed();
     return result;
+  }
+
+  /** Locks or releases the cable as the switch and the running transaction require. */
+  function updateLock(connectorId: number): void {
+    const connector = findConnector(station, connectorId);
+    if (connector === undefined) return;
+    const shouldLock = behaviour.cableLock && transactions.has(connectorId);
+    if (shouldLock && !connector.locked) applyDevice({ type: 'Lock', connectorId });
+    if (!shouldLock && connector.locked) applyDevice({ type: 'Unlock', connectorId });
   }
 
   // ---- Registration and heartbeats -------------------------------------
@@ -548,6 +587,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     transactions.set(connectorId, started.transaction);
     refs.set(connectorId, ref);
     changed();
+    updateLock(connectorId);
 
     const outcome = await enqueue('StartTransaction', started.request, ref);
     const stillRunning = transactions.get(connectorId) === started.transaction;
@@ -557,6 +597,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         transactions.delete(connectorId);
         refs.delete(connectorId);
         applyDevice({ type: 'CancelPrepare', connectorId });
+        updateLock(connectorId);
       }
       return;
     }
@@ -614,6 +655,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     // The transactionId is filled in from the StartTransaction answer when sent.
     const stopCall = ref !== undefined ? enqueue('StopTransaction', request, ref) : undefined;
     applyDevice({ type: 'TransactionEnded', connectorId });
+    updateLock(connectorId);
 
     const outcome = await stopCall;
     if (outcome?.ok === true && outcome.payload.idTagInfo !== undefined) {
@@ -701,6 +743,10 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     },
 
     RemoteStartTransaction(request) {
+      if (behaviour.refuseRemoteStart) {
+        log('remote start refused: the refuse-remote-start switch is on');
+        return { status: 'Rejected' };
+      }
       const connectorId =
         request.connectorId ?? connectors(station).find((c) => idle(c.connectorId))?.connectorId;
       if (
@@ -885,15 +931,22 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     },
 
     unplug(connectorId) {
-      if (applyDevice({ type: 'Unplug', connectorId }).error !== undefined) return;
+      if (findConnector(station, connectorId)?.locked === true) {
+        log(`connector ${connectorId}: the cable is locked`);
+        return 'locked';
+      }
+      if (applyDevice({ type: 'Unplug', connectorId }).error !== undefined) {
+        return 'unknown-connector';
+      }
       authorized.delete(connectorId);
       clearPrepare(connectorId);
-      if (!transactions.has(connectorId)) return;
+      if (!transactions.has(connectorId)) return 'unplugged';
       if (configBool(config, 'StopTransactionOnEVSideDisconnect')) {
         void endTransaction(connectorId, 'EVDisconnected');
       } else {
         updatePower(connectorId);
       }
+      return 'unplugged';
     },
 
     async presentIdTag(connectorId, idTag) {
@@ -958,6 +1011,12 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       );
     },
 
+    setBehaviour(changes) {
+      behaviour = { ...behaviour, ...changes };
+      for (const connector of connectors(station)) updateLock(connector.connectorId);
+      changed();
+    },
+
     snapshot() {
       const station0 = stationStatus(station);
       return {
@@ -984,6 +1043,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         }),
         config: config.values,
         queuedMessages: outbox.length,
+        behaviour: { ...behaviour },
       };
     },
 
@@ -1010,6 +1070,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         outbox: outbox.map((entry) => ({ ...entry })),
         csmsIds: Object.fromEntries(csmsIds),
         sequence,
+        behaviour: { ...behaviour },
       };
     },
   };

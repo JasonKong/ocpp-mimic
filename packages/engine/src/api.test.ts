@@ -184,6 +184,35 @@ describe('engine API', () => {
     await csms!.waitForConnection('SIM-1', 3000, connection);
   });
 
+  it('flips test switches and refuses to unplug a locked cable', async () => {
+    const { api, csmsUrl } = await start();
+    await addStation(api, csmsUrl);
+    const connection = await csms!.waitForConnection('SIM-1');
+
+    const patched = await api('PATCH', '/api/stations/SIM-1/behaviour', { cableLock: true });
+    expect(patched.status).toBe(200);
+    expect(patched.body?.behaviour).toEqual({ refuseRemoteStart: false, cableLock: true });
+    expect((await api('PATCH', '/api/stations/SIM-1/behaviour', { lock: true })).status).toBe(400);
+    expect((await api('PATCH', '/api/stations/SIM-1/behaviour', { cableLock: 'yes' })).status).toBe(
+      400,
+    );
+
+    await api('POST', '/api/stations/SIM-1/connectors/1/id-tag', { idTag: 'TAG' });
+    await api('POST', '/api/stations/SIM-1/connectors/1/plug');
+    await connection.waitForCall('StartTransaction', 3000);
+    await until(
+      async () => (await api('GET', '/api/stations/SIM-1')).body?.connectors[0].locked === true,
+    );
+    const refused = await api('POST', '/api/stations/SIM-1/connectors/1/unplug');
+    expect(refused.status).toBe(409);
+    expect(refused.body?.error).toMatch(/locked/);
+
+    await api('PATCH', '/api/stations/SIM-1/behaviour', { refuseRemoteStart: true });
+    expect(
+      await connection.call('RemoteStartTransaction', { idTag: 'REMOTE', connectorId: 1 }),
+    ).toMatchObject({ type: 3, payload: { status: 'Rejected' } });
+  });
+
   it('pushes frames and station updates over the /api/events WebSocket', async () => {
     const { url, api, csmsUrl } = await start();
     const events: ApiEvent[] = [];
