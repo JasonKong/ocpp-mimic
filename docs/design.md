@@ -677,7 +677,7 @@ The baseline's two bottlenecks, plus one the baseline did not cover:
 
 - **Nothing is built for nobody.** Without a client on the events WebSocket the engine builds no snapshot and serializes no record for it, and the 2-second push of charging stations is skipped.
 - **Recorder limit.** `serve --record-limit <n>` (default 1000, 0 keeps none); load runs keep 10 per station (T49).
-- **State saves.** With `--store`, each station's state was saved in its own SQLite transaction: 50 ms after every change, and every station every 10 s. At 1,000 stations the 10-second save held the event loop for about 300 ms. Changes are now collected for a second and written in one transaction, and the periodic save writes a tenth of the stations every second, so every station is still saved every 10 s but no transaction holds the loop for long.
+- **State saves.** With `--store`, each station's state was saved in its own SQLite transaction: 50 ms after every change, and every station every 10 s. At 1,000 stations the 10-second save held the event loop for about 300 ms. Changes are now collected for a second and written in one transaction, and the periodic save writes a tenth of the stations every second, so every station is still saved every 10 s but no transaction holds the loop for long. The store uses WAL with `synchronous=NORMAL`: on the CI runner a single commit's fsync once held the loop for 2.5 s; now commits do not wait for the disk (a crash can lose the last ones).
 - **Not changed**, as the baseline showed no need: the shared scheduler, and parsing each frame once.
 
 Measured with `pnpm bench`, 1,000 stations of `load-ac-1.6` with `--store`, 20 started a second, 30 % charging, 5 minutes, on the same laptop as the baseline:
@@ -689,6 +689,20 @@ Measured with `pnpm bench`, 1,000 stations of `load-ac-1.6` with `--store`, 20 s
 | Heartbeats late, p99 / max (ms) | 19 / 45 | 10 / 42 |
 | Meter values late, p99 / max (ms) | 7 / 24 | 8 / 20 |
 | RSS peak (MB) | 249 | 183 |
+
+On the reference machine (the `bench` workflow: a GitHub-hosted runner, 2 vCPUs, 8 GB), 1,000 stations for 10 minutes, 10 started a second, 30 % charging:
+
+| | Baseline (no store, 1,000 records per station) | After (`--store`, 10 records per station) |
+| --- | --- | --- |
+| Engine CPU after the ramp-up, mean / max (% of a core) | 4.1 / 6.6 | 5.0 / 7.7 |
+| Event-loop delay, worst 5-second p99 / max (ms) | 1.7 / 29 | 2.4 / 20 |
+| Heartbeats late, p99 / max (ms) | 1.2 / 16 | 1.3 / 13 |
+| WebSocket connect, p99 / max (ms) | 3.8 / 33 | 4.8 / 19 |
+| BootNotification accepted, p99 / max (ms) | 101 / 121 | 101 / 111 |
+| RSS peak (MB) | 269 | 249 |
+| Heap floor after the ramp-up, first quarter → last (MB) | 21 → 54 | 46.8 → 47.1 |
+
+Every number is within the exit thresholds; the heap no longer grows. The exit run itself (T54) uses `load`, which keeps no store.
 
 **Where the files go**
 
