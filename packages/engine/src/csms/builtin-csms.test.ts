@@ -158,5 +158,79 @@ describe('built-in CSMS', () => {
     csms = await startBuiltinCsms();
     await expect(open(`${csms.url}/CP-1`, ['ocpp2.0.1'])).rejects.toThrow();
     await expect(open(csms.url.replace('/ocpp', '/other/CP-1'))).rejects.toThrow();
+    expect(csms.stats()).toMatchObject({ refused: 2, opened: 0 });
+  });
+
+  it('answers with the configured heartbeat interval and refuses unknown idTags', async () => {
+    csms = await startBuiltinCsms({ heartbeatInterval: 300, unknownIdTagPrefix: 'UNKNOWN-' });
+    const rpc = await connectChargePoint('CP-1');
+    const boot = await rpc.call('BootNotification', {
+      chargePointVendor: 'V',
+      chargePointModel: 'M',
+    });
+    expect(boot).toMatchObject({ ok: true, payload: { interval: 300 } });
+    const authorize = (idTag: string) => rpc.call('Authorize', { idTag });
+    expect(await authorize('LOAD-0001')).toMatchObject({
+      payload: { idTagInfo: { status: 'Accepted' } },
+    });
+    expect(await authorize('UNKNOWN-7')).toMatchObject({
+      payload: { idTagInfo: { status: 'Invalid' } },
+    });
+    const start = await rpc.call('StartTransaction', {
+      connectorId: 1,
+      idTag: 'UNKNOWN-7',
+      meterStart: 0,
+      timestamp: '2026-11-15T10:00:00Z',
+    });
+    expect(start).toMatchObject({ payload: { idTagInfo: { status: 'Invalid' } } });
+  });
+
+  it('delays its answers by a random time in the configured range', async () => {
+    csms = await startBuiltinCsms({ responseDelay: { minMs: 80, maxMs: 120 } });
+    const rpc = await connectChargePoint('CP-1');
+    const started = performance.now();
+    await rpc.call('Heartbeat', {});
+    expect(performance.now() - started).toBeGreaterThanOrEqual(75);
+  });
+
+  it('keeps no frames without keepFrames, but still takes answers to its own calls', async () => {
+    csms = await startBuiltinCsms({ keepFrames: false });
+    const rpc = await connectChargePoint('CP-1', {
+      GetConfiguration: () => ({ configurationKey: [] }),
+    });
+    const connection = await csms.waitForConnection('CP-1');
+    for (let i = 0; i < 5; i++) await rpc.call('Heartbeat', {});
+    expect(connection.received).toHaveLength(0);
+
+    const answer = await connection.call('GetConfiguration', {});
+    expect(answer).toMatchObject({ type: 3, payload: { configurationKey: [] } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(connection.received).toHaveLength(0);
+  });
+
+  it('counts connections, calls by action and answers', async () => {
+    csms = await startBuiltinCsms({
+      handlers: { DataTransfer: () => new CallErrorReply('NotSupported') },
+    });
+    const rpc = await connectChargePoint('CP-1');
+    await rpc.call('Heartbeat', {});
+    await rpc.call('Heartbeat', {});
+    await rpc.call('DataTransfer', { vendorId: 'X' });
+    await connectChargePoint('CP-2');
+    await csms.waitForConnection('CP-2');
+    expect(csms.stats()).toEqual({
+      connected: 2,
+      opened: 2,
+      closed: 0,
+      refused: 0,
+      callsReceived: { Heartbeat: 2, DataTransfer: 1 },
+      results: 2,
+      errors: 1,
+    });
+    sockets[0]?.close();
+    await (
+      await csms.waitForConnection('CP-1')
+    ).closed;
+    expect(csms.stats()).toMatchObject({ connected: 1, closed: 1 });
   });
 });

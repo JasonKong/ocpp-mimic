@@ -2,7 +2,7 @@
 
 An OCPP charge point simulator: a headless engine runs many virtual charge points against the CSMS under test. See the design in [docs/design.md](docs/design.md) ([Chinese version](docs/design.zh-CN.md)).
 
-> Status: M1 in progress — OCPP 1.6J Core charge points, engine API and Web UI work; see the M1 milestone.
+> Status: M1 to M3 are done (OCPP 1.6J with every feature profile and the Security Whitepaper, scenarios and CI, fault injection); M4 (scale) is in progress.
 
 ## Requirements
 
@@ -33,16 +33,26 @@ node packages/cli/dist/main.js run scenarios/examples
 
 Each scenario runs on its own embedded engine, by default against the built-in test CSMS, and prints `PASS`, `FAIL` or `ERROR` with the failing step. Useful options: `--csms <url>` (with `--allow-csms <prefix>`) to test another CSMS, `--var NAME=value`, `--personas <dir>`, `--timeout <duration>`, `--bail` and `--junit <file>` for a JUnit XML report. The exit code is 0 when everything passed, 1 when something failed and 2 when a file does not validate.
 
+## Running the test CSMS on its own
+
+`ocpp-mimic csms` runs the built-in test CSMS as its own process, for example as the target of a load test or for stations created in the Web UI:
+
+```bash
+node packages/cli/dist/main.js csms --delay 20ms-100ms
+```
+
+Stations connect to `ws://127.0.0.1:9100/ocpp/<chargeBoxId>`. It accepts every station and answers every request; idTags starting with `UNKNOWN-` are Invalid (`--unknown-prefix`). Options: `--port`, `--host`, `--delay` (a fixed or random answer delay), `--heartbeat-interval`, `--password` (Basic Auth for every station), `--tls-cert` / `--tls-key` / `--tls-ca` / `--client-certificates` for wss://, and `--status` for how often it prints a status line. It keeps no frames, so memory stays flat over long runs, and prints a summary of requests by action when stopped with Ctrl-C.
+
 ## Layout
 
 | Directory         | Contents                                                                                                                                                                                  |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `packages/core`   | Protocol, state machines, persona interpreter. Pure logic with no IO: its tsconfig loads no Node or DOM types, so timers, sockets and files do not compile; time comes in through `Clock` |
 | `packages/engine` | Runtime: HTTP / WebSocket API, charge point scheduling, persistence                                                                                                                       |
-| `packages/cli`    | The `ocpp-mimic` command: starts the engine, and later runs scenarios                                                                                                                     |
+| `packages/cli`    | The `ocpp-mimic` command: starts the engine, runs scenarios, runs the test CSMS on its own                                                                                                |
 | `apps/web`        | Vue 3 Web UI; calls only the engine API and holds no simulation logic                                                                                                                     |
 | `docs`            | Design documents                                                                                                                                                                          |
-| `scenarios`       | Scenario files for `ocpp-mimic run`: reference examples, later the regression suite                                                                                                       |
+| `scenarios`       | Scenario files for `ocpp-mimic run` (examples, the regression suite, SteVe variants), personas, and the M4 load plans and import mappings                                                 |
 
 ## Third-party material
 

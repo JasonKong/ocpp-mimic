@@ -30,12 +30,36 @@ export interface RunCommand {
   allowCsms: string[];
 }
 
+export type ClientCertificateMode = 'none' | 'optional' | 'required';
+
+export interface CsmsCommand {
+  kind: 'csms';
+  port: number;
+  host: string;
+  /** Answer delay range in milliseconds. */
+  delay?: { minMs: number; maxMs: number };
+  /** Heartbeat interval in seconds, given in BootNotification answers. */
+  heartbeatInterval: number;
+  /** idTags starting with this are Invalid; empty = all accepted. */
+  unknownPrefix: string;
+  /** Basic Auth password every station must present. */
+  password?: string;
+  /** PEM file paths for wss://. */
+  tls?: { cert: string; key: string; ca?: string; clientCertificates: ClientCertificateMode };
+  /** How often to print a status line, in milliseconds; 0 = never. */
+  statusMs: number;
+}
+
 export type Command =
   | ServeCommand
   | RunCommand
+  | CsmsCommand
   | { kind: 'version' }
   | { kind: 'help' }
   | { kind: 'error'; message: string };
+
+/** Default port of `ocpp-mimic csms`; the M4 load plans use it. */
+export const DEFAULT_CSMS_PORT = 9100;
 
 export const USAGE = `Usage: ocpp-mimic <command> [options]
 
@@ -43,6 +67,8 @@ Commands:
   serve                  Start the engine, its HTTP API and the Web UI
   run <file|dir>...      Run scenario files (directories are searched for
                          .yaml / .yml files)
+  csms                   Run the built-in test CSMS on its own, e.g. as the
+                         target of a load test
 
 Options for serve:
   --port <number>        Port for the HTTP API (default ${DEFAULT_PORT})
@@ -58,112 +84,146 @@ Options for run:
   --bail                 Stop after the first scenario that does not pass
   --junit <file>         Also write a JUnit XML report to <file>
 
-Options for both:
+Options for serve and run:
   --personas <dir>       Extra persona directory; repeat for more
   --allow-csms <prefix>  Also allow CSMS URLs starting with <prefix>; repeat
                          for more (default: ${DEFAULT_ALLOWED_CSMS.slice(0, 2).join(', ')}, ...)
+
+Options for csms (stations connect to ws://<host>:<port>/ocpp/<id>):
+  --port <number>        Port to listen on (default ${DEFAULT_CSMS_PORT})
+  --host <host>          Interface to bind (default 127.0.0.1)
+  --delay <d>[-<d>]      Answer every station request after this delay, or a
+                         random one in the range, e.g. 50ms or 20ms-100ms
+  --heartbeat-interval <seconds>
+                         Interval given in BootNotification answers (default 60)
+  --unknown-prefix <s>   idTags starting with <s> are Invalid (default
+                         UNKNOWN-; an empty string accepts every idTag)
+  --password <password>  Basic Auth password every station must present
+  --tls-cert <file>      Serve wss:// with this certificate (PEM) ...
+  --tls-key <file>       ... and its private key (PEM)
+  --tls-ca <file>        CA (PEM) that client certificates must be signed by
+  --client-certificates <none|optional|required>
+                         Ask stations for a client certificate (default none)
+  --status <duration>    Print a status line this often (default 60s; 0: never)
+
   -v, --version          Print the version
   -h, --help             Print this help`;
+
+const OPTIONS = {
+  port: { type: 'string' },
+  host: { type: 'string' },
+  store: { type: 'string' },
+  personas: { type: 'string', multiple: true },
+  'allow-csms': { type: 'string', multiple: true },
+  csms: { type: 'string' },
+  var: { type: 'string', multiple: true },
+  timeout: { type: 'string' },
+  bail: { type: 'boolean' },
+  junit: { type: 'string' },
+  delay: { type: 'string' },
+  'heartbeat-interval': { type: 'string' },
+  'unknown-prefix': { type: 'string' },
+  password: { type: 'string' },
+  'tls-cert': { type: 'string' },
+  'tls-key': { type: 'string' },
+  'tls-ca': { type: 'string' },
+  'client-certificates': { type: 'string' },
+  status: { type: 'string' },
+  version: { type: 'boolean', short: 'v' },
+  help: { type: 'boolean', short: 'h' },
+} as const;
+
+type OptionName = keyof typeof OPTIONS;
+type Values = ReturnType<typeof parseArgs<{ options: typeof OPTIONS }>>['values'];
+
+const COMMANDS = {
+  serve: ['port', 'host', 'store', 'personas', 'allow-csms'],
+  run: ['csms', 'var', 'timeout', 'bail', 'junit', 'personas', 'allow-csms'],
+  csms: [
+    'port',
+    'host',
+    'delay',
+    'heartbeat-interval',
+    'unknown-prefix',
+    'password',
+    'tls-cert',
+    'tls-key',
+    'tls-ca',
+    'client-certificates',
+    'status',
+  ],
+} as const satisfies Record<string, readonly OptionName[]>;
+
+type CommandName = keyof typeof COMMANDS;
+
+const error = (message: string): Command => ({ kind: 'error', message });
 
 export function parseCommand(argv: readonly string[]): Command {
   try {
     const { values, positionals } = parseArgs({
       args: [...argv],
       allowPositionals: true,
-      options: {
-        port: { type: 'string' },
-        host: { type: 'string', default: '127.0.0.1' },
-        store: { type: 'string' },
-        personas: { type: 'string', multiple: true, default: [] },
-        'allow-csms': { type: 'string', multiple: true, default: [] },
-        csms: { type: 'string' },
-        var: { type: 'string', multiple: true, default: [] },
-        timeout: { type: 'string' },
-        bail: { type: 'boolean', default: false },
-        junit: { type: 'string' },
-        version: { type: 'boolean', short: 'v' },
-        help: { type: 'boolean', short: 'h' },
-      },
+      options: OPTIONS,
     });
 
     if (values.version) return { kind: 'version' };
     const [name, ...rest] = positionals;
     if (values.help || name === undefined) return { kind: 'help' };
-    if (name !== 'serve' && name !== 'run') {
-      return { kind: 'error', message: `Unknown command: ${name}` };
-    }
-    const badPrefix = values['allow-csms'].find((prefix) => !/^wss?:\/\/.+/.test(prefix));
-    if (badPrefix !== undefined) {
-      return {
-        kind: 'error',
-        message: `--allow-csms needs a ws:// or wss:// prefix, got ${badPrefix}`,
-      };
-    }
-    if (name === 'run') return parseRun(rest, values);
-    if (rest.length > 0) return { kind: 'error', message: `Unexpected argument: ${rest[0]}` };
-    for (const option of ['csms', 'timeout', 'junit'] as const) {
-      if (values[option] !== undefined) {
-        return { kind: 'error', message: `--${option} is an option of run` };
-      }
-    }
-    if (values.var.length > 0 || values.bail) {
-      return { kind: 'error', message: `${values.bail ? '--bail' : '--var'} is an option of run` };
+    if (!(name in COMMANDS)) return error(`Unknown command: ${name}`);
+    const command = name as CommandName;
+
+    // An option of another command is named as such.
+    const allowed: readonly string[] = COMMANDS[command];
+    for (const option of Object.keys(values)) {
+      if (option === 'version' || option === 'help' || allowed.includes(option)) continue;
+      const owners = Object.entries(COMMANDS)
+        .filter(([, options]) => (options as readonly string[]).includes(option))
+        .map(([owner]) => owner);
+      return error(`--${option} is an option of ${owners.join(' and ')}`);
     }
 
-    const port = values.port === undefined ? DEFAULT_PORT : Number(values.port);
-    if (!Number.isInteger(port) || port < 0 || port > 65535) {
-      return { kind: 'error', message: `Invalid port: ${values.port}` };
+    const badPrefix = values['allow-csms']?.find((prefix) => !/^wss?:\/\/.+/.test(prefix));
+    if (badPrefix !== undefined) {
+      return error(`--allow-csms needs a ws:// or wss:// prefix, got ${badPrefix}`);
     }
+    if (command === 'run') return parseRun(rest, values);
+    if (rest.length > 0) return error(`Unexpected argument: ${rest[0]}`);
+    if (command === 'csms') return parseCsms(values);
+
+    const port = parsePort(values.port, DEFAULT_PORT);
+    if (port === undefined) return error(`Invalid port: ${values.port}`);
     return {
       kind: 'serve',
       port,
-      host: values.host,
+      host: values.host ?? '127.0.0.1',
       ...(values.store !== undefined && { store: values.store }),
-      personas: values.personas,
-      allowCsms: values['allow-csms'],
+      personas: values.personas ?? [],
+      allowCsms: values['allow-csms'] ?? [],
     };
-  } catch (error) {
-    return { kind: 'error', message: error instanceof Error ? error.message : String(error) };
+  } catch (caught) {
+    return error(caught instanceof Error ? caught.message : String(caught));
   }
 }
 
-function parseRun(
-  paths: string[],
-  values: {
-    csms?: string | undefined;
-    var: string[];
-    timeout?: string | undefined;
-    bail: boolean;
-    junit?: string | undefined;
-    personas: string[];
-    'allow-csms': string[];
-    port?: string | undefined;
-    store?: string | undefined;
-  },
-): Command {
-  if (paths.length === 0)
-    return { kind: 'error', message: 'run needs a scenario file or directory' };
-  if (values.port !== undefined || values.store !== undefined) {
-    return {
-      kind: 'error',
-      message: `--${values.port !== undefined ? 'port' : 'store'} is an option of serve`,
-    };
-  }
+function parsePort(value: string | undefined, fallback: number): number | undefined {
+  const port = value === undefined ? fallback : Number(value);
+  return Number.isInteger(port) && port >= 0 && port <= 65535 ? port : undefined;
+}
+
+function parseRun(paths: string[], values: Values): Command {
+  if (paths.length === 0) return error('run needs a scenario file or directory');
   if (
     values.csms !== undefined &&
     values.csms !== 'builtin' &&
     !/^wss?:\/\/\S+$/.test(values.csms)
   ) {
-    return {
-      kind: 'error',
-      message: `--csms must be builtin or a ws:// or wss:// URL, got ${values.csms}`,
-    };
+    return error(`--csms must be builtin or a ws:// or wss:// URL, got ${values.csms}`);
   }
   const vars: Record<string, string> = {};
-  for (const entry of values.var) {
+  for (const entry of values.var ?? []) {
     const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(entry);
     if (match === null || match[1] === 'env') {
-      return { kind: 'error', message: `--var needs NAME=value, got ${entry}` };
+      return error(`--var needs NAME=value, got ${entry}`);
     }
     vars[match[1] ?? ''] = match[2] ?? '';
   }
@@ -171,10 +231,7 @@ function parseRun(
   if (values.timeout !== undefined) {
     timeoutMs = parseDuration(values.timeout);
     if (timeoutMs === undefined || timeoutMs <= 0) {
-      return {
-        kind: 'error',
-        message: `--timeout needs a duration such as 30s or 5m, got ${values.timeout}`,
-      };
+      return error(`--timeout needs a duration such as 30s or 5m, got ${values.timeout}`);
     }
   }
   return {
@@ -183,9 +240,81 @@ function parseRun(
     ...(values.csms !== undefined && { csms: values.csms }),
     vars,
     ...(timeoutMs !== undefined && { timeoutMs }),
-    bail: values.bail,
+    bail: values.bail ?? false,
     ...(values.junit !== undefined && { junit: values.junit }),
-    personas: values.personas,
-    allowCsms: values['allow-csms'],
+    personas: values.personas ?? [],
+    allowCsms: values['allow-csms'] ?? [],
+  };
+}
+
+/** `50ms`, or a range `20ms-100ms`; durations without a unit are milliseconds. */
+export function parseDelay(value: string): { minMs: number; maxMs: number } | undefined {
+  const match = /^([^-]+)(?:-([^-]+))?$/.exec(value.trim());
+  if (match === null) return undefined;
+  const ms = (text: string) => {
+    const number = Number(text);
+    return Number.isFinite(number) ? number : parseDuration(text);
+  };
+  const minMs = ms(match[1] ?? '');
+  const maxMs = match[2] === undefined ? minMs : ms(match[2]);
+  if (minMs === undefined || maxMs === undefined || minMs < 0 || maxMs < minMs) return undefined;
+  return { minMs, maxMs };
+}
+
+function parseCsms(values: Values): Command {
+  const port = parsePort(values.port, DEFAULT_CSMS_PORT);
+  if (port === undefined) return error(`Invalid port: ${values.port}`);
+
+  let delay: { minMs: number; maxMs: number } | undefined;
+  if (values.delay !== undefined) {
+    delay = parseDelay(values.delay);
+    if (delay === undefined) {
+      return error(`--delay needs a duration or a range such as 20ms-100ms, got ${values.delay}`);
+    }
+  }
+
+  const heartbeatInterval =
+    values['heartbeat-interval'] === undefined ? 60 : Number(values['heartbeat-interval']);
+  if (!Number.isInteger(heartbeatInterval) || heartbeatInterval <= 0) {
+    return error(`--heartbeat-interval needs whole seconds, got ${values['heartbeat-interval']}`);
+  }
+
+  const statusMs =
+    values.status === undefined ? 60_000 : values.status === '0' ? 0 : parseDuration(values.status);
+  if (statusMs === undefined || statusMs < 0) {
+    return error(`--status needs a duration such as 30s, got ${values.status}`);
+  }
+
+  const mode = values['client-certificates'] ?? 'none';
+  if (mode !== 'none' && mode !== 'optional' && mode !== 'required') {
+    return error(`--client-certificates must be none, optional or required, got ${mode}`);
+  }
+  const cert = values['tls-cert'];
+  const key = values['tls-key'];
+  if ((cert === undefined) !== (key === undefined)) {
+    return error('--tls-cert and --tls-key go together');
+  }
+  if (cert === undefined && (values['tls-ca'] !== undefined || mode !== 'none')) {
+    return error('--tls-ca and --client-certificates need --tls-cert and --tls-key');
+  }
+
+  return {
+    kind: 'csms',
+    port,
+    host: values.host ?? '127.0.0.1',
+    ...(delay !== undefined && { delay }),
+    heartbeatInterval,
+    unknownPrefix: values['unknown-prefix'] ?? 'UNKNOWN-',
+    ...(values.password !== undefined && { password: values.password }),
+    ...(cert !== undefined &&
+      key !== undefined && {
+        tls: {
+          cert,
+          key,
+          ...(values['tls-ca'] !== undefined && { ca: values['tls-ca'] }),
+          clientCertificates: mode,
+        },
+      }),
+    statusMs,
   };
 }

@@ -67,6 +67,7 @@ export {
   type BuiltinCsms,
   type BuiltinCsmsConnection,
   type BuiltinCsmsOptions,
+  type BuiltinCsmsStats,
   type CsmsHandler,
   type CsmsReply,
 } from './csms/builtin-csms.js';

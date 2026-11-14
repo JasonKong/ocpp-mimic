@@ -73,6 +73,8 @@ export interface BuiltinCsmsOptions {
    * password or is refused with HTTP 401; other stations need none.
    */
   passwords?: Record<string, string>;
+  /** A Basic Auth password for every station not listed in `passwords`. */
+  password?: string;
   /** Serve wss:// with TLS 1.2 or above instead of ws://. */
   tls?: BuiltinCsmsTls;
   /**
@@ -81,6 +83,34 @@ export interface BuiltinCsmsOptions {
    * CertificateSigned shortly after. Without it SignCertificate is Rejected.
    */
   certificateAuthority?: { certificate: string; key: string };
+  /**
+   * Keep every frame a station sends on its connection (`received`, used by
+   * `waitForCall`). Default true; a long load run turns it off so memory
+   * stays flat.
+   */
+  keepFrames?: boolean;
+  /** Answers each station CALL after a random delay in this range (milliseconds). */
+  responseDelay?: { minMs: number; maxMs: number };
+  /** The heartbeat interval (seconds) BootNotification answers with. Default 60. */
+  heartbeatInterval?: number;
+  /** idTags starting with this are Invalid in Authorize and StartTransaction answers. */
+  unknownIdTagPrefix?: string;
+}
+
+/** Counters over the CSMS's life, for a summary. */
+export interface BuiltinCsmsStats {
+  /** Connections open now. */
+  connected: number;
+  /** Connections accepted, and closed, since the start. */
+  opened: number;
+  closed: number;
+  /** Upgrade requests refused (wrong path, password or subprotocol). */
+  refused: number;
+  /** CALLs received from charge points, by action. */
+  callsReceived: Record<string, number>;
+  /** Answers sent to those CALLs: CALLRESULTs and CALLERRORs. */
+  results: number;
+  errors: number;
 }
 
 /** The client certificate a charge point presented over TLS. */
@@ -129,15 +159,24 @@ export interface BuiltinCsms {
    */
   setReply(chargeBoxId: string, action: string, reply: CsmsReply, times?: number): void;
   clearReplies(): void;
+  stats(): BuiltinCsmsStats;
   stop(): Promise<void>;
 }
 
 const now = () => new Date().toISOString();
 
-function defaultHandlers(): Record<string, CsmsHandler> {
+function defaultHandlers(options: BuiltinCsmsOptions): Record<string, CsmsHandler> {
   let nextTransactionId = 1;
+  const interval = options.heartbeatInterval ?? 60;
+  const prefix = options.unknownIdTagPrefix;
+  const idTagInfo = (idTag: unknown) => ({
+    status:
+      prefix !== undefined && prefix !== '' && String(idTag).startsWith(prefix)
+        ? 'Invalid'
+        : 'Accepted',
+  });
   return {
-    BootNotification: () => ({ status: 'Accepted', currentTime: now(), interval: 60 }),
+    BootNotification: () => ({ status: 'Accepted', currentTime: now(), interval }),
     Heartbeat: () => ({ currentTime: now() }),
     StatusNotification: () => ({}),
     FirmwareStatusNotification: () => ({}),
@@ -146,9 +185,9 @@ function defaultHandlers(): Record<string, CsmsHandler> {
     LogStatusNotification: () => ({}),
     SignedFirmwareStatusNotification: () => ({}),
     MeterValues: () => ({}),
-    Authorize: () => ({ idTagInfo: { status: 'Accepted' } }),
-    StartTransaction: () => ({
-      idTagInfo: { status: 'Accepted' },
+    Authorize: (payload) => ({ idTagInfo: idTagInfo(payload.idTag) }),
+    StartTransaction: (payload) => ({
+      idTagInfo: idTagInfo(payload.idTag),
       transactionId: nextTransactionId++,
     }),
     StopTransaction: () => ({ idTagInfo: { status: 'Accepted' } }),
@@ -180,15 +219,25 @@ function waitUntil<T>(
   });
 }
 
+/** What a connection needs from its CSMS. */
+interface ConnectionContext {
+  handlers: Record<string, CsmsHandler>;
+  takeOverride: (chargeBoxId: string, action: string) => CsmsReply | undefined;
+  onKeyChanged: (chargeBoxId: string, key: string) => void;
+  keepFrames: boolean;
+  /** Milliseconds to wait before answering a CALL. */
+  delay: () => number;
+  stats: BuiltinCsmsStats;
+}
+
 function createConnection(
   socket: WebSocket,
   chargeBoxId: string,
   headers: IncomingMessage['headers'],
-  handlers: Record<string, CsmsHandler>,
-  takeOverride: (chargeBoxId: string, action: string) => CsmsReply | undefined,
   clientCertificate: ClientCertificate | undefined,
-  onKeyChanged: (key: string) => void,
+  context: ConnectionContext,
 ): BuiltinCsmsConnection {
+  const { handlers, takeOverride, stats } = context;
   const received: Frame[] = [];
   let pings = 0;
   socket.on('ping', () => {
@@ -246,7 +295,7 @@ function createConnection(
         answer.type === MessageTypeId.CallResult &&
         answer.payload.status === 'Accepted'
       ) {
-        onKeyChanged(payload.value);
+        context.onKeyChanged(chargeBoxId, payload.value);
       }
       return answer;
     },
@@ -269,19 +318,41 @@ function createConnection(
     },
   };
 
+  /** Sends the answer to a station CALL, after the configured delay. */
+  const answer = (frame: Frame) => {
+    if (frame.type === MessageTypeId.CallError) stats.errors += 1;
+    else stats.results += 1;
+    const ms = context.delay();
+    if (ms <= 0) send(frame);
+    else
+      setTimeout(() => {
+        if (socket.readyState === socket.OPEN) send(frame);
+      }, ms);
+  };
+
   socket.on('message', async (data) => {
     const parsed = parseFrame(data.toString());
     if (!parsed.ok) return;
     const { frame } = parsed;
-    received.push(frame);
+    if (context.keepFrames || frame.type !== MessageTypeId.Call) received.push(frame);
     listeners.forEach((listener) => listener());
-    if (frame.type !== MessageTypeId.Call) return;
+    if (frame.type !== MessageTypeId.Call) {
+      // Answers to the CSMS's own CALLs are only needed until call() takes them.
+      if (!context.keepFrames) {
+        setTimeout(() => {
+          const index = received.indexOf(frame);
+          if (index >= 0) received.splice(index, 1);
+        }, 0);
+      }
+      return;
+    }
+    stats.callsReceived[frame.action] = (stats.callsReceived[frame.action] ?? 0) + 1;
 
     const override = takeOverride(chargeBoxId, frame.action);
     if (override !== undefined) {
       if ('ignore' in override) return;
       if ('error' in override) {
-        send({
+        answer({
           type: MessageTypeId.CallError,
           id: frame.id,
           errorCode: override.error,
@@ -289,14 +360,14 @@ function createConnection(
           errorDetails: {},
         });
       } else {
-        send({ type: MessageTypeId.CallResult, id: frame.id, payload: override.payload });
+        answer({ type: MessageTypeId.CallResult, id: frame.id, payload: override.payload });
       }
       return;
     }
 
     const handler = handlers[frame.action];
     if (handler === undefined) {
-      send({
+      answer({
         type: MessageTypeId.CallError,
         id: frame.id,
         errorCode: 'NotImplemented',
@@ -308,7 +379,7 @@ function createConnection(
     try {
       const reply = await handler(frame.payload, connection);
       if (reply instanceof CallErrorReply) {
-        send({
+        answer({
           type: MessageTypeId.CallError,
           id: frame.id,
           errorCode: reply.errorCode,
@@ -316,10 +387,10 @@ function createConnection(
           errorDetails: {},
         });
       } else {
-        send({ type: MessageTypeId.CallResult, id: frame.id, payload: reply });
+        answer({ type: MessageTypeId.CallResult, id: frame.id, payload: reply });
       }
     } catch (error) {
-      send({
+      answer({
         type: MessageTypeId.CallError,
         id: frame.id,
         errorCode: 'InternalError',
@@ -336,7 +407,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
   const { port = 0, host = '127.0.0.1' } = options;
   const authority = options.certificateAuthority;
   const handlers: Record<string, CsmsHandler> = {
-    ...defaultHandlers(),
+    ...defaultHandlers(options),
     SignCertificate: (payload, connection) => {
       if (authority === undefined) return { status: 'Rejected' };
       let certificate: string;
@@ -357,6 +428,15 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
   };
   const connections = new Map<string, BuiltinCsmsConnection>();
   const listeners = new Set<() => void>();
+  const stats: BuiltinCsmsStats = {
+    connected: 0,
+    opened: 0,
+    closed: 0,
+    refused: 0,
+    callsReceived: {},
+    results: 0,
+    errors: 0,
+  };
   /** `${chargeBoxId} ${action}` → the reply that replaces the handler. */
   const overrides = new Map<string, ReplyOverride>();
   const takeOverride = (chargeBoxId: string, action: string): CsmsReply | undefined => {
@@ -395,8 +475,22 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
           notFound,
         );
   const passwords: Record<string, string> = { ...options.passwords };
+  const delay = options.responseDelay;
+  const context: ConnectionContext = {
+    handlers,
+    takeOverride,
+    onKeyChanged: (chargeBoxId, key) => {
+      if (options.passwords !== undefined || options.password !== undefined) {
+        passwords[chargeBoxId] = key;
+      }
+    },
+    keepFrames: options.keepFrames ?? true,
+    delay: () =>
+      delay === undefined ? 0 : delay.minMs + Math.random() * (delay.maxMs - delay.minMs),
+    stats,
+  };
   const passwordOk = (chargeBoxId: string, authorization: string | undefined) => {
-    const password = passwords[chargeBoxId];
+    const password = passwords[chargeBoxId] ?? options.password;
     if (password === undefined) return true;
     const expected = `Basic ${Buffer.from(`${chargeBoxId}:${password}`).toString('base64')}`;
     return authorization === expected;
@@ -415,6 +509,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const match = /^\/ocpp\/([^/?]+)$/.exec(new URL(req.url ?? '/', 'http://x').pathname);
     if (match?.[1] === undefined) {
+      stats.refused += 1;
       socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
       return;
     }
@@ -427,27 +522,23 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       (options.authorize !== undefined &&
         !options.authorize(chargeBoxId, req.headers.authorization))
     ) {
+      stats.refused += 1;
       socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       if (ws.protocol !== OCPP16_SUBPROTOCOL) {
+        stats.refused += 1;
         ws.close(1002, 'ocpp1.6 subprotocol required');
         return;
       }
-      const connection = createConnection(
-        ws,
-        chargeBoxId,
-        req.headers,
-        handlers,
-        takeOverride,
-        clientCertificate,
-        (key) => {
-          if (options.passwords !== undefined) passwords[chargeBoxId] = key;
-        },
-      );
+      const connection = createConnection(ws, chargeBoxId, req.headers, clientCertificate, context);
       connections.set(chargeBoxId, connection);
+      stats.opened += 1;
+      stats.connected += 1;
       ws.on('close', () => {
+        stats.closed += 1;
+        stats.connected -= 1;
         if (connections.get(chargeBoxId) === connection) connections.delete(chargeBoxId);
       });
       listeners.forEach((listener) => listener());
@@ -484,6 +575,9 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     },
     clearReplies() {
       overrides.clear();
+    },
+    stats() {
+      return { ...stats, callsReceived: { ...stats.callsReceived } };
     },
     async stop() {
       for (const client of wss.clients) client.terminate();
