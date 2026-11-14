@@ -5,10 +5,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { createEngine, type Engine } from './engine.js';
 import type { ApiEvent } from './api.js';
-import { startMiniCsms, type MiniCsms } from './testing/mini-csms.js';
+import { startBuiltinCsms, type BuiltinCsms } from './csms/builtin-csms.js';
 
 let engine: Engine | undefined;
-let csms: MiniCsms | undefined;
+let csms: BuiltinCsms | undefined;
 const dirs: string[] = [];
 const sockets: WebSocket[] = [];
 
@@ -31,7 +31,7 @@ async function until(check: () => boolean | Promise<boolean>, timeoutMs = 4000):
 }
 
 async function start(options: Parameters<typeof createEngine>[0] = {}) {
-  csms = await startMiniCsms();
+  csms = await startBuiltinCsms();
   engine = createEngine({
     port: 0,
     backoff: { initialDelayMs: 20, maxDelayMs: 100, jitter: 0 },

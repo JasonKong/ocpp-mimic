@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
-import { startMiniCsms, type MiniCsms } from './testing/mini-csms.js';
+import { startBuiltinCsms, type BuiltinCsms } from './csms/builtin-csms.js';
 import {
   backoffDelay,
   createTransport,
@@ -10,7 +10,7 @@ import {
   type TransportOptions,
 } from './transport.js';
 
-let csms: MiniCsms | undefined;
+let csms: BuiltinCsms | undefined;
 const transports: Transport[] = [];
 const servers: WebSocketServer[] = [];
 
@@ -79,7 +79,7 @@ describe('backoffDelay', () => {
 
 describe('transport', () => {
   it('connects to <url>/<chargeBoxId> with ocpp1.6 and carries text both ways', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     const t = open({ url: csms.url });
     const connection = await csms.waitForConnection('CP-1');
     await until(() => t.opens === 1);
@@ -98,7 +98,7 @@ describe('transport', () => {
 
   it('sends Basic Auth with the chargeBoxId as user name', async () => {
     const expected = `Basic ${Buffer.from('CP-1:secret').toString('base64')}`;
-    csms = await startMiniCsms({ authorize: (_id, header) => header === expected });
+    csms = await startBuiltinCsms({ authorize: (_id, header) => header === expected });
     const good = open({ url: csms.url, password: 'secret' });
     expect((await csms.waitForConnection('CP-1')).headers.authorization).toBe(expected);
     await until(() => good.opens === 1);
@@ -109,7 +109,7 @@ describe('transport', () => {
   });
 
   it('reconnects with backoff when the CSMS drops the connection', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     const t = open({ url: csms.url });
     const first = await csms.waitForConnection('CP-1');
     first.close();
@@ -143,7 +143,7 @@ describe('transport', () => {
   });
 
   it('a clean outage closes the socket and stays offline until goOnline', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     const t = open({ url: csms.url });
     const first = await csms.waitForConnection('CP-1');
     await until(() => t.opens === 1);
@@ -161,7 +161,7 @@ describe('transport', () => {
   });
 
   it('a half-open outage keeps the socket but drops traffic and pongs', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     const t = open({ url: csms.url });
     const first = await csms.waitForConnection('CP-1');
     await until(() => t.opens === 1);
@@ -181,14 +181,14 @@ describe('transport', () => {
   });
 
   it('sends WebSocket pings at the configured interval', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     open({ url: csms.url, pingIntervalMs: 30 });
     const connection = await csms.waitForConnection('CP-1');
     await until(() => connection.pings >= 2);
   });
 
   it('restarts after the downtime of a reset', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     const t = open({ url: csms.url });
     const first = await csms.waitForConnection('CP-1');
     await until(() => t.opens === 1);
@@ -200,7 +200,7 @@ describe('transport', () => {
   });
 
   it('stop() closes the connection for good', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     const t = open({ url: csms.url });
     const connection = await csms.waitForConnection('CP-1');
     await until(() => t.opens === 1);

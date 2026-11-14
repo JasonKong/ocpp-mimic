@@ -289,7 +289,7 @@ Expectations:
 | --- | --- | --- |
 | `expect` | `sent` or `received` (an action), `payload`, `answer`, `within`, `from` | A matching CALL is recorded in time. `sent` means charge point → CSMS, `received` CSMS → charge point. `payload` must match the CALL and `answer` the CALLRESULT to it |
 | `expectNo` | `sent` or `received`, `payload`, `within` | No matching CALL is recorded during `within` |
-| `expectConnector` | `connector` plus connector snapshot fields (`status`, `errorCode`, `plugged`, `locked`, `transactionId`, ...), `within` | The connector snapshot matches in time |
+| `expectConnector` | `connector` plus connector snapshot fields (`status`, `errorCode`, `plugged`, `locked`, `transactionId`, `ev`, ...), `within` | The connector snapshot matches in time. `connector: 0` is the whole charge point (`status`, `errorCode`) |
 | `expectStation` | station snapshot fields (`registration`, `transport`, `queuedMessages`, `behaviour`, ...), `within` | The station snapshot matches in time |
 
 `within` defaults to 10 s. Message expectations are ordered: a search starts after the message the previous `expect` matched (`from: last`, the default), so consecutive `expect` steps also assert the order of the messages. `from: step` ignores messages recorded before the step began, and `from: start` searches from the start of the scenario.
@@ -324,7 +324,7 @@ HTTP, for the system under test:
 | Package | Part |
 | --- | --- |
 | core | Scenario model and validation (with the schema module), templates, matching, step labels. Pure, like personas |
-| engine | The runner: a fresh embedded engine (and the built-in CSMS) per scenario, steps executed in-process against the fleet and the recorder, teardown even after failures; the result model; console and JUnit reporters |
+| engine | The runner: a fresh embedded engine (and the built-in CSMS, `src/csms/builtin-csms.ts`) per scenario, steps executed in-process against the fleet and the recorder, teardown even after failures; the result model; console and JUnit reporters |
 | cli | `ocpp-mimic run`: arguments, reading the YAML files, calling the runner, the exit code |
 
 A remote engine over the HTTP API is not needed in M2: the CLI embeds its own engine, so CI needs no separate deployment.

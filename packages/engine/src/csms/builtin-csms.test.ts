@@ -7,9 +7,9 @@ import {
 } from '@ocpp-mimic/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
-import { CallErrorReply, startMiniCsms, type MiniCsms } from './mini-csms.js';
+import { CallErrorReply, startBuiltinCsms, type BuiltinCsms } from './builtin-csms.js';
 
-let csms: MiniCsms | undefined;
+let csms: BuiltinCsms | undefined;
 const sockets: WebSocket[] = [];
 
 afterEach(async () => {
@@ -42,9 +42,9 @@ async function connectChargePoint(id: string, handlers: CsmsHandlers = {}): Prom
   return rpc;
 }
 
-describe('mini CSMS', () => {
+describe('built-in CSMS', () => {
   it('accepts a BootNotification from a charge point and records it', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     const rpc = await connectChargePoint('CP-1');
     const connection = await csms.waitForConnection('CP-1');
 
@@ -60,7 +60,7 @@ describe('mini CSMS', () => {
   });
 
   it('hands out increasing transaction ids by default', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     const rpc = await connectChargePoint('CP-1');
     const start = {
       connectorId: 1,
@@ -76,7 +76,7 @@ describe('mini CSMS', () => {
   });
 
   it('uses custom handlers, including CALLERROR replies', async () => {
-    csms = await startMiniCsms({
+    csms = await startBuiltinCsms({
       handlers: {
         BootNotification: () => ({
           status: 'Rejected',
@@ -101,7 +101,7 @@ describe('mini CSMS', () => {
   });
 
   it('sends CALLs to the charge point and returns the answer', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     await connectChargePoint('CP-1', {
       Reset: ({ type }) => ({ status: type === 'Soft' ? 'Accepted' : 'Rejected' }),
     });
@@ -118,8 +118,44 @@ describe('mini CSMS', () => {
     });
   });
 
+  it('answers with replies set per station, for a number of calls or all of them', async () => {
+    csms = await startBuiltinCsms();
+    const rpc = await connectChargePoint('CP-1');
+    const other = await connectChargePoint('CP-2');
+    await csms.waitForConnection('CP-2');
+
+    csms.setReply('CP-1', 'Authorize', { payload: { idTagInfo: { status: 'Invalid' } } }, 1);
+    expect(await rpc.call('Authorize', { idTag: 'A' })).toMatchObject({
+      ok: true,
+      payload: { idTagInfo: { status: 'Invalid' } },
+    });
+    expect(await rpc.call('Authorize', { idTag: 'A' })).toMatchObject({
+      ok: true,
+      payload: { idTagInfo: { status: 'Accepted' } },
+    });
+
+    csms.setReply('CP-1', 'Heartbeat', { error: 'InternalError', description: 'down' });
+    for (let i = 0; i < 2; i++) {
+      expect(await rpc.call('Heartbeat', {})).toMatchObject({
+        ok: false,
+        failure: { kind: 'CallError', errorCode: 'InternalError', errorDescription: 'down' },
+      });
+    }
+    expect(await other.call('Heartbeat', {})).toMatchObject({ ok: true });
+
+    csms.setReply('CP-1', 'DataTransfer', { ignore: true });
+    const silent = await Promise.race([
+      rpc.call('DataTransfer', { vendorId: 'X' }).then(() => 'answered'),
+      new Promise((resolve) => setTimeout(() => resolve('silent'), 300)),
+    ]);
+    expect(silent).toBe('silent');
+
+    csms.clearReplies();
+    expect(await other.call('Heartbeat', {})).toMatchObject({ ok: true });
+  });
+
   it('refuses connections without the ocpp1.6 subprotocol or outside /ocpp/<id>', async () => {
-    csms = await startMiniCsms();
+    csms = await startBuiltinCsms();
     await expect(open(`${csms.url}/CP-1`, ['ocpp2.0.1'])).rejects.toThrow();
     await expect(open(csms.url.replace('/ocpp', '/other/CP-1'))).rejects.toThrow();
   });

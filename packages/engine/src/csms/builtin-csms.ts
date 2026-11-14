@@ -1,8 +1,9 @@
 /**
- * A minimal CSMS for integration tests. It accepts OCPP 1.6J connections on
+ * The built-in test CSMS, used by scenarios (`csms: builtin`) and the
+ * integration tests. It accepts OCPP 1.6J connections on
  * `/ocpp/<chargeBoxId>`, answers every charge point request with a sensible
- * default (or a custom handler), records all frames, and can send CALLs to
- * the charge point.
+ * default (or a custom handler, or a reply set per station with setReply),
+ * records all frames, and can send CALLs to the charge point.
  */
 import { createServer, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -29,10 +30,20 @@ export class CallErrorReply {
 
 export type CsmsHandler = (
   payload: JsonObject,
-  connection: MiniCsmsConnection,
+  connection: BuiltinCsmsConnection,
 ) => JsonObject | CallErrorReply | Promise<JsonObject | CallErrorReply>;
 
-export interface MiniCsmsOptions {
+/** A reply set for a station's calls of one action: a payload, a CALLERROR, or no answer. */
+export type CsmsReply =
+  { payload: JsonObject } | { error: string; description?: string } | { ignore: true };
+
+interface ReplyOverride {
+  reply: CsmsReply;
+  /** Calls left to answer this way; undefined means all of them. */
+  remaining?: number;
+}
+
+export interface BuiltinCsmsOptions {
   port?: number;
   host?: string;
   /** Handlers by action; they replace the defaults for those actions. */
@@ -41,7 +52,7 @@ export interface MiniCsmsOptions {
   authorize?: (chargeBoxId: string, authorization: string | undefined) => boolean;
 }
 
-export interface MiniCsmsConnection {
+export interface BuiltinCsmsConnection {
   readonly chargeBoxId: string;
   readonly protocol: string;
   /** Headers of the WebSocket upgrade request. */
@@ -61,15 +72,22 @@ export interface MiniCsmsConnection {
   readonly closed: Promise<void>;
 }
 
-export interface MiniCsms {
+export interface BuiltinCsms {
   /** Base URL; a charge point connects to `${url}/<chargeBoxId>`. */
   readonly url: string;
   /** Resolves with the charge point's current connection; with `previous`, waits for a newer one. */
   waitForConnection(
     chargeBoxId: string,
     timeoutMs?: number,
-    previous?: MiniCsmsConnection,
-  ): Promise<MiniCsmsConnection>;
+    previous?: BuiltinCsmsConnection,
+  ): Promise<BuiltinCsmsConnection>;
+  /**
+   * Answers the station's next `times` calls of `action` (all of them when
+   * undefined) with `reply` instead of the handler. Replaces an earlier reply
+   * for the same station and action.
+   */
+  setReply(chargeBoxId: string, action: string, reply: CsmsReply, times?: number): void;
+  clearReplies(): void;
   stop(): Promise<void>;
 }
 
@@ -121,7 +139,8 @@ function createConnection(
   chargeBoxId: string,
   headers: IncomingMessage['headers'],
   handlers: Record<string, CsmsHandler>,
-): MiniCsmsConnection {
+  takeOverride: (chargeBoxId: string, action: string) => CsmsReply | undefined,
+): BuiltinCsmsConnection {
   const received: Frame[] = [];
   let pings = 0;
   socket.on('ping', () => {
@@ -137,7 +156,7 @@ function createConnection(
   };
   const send = (frame: Frame) => socket.send(serializeFrame(frame));
 
-  const connection: MiniCsmsConnection = {
+  const connection: BuiltinCsmsConnection = {
     chargeBoxId,
     protocol: socket.protocol,
     headers,
@@ -198,13 +217,30 @@ function createConnection(
     listeners.forEach((listener) => listener());
     if (frame.type !== MessageTypeId.Call) return;
 
+    const override = takeOverride(chargeBoxId, frame.action);
+    if (override !== undefined) {
+      if ('ignore' in override) return;
+      if ('error' in override) {
+        send({
+          type: MessageTypeId.CallError,
+          id: frame.id,
+          errorCode: override.error,
+          errorDescription: override.description ?? '',
+          errorDetails: {},
+        });
+      } else {
+        send({ type: MessageTypeId.CallResult, id: frame.id, payload: override.payload });
+      }
+      return;
+    }
+
     const handler = handlers[frame.action];
     if (handler === undefined) {
       send({
         type: MessageTypeId.CallError,
         id: frame.id,
         errorCode: 'NotImplemented',
-        errorDescription: `mini CSMS has no handler for ${frame.action}`,
+        errorDescription: `the built-in CSMS has no handler for ${frame.action}`,
         errorDetails: {},
       });
       return;
@@ -236,11 +272,23 @@ function createConnection(
   return connection;
 }
 
-export async function startMiniCsms(options: MiniCsmsOptions = {}): Promise<MiniCsms> {
+export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promise<BuiltinCsms> {
   const { port = 0, host = '127.0.0.1' } = options;
   const handlers = { ...defaultHandlers(), ...options.handlers };
-  const connections = new Map<string, MiniCsmsConnection>();
+  const connections = new Map<string, BuiltinCsmsConnection>();
   const listeners = new Set<() => void>();
+  /** `${chargeBoxId} ${action}` → the reply that replaces the handler. */
+  const overrides = new Map<string, ReplyOverride>();
+  const takeOverride = (chargeBoxId: string, action: string): CsmsReply | undefined => {
+    const key = `${chargeBoxId} ${action}`;
+    const override = overrides.get(key);
+    if (override === undefined) return undefined;
+    if (override.remaining !== undefined) {
+      override.remaining -= 1;
+      if (override.remaining <= 0) overrides.delete(key);
+    }
+    return override.reply;
+  };
 
   const wss = new WebSocketServer({
     noServer: true,
@@ -270,7 +318,7 @@ export async function startMiniCsms(options: MiniCsmsOptions = {}): Promise<Mini
         ws.close(1002, 'ocpp1.6 subprotocol required');
         return;
       }
-      const connection = createConnection(ws, chargeBoxId, req.headers, handlers);
+      const connection = createConnection(ws, chargeBoxId, req.headers, handlers, takeOverride);
       connections.set(chargeBoxId, connection);
       ws.on('close', () => {
         if (connections.get(chargeBoxId) === connection) connections.delete(chargeBoxId);
@@ -300,6 +348,15 @@ export async function startMiniCsms(options: MiniCsmsOptions = {}): Promise<Mini
         timeoutMs,
         `a connection from ${chargeBoxId}`,
       );
+    },
+    setReply(chargeBoxId, action, reply, times) {
+      overrides.set(`${chargeBoxId} ${action}`, {
+        reply,
+        ...(times !== undefined && { remaining: times }),
+      });
+    },
+    clearReplies() {
+      overrides.clear();
     },
     async stop() {
       for (const client of wss.clients) client.terminate();

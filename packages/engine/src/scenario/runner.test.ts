@@ -6,6 +6,8 @@ import { findScenarioFiles, readScenarioFile } from './files.js';
 import { runScenario, type RunOptions } from './runner.js';
 
 const EXAMPLES = fileURLToPath(new URL('../../../../scenarios/examples/', import.meta.url));
+const REGRESSION = fileURLToPath(new URL('../../../../scenarios/regression/', import.meta.url));
+const PERSONAS = fileURLToPath(new URL('../../../../scenarios/personas/', import.meta.url));
 const FAST: RunOptions = { backoff: { initialDelayMs: 20, maxDelayMs: 100, jitter: 0 } };
 
 function scenario(yaml: string): Scenario {
@@ -40,6 +42,36 @@ describe('scenario runner', () => {
       'Remote start and stop from the CSMS: passed',
     ]);
   });
+
+  it(
+    'runs the CSMS command scenarios against the built-in CSMS',
+    { timeout: 120_000 },
+    async () => {
+      const outcomes: string[] = [];
+      for (const document of (await readScenarioFile(`${REGRESSION}csms-commands.yaml`))
+        .documents) {
+        if (document.scenario === undefined) throw new Error(document.errors.join('\n'));
+        const result = await runScenario(document.scenario, document.label, {
+          ...FAST,
+          personaDirs: [PERSONAS],
+        });
+        const failing = result.steps.find((s) => s.status === 'failed');
+        outcomes.push(
+          `${result.name}: ${result.status}${failing ? ` at "${failing.label}": ${failing.message} ${JSON.stringify(failing.details ?? [])}` : ''}${result.error ? ` (${result.error})` : ''}`,
+        );
+      }
+      expect(outcomes).toEqual([
+        'RemoteStartTransaction and RemoteStopTransaction: passed',
+        "RemoteStartTransaction refused by the station's switch: passed",
+        'TriggerMessage: passed',
+        'GetConfiguration and ChangeConfiguration take effect: passed',
+        'UnlockConnector ends the transaction: passed',
+        'ChangeAvailability answers first and keeps connectorId 0 separate: passed',
+        'Soft reset during a transaction, then a hard reset: passed',
+        "The station follows the CSMS's answers: passed",
+      ]);
+    },
+  );
 
   it(
     'fails a step with expected and actual values, and skips the rest',
