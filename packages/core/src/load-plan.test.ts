@@ -20,7 +20,11 @@ const PLAN = {
     },
   ],
   events: [
-    { at: '45m', inject: { type: 'powerLoss', off: '30s' }, stations: { share: '40%', group: 'ac' } },
+    {
+      at: '45m',
+      inject: { type: 'powerLoss', off: '30s' },
+      stations: { share: '40%', group: 'ac' },
+    },
     { at: '30m', reconnectStorm: {} },
   ],
   thresholds: {
@@ -51,7 +55,13 @@ describe('load plans', () => {
       rampUp: { rate: 10, jitter: 0.5 },
     });
     expect(plan.groups).toEqual([
-      { name: 'ac', ids: ['AC-01', 'AC-02', 'AC-03'], persona: 'load-ac-1.6', tags: ['ac'], usage: true },
+      {
+        name: 'ac',
+        ids: ['AC-01', 'AC-02', 'AC-03'],
+        persona: 'load-ac-1.6',
+        tags: ['ac'],
+        usage: true,
+      },
       {
         name: 'busy',
         ids: ['BUSY-1', 'BUSY-2'],
@@ -103,10 +113,12 @@ describe('load plans', () => {
     ).toEqual(['$.groups[1].name', '$.groups[1].id']);
     expect(bad({ events: [{ at: '2h', reconnectStorm: {} }] })).toEqual(['$.events[0].at']);
     expect(bad({ events: [{ at: '1m', explode: {} }] })).toEqual(['$.events[0]']);
-    expect(bad({ events: [{ at: '1m', reconnectStorm: {}, stations: { group: 'none' } }] })).toEqual([
-      '$.events[0].stations.group',
+    expect(
+      bad({ events: [{ at: '1m', reconnectStorm: {}, stations: { group: 'none' } }] }),
+    ).toEqual(['$.events[0].stations.group']);
+    expect(bad({ events: [{ at: '1m', inject: { type: 'nope' } }] })).toEqual([
+      '$.events[0].inject.type',
     ]);
-    expect(bad({ events: [{ at: '1m', inject: { type: 'nope' } }] })).toEqual(['$.events[0].inject.type']);
     expect(bad({ thresholds: { memory: { rss: 'lots' } } })).toEqual(['$.thresholds.memory.rss']);
   });
 
@@ -124,7 +136,11 @@ describe('load plans', () => {
     if (!parsed.ok) throw new Error('plan does not parse');
     const { plan } = parsed;
     expect(selectStations(plan, {}, seededRandom(1))).toHaveLength(5);
-    expect(selectStations(plan, { tag: 'ac' }, seededRandom(1))).toEqual(['AC-01', 'AC-02', 'AC-03']);
+    expect(selectStations(plan, { tag: 'ac' }, seededRandom(1))).toEqual([
+      'AC-01',
+      'AC-02',
+      'AC-03',
+    ]);
     const share = selectStations(plan, { share: 0.4 }, seededRandom(1));
     expect(share).toHaveLength(2);
     expect(selectStations(plan, { share: 0.4 }, seededRandom(1))).toEqual(share);

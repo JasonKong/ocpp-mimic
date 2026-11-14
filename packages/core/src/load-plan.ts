@@ -146,7 +146,12 @@ const thresholdsSchema = object(
 );
 
 const planSchema = object(
-  { name: string(), csms: string(), duration: durationSchema, groups: array(groupSchema, { minItems: 1 }) },
+  {
+    name: string(),
+    csms: string(),
+    duration: durationSchema,
+    groups: array(groupSchema, { minItems: 1 }),
+  },
   {
     seed: integer({ minimum: 0 }),
     rampUp: { check: () => {} } as Schema<unknown>,
@@ -262,45 +267,49 @@ export function parseLoadPlan(
   });
 
   const t = (raw.thresholds ?? {}) as Raw;
-  const sub = (key: string) => (t[key] ?? undefined) as Raw | undefined;
+  const sub = (key: string) => (t[key] ?? {}) as Raw;
   const msOf = (value: unknown) => (value === undefined ? undefined : ms(value));
-  const defined = <T extends object>(value: T) =>
-    Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
-  const nested = <T extends object>(value: T | undefined) => {
-    if (value === undefined) return undefined;
-    const kept = defined(value);
-    return Object.keys(kept).length === 0 ? undefined : kept;
+  const thresholds: LoadThresholds = {};
+  const set = <K extends keyof LoadThresholds>(key: K, value: LoadThresholds[K] | undefined) => {
+    if (value !== undefined) thresholds[key] = value;
   };
-  const thresholds: LoadThresholds = defined({
-    bootAcceptedWithinMs: msOf(t.bootAcceptedWithin),
-    recoverWithinMs: msOf(t.recoverWithin),
-    unexpectedDisconnects: t.unexpectedDisconnects as number | undefined,
-    lateWork: nested(
-      sub('lateWork') && { p99Ms: msOf(sub('lateWork')?.p99), maxMs: msOf(sub('lateWork')?.max) },
+  /** A nested threshold with only its given parts, or nothing. */
+  const pair = <A extends string, B extends string>(
+    a: A,
+    av: number | undefined,
+    b: B,
+    bv: number | undefined,
+  ) =>
+    av === undefined && bv === undefined
+      ? undefined
+      : ({ ...(av !== undefined && { [a]: av }), ...(bv !== undefined && { [b]: bv }) } as Partial<
+          Record<A | B, number>
+        >);
+  set('bootAcceptedWithinMs', msOf(t.bootAcceptedWithin));
+  set('recoverWithinMs', msOf(t.recoverWithin));
+  set('unexpectedDisconnects', t.unexpectedDisconnects as number | undefined);
+  set('lateWork', pair('p99Ms', msOf(sub('lateWork').p99), 'maxMs', msOf(sub('lateWork').max)));
+  set(
+    'csmsLatency',
+    pair('p95Ms', msOf(sub('csmsLatency').p95), 'p99Ms', msOf(sub('csmsLatency').p99)),
+  );
+  set('timeouts', t.timeouts as number | undefined);
+  set('callErrors', t.callErrors as number | undefined);
+  set('schemaViolations', t.schemaViolations as number | undefined);
+  set(
+    'eventLoopDelay',
+    pair('p99Ms', msOf(sub('eventLoopDelay').p99), 'maxMs', msOf(sub('eventLoopDelay').max)),
+  );
+  set(
+    'memory',
+    pair(
+      'rssBytes',
+      parseBytes(sub('memory').rss),
+      'heapGrowth',
+      parseShare(sub('memory').heapGrowth),
     ),
-    csmsLatency: nested(
-      sub('csmsLatency') && {
-        p95Ms: msOf(sub('csmsLatency')?.p95),
-        p99Ms: msOf(sub('csmsLatency')?.p99),
-      },
-    ),
-    timeouts: t.timeouts as number | undefined,
-    callErrors: t.callErrors as number | undefined,
-    schemaViolations: t.schemaViolations as number | undefined,
-    eventLoopDelay: nested(
-      sub('eventLoopDelay') && {
-        p99Ms: msOf(sub('eventLoopDelay')?.p99),
-        maxMs: msOf(sub('eventLoopDelay')?.max),
-      },
-    ),
-    memory: nested(
-      sub('memory') && {
-        rssBytes: parseBytes(sub('memory')?.rss),
-        heapGrowth: parseShare(sub('memory')?.heapGrowth),
-      },
-    ),
-    sessions: sub('sessions') && { min: parseShare(sub('sessions')?.min) ?? 0 },
-  });
+  );
+  if (t.sessions !== undefined) set('sessions', { min: parseShare(sub('sessions').min) ?? 0 });
 
   if (issues.length > 0) return { ok: false, issues };
   return {
@@ -335,7 +344,6 @@ export function selectStations(
     const j = Math.floor(random() * (i + 1));
     [ids[i], ids[j]] = [ids[j] as string, ids[i] as string];
   }
-  const take =
-    selection.count ?? Math.max(1, Math.round((selection.share ?? 0) * ids.length));
+  const take = selection.count ?? Math.max(1, Math.round((selection.share ?? 0) * ids.length));
   return ids.slice(0, Math.min(take, ids.length));
 }
