@@ -151,12 +151,18 @@ export function configList(config: ConfigState, key: string): string[] {
 type GetConfigurationResponse = ResponseOf<'GetConfiguration'>;
 type ChangeConfigurationStatus = ResponseOf<'ChangeConfiguration'>['status'];
 
-/** Answers GetConfiguration: the requested keys, or every key when none are named. */
+/**
+ * Answers GetConfiguration: the requested keys, or every key when the list is
+ * empty or missing (OCPP 1.6 treats both the same way).
+ */
 export function getConfiguration(
   config: ConfigState,
   request: RequestOf<'GetConfiguration'>,
 ): GetConfigurationResponse {
-  const requested = request.key ?? Object.keys(config.definitions);
+  const requested =
+    request.key !== undefined && request.key.length > 0
+      ? request.key
+      : Object.keys(config.definitions);
   const configurationKey: NonNullable<GetConfigurationResponse['configurationKey']> = [];
   const unknownKey: string[] = [];
   for (const key of requested) {
