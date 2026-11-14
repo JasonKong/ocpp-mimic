@@ -40,12 +40,20 @@ export interface StationDefinition {
   config?: Record<string, string>;
   /** Initial energy multiplier; the saved charge point state keeps later changes. */
   energyMultiplier?: number;
+  /** Names for selecting stations (at most 10). */
+  tags?: string[];
+  /** The group the station belongs to, e.g. its template; labels metrics and reports. */
+  group?: string;
 }
 
 export interface StateStore {
   listStations(): StationDefinition[];
   saveStation(definition: StationDefinition): void;
+  /** Saves many station definitions in one transaction. */
+  saveStations(definitions: readonly StationDefinition[]): void;
   deleteStation(id: string): void;
+  /** Deletes many stations in one transaction. */
+  deleteStations(ids: readonly string[]): void;
   loadState(id: string): PersistedChargePoint | undefined;
   saveState(id: string, state: PersistedChargePoint): void;
   close(): void;
@@ -77,14 +85,38 @@ export function openStateStore(path: string): StateStore {
     'INSERT INTO station_state (id, state, saved_at) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET state = excluded.state, saved_at = excluded.saved_at',
   );
 
+  /** Runs `work` in one transaction: all of it is written, or none. */
+  const transaction = (work: () => void) => {
+    db.exec('BEGIN');
+    try {
+      work();
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  };
+
   return {
     listStations: () =>
       listStations.all().map((row) => JSON.parse(String(row.definition)) as StationDefinition),
     saveStation: (definition) => {
       upsertStation.run(definition.id, JSON.stringify(definition));
     },
+    saveStations: (definitions) => {
+      transaction(() => {
+        for (const definition of definitions) {
+          upsertStation.run(definition.id, JSON.stringify(definition));
+        }
+      });
+    },
     deleteStation: (id) => {
       deleteStation.run(id);
+    },
+    deleteStations: (ids) => {
+      transaction(() => {
+        for (const id of ids) deleteStation.run(id);
+      });
     },
     loadState: (id) => {
       const row = loadState.get(id);

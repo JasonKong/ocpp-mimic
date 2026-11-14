@@ -598,6 +598,13 @@ thresholds:
 3. **在这个规模下不是瓶颈**：定时器（每个定时器一个 Node 定时器，延迟仍在 40 毫秒以内，所以不需要共享调度器）、帧解析（不到忙碌时间的 1%）和 CSMS 进程。
 4. **尚未测量**：使用 `--store` 时的状态保存，每次保存都是单独的 SQLite 事务；T45 会带 store 测量。
 
+**已实现：批量模板（T44）**
+
+- `POST /api/stations/bulk` 返回 `201 { created, ids }`。id 计数器、标签和分组的校验在 core 里（`fleet-template.ts`），压测计划以后也会用；id 须为 1 到 48 个可见字符，不含 `/ ? # %`，一个模板最多 10,000 个桩。所有桩先全部构建再保存，所以遇到未知 persona、不允许的 CSMS 地址或已存在的 id 时，一个桩都不会加。
+- 批量路由背后是 fleet 的 `addMany`、`startMany`、`stopMany` 和 `removeMany`；在 ramp-up 轮到之前就被停止或删除的桩保持停止。站点定义在一个 SQLite 事务里保存和删除。
+- 快照带 `tags` 和 `group`。`GET /api/stations?view=summary` 返回 `{ id, persona, group?, tags, state, registration, connectors: [{ connectorId, status }] }`，其中 `state` 是 connected、connecting（等待重连时也算）、offline（被设为离线，干净断开或半开）或 stopped。
+- 批量操作拒绝空的选择条件；`{ all: true }` 表示所有桩。批量路由位于 `/api/stations/bulk...`，所以桩不能叫 `bulk`。
+
 **文件放在哪里**
 
 压测计划放 `scenarios/load/`，导入映射放 `scenarios/import/`，样本日志放 `scenarios/logs/`，压测用的 persona 放 `scenarios/personas/`。测试会把 `scenarios/` 下其余所有文件当作场景校验，所以 `scenarios/examples/` 只放场景。
