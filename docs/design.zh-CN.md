@@ -624,6 +624,14 @@ thresholds:
 - 驱动事件写入桩的日志（`usage: a driver arrives at connector 1 with LOAD-0042 and EV compact-40kwh`），并计入 `ocpp_mimic_sessions_turned_away_total`。
 - `load-ac-1.6` 带一个使用模型；`scenarios/regression/usage.yaml` 运行以刷卡结束和以拔枪结束的充电。
 
+**已实现：日志导出、导入和脱敏（T51）**
+
+- 日志格式在 core 里（`log-format.ts`：`logLine`、`formatLog`、`parseLog`）。`GET /api/stations/:id/messages?format=jsonl` 下载一个桩的帧（recorder 中保存的部分）；Web UI 的消息日志有 Export JSONL 链接；`run --log-dir <dir>` 把每个场景的帧写到 `<dir>/<文件名>-<n>.jsonl`。`load --log-dir` 随压测命令（T49）提供。
+- `ocpp-mimic import <file>... [--map <mapping.yaml>] [--mask | --no-mask] [--salt <s> | --salt-file <f>] [-o <out>]` 按时间顺序把 ocpp-mimic 格式写到标准输出或文件。不带 `--map` 时输入是 ocpp-mimic 自己的格式。有无法读取的行时退出码为 1（列出这些行，其余照常写出），文件或映射无法读取时为 2。
+- 映射（`engine/src/logs/import.ts`）：`format: jsonl | csv | lines`；`fields.at | station | direction | frame` 分别指定 `column`（CSV，按表头名或序号）、`path`（JSONL，点分路径）或 `group`（日志行；默认是字段自己的名字）；`fields.at.time` 为 `iso`、`epoch-s` 或 `epoch-ms`，`timeZone`（IANA，默认 UTC）用于没有偏移的 ISO 时间，考虑夏令时；`fields.direction.values` 映射日志里的取值。`frame` 可以是 OCPP-J 文本或数组。CSV 字段可以加引号，支持双写引号和换行。
+- 脱敏（`core/src/mask.ts`，engine 里用 HMAC-SHA-256）：假名由前缀加 10 个 base-32 字符组成：桩用 `CP-`，`idTag` 和 `parentIdTag`（出现在任何位置，包括本地列表）用 `T`，序列号用 `S`，`iccid` 和 `imsi` 用 `SIM`，映射文件追加的路径用 `X`。回答与其 CALL 对应，所以 DataTransfer 回答里的 `data` 也会删除。不是消息的文本整体删除，因为其中可能有任何内容。盐来自 `--salt`、`--salt-file` 或 `OCPP_MIMIC_MASK_SALT`；没有时使用随机盐并输出警告。已标记为脱敏的日志不会再次脱敏。
+- `scenarios/logs/` 有三份从仓库场景录下的合成样本日志。
+
 **文件放在哪里**
 
 压测计划放 `scenarios/load/`，导入映射放 `scenarios/import/`，样本日志放 `scenarios/logs/`，压测用的 persona 放 `scenarios/personas/`。测试会把 `scenarios/` 下其余所有文件当作场景校验，所以 `scenarios/examples/` 只放场景。

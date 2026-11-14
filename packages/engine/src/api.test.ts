@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { createEngine, type Engine } from './engine.js';
 import type { ApiEvent } from './api.js';
+import { importText } from './logs/import.js';
 import { startBuiltinCsms, type BuiltinCsms } from './csms/builtin-csms.js';
 
 let engine: Engine | undefined;
@@ -215,6 +216,35 @@ describe('engine API: usage model', () => {
       });
       expect(res.status, JSON.stringify(bad)).toBe(400);
     }
+  });
+});
+
+describe('engine API: log export', () => {
+  it("exports a station's frames as a JSONL log that imports back unchanged", async () => {
+    const { url, api, csmsUrl } = await start();
+    await addStation(api, csmsUrl);
+    const res = await fetch(`${url}/api/stations/SIM-1/messages?format=jsonl`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/^application\/x-ndjson/);
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="SIM-1.jsonl"');
+    const text = await res.text();
+    const imported = importText(text, undefined);
+    expect(imported.problems).toEqual([]);
+    expect(JSON.parse(text.split('\n')[0] ?? '')).toEqual({
+      format: 'ocpp-mimic-log',
+      version: 1,
+      masked: false,
+      source: 'export',
+    });
+    const frames = (await api('GET', '/api/stations/SIM-1/messages?kind=frame')).body?.entries as {
+      text: string;
+      direction: string;
+    }[];
+    expect(imported.lines.map((l) => [l.direction, JSON.stringify(l.frame)])).toEqual(
+      frames.map((f) => [f.direction, f.text]),
+    );
+    expect(imported.lines[0]?.frame?.[2]).toBe('BootNotification');
+    expect((await api('GET', '/api/stations/SIM-1/messages?format=xml')).status).toBe(400);
   });
 });
 
