@@ -72,6 +72,10 @@ export interface StateStore {
 export function openStateStore(path: string): StateStore {
   const { DatabaseSync } = sqlite();
   const db = new DatabaseSync(path);
+  // WAL with synchronous=NORMAL: a commit does not wait for the disk (only
+  // checkpoints do), so saves never stall the event loop on a slow fsync. A
+  // crash can lose the last commits, which a simulator's state can afford.
+  if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
   db.exec(`
     CREATE TABLE IF NOT EXISTS stations (
       id TEXT PRIMARY KEY,
