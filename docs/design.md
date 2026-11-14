@@ -748,6 +748,8 @@ Every number is within the exit thresholds; the heap no longer grows. The exit r
   - **The authorization cache** had no size; it now holds the 100 cards seen most recently, as a dictionary object so a fleet's different card sets do not each create a V8 hidden class.
   - **CALLs in flight when a connection goes**: metrics and the recorder kept them waiting for answers that cannot come; they are dropped on disconnect.
 
+  With the fixes the same 25-minute run grows 1.3 % (52.3 → 53.0 MB over 12,000 sessions).
+
 **Where the files go**
 
 Load plans go in `scenarios/load/`, import mappings in `scenarios/import/`, sample logs in `scenarios/logs/`, and load personas in `scenarios/personas/`. The tests validate every other file under `scenarios/` as a scenario, so `scenarios/examples/` stays scenario-only.

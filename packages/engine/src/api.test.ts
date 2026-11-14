@@ -83,9 +83,20 @@ describe('engine API: bulk stations', () => {
       status: 201,
       body: { created: 5, ids: ['LOAD-001', 'LOAD-002', 'LOAD-003', 'LOAD-004', 'LOAD-005'] },
     });
+    // Connected comes before the boot is answered and the connectors reported.
     await until(async () => {
       const list = await api('GET', '/api/stations?view=summary&state=connected');
-      return list.body?.stations.length === 5;
+      const stations = (list.body?.stations ?? []) as {
+        registration: string;
+        connectors: { status: string }[];
+      }[];
+      return (
+        stations.length === 5 &&
+        stations.every(
+          (s) =>
+            s.registration === 'Accepted' && s.connectors.every((c) => c.status === 'Available'),
+        )
+      );
     });
     const summary = await api('GET', '/api/stations?view=summary&tag=load');
     expect(summary.body?.stations[0]).toEqual({
@@ -259,7 +270,15 @@ describe('engine metrics', () => {
       group: 'm',
       rampUp: false,
     });
-    await until(async () => (await api('GET', '/api/metrics')).body?.stations.connected === 2);
+    // Connected comes before the boots are answered and the connectors reported.
+    await until(async () => {
+      const body = (await api('GET', '/api/metrics')).body;
+      return (
+        body?.stations.connected === 2 &&
+        body.connectors.Available === 2 &&
+        body.csmsLatency.byAction.BootNotification?.count === 2
+      );
+    });
     const summary = (await api('GET', '/api/metrics')).body;
     expect(summary).toMatchObject({
       stations: { connected: 2 },

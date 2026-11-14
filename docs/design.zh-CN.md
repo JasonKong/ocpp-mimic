@@ -709,6 +709,8 @@ thresholds:
   - **授权缓存**没有上限；现在保留最近见过的 100 张卡，并使用字典对象，避免车队里不同的卡号组合各自生成一个 V8 隐藏类。
   - **连接断开时还在等待回答的 CALL**：指标和 recorder 一直在等永远不会来的回答；现在断线时清除。
 
+  修复后同样的 25 分钟运行只增长 1.3%（1.2 万次会话，52.3 → 53.0 MB）。
+
 **文件放在哪里**
 
 压测计划放 `scenarios/load/`，导入映射放 `scenarios/import/`，样本日志放 `scenarios/logs/`，压测用的 persona 放 `scenarios/personas/`。测试会把 `scenarios/` 下其余所有文件当作场景校验，所以 `scenarios/examples/` 只放场景。
