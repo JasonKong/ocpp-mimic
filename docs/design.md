@@ -716,6 +716,13 @@ Every number is within the exit thresholds; the heap no longer grows. The exit r
 - The Web UI keeps summaries for the list and subscribes to the selected station only. The list renders just the rows in view (36 px each), with a search box and filters by connection state and group; the Add form takes a count and a group and then uses the bulk API with an id counter. A fleet panel counts stations online, offline and stopped and connectors charging and faulted, by persona or group, and shows the main numbers from `/api/metrics` every 5 s.
 - Checked in a browser with 1,000 stations (900 running the usage model): 25 rows rendered, filtering applied within a millisecond, no long tasks (over 50 ms) in 10 s of updates, 13 MB of page heap; the counts matched `/api/metrics` up to the one-second batching.
 
+**Implemented: the load command (T49)**
+
+- Load plans are validated in core (`load-plan.ts`); the engine runs them (`engine/src/load/runner.ts`) and the CLI writes the reports. Groups run their usage model unless `usage: false`; all groups share one ramp-up in plan order; `selectStations` picks an event's share or count with the run's seeded generator, so the same seed hits the same stations.
+- The run measures what the metrics do not: BootNotification acceptance per station, recovery after each fleet event (from the event's end, so a power loss's dark time is not counted), a run-long event-loop delay histogram, memory every 5 s (heap floors after the warm-up, at most 10 minutes or a quarter of the run, and in the last window), and sessions per group against the expected number (each connector cycles through a wait of 1 / rate, the steps and the stay).
+- `ocpp-mimic load <plan> [--csms <url>] [--duration <d>] [--report-dir <dir>] [--junit <file>] [--port <n>] [--record-limit <n>] [--log-dir <dir>]`: `--log-dir` streams every frame to `frames.jsonl`; the recorder keeps 10 records per station by default. Exit code 0 when every threshold passes, 1 when one fails, 2 when the plan cannot run. `--port` serves the API, the Web UI and `/metrics` while it runs.
+- CI runs `scenarios/load/smoke-100.yaml` (100 stations for two minutes with a reconnect storm) against `ocpp-mimic csms` on every change and adds its report to the job summary.
+
 **Where the files go**
 
 Load plans go in `scenarios/load/`, import mappings in `scenarios/import/`, sample logs in `scenarios/logs/`, and load personas in `scenarios/personas/`. The tests validate every other file under `scenarios/` as a scenario, so `scenarios/examples/` stays scenario-only.

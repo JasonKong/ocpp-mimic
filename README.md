@@ -44,6 +44,17 @@ node packages/cli/dist/main.js csms --delay 20ms-100ms
 
 Stations connect to `ws://127.0.0.1:9100/ocpp/<chargeBoxId>`. It accepts every station and answers every request; idTags starting with `UNKNOWN-` are Invalid (`--unknown-prefix`). Options: `--port`, `--host`, `--delay` (a fixed or random answer delay), `--heartbeat-interval`, `--password` (Basic Auth for every station), `--tls-cert` / `--tls-key` / `--tls-ca` / `--client-certificates` for wss://, and `--status` for how often it prints a status line. It keeps no frames, so memory stays flat over long runs, and prints a summary of requests by action when stopped with Ctrl-C.
 
+## Load tests
+
+`ocpp-mimic load <plan>` runs a load plan: groups of stations from templates that charge on their own, a ramp-up, timed fleet events (reconnect storms, power losses, fault injections) and pass / fail thresholds. Start a CSMS (here the built-in one) and run the smoke plan:
+
+```bash
+node packages/cli/dist/main.js csms --port 9102 &
+node packages/cli/dist/main.js load scenarios/load/smoke-100.yaml --personas scenarios/personas --report-dir reports/load
+```
+
+It prints a progress line every 10 s and, at the end, every threshold with its measured value; the exit code is 0 when all pass. Options: `--csms`, `--duration`, `--report-dir` (report.json, report.md), `--junit`, `--port` (watch the run in the Web UI and `/metrics`), `--log-dir` (every frame as JSONL). Plans live in `scenarios/load/`; `m4-exit.yaml` is the M4 exit criterion. Only load-test a CSMS you operate or may test.
+
 ## Logs: export and import
 
 A station's frames download as a JSONL log from the Web UI (Export JSONL) or `GET /api/stations/<id>/messages?format=jsonl`; `run --log-dir <dir>` writes one per scenario. `ocpp-mimic import` turns other logs into that format and masks identifiers:
