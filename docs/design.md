@@ -305,9 +305,9 @@ HTTP, for the system under test:
 
 | Step | Arguments | Effect |
 | --- | --- | --- |
-| `http` | `method`, `url`, `headers`, `json`, `expect` (`status`, `json`), `save` | Sends a request and checks the response |
+| `http` | `method` (default GET), `url`, `headers`, `json`, `expect` (`status`, `json`), `save` | Sends a request (10 s timeout) and checks the response. Without `expect.status` any 2xx passes; `expect.json` matches the parsed body |
 
-`save: { NAME: <path> }` stores a value as a variable for later steps. It works on `expect` (path root `{ payload, answer }`), `expectConnector` and `expectStation` (the snapshot), `csmsCall` (`{ answer }`) and `http` (`{ status, json }`). Paths look like `$.answer.transactionId`.
+`save: { NAME: <path> }` stores a value as a variable for later steps. It works on `expect` (path root `{ payload, answer }`), `expectConnector` and `expectStation` (the snapshot), `csmsCall` (`{ answer }`) and `http` (`{ status, json, text }`). Paths look like `$.answer.transactionId`.
 
 **Matching**
 
