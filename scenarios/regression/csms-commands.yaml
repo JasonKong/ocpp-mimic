@@ -96,7 +96,11 @@ steps:
   - csmsCall:
       action: GetConfiguration
       payload: { key: [] }
-      answer: { configurationKey: { $exists: true }, unknownKey: { $exists: false } }
+      answer:
+        configurationKey:
+          $size: { $gte: 20 }
+          $contains: { key: MeterValueSampleInterval, readonly: false, value: '5' }
+        unknownKey: { $exists: false }
   - csmsCall:
       action: ChangeConfiguration
       payload: { key: NumberOfConnectors, value: '4' }

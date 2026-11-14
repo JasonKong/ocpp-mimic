@@ -185,7 +185,7 @@ describe('scenario validation', () => {
       'file.yaml#1: $.steps[7]: a step has exactly one step key besides name, found plugIn, unplug',
       'file.yaml#1: $.steps[8].wait: not a duration (use milliseconds or e.g. "500ms", "6s", "3m"): "soon"',
       'file.yaml#1: $.steps[9].expectStation: nothing to match',
-      'file.yaml#1: $.steps[10].expectConnector.status: unknown operator $near (use $exists, $regex, $ne, $gt, $gte, $lt, $lte)',
+      'file.yaml#1: $.steps[10].expectConnector.status: unknown operator $near (use $exists, $regex, $ne, $gt, $gte, $lt, $lte, $contains, $size)',
       'file.yaml#1: $.steps[11].csmsReply: give exactly one of payload, error or ignore: true',
       'file.yaml#1: $.steps[12].http.method: "FETCH" is not one of GET, POST, PUT, PATCH, DELETE',
       'file.yaml#1: $.steps[13].presentCard.station: no station SIM-9 in this scenario',

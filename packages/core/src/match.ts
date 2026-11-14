@@ -1,11 +1,22 @@
 /**
  * Partial matching for scenario expectations: every field the expectation
  * gives must be present and equal; other fields are ignored. Arrays match
- * element by element and must have the same length. A field can hold one
- * operator instead of a value.
+ * element by element and must have the same length. A field can hold
+ * operators instead of a value (an object whose keys all start with `$`);
+ * every operator given must hold.
  */
 
-export const MATCH_OPERATORS = ['$exists', '$regex', '$ne', '$gt', '$gte', '$lt', '$lte'] as const;
+export const MATCH_OPERATORS = [
+  '$exists',
+  '$regex',
+  '$ne',
+  '$gt',
+  '$gte',
+  '$lt',
+  '$lte',
+  '$contains',
+  '$size',
+] as const;
 export type MatchOperator = (typeof MATCH_OPERATORS)[number];
 
 export interface Mismatch {
@@ -17,40 +28,23 @@ export interface Mismatch {
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** The operator `value` stands for, when it is an object with a single `$` key. */
-function operatorOf(value: unknown): { op: string; arg: unknown } | undefined {
+/** The operators `value` stands for, when it is an object whose keys all start with `$`. */
+function operatorsOf(value: unknown): { op: string; arg: unknown }[] | undefined {
   if (!isObject(value)) return undefined;
   const keys = Object.keys(value);
-  const [op] = keys;
-  if (keys.length !== 1 || op === undefined || !op.startsWith('$')) return undefined;
-  return { op, arg: value[op] };
+  if (keys.length === 0 || !keys.every((key) => key.startsWith('$'))) return undefined;
+  return keys.map((op) => ({ op, arg: value[op] }));
 }
+
+const COMPARISONS = ['$gt', '$gte', '$lt', '$lte'];
 
 const show = (value: unknown) => (value === undefined ? 'nothing' : JSON.stringify(value));
 
 /** Problems with the operators used in an expectation. */
 export function operatorProblems(expected: unknown, path = '$'): Mismatch[] {
-  const problem = (message: string) => [{ path, message }];
-  const operator = operatorOf(expected);
-  if (operator !== undefined) {
-    const { op, arg } = operator;
-    if (!(MATCH_OPERATORS as readonly string[]).includes(op)) {
-      return problem(`unknown operator ${op} (use ${MATCH_OPERATORS.join(', ')})`);
-    }
-    if (op === '$exists' && typeof arg !== 'boolean') return problem('$exists takes true or false');
-    if (op === '$regex') {
-      if (typeof arg !== 'string') return problem('$regex takes a string');
-      try {
-        new RegExp(arg);
-      } catch {
-        return problem('$regex is not a valid regular expression');
-      }
-    }
-    if (['$gt', '$gte', '$lt', '$lte'].includes(op) && typeof arg !== 'number') {
-      return problem(`${op} takes a number`);
-    }
-    return [];
-  }
+  const operators = operatorsOf(expected);
+  if (operators !== undefined)
+    return operators.flatMap(({ op, arg }) => checkOperator(op, arg, path));
   if (Array.isArray(expected)) {
     return expected.flatMap((item, index) => operatorProblems(item, `${path}[${index}]`));
   }
@@ -58,6 +52,33 @@ export function operatorProblems(expected: unknown, path = '$'): Mismatch[] {
     return Object.entries(expected).flatMap(([key, child]) =>
       operatorProblems(child, `${path}.${key}`),
     );
+  }
+  return [];
+}
+
+function checkOperator(op: string, arg: unknown, path: string): Mismatch[] {
+  const problem = (message: string) => [{ path, message }];
+  if (!(MATCH_OPERATORS as readonly string[]).includes(op)) {
+    return problem(`unknown operator ${op} (use ${MATCH_OPERATORS.join(', ')})`);
+  }
+  if (op === '$exists' && typeof arg !== 'boolean') return problem('$exists takes true or false');
+  if (op === '$regex') {
+    if (typeof arg !== 'string') return problem('$regex takes a string');
+    try {
+      new RegExp(arg);
+    } catch {
+      return problem('$regex is not a valid regular expression');
+    }
+  }
+  if (COMPARISONS.includes(op) && typeof arg !== 'number') return problem(`${op} takes a number`);
+  if (op === '$contains') return operatorProblems(arg, `${path}.$contains`);
+  if (op === '$size') {
+    const size = operatorsOf(arg);
+    if (typeof arg === 'number' && Number.isInteger(arg) && arg >= 0) return [];
+    if (size !== undefined && size.every(({ op: inner }) => COMPARISONS.includes(inner))) {
+      return operatorProblems(arg, `${path}.$size`);
+    }
+    return problem('$size takes a whole number or comparisons such as { $gte: 1 }');
   }
   return [];
 }
@@ -88,6 +109,20 @@ function applyOperator(op: string, arg: unknown, actual: unknown, path: string):
         : fail(`expected a string matching /${String(arg)}/, found ${show(actual)}`);
     case '$ne':
       return equal(arg, actual) ? fail(`expected anything but ${show(arg)}`) : [];
+    case '$contains': {
+      if (!Array.isArray(actual)) return fail(`expected an array, found ${show(actual)}`);
+      if (actual.some((item) => matchValue(arg, item).length === 0)) return [];
+      return fail(
+        `expected an item matching ${show(arg)} among ${actual.length} item${actual.length === 1 ? '' : 's'}`,
+      );
+    }
+    case '$size': {
+      if (!Array.isArray(actual)) return fail(`expected an array, found ${show(actual)}`);
+      if (typeof arg === 'number') {
+        return actual.length === arg ? [] : fail(`expected ${arg} items, found ${actual.length}`);
+      }
+      return matchValue(arg, actual.length, `${path}.length`);
+    }
     default: {
       const value = numeric(actual);
       const bound = Number(arg);
@@ -113,8 +148,10 @@ function equal(a: unknown, b: unknown): boolean {
 
 /** Every way `actual` fails to match `expected`; empty when it matches. */
 export function matchValue(expected: unknown, actual: unknown, path = '$'): Mismatch[] {
-  const operator = operatorOf(expected);
-  if (operator !== undefined) return applyOperator(operator.op, operator.arg, actual, path);
+  const operators = operatorsOf(expected);
+  if (operators !== undefined) {
+    return operators.flatMap(({ op, arg }) => applyOperator(op, arg, actual, path));
+  }
   if (Array.isArray(expected)) {
     if (!Array.isArray(actual))
       return [{ path, message: `expected an array, found ${show(actual)}` }];
