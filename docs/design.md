@@ -259,7 +259,7 @@ Setup creates and starts every station; with `waitForBoot` (the default) it also
 
 **Steps**
 
-A step is a map with one step key whose value is the step's arguments. Steps that act on a station take `station` (its id; default the first station), and connector steps take `connector` (default 1). Any step may carry `name`, which reports show instead of the generated label.
+A step is a map with one step key whose value is the step's arguments. Steps that act on a station take `station` (its id; default the first station), and connector steps take `connector` (default 1). Any step may carry `name` next to the step key (`- name: Card in` above `presentCard: ...`), which reports show instead of the generated label. Steps without arguments can be written `online:` or `online: {}`.
 
 Charge point actions, the same operations the API offers:
 

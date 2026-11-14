@@ -24,3 +24,6 @@ export * from './ev.js';
 export * from './transaction.js';
 export * from './charge-point.js';
 export * from './persona.js';
+export * from './template.js';
+export * from './match.js';
+export * from './scenario.js';

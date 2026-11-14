@@ -41,7 +41,7 @@ export function parseDuration(value: number | string): number | undefined {
   return Number(match[1]) * UNIT_MS[match[2] as keyof typeof UNIT_MS];
 }
 
-const durationSchema: Schema<number | string> = {
+export const durationSchema: Schema<number | string> = {
   check(value, path, issues) {
     if (typeof value !== 'number' && typeof value !== 'string') {
       issues.push({ path, errorCode: 'TypeConstraintViolation', message: 'expected a duration' });
