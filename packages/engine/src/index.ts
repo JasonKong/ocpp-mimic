@@ -22,3 +22,12 @@ export {
 } from './fleet.js';
 export { openStateStore, type StateStore, type StationDefinition } from './state-store.js';
 export { createSystemClock, randomIds } from './system-clock.js';
+export {
+  createRecorder,
+  type Direction,
+  type FrameRecord,
+  type LogRecord,
+  type RecordEntry,
+  type Recorder,
+} from './recorder.js';
+export type { ApiEvent } from './api.js';
