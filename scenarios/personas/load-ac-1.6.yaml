@@ -1,0 +1,15 @@
+# A two-connector 22 kW AC charge point for load tests and the benchmark
+# (docs/design.md, "M4 scale"). Load it with --personas scenarios/personas.
+persona: load-ac-1.6
+extends: generic-1.6
+description: Two-connector 22 kW AC charge point for load tests
+boot:
+  chargePointModel: Load-AC-22
+connectors: 2
+power:
+  offeredW: 22080
+config:
+  HeartbeatInterval: 60
+  MeterValueSampleInterval: 60
+evs:
+  suv-77kwh: { capacityKWh: 77, initialSoc: 25, maxPowerW: 11000, phases: 3 }

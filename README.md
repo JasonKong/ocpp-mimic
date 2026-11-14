@@ -22,6 +22,7 @@ An OCPP charge point simulator: a headless engine runs many virtual charge point
 | `pnpm format`         | Format with Prettier                                                             |
 | `pnpm serve`          | Build everything and start the engine with the Web UI at `http://127.0.0.1:7300` |
 | `pnpm dev:web`        | Start the Web UI dev server; `/api` is proxied to the local engine               |
+| `pnpm bench`          | Build, then run the benchmark harness (see below)                                |
 
 ## Running scenarios
 
@@ -42,6 +43,16 @@ node packages/cli/dist/main.js csms --delay 20ms-100ms
 ```
 
 Stations connect to `ws://127.0.0.1:9100/ocpp/<chargeBoxId>`. It accepts every station and answers every request; idTags starting with `UNKNOWN-` are Invalid (`--unknown-prefix`). Options: `--port`, `--host`, `--delay` (a fixed or random answer delay), `--heartbeat-interval`, `--password` (Basic Auth for every station), `--tls-cert` / `--tls-key` / `--tls-ca` / `--client-certificates` for wss://, and `--status` for how often it prints a status line. It keeps no frames, so memory stays flat over long runs, and prints a summary of requests by action when stopped with Ctrl-C.
+
+## Benchmark
+
+`pnpm bench` runs N stations in one process, the way `ocpp-mimic serve` runs them, against `ocpp-mimic csms` in a child process, and samples the engine every 5 s: event-loop delay, CPU, memory and frames a second, plus how late heartbeats and meter values go out.
+
+```bash
+pnpm bench --stations 1000 --duration 10m --rate 10 --out bench-results/run
+```
+
+Options: `--stations`, `--duration`, `--rate` (stations started a second), `--persona` (default `load-ac-1.6`), `--charging` (share of stations charging), `--csms-delay`, `--sample`, `--store` (keep state in SQLite, as `serve --store`), `--out` (samples.csv and summary.json) and `--heap-snapshot`. For a CPU profile run `node --cpu-prof packages/cli/dist/bench-main.js ...`. The `bench` workflow runs it on a GitHub-hosted runner, the M4 reference machine.
 
 ## Layout
 

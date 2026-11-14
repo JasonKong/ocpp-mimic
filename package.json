@@ -17,6 +17,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "serve": "pnpm build && node packages/cli/dist/main.js serve",
+    "bench": "tsc -b && node packages/cli/dist/bench-main.js",
     "dev:web": "pnpm --filter @ocpp-mimic/web dev"
   },
   "devDependencies": {

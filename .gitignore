@@ -9,3 +9,6 @@ coverage/
 !.env.example
 *.sqlite
 *.db
+bench-results/
+*.cpuprofile
+*.heapsnapshot
