@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets maintainers rerun everything on main, e.g. to check that the
+  # regression scenarios pass reliably.
+  workflow_dispatch:
 
 jobs:
   check:
@@ -21,3 +24,38 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+
+  scenarios:
+    name: regression scenarios
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Run scenarios/regression against the built-in CSMS
+        run: |
+          set -o pipefail
+          node packages/cli/dist/main.js run scenarios/regression \
+            --personas scenarios/personas --junit reports/scenarios.xml | tee reports-console.txt
+      - name: Add the results to the job summary
+        if: always()
+        run: |
+          {
+            echo '### Regression scenarios'
+            echo '```'
+            cat reports-console.txt 2>/dev/null || echo 'no output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenarios-junit
+          path: reports/scenarios.xml
+          if-no-files-found: warn

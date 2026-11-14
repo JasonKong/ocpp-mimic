@@ -10,3 +10,10 @@ Scenario files for `ocpp-mimic run`, in the format described under
   the personas in `personas/` (`--personas scenarios/personas`).
 - `personas/`: personas for the regression suite, such as `regression-1.6`
   (generic-1.6 with short reset downtimes).
+
+Run the regression suite (as CI does) with `pnpm test:scenarios`, or after
+`pnpm build`:
+
+```bash
+node packages/cli/dist/main.js run scenarios/regression --personas scenarios/personas
+```
