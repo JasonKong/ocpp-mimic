@@ -9,7 +9,8 @@ boot:
 connectors: 1
 power:
   offeredW: 7360
-features: [Core, RemoteTrigger, LocalAuthListManagement, Reservation, SmartCharging]
+features:
+  [Core, FirmwareManagement, RemoteTrigger, LocalAuthListManagement, Reservation, SmartCharging]
 config:
   HeartbeatInterval: 300
   MeterValueSampleInterval: 60
@@ -21,6 +22,12 @@ timing:
     soft: 30s
     hard: 3m
   bootRetry: 60s
+# Simulated firmware updates and diagnostics uploads (transfer: real makes
+# HTTP(S) locations really receive / serve the files).
+firmware:
+  downloadTime: 10s
+  installTime: 10s
+  uploadTime: 5s
 # Made-up EV profiles for plugging in with an EV (power and SoC follow the
 # charging curve). test-5kwh fills up within minutes for quick tests.
 evs:

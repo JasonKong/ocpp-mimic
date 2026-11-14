@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { parseDuration, resolvePersonas } from './persona.js';
+import {
+  FEATURE_PROFILES,
+  IMPLEMENTED_FEATURE_PROFILES,
+  parseDuration,
+  resolvePersonas,
+} from './persona.js';
 
 const BASE = {
   persona: 'base',
@@ -127,10 +132,9 @@ describe('resolvePersonas', () => {
     );
   });
 
-  it('warns about feature profiles that are not implemented yet', () => {
-    const { personas } = resolveOne({ ...BASE, features: ['Core', 'FirmwareManagement'] });
-    expect(personas.get('base')?.warnings).toEqual([
-      'test.yaml: feature profile FirmwareManagement is advertised but not implemented yet',
-    ]);
+  it('implements every OCPP 1.6 feature profile, so advertising them all warns about nothing', () => {
+    const { personas } = resolveOne({ ...BASE, features: [...FEATURE_PROFILES] });
+    expect([...IMPLEMENTED_FEATURE_PROFILES].sort()).toEqual([...FEATURE_PROFILES].sort());
+    expect(personas.get('base')?.warnings).toEqual([]);
   });
 });

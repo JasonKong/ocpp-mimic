@@ -15,6 +15,7 @@ import {
 } from './charge-point.js';
 import { createConfig } from './config.js';
 import { evProfileProblems, type EvProfile } from './ev.js';
+import type { FirmwareSettings } from './firmware.js';
 import { ChargePointErrorCodeSchema, OCPP16_MESSAGES } from './ocpp16-messages.js';
 import {
   array,
@@ -69,6 +70,7 @@ export const FEATURE_PROFILES = [
 /** Feature profiles this version of the charge point implements. */
 export const IMPLEMENTED_FEATURE_PROFILES: readonly string[] = [
   'Core',
+  'FirmwareManagement',
   'RemoteTrigger',
   'LocalAuthListManagement',
   'Reservation',
@@ -107,6 +109,18 @@ export const PersonaSchema = object(
         bootRetry: durationSchema,
       },
     ),
+    firmware: object(
+      {},
+      {
+        downloadTime: durationSchema,
+        installTime: durationSchema,
+        uploadTime: durationSchema,
+        download: oneOf(['succeed', 'fail']),
+        install: oneOf(['succeed', 'fail']),
+        upload: oneOf(['succeed', 'fail']),
+        transfer: oneOf(['simulated', 'real']),
+      },
+    ),
     evs: record(
       object(
         { capacityKWh: number(), initialSoc: number(), maxPowerW: number(), phases: integer() },
@@ -131,7 +145,7 @@ export type PersonaDefinition = Infer<typeof PersonaSchema>;
 /** The parts of the charge point options a persona decides. */
 export type PersonaChargePointOptions = Pick<
   ChargePointOptions,
-  'boot' | 'connectors' | 'config' | 'timing'
+  'boot' | 'connectors' | 'config' | 'timing' | 'firmware'
 > & {
   offeredPowerW?: number;
   evPowerW?: number;
@@ -202,6 +216,22 @@ function timingFrom(definition: PersonaDefinition): Partial<ChargePointTiming> {
   };
 }
 
+function firmwareFrom(
+  firmware: NonNullable<PersonaDefinition['firmware']>,
+): Partial<FirmwareSettings> {
+  const downloadMs = toMs(firmware.downloadTime);
+  const installMs = toMs(firmware.installTime);
+  const uploadMs = toMs(firmware.uploadTime);
+  return {
+    ...(downloadMs !== undefined && { downloadMs }),
+    ...(installMs !== undefined && { installMs }),
+    ...(uploadMs !== undefined && { uploadMs }),
+    ...(firmware.download !== undefined && { download: firmware.download }),
+    ...(firmware.install !== undefined && { install: firmware.install }),
+    ...(firmware.upload !== undefined && { upload: firmware.upload }),
+  };
+}
+
 /** Charge point options for a validated persona; throws if its configuration values are invalid. */
 export function personaToOptions(definition: PersonaDefinition): PersonaChargePointOptions {
   const values: Record<string, string> = Object.fromEntries(
@@ -218,6 +248,7 @@ export function personaToOptions(definition: PersonaDefinition): PersonaChargePo
     timing: timingFrom(definition),
     ...(definition.power?.offeredW !== undefined && { offeredPowerW: definition.power.offeredW }),
     ...(definition.power?.evW !== undefined && { evPowerW: definition.power.evW }),
+    ...(definition.firmware !== undefined && { firmware: firmwareFrom(definition.firmware) }),
   };
 }
 

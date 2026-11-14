@@ -2,6 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { ManualClock } from './clock.js';
 
 describe('ManualClock', () => {
+  it('tells when the earliest pending timer falls due', () => {
+    const clock = new ManualClock(1_000);
+    expect(clock.nextTimerAt()).toBeUndefined();
+    const late = clock.setTimer(900, () => undefined);
+    const early = clock.setTimer(100, () => undefined);
+    expect(clock.nextTimerAt()).toBe(1_100);
+    clock.clearTimer(early);
+    expect(clock.nextTimerAt()).toBe(1_900);
+    clock.clearTimer(late);
+    expect(clock.nextTimerAt()).toBeUndefined();
+  });
+
   it('fires due timers in time order and moves now with them', () => {
     const clock = new ManualClock(1_000);
     const fired: Array<[string, number]> = [];

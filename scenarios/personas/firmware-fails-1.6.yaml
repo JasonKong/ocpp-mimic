@@ -1,0 +1,8 @@
+# regression-1.6 whose firmware downloads and diagnostics uploads always fail,
+# to test how a CSMS reports a failed update or upload.
+persona: firmware-fails-1.6
+extends: regression-1.6
+description: regression-1.6 whose firmware downloads and diagnostics uploads fail
+firmware:
+  download: fail
+  upload: fail

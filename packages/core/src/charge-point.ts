@@ -61,6 +61,14 @@ import {
   type InstallContext,
   type InstalledProfile,
 } from './charging-profile.js';
+import {
+  DEFAULT_FIRMWARE_SETTINGS,
+  diagnosticsFileName,
+  firmwareVersionFrom,
+  isHttpLocation,
+  type FileTransfer,
+  type FirmwareSettings,
+} from './firmware.js';
 import type { IdGenerator } from './ids.js';
 import { OCPP16_ACTION_PROFILES } from './ocpp16.js';
 import {
@@ -194,6 +202,8 @@ export interface PersistedChargePoint {
   reservations?: Reservation[];
   /** Installed charging profiles; missing in states saved before Smart Charging. */
   chargingProfiles?: InstalledProfile[];
+  /** The firmware version after an update; missing until one was installed. */
+  firmwareVersion?: string;
 }
 
 /** A ReserveNow the station holds: a connector, or any connector with connectorId 0. */
@@ -228,6 +238,10 @@ export interface ChargePointOptions {
   onEvent?: (event: ChargePointEvent) => void;
   /** Initial test switches; a restored state's switches take precedence. */
   behaviour?: Partial<ChargePointBehaviour>;
+  /** Timings and outcomes of simulated firmware updates and diagnostics uploads. */
+  firmware?: Partial<FirmwareSettings>;
+  /** Real HTTP(S) transfers for UpdateFirmware and GetDiagnostics; simulated without it. */
+  transfer?: FileTransfer;
   /**
    * Energy (and SoC) advance this many times faster than real time; every
    * timestamp stays real. Default 1; a restored state's value takes precedence.
@@ -272,6 +286,11 @@ export interface ChargePointSnapshot {
   config: Readonly<Record<string, string>>;
   /** Transaction messages waiting to be sent. */
   queuedMessages: number;
+  /** The firmware version the station reports, after any update. */
+  firmwareVersion?: string;
+  /** The firmware update and diagnostics upload in progress, or Idle. */
+  firmwareStatus: string;
+  diagnosticsStatus: string;
   behaviour: ChargePointBehaviour;
   energyMultiplier: number;
   /** GetLocalListVersion's answer and the number of entries. */
@@ -495,6 +514,129 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     return result;
   }
 
+  // ---- Firmware and diagnostics -------------------------------------------
+
+  const firmwareSettings: FirmwareSettings = { ...DEFAULT_FIRMWARE_SETTINGS, ...options.firmware };
+  let firmwareVersion = options.restore?.firmwareVersion ?? options.boot.firmwareVersion;
+  type FirmwareStatus = RequestOf<'FirmwareStatusNotification'>['status'];
+  type DiagnosticsStatus = RequestOf<'DiagnosticsStatusNotification'>['status'];
+  let firmwareStatus: FirmwareStatus = 'Idle';
+  let diagnosticsStatus: DiagnosticsStatus = 'Idle';
+  /** Installed is reported after the reboot that follows an update (section 5.19). */
+  let installedPendingReport = false;
+  const idleWaiters: (() => void)[] = [];
+
+  const bootPayload = (): RequestOf<'BootNotification'> => ({
+    ...options.boot,
+    ...(firmwareVersion !== undefined && { firmwareVersion }),
+  });
+  const delay = (ms: number) => new Promise<void>((resolve) => later(ms, resolve));
+  /** Resolves when no transaction is running. */
+  const noTransactions = () =>
+    transactions.size === 0
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => idleWaiters.push(resolve));
+  function wakeIdleWaiters(): void {
+    if (transactions.size > 0) return;
+    for (const resolve of idleWaiters.splice(0)) resolve();
+  }
+
+  function reportFirmware(status: FirmwareStatus): void {
+    firmwareStatus = status;
+    void sendIfOnline('FirmwareStatusNotification', { status });
+    changed();
+  }
+  function reportDiagnostics(status: DiagnosticsStatus): void {
+    diagnosticsStatus = status;
+    void sendIfOnline('DiagnosticsStatusNotification', { status });
+    changed();
+  }
+
+  /** Tries a transfer up to 1 + retries times, retryInterval seconds apart. */
+  async function withRetries(
+    attempt: () => Promise<boolean>,
+    retries: number | undefined,
+    retryIntervalS: number | undefined,
+  ): Promise<boolean> {
+    for (let n = 0; n <= (retries ?? 0); n++) {
+      if (n > 0) await delay((retryIntervalS ?? 30) * 1000);
+      if (await attempt()) return true;
+    }
+    return false;
+  }
+
+  async function runFirmwareUpdate(request: RequestOf<'UpdateFirmware'>): Promise<void> {
+    await delay(Math.max(0, Date.parse(request.retrieveDate) - now()));
+    reportFirmware('Downloading');
+    const downloaded = await withRetries(
+      async () => {
+        if (options.transfer !== undefined && isHttpLocation(request.location)) {
+          return options.transfer.download(request.location);
+        }
+        await delay(firmwareSettings.downloadMs);
+        return firmwareSettings.download === 'succeed';
+      },
+      request.retries,
+      request.retryInterval,
+    );
+    if (!downloaded) {
+      reportFirmware('DownloadFailed');
+      firmwareStatus = 'Idle';
+      return;
+    }
+    reportFirmware('Downloaded');
+    await noTransactions();
+    reportFirmware('Installing');
+    await delay(firmwareSettings.installMs);
+    if (firmwareSettings.install === 'fail') {
+      reportFirmware('InstallationFailed');
+      firmwareStatus = 'Idle';
+      return;
+    }
+    firmwareVersion = firmwareVersionFrom(request.location, firmwareVersion);
+    installedPendingReport = true;
+    log(`firmware ${firmwareVersion} installed`);
+    changed();
+    await resetChargePoint('Hard');
+  }
+
+  async function runDiagnosticsUpload(
+    request: RequestOf<'GetDiagnostics'>,
+    fileName: string,
+  ): Promise<void> {
+    reportDiagnostics('Uploading');
+    const content = diagnosticsContent(request);
+    const uploaded = await withRetries(
+      async () => {
+        if (options.transfer !== undefined && isHttpLocation(request.location)) {
+          return options.transfer.upload(request.location, fileName, content);
+        }
+        await delay(firmwareSettings.uploadMs);
+        return firmwareSettings.upload === 'succeed';
+      },
+      request.retries,
+      request.retryInterval,
+    );
+    reportDiagnostics(uploaded ? 'Uploaded' : 'UploadFailed');
+    diagnosticsStatus = 'Idle';
+  }
+
+  /** The diagnostics file: the station's state and configuration as text. */
+  function diagnosticsContent(request: RequestOf<'GetDiagnostics'>): string {
+    const lines = [
+      `ocpp-mimic diagnostics, ${new Date(now()).toISOString()}`,
+      `vendor ${options.boot.chargePointVendor}, model ${options.boot.chargePointModel}, firmware ${firmwareVersion ?? 'unknown'}`,
+      `period ${request.startTime ?? 'start'} to ${request.stopTime ?? 'now'}`,
+      `registration ${registration}`,
+      ...connectors(station).map((c) => {
+        const status = connectorStatus(c, station);
+        return `connector ${c.connectorId}: ${status.status} ${status.errorCode}`;
+      }),
+      ...Object.entries(config.values).map(([key, value]) => `config ${key}=${value}`),
+    ];
+    return `${lines.join('\n')}\n`;
+  }
+
   // ---- Smart Charging -----------------------------------------------------
 
   // TxProfiles belonged to transactions that a restart ends.
@@ -695,7 +837,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     if (current === undefined) return;
     registration = 'Booting';
     changed();
-    const outcome = await current.call('BootNotification', options.boot);
+    const outcome = await current.call('BootNotification', bootPayload());
     if (rpc !== current) return; // the connection changed meanwhile
     if (!outcome.ok) {
       log(`BootNotification failed: ${outcome.failure.kind}`);
@@ -718,6 +860,11 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     startHeartbeat();
     scheduleAligned();
     applyDevice({ type: 'ReportAll' });
+    if (installedPendingReport) {
+      installedPendingReport = false;
+      reportFirmware('Installed');
+      firmwareStatus = 'Idle';
+    }
     pump();
   }
 
@@ -1037,6 +1184,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     updateLock(connectorId);
     chargingProfiles = endTransactionProfiles(chargingProfiles, connectorId);
     updateAllPowers();
+    wakeIdleWaiters();
 
     const outcome = await stopCall;
     if (outcome?.ok === true && outcome.payload.idTagInfo !== undefined) {
@@ -1112,6 +1260,17 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       scheduleExpiry(reservation);
       changed();
       return { status: 'Accepted' };
+    },
+
+    UpdateFirmware(request) {
+      void runFirmwareUpdate(request);
+      return {};
+    },
+
+    GetDiagnostics(request) {
+      const fileName = diagnosticsFileName(now());
+      void runDiagnosticsUpload(request, fileName);
+      return { fileName };
     },
 
     SetChargingProfile(request) {
@@ -1328,7 +1487,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
           : [connectorId];
       switch (request.requestedMessage) {
         case 'BootNotification':
-          later(delayFor('TriggerMessage'), () => sendIfOnline('BootNotification', options.boot));
+          later(delayFor('TriggerMessage'), () => sendIfOnline('BootNotification', bootPayload()));
           return { status: 'Accepted' };
         case 'Heartbeat':
           later(delayFor('TriggerMessage'), () => sendIfOnline('Heartbeat', {}));
@@ -1358,6 +1517,16 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         case 'MeterValues':
           later(delayFor('TriggerMessage'), () =>
             targets.forEach((id) => sendMeterValues(id, 'MeterValuesSampledData', 'Trigger')),
+          );
+          return { status: 'Accepted' };
+        case 'FirmwareStatusNotification':
+          later(delayFor('TriggerMessage'), () =>
+            sendIfOnline('FirmwareStatusNotification', { status: firmwareStatus }),
+          );
+          return { status: 'Accepted' };
+        case 'DiagnosticsStatusNotification':
+          later(delayFor('TriggerMessage'), () =>
+            sendIfOnline('DiagnosticsStatusNotification', { status: diagnosticsStatus }),
           );
           return { status: 'Accepted' };
         default:
@@ -1656,6 +1825,9 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         }),
         config: config.values,
         queuedMessages: outbox.length,
+        ...(firmwareVersion !== undefined && { firmwareVersion }),
+        firmwareStatus,
+        diagnosticsStatus,
         behaviour: { ...behaviour },
         energyMultiplier,
         localList: {
@@ -1705,6 +1877,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         localList,
         reservations: [...reservations.values()].map((r) => ({ ...r })),
         chargingProfiles: chargingProfiles.map((p) => ({ ...p })),
+        ...(firmwareVersion !== options.boot.firmwareVersion &&
+          firmwareVersion !== undefined && { firmwareVersion }),
       };
     },
   };

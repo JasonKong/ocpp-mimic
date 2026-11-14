@@ -67,10 +67,12 @@ export const STANDARD_CONFIG_KEYS: Readonly<Record<string, ConfigKeyDefinition>>
   StopTransactionOnInvalidId: { type: 'boolean', readonly: false, value: 'true' },
   StopTxnAlignedData: { ...MEASURAND_LIST, value: '' },
   StopTxnSampledData: MEASURAND_LIST,
+  SupportedFileTransferProtocols: { type: 'list', readonly: true, value: 'HTTP,HTTPS,FTP' },
   SupportedFeatureProfiles: {
     type: 'list',
     readonly: true,
-    value: 'Core,RemoteTrigger,LocalAuthListManagement,Reservation,SmartCharging',
+    value:
+      'Core,FirmwareManagement,RemoteTrigger,LocalAuthListManagement,Reservation,SmartCharging',
   },
   TransactionMessageAttempts: { type: 'integer', readonly: false, value: '3', minimum: 0 },
   TransactionMessageRetryInterval: { type: 'integer', readonly: false, value: '60', minimum: 0 },
