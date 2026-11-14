@@ -1,0 +1,61 @@
+# Firmware Management (UpdateFirmware, GetDiagnostics). The transfers are
+# simulated with the persona's timings and outcomes; the real HTTP transfer is
+# covered by the engine tests.
+name: UpdateFirmware downloads, installs, reboots and reports Installed with the new version
+station: { id: REG-FW-UPDATE, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      action: UpdateFirmware
+      payload:
+        { location: 'ftp://fw.example.com/fw-2.6.0.bin', retrieveDate: '2020-01-01T00:00:00Z' }
+      answer: {}
+  - expect: { sent: FirmwareStatusNotification, payload: { status: Downloading } }
+  - expect: { sent: FirmwareStatusNotification, payload: { status: Downloaded } }
+  - expect: { sent: FirmwareStatusNotification, payload: { status: Installing } }
+  - expect: { sent: BootNotification, payload: { firmwareVersion: 2.6.0 } }
+  - expect: { sent: FirmwareStatusNotification, payload: { status: Installed } }
+  - expectStation: { firmwareVersion: 2.6.0, firmwareStatus: Idle }
+---
+name: GetDiagnostics names the file and reports the upload
+station: { id: REG-FW-DIAG, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      action: GetDiagnostics
+      payload: { location: 'ftp://logs.example.com/' }
+      answer: { fileName: { $regex: '^diagnostics-\d{8}T\d{6}Z\.log$' } }
+  - expect: { sent: DiagnosticsStatusNotification, payload: { status: Uploading } }
+  - expect: { sent: DiagnosticsStatusNotification, payload: { status: Uploaded } }
+  - csmsCall:
+      action: TriggerMessage
+      payload: { requestedMessage: DiagnosticsStatusNotification }
+      answer: { status: Accepted }
+  - expect: { sent: DiagnosticsStatusNotification, payload: { status: Idle } }
+---
+name: A failing download is retried, then reported; so is a failing upload
+station: { id: REG-FW-FAIL, persona: firmware-fails-1.6 }
+steps:
+  - csmsCall:
+      action: UpdateFirmware
+      payload:
+        location: 'ftp://fw.example.com/fw-2.6.0.bin'
+        retrieveDate: '2020-01-01T00:00:00Z'
+        retries: 1
+        retryInterval: 1
+      answer: {}
+  - expect: { sent: FirmwareStatusNotification, payload: { status: Downloading } }
+  - expect: { sent: FirmwareStatusNotification, payload: { status: DownloadFailed } }
+  - csmsCall:
+      action: GetDiagnostics
+      payload: { location: 'ftp://logs.example.com/' }
+      answer: { fileName: { $exists: true } }
+  - expect: { sent: DiagnosticsStatusNotification, payload: { status: UploadFailed } }
+  - expectStation: { firmwareStatus: Idle, diagnosticsStatus: Idle }
+---
+name: A station without the FirmwareManagement profile refuses UpdateFirmware
+station: { id: REG-FW-NONE, persona: core-only-1.6 }
+steps:
+  - csmsCall:
+      action: UpdateFirmware
+      payload:
+        { location: 'ftp://fw.example.com/fw-2.6.0.bin', retrieveDate: '2020-01-01T00:00:00Z' }
+      error: NotSupported

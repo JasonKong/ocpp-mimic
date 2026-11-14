@@ -1,9 +1,14 @@
-# generic-1.6 with short reset downtimes, so the regression suite does not
-# wait 30 s / 3 min for each reset. Load it with --personas scenarios/personas.
+# generic-1.6 with short reset downtimes and firmware transfers, so the
+# regression suite does not wait 30 s / 3 min for each reset or 10 s for each
+# firmware step. Load it with --personas scenarios/personas.
 persona: regression-1.6
 extends: generic-1.6
-description: generic-1.6 with short reset downtimes for the regression suite
+description: generic-1.6 with short reset downtimes and firmware steps for the regression suite
 timing:
   resetDowntime:
     soft: 1s
     hard: 2s
+firmware:
+  downloadTime: 1s
+  installTime: 1s
+  uploadTime: 1s

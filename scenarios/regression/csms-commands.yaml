@@ -79,7 +79,8 @@ steps:
   - csmsCall:
       action: TriggerMessage
       payload: { requestedMessage: DiagnosticsStatusNotification }
-      answer: { status: NotImplemented }
+      answer: { status: Accepted }
+  - expect: { sent: DiagnosticsStatusNotification, payload: { status: Idle } }
 ---
 name: GetConfiguration and ChangeConfiguration take effect
 station: { id: REG-CONFIG, persona: regression-1.6 }

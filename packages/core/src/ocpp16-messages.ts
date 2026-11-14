@@ -257,6 +257,24 @@ export const OCPP16_MESSAGES = {
     ),
   },
 
+  DiagnosticsStatusNotification: {
+    request: object({ status: oneOf(['Idle', 'Uploaded', 'UploadFailed', 'Uploading']) }),
+    response: object({}),
+  },
+  FirmwareStatusNotification: {
+    request: object({
+      status: oneOf([
+        'Downloaded',
+        'DownloadFailed',
+        'Downloading',
+        'Idle',
+        'InstallationFailed',
+        'Installing',
+        'Installed',
+      ]),
+    }),
+    response: object({}),
+  },
   // Initiated by the CSMS
   ChangeAvailability: {
     request: object({
@@ -274,6 +292,20 @@ export const OCPP16_MESSAGES = {
   ClearCache: {
     request: object({}),
     response: acceptedOrRejected,
+  },
+  GetDiagnostics: {
+    request: object(
+      { location: string() },
+      { retries: integer(), retryInterval: integer(), startTime: dateTime(), stopTime: dateTime() },
+    ),
+    response: object({}, { fileName: string({ maxLength: 255 }) }),
+  },
+  UpdateFirmware: {
+    request: object(
+      { location: string(), retrieveDate: dateTime() },
+      { retries: integer(), retryInterval: integer() },
+    ),
+    response: object({}),
   },
   ClearChargingProfile: {
     request: object(
@@ -399,6 +431,8 @@ export const CHARGE_POINT_ACTIONS = [
   'Authorize',
   'BootNotification',
   'DataTransfer',
+  'DiagnosticsStatusNotification',
+  'FirmwareStatusNotification',
   'Heartbeat',
   'MeterValues',
   'StartTransaction',
@@ -416,6 +450,7 @@ export const CSMS_ACTIONS = [
   'DataTransfer',
   'GetCompositeSchedule',
   'GetConfiguration',
+  'GetDiagnostics',
   'GetLocalListVersion',
   'RemoteStartTransaction',
   'RemoteStopTransaction',
@@ -425,6 +460,7 @@ export const CSMS_ACTIONS = [
   'SetChargingProfile',
   'TriggerMessage',
   'UnlockConnector',
+  'UpdateFirmware',
 ] as const satisfies readonly Ocpp16Action[];
 
 export function isOcpp16Action(action: string): action is Ocpp16Action {

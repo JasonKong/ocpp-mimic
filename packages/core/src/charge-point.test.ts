@@ -6,6 +6,7 @@ import {
   type PersistedChargePoint,
 } from './charge-point.js';
 import { ManualClock } from './clock.js';
+import type { FileTransfer, FirmwareSettings } from './firmware.js';
 import { sequentialIds } from './ids.js';
 import { parseFrame, type CallFrame, type Frame, type JsonObject } from './ocppj.js';
 import { resolvePersonas } from './persona.js';
@@ -27,6 +28,8 @@ interface SetupOptions {
   timing?: Partial<ChargePointTiming>;
   behaviour?: Partial<ChargePointBehaviour>;
   energyMultiplier?: number;
+  firmware?: Partial<FirmwareSettings>;
+  transfer?: FileTransfer;
 }
 
 /**
@@ -51,6 +54,8 @@ function setup(options: SetupOptions = {}) {
     }),
     StopTransaction: () => ({}),
     DataTransfer: () => ({ status: 'Accepted' }),
+    FirmwareStatusNotification: () => ({}),
+    DiagnosticsStatusNotification: () => ({}),
     ...options.csms,
   };
   const cp = createChargePoint({
@@ -69,6 +74,8 @@ function setup(options: SetupOptions = {}) {
     ...(options.restore !== undefined && { restore: options.restore }),
     ...(options.behaviour !== undefined && { behaviour: options.behaviour }),
     ...(options.energyMultiplier !== undefined && { energyMultiplier: options.energyMultiplier }),
+    ...(options.firmware !== undefined && { firmware: options.firmware }),
+    ...(options.transfer !== undefined && { transfer: options.transfer }),
   });
 
   let answered = 0;
@@ -124,8 +131,19 @@ function setup(options: SetupOptions = {}) {
     const answer = frames.find((f) => f.type !== 2 && f.id === id);
     return answer?.type === 3 ? answer.payload : answer;
   }
+  /**
+   * Moves time forward timer by timer, settling in between, so that work an
+   * async flow schedules after an await still falls due within `ms`.
+   */
   async function advance(ms: number) {
-    clock.advance(ms);
+    const target = clock.now() + ms;
+    for (;;) {
+      const next = clock.nextTimerAt();
+      if (next === undefined || next > target) break;
+      clock.advance(next - clock.now());
+      await settle();
+    }
+    clock.advance(target - clock.now());
     await settle();
   }
   async function boot() {
@@ -510,7 +528,7 @@ describe('commands from the CSMS', () => {
     });
   });
 
-  it('TriggerMessage: sends the requested message, NotImplemented for firmware and diagnostics', async () => {
+  it('TriggerMessage: sends the requested message, Rejected for an unknown connector', async () => {
     const h = setup();
     await h.boot();
     await h.startSession(1);
@@ -541,9 +559,6 @@ describe('commands from the CSMS', () => {
       connectorId: 1,
       meterValue: [{ sampledValue: [{ context: 'Trigger' }] }],
     });
-    expect(
-      await h.csmsCall('TriggerMessage', { requestedMessage: 'FirmwareStatusNotification' }),
-    ).toEqual({ status: 'NotImplemented' });
     expect(
       await h.csmsCall('TriggerMessage', { requestedMessage: 'Heartbeat', connectorId: 9 }),
     ).toEqual({ status: 'Rejected' });
@@ -984,6 +999,183 @@ describe('smart charging', () => {
     await plain.boot();
     expect(
       await plain.csmsCall('GetCompositeSchedule', { connectorId: 1, duration: 60 }),
+    ).toMatchObject({ type: 4, errorCode: 'NotSupported' });
+  });
+});
+
+describe('firmware management', () => {
+  const at = (h: ReturnType<typeof setup>, ms: number) =>
+    new Date(h.clock.now() + ms).toISOString();
+  const firmwareStatuses = (h: ReturnType<typeof setup>, from = 0) =>
+    h.frames
+      .slice(from)
+      .filter((f): f is CallFrame => f.type === 2 && f.action === 'FirmwareStatusNotification')
+      .map((f) => f.payload.status);
+  const diagnosticsStatuses = (h: ReturnType<typeof setup>, from = 0) =>
+    h.frames
+      .slice(from)
+      .filter((f): f is CallFrame => f.type === 2 && f.action === 'DiagnosticsStatusNotification')
+      .map((f) => f.payload.status);
+
+  it('downloads at retrieveDate, installs, reboots and reports Installed with the new version', async () => {
+    const h = setup();
+    await h.boot();
+    const mark = h.frames.length;
+    expect(
+      await h.csmsCall('UpdateFirmware', {
+        location: 'ftp://fw.example.com/fw-2.6.0.bin',
+        retrieveDate: at(h, 60_000),
+      }),
+    ).toEqual({});
+    await h.advance(59_000);
+    expect(firmwareStatuses(h, mark)).toEqual([]);
+    await h.advance(1000);
+    expect(firmwareStatuses(h, mark)).toEqual(['Downloading']);
+    expect(h.cp.snapshot().firmwareStatus).toBe('Downloading');
+    await h.advance(10_000);
+    expect(firmwareStatuses(h, mark)).toEqual(['Downloading', 'Downloaded', 'Installing']);
+    await h.advance(10_000);
+    expect(h.restarts).toEqual([180_000]);
+    expect(h.cp.snapshot().firmwareVersion).toBe('2.6.0');
+
+    h.cp.disconnected();
+    await h.boot();
+    expect(h.lastCall('BootNotification')?.payload).toMatchObject({ firmwareVersion: '2.6.0' });
+    expect(firmwareStatuses(h, mark)).toEqual([
+      'Downloading',
+      'Downloaded',
+      'Installing',
+      'Installed',
+    ]);
+    expect(h.cp.snapshot()).toMatchObject({ firmwareStatus: 'Idle', firmwareVersion: '2.6.0' });
+    // The version survives a restart from the State Store.
+    const after = setup({ restore: h.cp.persistentState() });
+    await after.boot();
+    expect(after.lastCall('BootNotification')?.payload).toMatchObject({ firmwareVersion: '2.6.0' });
+  });
+
+  it('waits for running transactions to end before installing', async () => {
+    const h = setup({ firmware: { downloadMs: 1000, installMs: 1000 } });
+    await h.boot();
+    await h.startSession(1);
+    const mark = h.frames.length;
+    await h.csmsCall('UpdateFirmware', {
+      location: 'ftp://fw.example.com/fw-3.0.0.bin',
+      retrieveDate: at(h, 0),
+    });
+    await h.advance(60_000);
+    expect(firmwareStatuses(h, mark)).toEqual(['Downloading', 'Downloaded']);
+    h.cp.unplug(1);
+    await h.advance(1000);
+    expect(firmwareStatuses(h, mark)).toEqual(['Downloading', 'Downloaded', 'Installing']);
+    await h.advance(1000);
+    expect(h.restarts).toEqual([180_000]);
+  });
+
+  it('retries a failing download, then reports DownloadFailed; a failed install keeps the old version', async () => {
+    const download = setup({ firmware: { downloadMs: 1000, download: 'fail' } });
+    await download.boot();
+    await download.csmsCall('UpdateFirmware', {
+      location: 'ftp://fw.example.com/fw-2.6.0.bin',
+      retrieveDate: at(download, 0),
+      retries: 2,
+      retryInterval: 5,
+    });
+    // Three attempts of 1 s, 5 s apart.
+    await download.advance(12_000);
+    expect(firmwareStatuses(download)).toEqual(['Downloading']);
+    await download.advance(1000);
+    expect(firmwareStatuses(download)).toEqual(['Downloading', 'DownloadFailed']);
+    expect(download.cp.snapshot().firmwareStatus).toBe('Idle');
+
+    const install = setup({ firmware: { downloadMs: 1000, installMs: 1000, install: 'fail' } });
+    await install.boot();
+    await install.csmsCall('UpdateFirmware', {
+      location: 'ftp://fw.example.com/fw-2.6.0.bin',
+      retrieveDate: at(install, 0),
+    });
+    await install.advance(5000);
+    expect(firmwareStatuses(install)).toEqual([
+      'Downloading',
+      'Downloaded',
+      'Installing',
+      'InstallationFailed',
+    ]);
+    expect(install.restarts).toEqual([]);
+    expect(install.cp.snapshot().firmwareVersion).toBeUndefined();
+  });
+
+  it('downloads and uploads over HTTP with the real file transfer when one is given', async () => {
+    const downloads: string[] = [];
+    const uploads: { location: string; fileName: string; content: string }[] = [];
+    let downloadOk = false;
+    const transfer: FileTransfer = {
+      download: (location) => {
+        downloads.push(location);
+        const ok = downloadOk;
+        downloadOk = true;
+        return Promise.resolve(ok);
+      },
+      upload: (location, fileName, content) => {
+        uploads.push({ location, fileName, content });
+        return Promise.resolve(true);
+      },
+    };
+    const h = setup({ transfer, firmware: { installMs: 1000 } });
+    await h.boot();
+    await h.csmsCall('UpdateFirmware', {
+      location: 'https://fw.example.com/fw-2.7.0.bin',
+      retrieveDate: at(h, 0),
+      retries: 1,
+      retryInterval: 2,
+    });
+    await h.advance(2000);
+    expect(downloads).toEqual([
+      'https://fw.example.com/fw-2.7.0.bin',
+      'https://fw.example.com/fw-2.7.0.bin',
+    ]);
+    expect(firmwareStatuses(h)).toEqual(['Downloading', 'Downloaded', 'Installing']);
+
+    const answer = await h.csmsCall('GetDiagnostics', { location: 'https://logs.example.com/up' });
+    expect(answer).toEqual({ fileName: 'diagnostics-20261114T100002Z.log' });
+    await h.settle();
+    expect(uploads).toEqual([
+      {
+        location: 'https://logs.example.com/up',
+        fileName: 'diagnostics-20261114T100002Z.log',
+        content: expect.stringContaining('config HeartbeatInterval=') as unknown as string,
+      },
+    ]);
+    expect(diagnosticsStatuses(h)).toEqual(['Uploading', 'Uploaded']);
+  });
+
+  it('simulates diagnostics uploads, reports both statuses on TriggerMessage, and is NotSupported without the profile', async () => {
+    const h = setup({ firmware: { uploadMs: 2000, upload: 'fail' } });
+    await h.boot();
+    expect(await h.csmsCall('GetDiagnostics', { location: 'ftp://logs.example.com/' })).toEqual({
+      fileName: 'diagnostics-20261114T100000Z.log',
+    });
+    expect(h.cp.snapshot().diagnosticsStatus).toBe('Uploading');
+    await h.advance(2000);
+    expect(diagnosticsStatuses(h)).toEqual(['Uploading', 'UploadFailed']);
+
+    const mark = h.frames.length;
+    for (const requestedMessage of [
+      'FirmwareStatusNotification',
+      'DiagnosticsStatusNotification',
+    ]) {
+      expect(await h.csmsCall('TriggerMessage', { requestedMessage })).toEqual({
+        status: 'Accepted',
+      });
+    }
+    await h.advance(100);
+    expect(firmwareStatuses(h, mark)).toEqual(['Idle']);
+    expect(diagnosticsStatuses(h, mark)).toEqual(['Idle']);
+
+    const plain = setup({ config: { SupportedFeatureProfiles: 'Core,RemoteTrigger' } });
+    await plain.boot();
+    expect(
+      await plain.csmsCall('GetDiagnostics', { location: 'ftp://logs.example.com/' }),
     ).toMatchObject({ type: 4, errorCode: 'NotSupported' });
   });
 });

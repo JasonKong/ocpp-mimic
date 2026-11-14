@@ -15,7 +15,8 @@ describe('OCPP 1.6 message definitions', () => {
     expect([...new Set([...CHARGE_POINT_ACTIONS, ...CSMS_ACTIONS])].sort()).toEqual(defined);
     expect(CHARGE_POINT_ACTIONS.length + CSMS_ACTIONS.length).toBe(defined.length + 1);
     expect(isOcpp16Action('BootNotification')).toBe(true);
-    expect(isOcpp16Action('UpdateFirmware')).toBe(false);
+    expect(isOcpp16Action('UpdateFirmware')).toBe(true);
+    expect(isOcpp16Action('NotAnAction')).toBe(false);
     expect(isOcpp16Action('toString')).toBe(false);
   });
 

@@ -99,6 +99,8 @@ function defaultHandlers(): Record<string, CsmsHandler> {
     BootNotification: () => ({ status: 'Accepted', currentTime: now(), interval: 60 }),
     Heartbeat: () => ({ currentTime: now() }),
     StatusNotification: () => ({}),
+    FirmwareStatusNotification: () => ({}),
+    DiagnosticsStatusNotification: () => ({}),
     MeterValues: () => ({}),
     Authorize: () => ({ idTagInfo: { status: 'Accepted' } }),
     StartTransaction: () => ({

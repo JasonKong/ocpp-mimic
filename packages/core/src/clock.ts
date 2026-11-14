@@ -42,6 +42,15 @@ export class ManualClock implements Clock {
     this.#timers.delete(handle);
   }
 
+  /** When the earliest pending timer falls due, or undefined without timers. */
+  nextTimerAt(): number | undefined {
+    let earliest: number | undefined;
+    for (const { at } of this.#timers.values()) {
+      if (earliest === undefined || at < earliest) earliest = at;
+    }
+    return earliest;
+  }
+
   /**
    * Moves time forward by `ms`, firing every timer that falls due on the way in
    * time order (timers due at the same moment fire in the order they were set).

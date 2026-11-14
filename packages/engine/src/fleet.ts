@@ -15,6 +15,7 @@ import {
   type PersistedChargePoint,
   type ResolvedPersona,
 } from '@ocpp-mimic/core';
+import { createHttpFileTransfer } from './file-transfer.js';
 import type { PersonaRegistry } from './personas.js';
 import type { StateStore, StationDefinition } from './state-store.js';
 import { createSystemClock, randomIds } from './system-clock.js';
@@ -174,6 +175,9 @@ export function createFleet(options: FleetOptions): Fleet {
       ids,
       ...(definition.energyMultiplier !== undefined && {
         energyMultiplier: definition.energyMultiplier,
+      }),
+      ...(persona.definition.firmware?.transfer === 'real' && {
+        transfer: createHttpFileTransfer(),
       }),
       send: (text) => transport.send(text),
       restart: (downtimeMs) => transport.restartAfter(downtimeMs),
