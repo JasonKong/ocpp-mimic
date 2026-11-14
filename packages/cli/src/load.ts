@@ -37,6 +37,8 @@ export async function runLoadCommand(command: LoadCommand, io: LoadIo = CONSOLE)
       ...(command.durationMs !== undefined && { durationMs: command.durationMs }),
       ...(command.port !== undefined && { port: command.port }),
       ...(command.webRoot !== undefined && { webRoot: command.webRoot }),
+      ...(command.recordLimit !== undefined && { recordLimit: command.recordLimit }),
+      ...(command.logDir !== undefined && { logDir: command.logDir }),
       progress: io.out,
       onStart: ({ url, csms }) => {
         io.out(`ocpp-mimic load: ${plan.name}: ${stations} stations against ${csms}`);

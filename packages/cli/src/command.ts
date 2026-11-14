@@ -82,6 +82,8 @@ export interface LoadCommand {
   port?: number;
   /** The Web UI build to serve with --port; set by main. */
   webRoot?: string;
+  recordLimit?: number;
+  logDir?: string;
   personas: string[];
   allowCsms: string[];
 }
@@ -145,6 +147,8 @@ Options for load:
   --report-dir <dir>     Write report.json and report.md there
   --junit <file>         Also write a JUnit XML report (a test case per threshold)
   --port <number>        Also serve the API, the Web UI and /metrics there
+  --record-limit <n>     Records kept per station for the Web UI (default 10)
+  --log-dir <dir>        Stream every frame to <dir>/frames.jsonl
 
 Options for serve, run and load:
   --personas <dir>       Extra persona directory; repeat for more
@@ -236,7 +240,17 @@ const COMMANDS = {
     'status',
   ],
   import: ['map', 'mask', 'no-mask', 'salt', 'salt-file', 'out'],
-  load: ['csms', 'duration', 'report-dir', 'junit', 'port', 'personas', 'allow-csms'],
+  load: [
+    'csms',
+    'duration',
+    'report-dir',
+    'junit',
+    'port',
+    'record-limit',
+    'log-dir',
+    'personas',
+    'allow-csms',
+  ],
 } as const satisfies Record<string, readonly OptionName[]>;
 
 type CommandName = keyof typeof COMMANDS;
@@ -264,7 +278,9 @@ export function parseCommand(argv: readonly string[]): Command {
       const owners = Object.entries(COMMANDS)
         .filter(([, options]) => (options as readonly string[]).includes(option))
         .map(([owner]) => owner);
-      return error(`--${option} is an option of ${owners.join(' and ')}`);
+      const list =
+        owners.length > 1 ? `${owners.slice(0, -1).join(', ')} and ${owners.at(-1)}` : owners[0];
+      return error(`--${option} is an option of ${list}`);
     }
 
     const badPrefix = values['allow-csms']?.find((prefix) => !/^wss?:\/\/.+/.test(prefix));
@@ -408,6 +424,11 @@ function parseLoad(rest: string[], values: Values): Command {
     port = parsePort(values.port, 0);
     if (port === undefined) return error(`Invalid port: ${values.port}`);
   }
+  const recordLimit =
+    values['record-limit'] === undefined ? undefined : Number(values['record-limit']);
+  if (recordLimit !== undefined && !(Number.isInteger(recordLimit) && recordLimit >= 0)) {
+    return error(`--record-limit needs a whole number, got ${values['record-limit']}`);
+  }
   return {
     kind: 'load',
     plan,
@@ -416,6 +437,8 @@ function parseLoad(rest: string[], values: Values): Command {
     ...(values['report-dir'] !== undefined && { reportDir: values['report-dir'] }),
     ...(values.junit !== undefined && { junit: values.junit }),
     ...(port !== undefined && { port }),
+    ...(recordLimit !== undefined && { recordLimit }),
+    ...(values['log-dir'] !== undefined && { logDir: values['log-dir'] }),
     personas: values.personas ?? [],
     allowCsms: values['allow-csms'] ?? [],
   };

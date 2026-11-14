@@ -129,7 +129,7 @@ describe('parseCommand', () => {
     expect(parseCommand(['run', 'a.yaml', '--csms', 'http://x'])).toMatchObject({ kind: 'error' });
     expect(parseCommand(['run', 'a.yaml', '--port', '1'])).toEqual({
       kind: 'error',
-      message: '--port is an option of serve and csms',
+      message: '--port is an option of serve, csms and load',
     });
     expect(parseCommand(['serve', '--delay', '1s'])).toEqual({
       kind: 'error',
@@ -250,6 +250,9 @@ describe('parseCommand', () => {
     expect(parseCommand(['run', 'a.yaml', '--log-dir', 'logs'])).toMatchObject({
       kind: 'run',
       logDir: 'logs',
+    });
+  });
+
   it('parses load with its options', () => {
     expect(parseCommand(['load', 'plan.yaml'])).toEqual({
       kind: 'load',
@@ -285,7 +288,10 @@ describe('parseCommand', () => {
       personas: ['scenarios/personas'],
       allowCsms: [],
     });
-    expect(parseCommand(['load'])).toEqual({ kind: 'error', message: 'load needs a load plan file' });
+    expect(parseCommand(['load'])).toEqual({
+      kind: 'error',
+      message: 'load needs a load plan file',
+    });
     expect(parseCommand(['load', 'p.yaml', '--duration', 'soon'])).toMatchObject({ kind: 'error' });
     expect(parseCommand(['load', 'p.yaml', '--bail'])).toEqual({
       kind: 'error',

@@ -3,8 +3,14 @@
  * on an engine, ramps them up, fires the fleet events, watches the engine's
  * health and the CSMS's answers, and judges the thresholds into a report.
  */
+import { createWriteStream, type WriteStream } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import {
+  LOG_FORMAT,
+  LOG_VERSION,
+  logLine,
   seededRandom,
   selectStations,
   usageModel,
@@ -35,6 +41,10 @@ export interface LoadRunOptions {
   progressMs?: number;
   /** Called once the engine listens, with its URL. */
   onStart?: (info: { url: string; csms: string }) => void;
+  /** Records kept per station (default 10: full once warmed up, so the heap stays flat). */
+  recordLimit?: number;
+  /** Streams every frame to `<logDir>/frames.jsonl` in ocpp-mimic's log format. */
+  logDir?: string;
 }
 
 export interface ThresholdResult {
@@ -108,6 +118,7 @@ export async function runLoadPlan(options: LoadRunOptions): Promise<LoadReport> 
     const csmsUrl = csms?.url ?? csmsTarget;
     engine = createEngine({
       port: options.port ?? 0,
+      recordLimit: options.recordLimit ?? 10,
       ...(options.personaDirs !== undefined && { personaDirs: options.personaDirs }),
       ...(options.allowedCsms !== undefined && { allowedCsms: options.allowedCsms }),
       ...(options.webRoot !== undefined && { webRoot: options.webRoot }),
@@ -132,7 +143,29 @@ export async function runLoadPlan(options: LoadRunOptions): Promise<LoadReport> 
       else if (event.type === 'refused') counts.refused += 1;
       else if (event.type === 'turned-away') counts.turnedAway += 1;
     };
+    // The whole log, streamed: the recorder keeps only the last few records.
+    let log: WriteStream | undefined;
+    if (options.logDir !== undefined) {
+      await mkdir(options.logDir, { recursive: true });
+      log = createWriteStream(join(options.logDir, 'frames.jsonl'));
+      log.write(
+        `${JSON.stringify({ format: LOG_FORMAT, version: LOG_VERSION, masked: false, source: plan.name })}\n`,
+      );
+    }
     const unsubscribe = fleet.subscribe((event: FleetEvent) => {
+      if (event.type === 'frame' && log !== undefined) {
+        const line = logLine(
+          new Date().toISOString(),
+          event.stationId,
+          event.direction,
+          event.text,
+          {
+            ...(event.injected !== undefined && { injected: event.injected }),
+            ...(event.dropped === true && { dropped: true }),
+          },
+        );
+        log.write(`${JSON.stringify(line)}\n`);
+      }
       if (event.type === 'usage') onUsage(event.stationId, event.event);
       else if (
         event.type === 'frame' &&
@@ -239,6 +272,10 @@ export async function runLoadPlan(options: LoadRunOptions): Promise<LoadReport> 
     sampleMemory();
     loop.disable();
     unsubscribe();
+    if (log !== undefined) {
+      const stream = log;
+      await new Promise<void>((resolve) => stream.end(resolve));
+    }
     const elapsedS = (Date.now() - started) / 1000;
     const cpu = process.cpuUsage(cpuStart);
     const metrics = engine.metrics.summary();
