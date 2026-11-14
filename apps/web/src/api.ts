@@ -144,6 +144,8 @@ export const api = {
     request<StationSnapshot>('POST', `${station(id)}/offline`, { mode }),
   online: (id: string) => request<StationSnapshot>('POST', `${station(id)}/online`),
   clearInjections: (id: string) => request<StationSnapshot>('DELETE', `${station(id)}/injections`),
+  inject: (id: string, injection: Record<string, unknown>) =>
+    request<StationSnapshot>('POST', `${station(id)}/injections`, injection),
   setEnergyMultiplier: (id: string, energyMultiplier: number) =>
     request<StationSnapshot>('PATCH', `${station(id)}/energy-multiplier`, { energyMultiplier }),
   setBehaviour: (id: string, changes: Partial<Behaviour>) =>

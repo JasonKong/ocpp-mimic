@@ -115,7 +115,7 @@ describe('matching', () => {
     expect(operatorProblems({ a: { $gt: 1 }, b: [{ $regex: 'x' }] })).toEqual([]);
     expect(operatorProblems({ a: { $size: 'x' }, b: { $contains: { c: { $gt: 'y' } } } })).toEqual([
       { path: '$.a', message: '$size takes a whole number or comparisons such as { $gte: 1 }' },
-      { path: '$.b.$contains.c', message: '$gt takes a number' },
+      { path: '$.b.$contains.c', message: '$gt takes a number (or a template for one)' },
     ]);
     expect(operatorProblems({ a: { $near: 1 }, b: { $gt: '1' }, c: { $regex: '(' } })).toEqual([
       {
@@ -123,7 +123,7 @@ describe('matching', () => {
         message:
           'unknown operator $near (use $exists, $regex, $ne, $gt, $gte, $lt, $lte, $contains, $size)',
       },
-      { path: '$.b', message: '$gt takes a number' },
+      { path: '$.b', message: '$gt takes a number (or a template for one)' },
       { path: '$.c', message: '$regex is not a valid regular expression' },
     ]);
   });

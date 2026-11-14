@@ -33,6 +33,8 @@ export interface FaultInjectorOptions {
   swallowed(direction: WireDirection, text: string, injected: string): void;
   goOffline(): void;
   goOnline(): void;
+  /** The list of active injections changed. */
+  onChange?: () => void;
   random?: () => number;
 }
 
@@ -72,6 +74,7 @@ export function createFaultInjector(options: FaultInjectorOptions): FaultInjecto
     if (index < 0) return;
     entries.splice(index, 1);
     entry.timers.forEach(clearTimeout);
+    options.onChange?.();
     if (entry.injection.type === 'flap' && offlineByFlap) {
       offlineByFlap = false;
       options.goOnline();
@@ -166,6 +169,7 @@ export function createFaultInjector(options: FaultInjectorOptions): FaultInjecto
         ...(counted !== undefined && { remaining: counted }),
       };
       entries.push(entry);
+      options.onChange?.();
       if (forMs !== undefined) entry.timers.push(setTimeout(() => remove(entry), forMs));
       if (injection.type === 'flap') flap(entry, injection);
       return {
@@ -203,6 +207,17 @@ export function createFaultInjector(options: FaultInjectorOptions): FaultInjecto
 
       if (frame !== undefined) {
         if (frame.type === MessageTypeId.Call) {
+          const drift = entries
+            .map((e) => e.injection)
+            .reduce((total, i) => total + (i.type === 'clockDrift' ? i.ms : 0), 0);
+          if (drift !== 0 && hasTimestamp(frame.payload)) {
+            frame = { ...frame, payload: mapTimestamps(frame.payload, (t) => shift(t, drift)) };
+            injected = 'clockDrift';
+          }
+          if (hasTimestamp(frame.payload) && take('badTimestamp') !== undefined) {
+            frame = { ...frame, payload: mapTimestamps(frame.payload, () => 'not-a-timestamp') };
+            injected = 'badTimestamp';
+          }
           const violation = take('schemaViolation', (i) => callOf(frame, i.action));
           if (violation !== undefined) {
             frame = { ...frame, payload: { ...frame.payload, injected: true } };
@@ -293,4 +308,35 @@ export function createFaultInjector(options: FaultInjectorOptions): FaultInjecto
       });
     },
   };
+}
+
+type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+
+/** Whether a payload has a `timestamp` field anywhere (StatusNotification, meter values, ...). */
+function hasTimestamp(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasTimestamp);
+  if (typeof value !== 'object' || value === null) return false;
+  return Object.entries(value).some(
+    ([key, child]) => (key === 'timestamp' && typeof child === 'string') || hasTimestamp(child),
+  );
+}
+
+/** A copy of `value` with every `timestamp` string replaced by `change(timestamp)`. */
+function mapTimestamps<T>(value: T, change: (timestamp: string) => string): T {
+  const walk = (node: Json): Json => {
+    if (Array.isArray(node)) return node.map(walk);
+    if (typeof node !== 'object' || node === null) return node;
+    return Object.fromEntries(
+      Object.entries(node).map(([key, child]) => [
+        key,
+        key === 'timestamp' && typeof child === 'string' ? change(child) : walk(child),
+      ]),
+    );
+  };
+  return walk(value as Json) as T;
+}
+
+function shift(timestamp: string, ms: number): string {
+  const at = Date.parse(timestamp);
+  return Number.isNaN(at) ? timestamp : new Date(at + ms).toISOString();
 }

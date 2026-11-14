@@ -123,7 +123,8 @@ export function stopTransactionRequest(input: {
   );
   return {
     transactionId: transaction.transactionId,
-    meterStop: Math.max(registerWh(meter), transaction.meterStartWh),
+    // A meter that rolled back reports less than meterStart, as a real faulty one would.
+    meterStop: registerWh(meter),
     timestamp: new Date(now).toISOString(),
     reason: input.reason,
     ...(input.idTag !== undefined && { idTag: input.idTag }),

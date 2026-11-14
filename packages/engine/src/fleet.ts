@@ -14,6 +14,7 @@ import {
   type Clock,
   type ConnectionSecurity,
   type IdGenerator,
+  type InjectionRequest,
   type PersistedChargePoint,
   type ResolvedPersona,
 } from '@ocpp-mimic/core';
@@ -50,6 +51,8 @@ export const DEFAULT_ALLOWED_CSMS = [
 export type FleetEvent =
   | { stationId: string; type: 'charge-point'; event: ChargePointEvent }
   | { stationId: string; type: 'transport'; event: TransportEvent }
+  /** The station's active fault injections changed. */
+  | { stationId: string; type: 'injections' }
   /**
    * A frame on the wire, after the Fault Injector: `injected` names the
    * injection that changed or made it, `dropped` marks one that never reached
@@ -115,6 +118,12 @@ export interface Fleet {
   shutdown(): Promise<void>;
   /** A reconnect storm: every running station drops its connection and reconnects at once. */
   reconnectStorm(): void;
+  /**
+   * Starts a fault injection on a station: wire faults go to its Fault
+   * Injector, meter faults to the charge point, a power loss is carried out
+   * here, and a reconnect storm hits every station.
+   */
+  inject(id: string, request: InjectionRequest): void;
 }
 
 /** True when `url` starts with one of `allowed` at a boundary (end, ':', '/' or '?'). */
@@ -169,8 +178,13 @@ export function createFleet(options: FleetOptions): Fleet {
         }, options.saveIntervalMs ?? 10_000);
   saveTimer?.unref();
 
-  function build(definition: StationDefinition, restore?: PersistedChargePoint): VirtualStation {
-    if (entries.has(definition.id)) throw new Error(`station ${definition.id} already exists`);
+  function build(
+    definition: StationDefinition,
+    restore?: PersistedChargePoint,
+    replace = false,
+  ): VirtualStation {
+    if (!replace && entries.has(definition.id))
+      throw new Error(`station ${definition.id} already exists`);
     if (!isAllowedCsms(definition.csmsUrl, allowed)) {
       throw new Error(
         `CSMS address ${definition.csmsUrl} is not allowed (allowed: ${allowed.join(', ')})`,
@@ -249,6 +263,7 @@ export function createFleet(options: FleetOptions): Fleet {
       swallowed: (direction, text, injected) => frame(direction, text, injected, true),
       goOffline: () => transport.goOffline('clean'),
       goOnline: () => transport.goOnline(),
+      onChange: () => emit({ stationId: definition.id, type: 'injections' }),
     });
     const cp = createChargePoint({
       ...personaOptions,
@@ -306,6 +321,38 @@ export function createFleet(options: FleetOptions): Fleet {
     return station;
   }
 
+  /**
+   * Power loss: the station goes dark (its state saved, connection dropped)
+   * for `offMs`, then starts again from the saved state, as after a power
+   * cut: transactions end with PowerLoss and queued messages keep their
+   * timestamps. Repeated `times`, `onMs` apart.
+   */
+  async function powerLoss(
+    id: string,
+    { offMs, onMs, times }: { offMs: number; onMs: number; times: number },
+  ): Promise<void> {
+    for (let cycle = 0; cycle < times; cycle++) {
+      const entry = entries.get(id);
+      if (entry === undefined || shuttingDown) return;
+      const { station } = entry;
+      const state = station.chargePoint.persistentState();
+      options.store?.saveState(id, state);
+      emit({
+        stationId: id,
+        type: 'charge-point',
+        event: { type: 'log', message: `power loss for ${offMs} ms` },
+      });
+      station.injector.clear();
+      entry.running = false;
+      await station.transport.stop();
+      await new Promise((resolve) => setTimeout(resolve, offMs).unref());
+      if (shuttingDown || entries.get(id) !== entry) return;
+      build(station.definition, state, true);
+      startStation(id);
+      if (cycle < times - 1) await new Promise((resolve) => setTimeout(resolve, onMs).unref());
+    }
+  }
+
   function startStation(id: string): void {
     const entry = entries.get(id);
     if (entry === undefined) throw new Error(`unknown station ${id}`);
@@ -332,6 +379,37 @@ export function createFleet(options: FleetOptions): Fleet {
     },
 
     get: (id) => entries.get(id)?.station,
+
+    inject(id, request) {
+      const entry = entries.get(id);
+      if (entry === undefined) throw new Error(`unknown station ${id}`);
+      const { injection } = request;
+      const cp = entry.station.chargePoint;
+      const register = (connectorId: number) =>
+        cp.snapshot().connectors.find((c) => c.connectorId === connectorId)?.energyWh;
+      switch (injection.type) {
+        case 'reconnectStorm':
+          for (const other of entries.values()) {
+            if (other.running) other.station.transport.restartAfter(0);
+          }
+          return;
+        case 'meterReset':
+          cp.setMeterRegister(injection.connector, 0);
+          return;
+        case 'meterRollback': {
+          const current = register(injection.connector);
+          if (current === undefined)
+            throw new Error(`station ${id} has no connector ${injection.connector}`);
+          cp.setMeterRegister(injection.connector, current - injection.wh);
+          return;
+        }
+        case 'powerLoss':
+          void powerLoss(id, injection);
+          return;
+        default:
+          entry.station.injector.add(request);
+      }
+    },
 
     reconnectStorm() {
       for (const entry of entries.values()) {

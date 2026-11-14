@@ -1,0 +1,73 @@
+# Fault injection, device and power: a faulty meter, a station clock that is
+# off, malformed timestamps and power cuts, each checked on what the CSMS
+# receives.
+name: 'meterRollback: meter values go backwards'
+station:
+  id: REG-FI-METER
+  persona: regression-1.6
+  energyMultiplier: 1000
+  config: { MeterValueSampleInterval: 1 }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StartTransaction }
+  - expectConnector: { transactionId: { $exists: true } }
+  - charge: { duration: 2s }
+  - expect:
+      sent: MeterValues
+      from: step
+      save: { before: '$.payload.meterValue[0].sampledValue[0].value' }
+  - inject: { type: meterRollback, wh: 100000 }
+  - expect:
+      sent: MeterValues
+      from: step
+      payload: { meterValue: [{ sampledValue: [{ value: { $lt: '{{before}}' } }] }] }
+---
+name: 'meterReset: the register starts again from zero'
+station: { id: REG-FI-RESET, persona: regression-1.6, config: { MeterValueSampleInterval: 1 } }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StartTransaction }
+  - inject: { type: meterReset }
+  - expectConnector: { energyWh: { $lt: 10 } }
+---
+name: 'clockDrift and badTimestamp: the station reports wrong times'
+station: { id: REG-FI-CLOCK, persona: regression-1.6 }
+steps:
+  # Ten years behind.
+  - inject: { type: clockDrift, ms: -315569520000 }
+  - csmsCall:
+      action: TriggerMessage
+      payload: { requestedMessage: StatusNotification, connectorId: 1 }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { timestamp: { $regex: '^20[01]\d-' } } }
+  - clearInjections: {}
+  - inject: { type: badTimestamp }
+  - csmsCall:
+      action: TriggerMessage
+      payload: { requestedMessage: StatusNotification, connectorId: 1 }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { timestamp: not-a-timestamp } }
+---
+name: 'powerLoss: the session ends with PowerLoss after the restart'
+station: { id: REG-FI-POWER, persona: regression-1.6 }
+steps:
+  - expect: { sent: BootNotification } # the first boot; later expects find the next one
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StartTransaction }
+  - inject: { type: powerLoss, off: 1s }
+  - expectStation: { running: false, transport: stopped }
+  - expect: { sent: BootNotification, within: 15s }
+  - expect: { sent: StopTransaction, payload: { reason: PowerLoss } }
+  - expect: { sent: SecurityEventNotification, from: start, payload: { type: StartupOfTheDevice } }
+---
+name: 'powerLoss, repeated: the station boots after every cut'
+station: { id: REG-FI-CYCLES, persona: regression-1.6 }
+steps:
+  - expect: { sent: BootNotification }
+  - inject: { type: powerLoss, off: 500ms, on: 2s, times: 2 }
+  - expect: { sent: BootNotification, within: 15s }
+  - expect: { sent: BootNotification, within: 15s }
+  - expectStation: { running: true, registration: Accepted }

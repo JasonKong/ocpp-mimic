@@ -17,7 +17,9 @@ function setup(random = () => 0) {
   const toCp: string[] = [];
   const swallowed: { direction: WireDirection; text: string; injected: string }[] = [];
   const network: string[] = [];
+  const changes = { count: 0 };
   const injector = createFaultInjector({
+    onChange: () => changes.count++,
     toCsms: (text, injected) => toCsms.push({ text, ...(injected !== undefined && { injected }) }),
     toChargePoint: (text) => toCp.push(text),
     swallowed: (direction, text, injected) => swallowed.push({ direction, text, injected }),
@@ -25,7 +27,7 @@ function setup(random = () => 0) {
     goOnline: () => network.push('up'),
     random,
   });
-  return { injector, toCsms, toCp, swallowed, network };
+  return { injector, toCsms, toCp, swallowed, network, changes };
 }
 
 beforeEach(() => {
@@ -58,6 +60,8 @@ describe('fault injector', () => {
     ]);
     vi.advanceTimersByTime(4000);
     expect(h.injector.list()).toEqual([]);
+    // Added and expired: the station's snapshot is pushed both times.
+    expect(h.changes.count).toBe(2);
   });
 
   it('drops by count, action and probability, in either direction', () => {
@@ -151,6 +155,37 @@ describe('fault injector', () => {
       },
     ]);
     expect(h.toCp).toEqual([call('c3', 'Reset', { type: 'Soft' })]);
+  });
+
+  it('shifts every timestamp for clockDrift, and breaks them for badTimestamp', () => {
+    const h = setup();
+    const status = call('1', 'StatusNotification', {
+      connectorId: 1,
+      status: 'Available',
+      errorCode: 'NoError',
+      timestamp: '2026-11-14T10:00:00.000Z',
+    });
+    const meter = call('2', 'MeterValues', {
+      connectorId: 1,
+      meterValue: [{ timestamp: '2026-11-14T10:00:00.000Z', sampledValue: [{ value: '1' }] }],
+    });
+    h.injector.add(request({ type: 'clockDrift', ms: -90_000 }));
+    h.injector.outgoing(status);
+    h.injector.outgoing(meter);
+    h.injector.outgoing(call('3', 'Heartbeat'));
+    expect(h.toCsms.map((f) => [f.injected, JSON.stringify(JSON.parse(f.text)[3])])).toEqual([
+      ['clockDrift', expect.stringContaining('"timestamp":"2026-11-14T09:58:30.000Z"')],
+      ['clockDrift', expect.stringContaining('"timestamp":"2026-11-14T09:58:30.000Z"')],
+      [undefined, '{}'],
+    ]);
+    h.injector.clear();
+    h.injector.add(request({ type: 'badTimestamp' }));
+    h.injector.outgoing(call('4', 'Heartbeat'));
+    h.injector.outgoing(status);
+    h.injector.outgoing(status);
+    expect(h.toCsms.at(-2)).toMatchObject({ injected: 'badTimestamp' });
+    expect(h.toCsms.at(-2)?.text).toContain('"timestamp":"not-a-timestamp"');
+    expect(h.toCsms.at(-1)?.text).toBe(status);
   });
 
   it('flaps the connection the given number of times, and clear() brings it back up', () => {
