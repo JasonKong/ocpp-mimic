@@ -182,6 +182,41 @@ describe('engine API: bulk stations', () => {
   });
 });
 
+describe('engine metrics', () => {
+  it('serves Prometheus text at /metrics and a summary at /api/metrics', async () => {
+    const { url, api, csmsUrl } = await start();
+    await api('POST', '/api/stations/bulk', {
+      persona: 'generic-1.6',
+      csmsUrl,
+      count: 2,
+      id: 'M-{1}',
+      group: 'm',
+      rampUp: false,
+    });
+    await until(async () => (await api('GET', '/api/metrics')).body?.stations.connected === 2);
+    const summary = (await api('GET', '/api/metrics')).body;
+    expect(summary).toMatchObject({
+      stations: { connected: 2 },
+      connectors: { Available: 2 },
+      connections: { opened: 2, failed: 0 },
+      callErrors: { sent: 0, received: 0 },
+      schemaViolations: 0,
+    });
+    expect(summary?.csmsLatency.byAction.BootNotification.count).toBe(2);
+
+    const res = await fetch(`${url}/metrics`);
+    expect(res.headers.get('content-type')).toMatch(/^text\/plain; version=0\.0\.4/);
+    const text = await res.text();
+    expect(text).toContain(
+      'ocpp_mimic_stations{state="connected",persona="generic-1.6",group="m"} 2',
+    );
+    expect(text).toMatch(
+      /ocpp_mimic_csms_response_seconds_count\{action="BootNotification",persona="generic-1.6",group="m"\} 2/,
+    );
+    expect(text).toMatch(/^ocpp_mimic_work_lateness_seconds_count [0-9]+$/m);
+  });
+});
+
 describe('engine API', () => {
   it('reports health and lists personas', async () => {
     const { api } = await start();

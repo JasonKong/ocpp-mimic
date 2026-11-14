@@ -539,7 +539,7 @@ thresholds:
 | `ocpp_mimic_schema_violations_total` | counter | `direction`、action |
 | `ocpp_mimic_frames_total`、`ocpp_mimic_frame_bytes_total` | counter | `direction` |
 | `ocpp_mimic_connections_total` | counter | `outcome`（opened、failed） |
-| `ocpp_mimic_disconnects_total` | counter | `cause`（injected、stopped、remote、error） |
+| `ocpp_mimic_disconnects_total` | counter | `cause`（local、remote、error） |
 | `ocpp_mimic_transactions_total` | counter | `outcome`（started、stopped、refused） |
 | `ocpp_mimic_sessions_turned_away_total` | counter | persona、group |
 | `ocpp_mimic_energy_wh_total` | counter | persona、group |
@@ -604,6 +604,15 @@ thresholds:
 - 批量路由背后是 fleet 的 `addMany`、`startMany`、`stopMany` 和 `removeMany`；在 ramp-up 轮到之前就被停止或删除的桩保持停止。站点定义在一个 SQLite 事务里保存和删除。
 - 快照带 `tags` 和 `group`。`GET /api/stations?view=summary` 返回 `{ id, persona, group?, tags, state, registration, connectors: [{ connectorId, status }] }`，其中 `state` 是 connected、connecting（等待重连时也算）、offline（被设为离线，干净断开或半开）或 stopped。
 - 批量操作拒绝空的选择条件；`{ all: true }` 表示所有桩。批量路由位于 `/api/stations/bulk...`，所以桩不能叫 `bulk`。
+
+**已实现：指标（T46）**
+
+- `engine/src/metrics.ts` 从 Event Recorder 的记录（只解析一次、只做一次 schema 检查）、传输层事件和 RPC 超时获取数据；系统时钟报告每个定时器晚了多久。`GET /metrics` 在 engine 的端口上提供 Prometheus 文本格式；`GET /api/metrics` 以 JSON 提供汇总（计数、按 action 和总体的 CSMS 延迟 p50 / p95 / p99（毫秒）、事件循环延迟、进程 CPU 和内存）。
+- CSMS 延迟按记录的帧计算：从桩的 CALL 经过 Fault Injector 发出，到回答从 Fault Injector 出来，所以注入的 `latency` 也计算在内。
+- 断线分为 `local`（桩自己断开：停止、设为离线、注入、重置或重连）、`remote`（CSMS 关闭连接）和 `error`（没有关闭帧就断了）；出口标准里的意外断线是 `remote` 加 `error`。从未打开的连接尝试计为 `failed`。
+- 交易按 StartTransaction 的回答计为 `started` 或 `refused`，按 StopTransaction 的回答计为 `stopped`；`ocpp_mimic_energy_wh_total` 累加已结束交易的 meterStop − meterStart。连接器 gauge 使用每个连接器（不含连接器 0）最近一次 StatusNotification。
+- `ocpp_mimic_info{version}` 给出版本。`ocpp_mimic_sessions_turned_away_total` 随使用模型（T48）提供。
+- CI 用 `promtool check metrics`（prom/prometheus v3.5.0）检查运行中 engine 的输出。
 
 **文件放在哪里**
 
