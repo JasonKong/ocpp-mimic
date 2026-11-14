@@ -51,6 +51,11 @@ export interface StationDefinition {
   usage?: boolean | UsageOverride;
   /** The run's seed for the usage model's random numbers; with the id it seeds the station. */
   seed?: number;
+  /**
+   * A replay station: its charge point stays off the wire (it never sees the
+   * connection open), and a replay drives the connection through `wire`.
+   */
+  replay?: boolean;
 }
 
 export interface StateStore {

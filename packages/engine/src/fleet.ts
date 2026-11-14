@@ -104,8 +104,21 @@ export interface VirtualStation {
   readonly injector: FaultInjector;
   /** The usage model's driver, when the station has a model. */
   readonly usage?: UsageDriver;
+  /** The connection itself, for a replay station. */
+  readonly wire?: StationWire;
   readonly running: boolean;
   snapshot(): StationSnapshot;
+}
+
+/** A replay station's connection, driven directly instead of by its charge point. */
+export interface StationWire {
+  /** Sends a frame to the CSMS, through the Fault Injector. */
+  send(text: string): void;
+  /** Listens to the CSMS's frames; returns the unsubscribe function. */
+  onFrame(listener: (text: string) => void): () => void;
+  readonly open: boolean;
+  /** Resolves once the connection is open. */
+  whenOpen(timeoutMs: number): Promise<void>;
 }
 
 export interface FleetOptions {
@@ -270,6 +283,8 @@ export function createFleet(options: FleetOptions): Fleet {
       ...definition.config,
     };
     const pem = readStationCertificates(definition.security);
+    const wire =
+      definition.replay === true ? createWire((text) => injector.outgoing(text)) : undefined;
     const usage = resolveUsage(persona.definition.usage, definition.usage);
     const unknownEvs = Object.keys(usage.model?.evs ?? {}).filter(
       (name) => persona.definition.evs?.[name] === undefined,
@@ -302,8 +317,8 @@ export function createFleet(options: FleetOptions): Fleet {
       pingIntervalMs: configInt(config, 'WebSocketPingInterval') * 1000,
       ...(options.backoff !== undefined && { backoff: options.backoff }),
       onText: (text) => injector.incoming(text),
-      onOpen: () => holder.chargePoint?.connected(),
-      onClose: () => holder.chargePoint?.disconnected(),
+      onOpen: () => (wire === undefined ? holder.chargePoint?.connected() : wire.opened()),
+      onClose: () => (wire === undefined ? holder.chargePoint?.disconnected() : wire.closed()),
       onEvent: (event) => {
         if (event.type === 'error') {
           connectionError = event.message;
@@ -336,7 +351,8 @@ export function createFleet(options: FleetOptions): Fleet {
       },
       toChargePoint: (text) => {
         frame('csms-to-cp', text);
-        holder.chargePoint?.receive(text);
+        if (wire === undefined) holder.chargePoint?.receive(text);
+        else wire.deliver(text);
       },
       swallowed: (direction, text, injected) => frame(direction, text, injected, true),
       goOffline: () => transport.goOffline('clean'),
@@ -414,6 +430,7 @@ export function createFleet(options: FleetOptions): Fleet {
       transport,
       injector,
       ...(driver !== undefined && { usage: driver }),
+      ...(wire !== undefined && { wire: wire.wire }),
       get running() {
         return entries.get(definition.id)?.running ?? false;
       },
@@ -675,6 +692,51 @@ export function createFleet(options: FleetOptions): Fleet {
       await Promise.all([...entries.keys()].map((id) => stopStation(id)));
       // One final save of every station, in one transaction; nothing is written after this.
       saveMany(entries.keys());
+    },
+  };
+}
+
+/** The wire of a replay station, and the hooks the transport calls. */
+function createWire(send: (text: string) => void) {
+  const listeners = new Set<(text: string) => void>();
+  const waiting = new Set<() => void>();
+  let open = false;
+  const wire: StationWire = {
+    send: (text) => send(text),
+    onFrame(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    get open() {
+      return open;
+    },
+    whenOpen(timeoutMs) {
+      if (open) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const done = () => {
+          clearTimeout(timer);
+          waiting.delete(done);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          waiting.delete(done);
+          reject(new Error(`the connection did not open within ${timeoutMs} ms`));
+        }, timeoutMs);
+        waiting.add(done);
+      });
+    },
+  };
+  return {
+    wire,
+    opened() {
+      open = true;
+      for (const done of [...waiting]) done();
+    },
+    closed() {
+      open = false;
+    },
+    deliver(text: string) {
+      for (const listener of listeners) listener(text);
     },
   };
 }

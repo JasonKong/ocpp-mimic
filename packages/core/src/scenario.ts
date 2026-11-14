@@ -9,6 +9,7 @@ import { ChargePointErrorCodeSchema, type ChargePointErrorCode } from './ocpp16-
 import { OCPP16_CHARGE_POINT_INITIATED, OCPP16_CSMS_INITIATED, RPC_ERROR_CODES } from './ocpp16.js';
 import { durationSchema, parseDuration } from './duration.js';
 import {
+  array,
   boolean,
   integer,
   number,
@@ -49,6 +50,8 @@ export interface ScenarioStation {
   usage?: boolean | UsageOverride;
   /** Seeds the usage model's random numbers, with the station id. */
   seed?: number;
+  /** A replay station: its charge point stays off the wire, and `replay` steps drive it. */
+  replay?: boolean;
   /** Setup waits until BootNotification is Accepted. Default true. */
   waitForBoot: boolean;
 }
@@ -81,6 +84,13 @@ interface StepBase {
 interface ActionBase extends StepBase {
   /** The engine must refuse the action with a message containing this text. */
   expectError?: string;
+}
+
+/** A frame of an inline replay: when (from the first frame), which way, and the OCPP-J message. */
+export interface ReplayFrame {
+  atMs: number;
+  direction: 'cp-to-csms' | 'csms-to-cp';
+  frame: unknown[];
 }
 
 export type ScenarioStep =
@@ -158,6 +168,18 @@ export type ScenarioStep =
       request: InjectionRequest;
     })
   | (StepBase & { kind: 'clearInjections'; station?: string })
+  | (StepBase & {
+      kind: 'replay';
+      station?: string;
+      /** A log file (ocpp-mimic's JSONL format), or the frames inline. */
+      log?: string;
+      frames?: ReplayFrame[];
+      /** The log's station, when it has several. */
+      logStation?: string;
+      speed: number;
+      maxGapMs: number;
+      compare: 'status' | 'strict' | 'none';
+    })
   | (StepBase & {
       kind: 'http';
       method: HttpMethod;
@@ -252,6 +274,7 @@ const stationSchema = object(
     waitForBoot: boolean(),
     usage: union(boolean(), UsageOverrideSchema),
     seed: integer({ minimum: 0 }),
+    replay: boolean(),
     security: object(
       {},
       {
@@ -386,8 +409,22 @@ export const STEP_KINDS: readonly StepKind[] = [
   ...(Object.keys(ARGUMENTS) as StepKind[]),
   'wait',
   'inject',
+  'replay',
   ...(Object.keys(SNAPSHOT_KEYS) as StepKind[]),
 ];
+
+const replaySchema = object(
+  {},
+  {
+    station: nonEmpty,
+    log: nonEmpty,
+    logStation: nonEmpty,
+    frames: array(object({ at: durationSchema }, { sent: anyJson, received: anyJson })),
+    speed: number(),
+    maxGap: durationSchema,
+    compare: oneOf(['status', 'strict', 'none']),
+  },
+);
 
 const CSMS_STEPS = new Set<StepKind>(['csmsCall', 'csmsReply']);
 const NO_STATION_STEPS = new Set<StepKind>(['wait', 'http']);
@@ -456,6 +493,54 @@ function parseStep(
     durationSchema.check(value, at, issues);
     if (issues.length > before) return undefined;
     return { kind, ...named, durationMs: durationMs(value, 0) };
+  }
+  if (kind === 'replay') {
+    replaySchema.check(value, at, issues);
+    if (issues.length > before) return undefined;
+    const v = value as Record<string, unknown>;
+    if ((v.log === undefined) === (v.frames === undefined)) {
+      issues.push({
+        path: at,
+        errorCode: 'OccurenceConstraintViolation',
+        message: 'give log or frames',
+      });
+    }
+    if (v.speed !== undefined && !((v.speed as number) > 0)) {
+      issues.push({
+        path: `${at}.speed`,
+        errorCode: 'PropertyConstraintViolation',
+        message: 'must be above 0',
+      });
+    }
+    const frames: ReplayFrame[] = [];
+    ((v.frames as Record<string, unknown>[] | undefined) ?? []).forEach((entry, i) => {
+      const sent = entry.sent;
+      const received = entry.received;
+      const frame = sent ?? received;
+      if ((sent === undefined) === (received === undefined) || !Array.isArray(frame)) {
+        issues.push({
+          path: `${at}.frames[${i}]`,
+          errorCode: 'FormationViolation',
+          message: 'needs sent or received, with an OCPP-J message array',
+        });
+        return;
+      }
+      frames.push({
+        atMs: durationMs(entry.at, 0),
+        direction: sent !== undefined ? 'cp-to-csms' : 'csms-to-cp',
+        frame,
+      });
+    });
+    if (issues.length > before) return undefined;
+    return {
+      kind,
+      ...named,
+      ...pick(v, ['station', 'log', 'logStation'] as const),
+      ...(v.frames !== undefined && { frames }),
+      speed: (v.speed as number | undefined) ?? 1,
+      maxGapMs: durationMs(v.maxGap, 30_000),
+      compare: (v.compare as 'status' | 'strict' | 'none' | undefined) ?? 'status',
+    } as ScenarioStep;
   }
   if (kind === 'inject') {
     const parsed = parseInjection(value, at);
@@ -746,11 +831,13 @@ export function parseScenario(document: unknown, label?: string): ScenarioResult
         'security',
         'usage',
         'seed',
+        'replay',
       ] as const) as Partial<ScenarioStation>),
       ...(isObject(raw.config) && {
         config: Object.fromEntries(Object.entries(raw.config).map(([k, v]) => [k, String(v)])),
       }),
-      waitForBoot: raw.waitForBoot !== false,
+      // A replay station's charge point never boots on its own.
+      waitForBoot: raw.replay === true ? false : raw.waitForBoot !== false,
     });
   });
 
@@ -945,5 +1032,7 @@ export function stepLabel(step: ScenarioStep): string {
     }
     case 'clearInjections':
       return `${at}clearInjections`;
+    case 'replay':
+      return `${at}replay ${step.log ?? `${step.frames?.length ?? 0} frames`}${step.speed === 1 ? '' : ` ×${step.speed}`}`;
   }
 }
