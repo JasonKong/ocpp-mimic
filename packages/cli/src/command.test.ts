@@ -339,6 +339,43 @@ describe('parseCommand', () => {
     }
   });
 
+  it('parses calibrate with its options', () => {
+    expect(
+      parseCommand([
+        'calibrate',
+        'a.jsonl',
+        'b.jsonl',
+        '--station',
+        'CP1',
+        '--station',
+        'CP2',
+        '--name',
+        'vendor-x',
+        '--extends',
+        'generic-1.6',
+        '-o',
+        'p.yaml',
+        '--report',
+        'r.md',
+      ]),
+    ).toEqual({
+      kind: 'calibrate',
+      logs: ['a.jsonl', 'b.jsonl'],
+      stations: ['CP1', 'CP2'],
+      name: 'vendor-x',
+      extends: 'generic-1.6',
+      out: 'p.yaml',
+      report: 'r.md',
+    });
+    expect(parseCommand(['calibrate'])).toEqual({
+      kind: 'error',
+      message: 'calibrate needs a log file',
+    });
+    expect(parseCommand(['replay', 'l.jsonl', '--station', 'a', '--station', 'b'])).toMatchObject({
+      kind: 'error',
+    });
+  });
+
   it('prints help with no command, and the version with -v', () => {
     expect(parseCommand([])).toEqual({ kind: 'help' });
     expect(parseCommand(['-v'])).toEqual({ kind: 'version' });

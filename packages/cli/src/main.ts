@@ -8,6 +8,7 @@ import { startCsmsCommand } from './csms.js';
 import { runImportCommand } from './import.js';
 import { runLoadCommand } from './load.js';
 import { runReplayCommand } from './replay.js';
+import { runCalibrateCommand } from './calibrate.js';
 import { runCommand } from './run.js';
 
 /** The Web UI build in this monorepo (apps/web/dist), when it has been built. */
@@ -56,6 +57,9 @@ switch (command.kind) {
     break;
   case 'import':
     process.exitCode = await runImportCommand(command);
+    break;
+  case 'calibrate':
+    process.exitCode = await runCalibrateCommand(command);
     break;
   case 'replay':
     process.exitCode = await runReplayCommand(command);
