@@ -13,16 +13,29 @@ const WEB_ROOT = fileURLToPath(new URL('../../../apps/web/dist/', import.meta.ur
 
 const command = parseCommand(process.argv.slice(2));
 
-/** OTLP settings from the options, else from the standard environment variables. */
+/**
+ * OTLP settings: the standard environment variables, with `--otlp-endpoint`
+ * and `--otlp-header` taking the endpoint's and headers' place when given.
+ */
 function otlpOf(options: { otlpEndpoint?: string; otlpHeaders?: Record<string, string> }) {
-  const otlp =
-    options.otlpEndpoint !== undefined
-      ? {
-          endpoint: options.otlpEndpoint,
-          ...(options.otlpHeaders !== undefined && { headers: options.otlpHeaders }),
-        }
-      : otlpFromEnvironment(process.env);
-  return otlp === undefined ? {} : { otlp };
+  const env =
+    options.otlpEndpoint === undefined
+      ? process.env
+      : {
+          ...process.env,
+          OTEL_EXPORTER_OTLP_ENDPOINT: options.otlpEndpoint,
+          OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: undefined,
+        };
+  const otlp = otlpFromEnvironment(env);
+  if (otlp === undefined) return {};
+  return {
+    otlp: {
+      ...otlp,
+      ...(options.otlpHeaders !== undefined && {
+        headers: { ...otlp.headers, ...options.otlpHeaders },
+      }),
+    },
+  };
 }
 
 switch (command.kind) {
