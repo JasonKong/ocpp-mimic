@@ -86,12 +86,42 @@ describe('matching', () => {
     expect(matchValue({ x: null }, actual)).toEqual([]);
   });
 
+  it('supports $contains and $size on arrays, and several operators on one field', () => {
+    const actual = {
+      keys: [
+        { key: 'A', value: '1' },
+        { key: 'B', value: '2' },
+      ],
+      n: 5,
+    };
+    expect(matchValue({ keys: { $contains: { key: 'B' } } }, actual)).toEqual([]);
+    expect(matchValue({ keys: { $size: 2 } }, actual)).toEqual([]);
+    expect(
+      matchValue({ keys: { $size: { $gte: 1, $lt: 3 }, $contains: { key: 'A' } } }, actual),
+    ).toEqual([]);
+    expect(matchValue({ n: { $gt: 1, $lt: 9 } }, actual)).toEqual([]);
+    expect(matchValue({ keys: { $contains: { key: 'C' } } }, actual)).toEqual([
+      { path: '$.keys', message: 'expected an item matching {"key":"C"} among 2 items' },
+    ]);
+    expect(matchValue({ keys: { $size: { $gte: 3 } } }, actual)).toEqual([
+      { path: '$.keys.length', message: 'expected a number at least 3, found 2' },
+    ]);
+    expect(matchValue({ n: { $size: 1 } }, actual)).toEqual([
+      { path: '$.n', message: 'expected an array, found 5' },
+    ]);
+  });
+
   it('checks operators before they are used', () => {
     expect(operatorProblems({ a: { $gt: 1 }, b: [{ $regex: 'x' }] })).toEqual([]);
+    expect(operatorProblems({ a: { $size: 'x' }, b: { $contains: { c: { $gt: 'y' } } } })).toEqual([
+      { path: '$.a', message: '$size takes a whole number or comparisons such as { $gte: 1 }' },
+      { path: '$.b.$contains.c', message: '$gt takes a number' },
+    ]);
     expect(operatorProblems({ a: { $near: 1 }, b: { $gt: '1' }, c: { $regex: '(' } })).toEqual([
       {
         path: '$.a',
-        message: 'unknown operator $near (use $exists, $regex, $ne, $gt, $gte, $lt, $lte)',
+        message:
+          'unknown operator $near (use $exists, $regex, $ne, $gt, $gte, $lt, $lte, $contains, $size)',
       },
       { path: '$.b', message: '$gt takes a number' },
       { path: '$.c', message: '$regex is not a valid regular expression' },
