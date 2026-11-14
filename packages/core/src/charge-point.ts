@@ -527,9 +527,9 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
   }
 
   /** Readings outside the meter for samples: the EV's SoC. */
-  function extras(connectorId: number): { socPercent?: number } {
+  function extras(connectorId: number): { socPercent?: number; phases?: number } {
     const ev = evs.get(connectorId);
-    return ev === undefined ? {} : { socPercent: ev.state.soc };
+    return ev === undefined ? {} : { socPercent: ev.state.soc, phases: ev.state.profile.phases };
   }
 
   function setPower(connectorId: number, powerW: number): void {

@@ -74,9 +74,33 @@ export const SUPPORTED_MEASURANDS: readonly Measurand[] = [
 export interface SampleExtras {
   /** State of charge of the plugged-in EV, in percent; SoC is skipped without it. */
   socPercent?: number;
+  /**
+   * Phases the current flows on (the EV's); default 1. With 3, currents are
+   * per phase and reported once for each of L1, L2 and L3.
+   */
+  phases?: number;
 }
 
 const round1 = (value: number) => (Math.round(value * 10) / 10).toString();
+
+const PHASES = ['L1', 'L2', 'L3'] as const;
+
+function sampledValues(
+  meter: MeterState,
+  measurand: Measurand,
+  context: ReadingContext,
+  extras: SampleExtras,
+): SampledValue[] {
+  const phases = extras.phases === 3 ? 3 : 1;
+  if (measurand === 'Current.Import' || measurand === 'Current.Offered') {
+    const watts = measurand === 'Current.Import' ? meter.powerW : meter.offeredW;
+    const value = round1(watts / meter.voltageV / phases);
+    const base = { context, measurand, location: 'Outlet' as const, unit: 'A' as const, value };
+    return phases === 3 ? PHASES.map((phase) => ({ ...base, phase })) : [base];
+  }
+  const single = sampledValue(meter, measurand, context, extras);
+  return single === undefined ? [] : [single];
+}
 
 function sampledValue(
   meter: MeterState,
@@ -100,10 +124,6 @@ function sampledValue(
       return { ...base, value: round1(meter.powerW), unit: 'W' };
     case 'Power.Offered':
       return { ...base, value: round1(meter.offeredW), unit: 'W' };
-    case 'Current.Import':
-      return { ...base, value: round1(meter.powerW / meter.voltageV), unit: 'A' };
-    case 'Current.Offered':
-      return { ...base, value: round1(meter.offeredW / meter.voltageV), unit: 'A' };
     case 'Voltage':
       return { ...base, value: round1(meter.voltageV), unit: 'V' };
     default:
@@ -123,9 +143,7 @@ export function sampleMeter(
   extras: SampleExtras = {},
 ): MeterValue | undefined {
   const current = meterAt(meter, now);
-  const values = measurands
-    .map((m) => sampledValue(current, m as Measurand, context, extras))
-    .filter((v): v is SampledValue => v !== undefined);
+  const values = measurands.flatMap((m) => sampledValues(current, m as Measurand, context, extras));
   const [first, ...rest] = values;
   if (first === undefined) return undefined;
   return { timestamp: new Date(now).toISOString(), sampledValue: [first, ...rest] };
