@@ -158,27 +158,27 @@ A persona is a declarative configuration describing how a vendor or firmware beh
 
 ```yaml
 persona: vendorX-fw2.5 # example values, not real vendor data
+extends: generic-1.6 # built-in persona; only the differences are listed
 boot:
-  vendor: VendorX
-  model: AC-7
-  firmware: "2.5.0"
-features: [Core, RemoteTrigger, FirmwareManagement]
+  chargePointVendor: VendorX
+  chargePointModel: AC-7
+  firmwareVersion: "2.5.0"
+connectors: 2
+power: { offeredW: 11000 }
+features: [Core, RemoteTrigger]
 config:
   HeartbeatInterval: 60
   MeterValueSampleInterval: 300
   StopTransactionOnEVSideDisconnect: true
-flows:
-  remoteStop: # after receiving RemoteStopTransaction
-    - { send: StatusNotification, status: Finishing }
-    - { after: 200ms, reply: Accepted }
-    - { after: 800ms, send: StopTransaction, reason: Remote }
-    - { after: 6s, send: StatusNotification, status: Available }
-  reset: { soft: 30s, hard: 180s }
-quirks:
-  firmwareUpdateMinVersion: "2.5.0"
+timing:
+  startTransactionDelay: 2s
+  commandDelays: { RemoteStopTransaction: 800ms }
+  resetDowntime: { soft: 30s, hard: 3m }
 faults:
-  - { errorCode: GroundFailure, info: GND_FAULT, vendorErrorCode: E101 }
+  - { name: Ground fault, errorCode: GroundFailure, info: GND_FAULT, vendorErrorCode: E101 }
 ```
+
+Persona v1 (implemented in `packages/core/src/persona.ts`, loaded by the engine's Persona Registry) covers BootNotification fields, connectors, power, advertised feature profiles, configuration defaults, timing (durations in milliseconds or with `ms` / `s` / `m` / `h`) and a fault catalogue. `extends` merges objects key by key and replaces arrays and scalars. Scripted message flows (for example sending StatusNotification Finishing before answering RemoteStop) and vendor quirks such as a minimum firmware version for UpdateFirmware are planned for a later version.
 
 Personas come from three sources: written by hand; generated from statistics over real logs (see record & replay); or inherited from an existing persona and overridden (`extends: vendorX-fw2.5`).
 

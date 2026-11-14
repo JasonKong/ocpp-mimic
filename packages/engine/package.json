@@ -11,14 +11,16 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "personas"
   ],
   "scripts": {
     "build": "tsc -b"
   },
   "dependencies": {
     "@ocpp-mimic/core": "workspace:*",
-    "ws": "^8.22.1"
+    "ws": "^8.22.1",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/ws": "^8.18.2"
