@@ -1,0 +1,13 @@
+# How `ocpp-mimic import` reads a CSV export of a CSMS's OCPP message log
+# (docs/design.md, "M4 scale"). The column names are an example.
+format: csv
+csv: { delimiter: ',', header: true }
+fields:
+  at: { column: logged_at, time: iso, timeZone: UTC } # iso, epoch-s or epoch-ms
+  station: { column: charge_box_id }
+  # Seen from the CSMS: IN came from the charge point.
+  direction: { column: direction, values: { IN: cp-to-csms, OUT: csms-to-cp } }
+  frame: { column: message } # the OCPP-J text, e.g. [2,"id","Heartbeat",{}]
+mask:
+  paths: [] # extra payload paths to mask, e.g. DataTransfer.vendorId
+  keep: [] # paths to keep that are masked by default

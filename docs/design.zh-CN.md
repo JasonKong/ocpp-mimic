@@ -183,6 +183,8 @@ steps:
 - 统计日志里消息之间的间隔，自动生成或校准 persona。
 - 导入时自动脱敏 idTag、序列号等标识。
 
+具体设计见下文「M4 规模」（日志格式、导入映射、脱敏规则、回放和校准）。
+
 ## 场景格式 v1
 
 M2 确定（#38）。场景文件是 YAML，文件里的每个 YAML 文档（用 `---` 分隔）是一个场景。runner 逐个执行场景，每个场景用一个全新的内嵌 engine；报告里每个文件是一个 test suite，每个场景是一个 test case。`scenarios/examples/` 里的文件是参考示例。
@@ -424,6 +426,154 @@ steps:
   - expect: { sent: StatusNotification, payload: { status: Charging }, within: 15s }
 ```
 
+## M4 规模
+
+M4 确定（#97）。M4 把 ocpp-mimic 做成压测工具：批量创建、能自己充电的桩，一个给出通过 / 失败报告的压测命令，供 Prometheus 和 OpenTelemetry 使用的指标，以及录制回放（导入日志并脱敏、回放成场景、校准 persona）。扩展到多台机器仍放在 M4 之后。
+
+**出口标准**
+
+1,000 个虚拟桩在一台机器上稳定运行一小时。具体地说，`scenarios/load/m4-exit.yaml` 在私有仓库的 GitHub 托管 `ubuntu-latest` runner（2 vCPU、8 GB 内存）上通过，engine 和 `ocpp-mimic csms` 是这台 runner 上的两个进程：
+
+- 1,000 个 `load-ac-1.6` 桩（两个连接器，HeartbeatInterval 60 秒，MeterValueSampleInterval 60 秒），每秒启动 10 个。
+- 每个空闲连接器平均每小时来一次充电，每次 10 到 40 分钟（见下面的使用模型），其中 5% 是未知卡。CSMS 随机延迟 20 到 100 毫秒再回答。
+- 第 30 分钟一次重连风暴（所有连接同时断开），第 45 分钟 5% 的桩断电 30 秒。
+
+下面每一条都满足才算通过：
+
+| 指标 | 要求 |
+| --- | --- |
+| 每个桩的 BootNotification 被 Accepted | ramp-up 结束后 60 秒内 |
+| 注入以外的断线 | 没有 |
+| 每次批量事件后重新上线 | 所有桩在 120 秒内 |
+| 定时任务的延迟（心跳、电表采样、使用模型事件、重试） | p99 小于 1 秒，最大不超过 5 秒 |
+| engine 事件循环延迟 | p99 小于 100 毫秒 |
+| engine 内存 | RSS 小于 2 GB；最后 5 分钟的堆底线不高于第 10 到 15 分钟堆底线的 110% |
+| 任何一方的 CALL 超时、CALLERROR、schema 违规 | 没有 |
+| 充电次数 | 至少达到预期数量的 80%；结束时每个已开始的交易要么已停止，要么仍在进行 |
+
+CPU 占用只报告，不作为判定条件。本地可以用 `--duration 8h` 跑更久。这些数字是 M4 的目标，实际需要不同时可以调整。
+
+**批量模板**
+
+- `POST /api/stations/bulk` 按模板创建桩：`{ count, id, persona, csmsUrl, password?, security?, config?, energyMultiplier?, tags?, group?, usage?, start?, rampUp? }`。`id` 里有一个花括号计数器，其中的数字同时给出起始值和位数：`SIM-{0001}` 生成 SIM-0001、SIM-0002……；`SIM-{1001}` 从 SIM-1001 开始。要么全部创建，要么一个都不建（有重复 id 时返回 409），在 State Store 的一个事务里写入。
+- `tags`（最多 10 个，由字母、数字、`.`、`_`、`-` 组成）用于选择；`group`（一个名字）还用作指标和报告的分组。单个创建的桩也可以带这两个字段。
+- Ramp-up：`rampUp: { rate, jitter }` 每秒启动 `rate` 个桩（默认 20），每个桩在自己的时间槽内随机偏移 `jitter`（0 到 1，默认 0.5）；`rampUp: false` 表示全部同时启动。
+- 批量操作：`POST /api/stations/bulk/start`、`/stop`、`/offline`、`/online` 和 `DELETE /api/stations/bulk` 接受 `{ ids?, tag?, group? }`（start 还接受 `rampUp`）。`GET /api/stations` 可按 `tag`、`group`、`state` 过滤，`?view=summary` 只返回 id、persona、group、tags、连接状态和连接器状态。
+
+**使用模型**
+
+桩可以自己充电，由 core 的时钟和带种子的随机数生成器驱动。默认关闭，所以场景和手动操作仍是确定的。可以在 persona（`usage`）、模板或压测计划的分组里设置，也可以通过 API 按桩设置；`PATCH /api/stations/:id/usage` 加 `{ enabled }` 开关。
+
+```yaml
+usage:
+  sessionsPerHour: 1 # 每个连接器空闲时的平均到达次数（泊松到达）
+  stay: { min: 20m, max: 2h } # 司机停留多久，均匀分布
+  evs: { compact-40kwh: 3, suv-77kwh: 1 } # persona 中 evs 的权重（默认相等）
+  idTags: { prefix: LOAD-, count: 500, unknownShare: 0.05, unknownPrefix: UNKNOWN- }
+  cardFirst: 0.3 # 先刷卡再插枪的司机比例
+  stopBy: { card: 0.7, unplug: 0.3 } # 司机离开时如何结束充电
+```
+
+- 一次充电：到达时选好 EV、卡、先后顺序和停留时长；刷卡和插枪间隔 5 到 30 秒。卡被拒绝时，司机 30 到 60 秒后拔枪。停留结束时，司机再刷一次卡（StopTransaction 原因 Local），10 到 60 秒后拔枪；或者直接拔枪（EVDisconnected）。EV 提前充满就停在 SuspendedEV 等待。
+- 连接器不空闲（Unavailable、Faulted、Reserved 或仍被占用）时，到达的司机离开，并计数。远程启动不在模型里：它需要 CSMS 发起。
+- 每个桩的随机数生成器用运行的 `seed` 和桩 id 作种子，所以只要 CSMS 的回答相同，这个桩的充电过程就会重现，与其他桩无关。重启后，已插枪的连接器重新选一个停留时长。
+- 内置 CSMS 可以设置为：以未知前缀（默认 `UNKNOWN-`）开头的 idTag 回答 Invalid，这样未知卡的比例在 CSMS 端也能看到。
+
+**压测计划和报告**
+
+`ocpp-mimic load <plan.yaml>` 运行一个压测计划。示例（`scenarios/load/example.yaml`）：
+
+```yaml
+name: Two groups for an hour, with a reconnect storm
+csms: ws://127.0.0.1:9100/ocpp # 或 builtin：同进程运行，适合小规模计划
+seed: 1
+duration: 60m
+rampUp: { rate: 10, jitter: 0.5 }
+groups:
+  - name: ac
+    count: 900
+    id: LOAD-AC-{0001}
+    persona: load-ac-1.6
+    tags: [ac]
+  - name: busy
+    count: 100
+    id: LOAD-BUSY-{0001}
+    persona: load-ac-1.6
+    usage: { sessionsPerHour: 4, stay: { min: 5m, max: 20m } }
+events:
+  - at: 30m
+    reconnectStorm: {}
+  - at: 45m
+    inject: { type: powerLoss, off: 30s }
+    stations: { share: 0.05, group: ac } # 或 count；或 tag
+thresholds:
+  bootAcceptedWithin: 60s
+  recoverWithin: 120s
+  unexpectedDisconnects: 0
+  lateWork: { p99: 1s, max: 5s }
+  csmsLatency: { p95: 1s } # 按 action 和总体
+  timeouts: 0
+  callErrors: 0
+  schemaViolations: 0
+  eventLoopDelay: { p99: 100ms }
+  memory: { rss: 2GB, heapGrowth: 10% }
+  sessions: { min: 0.8 } # 占预期数量的比例
+```
+
+- 选项：`--csms`、`--duration`、`--report-dir`（写出 `report.json` 和 `report.md`）、`--junit`（每个阈值一个测试用例）、`--log-dir`（每个桩的帧，JSONL）、`--port`（同时提供 API 和 Web UI，用来观察运行）、`--metrics` 和 `--otlp-endpoint`、`--personas`、`--allow-csms`。任一阈值不满足时退出码为 1。
+- 每 10 秒输出一行进度：在线桩数、进行中的充电、CSMS 延迟 p95、错误数。报告列出每个阈值和实测值、各分组的结果、按 action 的 CSMS 延迟，以及每次批量事件和恢复时间。
+- 允许列表和场景一样生效（默认只允许本机，除非 `--allow-csms`）。只压测你自己运营或获准测试的 CSMS。
+
+**指标**
+
+在 engine 里从线路和传输层采集，所以 Event Recorder 关闭时也能用。标签只有 `action`、`persona`、`group`（以及表中列出的 `direction`、`outcome`、`code`）；没有按桩的标签，所以 1,000 个桩和一个桩的时间序列数量一样。
+
+| 指标 | 类型 | 标签 |
+| --- | --- | --- |
+| `ocpp_mimic_stations` | gauge | `state`（connected、connecting、offline、stopped）、persona、group |
+| `ocpp_mimic_connectors` | gauge | `status`（1.6 的各状态）、persona、group |
+| `ocpp_mimic_csms_response_seconds` | histogram | action、persona、group：桩的 CALL 从 socket 发出到回答从 socket 收到 |
+| `ocpp_mimic_csms_answers_total` | counter | action、`outcome`（result、error、timeout） |
+| `ocpp_mimic_calls_received_total` | counter | action：CSMS 发来的 CALL |
+| `ocpp_mimic_callerrors_total` | counter | `direction`、action、`code` |
+| `ocpp_mimic_schema_violations_total` | counter | `direction`、action |
+| `ocpp_mimic_frames_total`、`ocpp_mimic_frame_bytes_total` | counter | `direction` |
+| `ocpp_mimic_connections_total` | counter | `outcome`（opened、failed） |
+| `ocpp_mimic_disconnects_total` | counter | `cause`（injected、stopped、remote、error） |
+| `ocpp_mimic_transactions_total` | counter | `outcome`（started、stopped、refused） |
+| `ocpp_mimic_sessions_turned_away_total` | counter | persona、group |
+| `ocpp_mimic_energy_wh_total` | counter | persona、group |
+| `ocpp_mimic_offline_queue_messages` | gauge | — |
+| `ocpp_mimic_work_lateness_seconds` | histogram | —：定时任务实际执行时间减去应执行时间 |
+| `ocpp_mimic_eventloop_delay_seconds` | gauge | `quantile`（0.5、0.99、max） |
+| `process_cpu_seconds_total`、`process_resident_memory_bytes`、`nodejs_heap_size_used_bytes` | — | —（沿用常见名称，现成的看板可以直接用） |
+
+- 直方图桶（秒）：0.005、0.01、0.025、0.05、0.1、0.25、0.5、1、2.5、5、10、30。内部用误差约 2% 的对数分桶记录延迟，所以报告给出真实的 p50 / p95 / p99；Prometheus 的桶由它折算。
+- `GET /metrics` 提供 Prometheus 文本格式（不加新依赖）；`GET /api/metrics` 以 JSON 提供同样的数字和百分位，给 Web UI 和 CLI 用。
+- OpenTelemetry：同样的指标通过 OTLP/HTTP（JSON 编码）推送到 `<endpoint>/v1/metrics`，累计值，每 10 秒一次。编码由 engine 自己实现，不用官方 SDK：为一个小协议引入大量包不值得。配置用 `--otlp-endpoint` 和 `--otlp-header`，或标准的 `OTEL_EXPORTER_OTLP_ENDPOINT`、`OTEL_EXPORTER_OTLP_HEADERS`、`OTEL_METRIC_EXPORT_INTERVAL`、`OTEL_SERVICE_NAME` 和 `OTEL_RESOURCE_ATTRIBUTES`；资源属性有 `service.name`、`service.version` 和 `ocpp_mimic.run`。M4 不做 trace：1,000 个桩每帧一个 span，成本高于它比延迟直方图多提供的信息。
+
+**规模下的 engine**
+
+- **先做基准测试。** `pnpm bench --stations N --duration D` 在同一进程里运行 engine，以子进程方式运行 `ocpp-mimic csms`，每 5 秒采样：事件循环延迟、CPU、RSS 和堆、每秒帧数、连接耗时、定时任务延迟。100、500、1,000 个桩的基线，加上 CPU profile 和堆快照，决定 T45 改什么；数字记入本文档。
+- **候选优化**，基线证明有影响才保留：所有桩共用一个调度器（一个按到期时间排序的堆，背后只有一个 Node 定时器），代替每个定时器一个 Node 定时器；帧在线路上只解析一次，不再由 Fault Injector、recorder 和 core 各解析一次；状态保存合并为每秒一个 SQLite 事务；快照只在被请求时生成。
+- **Event Recorder。** 每个桩的记录上限：`serve` 1,000 条，`load` 100 条，0 表示不保留（`--record-limit`）。不保留时 schema 检查仍计入指标。
+- **事件 WebSocket。** 客户端订阅它正在显示的桩（`{ type: subscribe, stations: [...] }`）：记录和完整快照只发给订阅者，充电中的桩每 2 秒的推送也是。所有客户端都收到车队摘要（有变化的桩的 `?view=summary` 字段），最多每秒一批。
+
+**录制与回放**
+
+- **日志格式。** ocpp-mimic 的日志是 JSONL：可选的头部一行 `{ "format": "ocpp-mimic-log", "version": 1, "masked": false }`，之后每行一帧：`{ "at": "2026-11-15T09:00:00.000Z", "station": "SIM-001", "direction": "cp-to-csms", "frame": [2, "19223201", "BootNotification", { ... }] }`。不是 JSON 的帧用 `text` 代替 `frame`；注入和丢弃的帧保留标记。
+- **导出。** `GET /api/stations/:id/messages?format=jsonl`、Web UI 消息日志里的导出按钮，以及 `run` 和 `load` 的 `--log-dir`（每个桩一个文件）。仓库自己的场景录下的日志就是样本日志。
+- **导入。** `ocpp-mimic import <file>... --map <mapping.yaml> [--mask] [--salt <s> | --salt-file <f>] [-o <out.jsonl>]` 把其他日志转换成这个格式。映射文件可以读 JSONL（字段路径）、CSV（列）或普通日志行（带命名分组的正则表达式），并指定时间格式（ISO 8601、epoch 秒或毫秒、无时区时间所用的时区）和方向的取值。示例见 `scenarios/import/csv-mapping.yaml`。
+- **脱敏**，导入时默认开启，对 ocpp-mimic 自己的日志用 `--mask` 开启。稳定的假名（用盐对类别和值做 HMAC-SHA-256，截短到字段允许的长度）用于 chargeBoxId、所有位置的 `idTag` 和 `parentIdTag`、`chargePointSerialNumber`、`chargeBoxSerialNumber`、`meterSerialNumber`、`iccid` 和 `imsi`：同一个盐下，同一个值总是得到同一个假名，所以脱敏后各次充电仍能对上。删除：DataTransfer 的 `data`、URL 里的密码、`AuthorizationKey` 的值、证书和 CSR。保留：`info` 和 `vendorErrorCode`，校准需要它们。映射文件可以增加要脱敏或保留的路径。没有给盐时使用一个随机盐且不保存，因此两次导入无法关联。头部记录 `masked: true`。
+- **回放。** `replay` 场景步骤直接驱动一个桩的连接：这一步期间，桩自己的逻辑断开。它按顺序发送日志里桩发出的帧，记录的间隔除以 `speed`，并以 `maxGap` 为上限；用 `compare: status`（默认：结果还是错误、错误码，以及所有 `status` 字段）、`strict`（整个 payload，除了 `currentTime`、`transactionId`、时间戳等易变字段）或 `none` 检查 CSMS 的回答。CSMS 发来的 CALL 与日志里下一条同 action 的 CALL 对应，用日志里的回答回复；对不上的，以及日志里有但一直没来的，都会报告。时间戳移到当前时间（遵循时间加速的决定），uniqueId 重新生成，`transactionId` 映射为 CSMS 分配的新值。日志从充电中途开始时，先发一条 BootNotification。
+- `ocpp-mimic replay <log> [--station <id>] [--csms <url>] [--speed <n>] [--max-gap <d>] [--compare <mode>]` 直接运行并像 `run` 一样报告；`--write <scenario.yaml>` 改为写出场景，帧以内联形式写入，可以编辑。
+- **校准。** `ocpp-mimic calibrate <log>... [--station <id>] [--extends <persona>] [-o persona.yaml] [--report report.md]` 从同一型号的一个或多个桩推导 persona：BootNotification 字段、连接器数量、最近一次 GetConfiguration 回答中的配置、HeartbeatInterval 和 MeterValueSampleInterval（间隔的中位数）、测量项、相位和位置、供电功率、`timing`（启动交易的延迟、对每种 CSMS action 的回答延迟、重启停机时间）、故障目录（errorCode、info、vendorErrorCode）、上报 SoC 时的 EV 参数，以及使用模型（到达频率、停留时长、结束方式、未知卡）。每个值都列出样本数和离散程度；样本少于 3 个的值报告为无法推导。
+- **样本日志。** 测试使用从仓库自己的 persona 和场景录下的合成日志，规模很小，放在 `scenarios/logs/`。真实日志只来自用户自己的来源，必须脱敏，且不提交。校准测试用一个参数有明显特征的 persona 录一段日志，检查校准结果能还原这些参数。
+
+**文件放在哪里**
+
+压测计划放 `scenarios/load/`，导入映射放 `scenarios/import/`，样本日志放 `scenarios/logs/`，压测用的 persona 放 `scenarios/personas/`。测试会把 `scenarios/` 下其余所有文件当作场景校验，所以 `scenarios/examples/` 只放场景。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。
@@ -581,7 +731,7 @@ TriggerMessage 属于 Remote Trigger profile，提前到 M1 是因为很多 CSMS
 
 ![分阶段路线图：5 个阶段，4 条出口标准](images/roadmap.png)
 
-每个阶段以一条出口标准收尾，达标后再进入下一阶段。M4 的规模目标是建议值，可以按实际需求调整。
+每个阶段以一条出口标准收尾，达标后再进入下一阶段。M4 的具体阈值见「M4 规模」，可以按实际需求调整。
 
 ## 待决问题
 
@@ -589,4 +739,4 @@ TriggerMessage 属于 Remote Trigger profile，提前到 M1 是因为很多 CSMS
 - [ ] OCPP 2.0.1 何时开始：是否已有目标用户需要 2.0.1？
 - [ ] 开源还是商用：决定压测、UI、文档要做多重，以及用什么许可证。
 - [ ] 能量倍率是否默认开启，在报告里如何标注。
-- [ ] 首个 persona 参照哪一款真实桩；样本日志从哪里来（必须脱敏，且不使用客户项目的数据）。
+- [ ] 首个 persona 参照哪一款真实桩。测试用的样本日志是 ocpp-mimic 自己录下的合成日志（M4）；真实日志必须脱敏，且不使用客户项目的数据。

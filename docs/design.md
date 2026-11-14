@@ -222,6 +222,8 @@ steps:
 - Derive the intervals between messages from logs to generate or calibrate personas.
 - Mask idTags, serial numbers and other identifiers on import.
 
+Designed in "M4 scale" below (log format, import mappings, masking rules, replay and calibration).
+
 ## Scenario format v1
 
 Decided for M2 (#38). A scenario file is YAML; each YAML document in it (documents are separated by `---`) is one scenario. The runner executes scenarios one at a time, each on a fresh embedded engine, and reports a test suite per file and a test case per scenario. The files in `scenarios/examples/` are the reference examples.
@@ -463,6 +465,154 @@ steps:
   - expect: { sent: StatusNotification, payload: { status: Charging }, within: 15s }
 ```
 
+## M4 scale
+
+Decided for M4 (#97). M4 makes ocpp-mimic a load-test tool: stations created in bulk that charge on their own, a load-test command with a pass / fail report, metrics for Prometheus and OpenTelemetry, and record & replay (log import with masking, replay as a scenario, persona calibration). Scaling out to several machines stays after M4.
+
+**Exit criterion**
+
+1,000 virtual charge points run stably for an hour on one machine. Concretely, `scenarios/load/m4-exit.yaml` passes on a GitHub-hosted `ubuntu-latest` runner of a private repository (2 vCPUs, 8 GB RAM), with the engine and `ocpp-mimic csms` as two processes on that runner:
+
+- 1,000 stations of `load-ac-1.6` (two connectors, HeartbeatInterval 60 s, MeterValueSampleInterval 60 s), started at 10 stations a second.
+- Sessions arrive at each free connector once an hour on average and last 10 to 40 minutes (the usage model below), with 5 % unknown cards. The CSMS answers after a random 20 to 100 ms.
+- A reconnect storm at minute 30 (every connection dropped at once), and a 30-second power loss on 5 % of the stations at minute 45.
+
+It passes when all of these hold:
+
+| Threshold | Value |
+| --- | --- |
+| BootNotification Accepted for every station | within 60 s after the ramp-up ends |
+| Disconnects other than the injected ones | none |
+| Back online after each fleet event | every station within 120 s |
+| Scheduled work late (heartbeats, meter samples, usage events, retries) | p99 under 1 s, never over 5 s |
+| Engine event-loop delay | p99 under 100 ms |
+| Engine memory | RSS under 2 GB; the heap floor of the last 5 minutes at most 10 % above the floor of minutes 10 to 15 |
+| CALL timeouts, CALLERRORs and schema violations, either side | none |
+| Sessions | at least 80 % of the expected number; every started transaction stopped or still running at the end |
+
+CPU use is reported, not judged. The same plan runs longer locally with `--duration 8h`. These numbers are the M4 target; they can change if real needs differ.
+
+**Fleet templates**
+
+- `POST /api/stations/bulk` creates stations from a template: `{ count, id, persona, csmsUrl, password?, security?, config?, energyMultiplier?, tags?, group?, usage?, start?, rampUp? }`. The `id` holds one counter in braces whose digits give the start and the width: `SIM-{0001}` makes SIM-0001, SIM-0002, ...; `SIM-{1001}` starts at SIM-1001. It creates all of them or none (409 when an id exists), in one State Store transaction.
+- `tags` (up to 10 names of letters, digits, `.`, `_` and `-`) are for selecting; `group` (one name) also labels metrics and report lines. Stations created one by one take both too.
+- Ramp-up: `rampUp: { rate, jitter }` starts `rate` stations a second (default 20), each at a random point within `jitter` (0 to 1, default 0.5) of its slot; `rampUp: false` starts them all at once.
+- Selections: `POST /api/stations/bulk/start`, `/stop`, `/offline`, `/online` and `DELETE /api/stations/bulk` take `{ ids?, tag?, group? }` (start also `rampUp`). `GET /api/stations` filters by `tag`, `group` and `state`, and `?view=summary` returns only id, persona, group, tags, connection state and connector statuses.
+
+**Usage model**
+
+A station can charge on its own, driven by core's clock and a seeded random generator, so scenarios and manual use stay deterministic when it is off (the default). It is set in the persona (`usage`), in a template or load-plan group, or per station through the API, and `PATCH /api/stations/:id/usage` with `{ enabled }` switches it.
+
+```yaml
+usage:
+  sessionsPerHour: 1 # per connector, while it is free (Poisson arrivals)
+  stay: { min: 20m, max: 2h } # how long the driver stays, uniform
+  evs: { compact-40kwh: 3, suv-77kwh: 1 } # weights over the persona's evs (default: all equal)
+  idTags: { prefix: LOAD-, count: 500, unknownShare: 0.05, unknownPrefix: UNKNOWN- }
+  cardFirst: 0.3 # share of drivers who present the card before plugging in
+  stopBy: { card: 0.7, unplug: 0.3 } # how the driver ends the session when leaving
+```
+
+- A session: an arrival picks an EV, a card, the order and the stay; card and plug follow each other 5 to 30 s apart. A refused card makes the driver unplug 30 to 60 s later. At the end of the stay the driver presents the card again (StopTransaction reason Local) and unplugs 10 to 60 s later, or just unplugs (EVDisconnected); an EV that is full first waits in SuspendedEV.
+- A connector that is not free (Unavailable, Faulted, Reserved, or still occupied) turns arrivals away; they are counted. Remote starts are not part of the model: they need the CSMS to begin them.
+- Each station's generator is seeded from the run's `seed` and the station id, so a station repeats its sessions when the CSMS answers the same way, whatever the other stations do. After a restart the driver of a plugged-in connector picks a new stay.
+- The built-in CSMS answers Invalid for idTags starting with the unknown prefix (`UNKNOWN-` by default) when asked to, so the unknown share is visible to it.
+
+**Load plan and report**
+
+`ocpp-mimic load <plan.yaml>` runs a load plan. Example (`scenarios/load/example.yaml`):
+
+```yaml
+name: Two groups for an hour, with a reconnect storm
+csms: ws://127.0.0.1:9100/ocpp # or builtin: in-process, for small plans
+seed: 1
+duration: 60m
+rampUp: { rate: 10, jitter: 0.5 }
+groups:
+  - name: ac
+    count: 900
+    id: LOAD-AC-{0001}
+    persona: load-ac-1.6
+    tags: [ac]
+  - name: busy
+    count: 100
+    id: LOAD-BUSY-{0001}
+    persona: load-ac-1.6
+    usage: { sessionsPerHour: 4, stay: { min: 5m, max: 20m } }
+events:
+  - at: 30m
+    reconnectStorm: {}
+  - at: 45m
+    inject: { type: powerLoss, off: 30s }
+    stations: { share: 0.05, group: ac } # or count; or tag
+thresholds:
+  bootAcceptedWithin: 60s
+  recoverWithin: 120s
+  unexpectedDisconnects: 0
+  lateWork: { p99: 1s, max: 5s }
+  csmsLatency: { p95: 1s } # per action and overall
+  timeouts: 0
+  callErrors: 0
+  schemaViolations: 0
+  eventLoopDelay: { p99: 100ms }
+  memory: { rss: 2GB, heapGrowth: 10% }
+  sessions: { min: 0.8 } # share of the expected number
+```
+
+- Options: `--csms`, `--duration`, `--report-dir` (writes `report.json` and `report.md`), `--junit` (one test case per threshold), `--log-dir` (frames per station as JSONL), `--port` (also serves the API and Web UI to watch the run), `--metrics` and `--otlp-endpoint`, `--personas`, `--allow-csms`. The exit code is 1 when a threshold fails.
+- A progress line every 10 s: stations online, sessions running, CSMS latency p95, errors. The report has every threshold with its measured value, per-group lines, CSMS latency per action, and the fleet events with their recovery times.
+- The allow list applies as for scenarios (loopback unless `--allow-csms`). Only load-test a CSMS you operate or have permission to test.
+
+**Metrics**
+
+Collected in the engine from the wire and the transport, so they work with the Event Recorder off. Labels stay at `action`, `persona` and `group` (plus `direction`, `outcome`, `code` where listed); there is no station label, so 1,000 stations cost no more series than one.
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `ocpp_mimic_stations` | gauge | `state` (connected, connecting, offline, stopped), persona, group |
+| `ocpp_mimic_connectors` | gauge | `status` (the 1.6 statuses), persona, group |
+| `ocpp_mimic_csms_response_seconds` | histogram | action, persona, group: socket send of the station's CALL to socket receive of the answer |
+| `ocpp_mimic_csms_answers_total` | counter | action, `outcome` (result, error, timeout) |
+| `ocpp_mimic_calls_received_total` | counter | action: CALLs from the CSMS |
+| `ocpp_mimic_callerrors_total` | counter | `direction`, action, `code` |
+| `ocpp_mimic_schema_violations_total` | counter | `direction`, action |
+| `ocpp_mimic_frames_total`, `ocpp_mimic_frame_bytes_total` | counter | `direction` |
+| `ocpp_mimic_connections_total` | counter | `outcome` (opened, failed) |
+| `ocpp_mimic_disconnects_total` | counter | `cause` (injected, stopped, remote, error) |
+| `ocpp_mimic_transactions_total` | counter | `outcome` (started, stopped, refused) |
+| `ocpp_mimic_sessions_turned_away_total` | counter | persona, group |
+| `ocpp_mimic_energy_wh_total` | counter | persona, group |
+| `ocpp_mimic_offline_queue_messages` | gauge | — |
+| `ocpp_mimic_work_lateness_seconds` | histogram | — : scheduled work run time minus its due time |
+| `ocpp_mimic_eventloop_delay_seconds` | gauge | `quantile` (0.5, 0.99, max) |
+| `process_cpu_seconds_total`, `process_resident_memory_bytes`, `nodejs_heap_size_used_bytes` | — | — (the usual names, so existing dashboards fit) |
+
+- Histogram buckets (seconds): 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30. Internally latencies go into log-scaled buckets with about 2 % error, so reports give real p50 / p95 / p99; the Prometheus buckets are folded from them.
+- `GET /metrics` serves the Prometheus text format (no new dependency); `GET /api/metrics` the same numbers as JSON, with percentiles, for the Web UI and the CLI.
+- OpenTelemetry: the same instruments pushed over OTLP/HTTP with JSON encoding to `<endpoint>/v1/metrics`, cumulative, every 10 s. The encoding is the engine's own, not the official SDK, which would add many packages for a small protocol. `--otlp-endpoint` and `--otlp-header`, or the standard `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`; resource attributes `service.name`, `service.version` and `ocpp_mimic.run`. No traces in M4: a span per frame at 1,000 stations costs more than the latency histograms tell.
+
+**Engine at scale**
+
+- **Benchmark first.** `pnpm bench --stations N --duration D` runs the engine in-process against `ocpp-mimic csms` in a child process and samples every 5 s: event-loop delay, CPU, RSS and heap, frames a second, connect times and late work. The baseline at 100, 500 and 1,000 stations, with CPU profiles and heap snapshots, decides what T45 changes; the numbers go into this document.
+- **Candidates**, each kept only if the baseline shows it matters: one shared scheduler (a heap of due times behind one Node timer) instead of a Node timer per timer; frames parsed once on the wire instead of by the Fault Injector, the recorder and core separately; state saves batched into one SQLite transaction a second; snapshots built only when asked for.
+- **Event Recorder.** A per-station limit: 1,000 entries for `serve`, 100 for `load`, 0 to keep none (`--record-limit`). Schema checks keep counting into metrics when nothing is kept.
+- **Events WebSocket.** A client subscribes to the stations it shows (`{ type: subscribe, stations: [...] }`): records and full snapshots go only to their subscribers, and so does the 2-second push of charging stations. Everyone gets fleet summaries (the `?view=summary` fields of changed stations), batched at most once a second.
+
+**Record & replay**
+
+- **Log format.** ocpp-mimic's log is JSONL: an optional header line `{ "format": "ocpp-mimic-log", "version": 1, "masked": false }`, then one frame per line: `{ "at": "2026-11-15T09:00:00.000Z", "station": "SIM-001", "direction": "cp-to-csms", "frame": [2, "19223201", "BootNotification", { ... }] }`. A frame that is not JSON keeps its `text` instead of `frame`; injected and dropped frames keep their marks.
+- **Export.** `GET /api/stations/:id/messages?format=jsonl`, an Export button in the Web UI's message log, and `--log-dir` on `run` and `load` (one file per station). Logs of the repository's own scenarios are the sample logs.
+- **Import.** `ocpp-mimic import <file>... --map <mapping.yaml> [--mask] [--salt <s> | --salt-file <f>] [-o <out.jsonl>]` turns other logs into this format. A mapping reads JSONL (field paths), CSV (columns) or plain log lines (a regular expression with named groups), with the time format (ISO 8601, epoch seconds or milliseconds, a time zone for times without one) and the direction values. Example in `scenarios/import/csv-mapping.yaml`.
+- **Masking**, on by default for imports and with `--mask` for ocpp-mimic's own logs. Stable pseudonyms (HMAC-SHA-256 of kind and value with the salt, shortened to fit the field) for chargeBoxIds, `idTag` and `parentIdTag` wherever they occur, `chargePointSerialNumber`, `chargeBoxSerialNumber`, `meterSerialNumber`, `iccid` and `imsi`: one value always gets the same pseudonym under one salt, so sessions still line up. Removed: DataTransfer `data`, passwords in URLs, `AuthorizationKey` values, certificates and CSRs. Kept: `info` and `vendorErrorCode`, which calibration needs. A mapping can add paths to mask or keep. Without a salt a random one is used and not stored, so two imports cannot be linked. The header records `masked: true`.
+- **Replay.** A `replay` scenario step drives a station's connection directly: its charge point logic is detached for the step. It sends the log's charge-point frames in order, with the recorded gaps divided by `speed` and capped at `maxGap`, and checks the CSMS's answers with `compare: status` (default: result or error, error code, and every `status` field), `strict` (the whole payload except volatile fields such as `currentTime`, `transactionId` and timestamps) or `none`. CALLs from the CSMS are matched to the next recorded CALL of the same action and answered with its recorded answer; unmatched ones and recorded ones that never come are reported. Timestamps move to the present (the time-acceleration decision), uniqueIds are fresh, and `transactionId`s map to the ones the CSMS assigns. A log that starts mid-session gets a BootNotification first.
+- `ocpp-mimic replay <log> [--station <id>] [--csms <url>] [--speed <n>] [--max-gap <d>] [--compare <mode>]` runs it and reports like `run`; `--write <scenario.yaml>` writes the scenario instead, with the frames inline so they can be edited.
+- **Calibration.** `ocpp-mimic calibrate <log>... [--station <id>] [--extends <persona>] [-o persona.yaml] [--report report.md]` derives a persona from one or more stations of the same model: BootNotification fields, connector count, configuration from the latest GetConfiguration answer, HeartbeatInterval and MeterValueSampleInterval (median gaps), measurands, phases and locations, offered power, `timing` (start-transaction delay, answer delay per CSMS action, reset downtime), the fault catalogue (errorCode, info, vendorErrorCode), EV profiles where SoC is reported, and the usage model (arrivals, stays, how sessions end, unknown cards). Every value lists its sample count and spread; a value with fewer than 3 samples is reported as not derived.
+- **Sample logs.** Tests use synthetic logs recorded from the repository's own personas and scenarios, kept small under `scenarios/logs/`. Real logs come only from the user's own sources, are masked, and are not committed. The calibration test records a log from a persona with distinctive values and checks that calibration gives those values back.
+
+**Where the files go**
+
+Load plans go in `scenarios/load/`, import mappings in `scenarios/import/`, sample logs in `scenarios/logs/`, and load personas in `scenarios/personas/`. The tests validate every other file under `scenarios/` as a scenario, so `scenarios/examples/` stays scenario-only.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
@@ -471,7 +621,7 @@ The UI is one client of the engine API; everything it does can also be done thro
 - Sequence view: messages between charge point and CSMS over time, with timeouts and errors marked.
 - State machine view: the current state of each connector, highlighted live.
 - Fleet overview: online / offline / faulted counts, grouped by persona or tag.
-- Metrics: CSMS response latency (p50 / p95), timeout rate, error rate and schema violations, exported via Prometheus or OpenTelemetry.
+- Metrics: CSMS response latency (p50 / p95), timeout rate, error rate and schema violations, exported via Prometheus or OpenTelemetry (catalogue in "M4 scale").
 
 ## Time acceleration
 
@@ -627,12 +777,12 @@ flowchart TB
   M3["<b>M3 · Feature coverage</b><br/>Fault injection; Firmware Management, Smart Charging<br/>Reservation, LocalAuthList; 1.6 Security Whitepaper: Security Profiles 1–3"]
   G3{{"Exit: all 1.6 feature scenarios pass against SteVe"}}
   M4["<b>M4 · Scale</b><br/>Fleet / load-test mode; metrics export: Prometheus / OpenTelemetry<br/>Log import, replay, persona calibration"]
-  G4{{"Exit (proposed): 1,000 virtual charge points run stably on one machine"}}
+  G4{{"Exit: 1,000 virtual charge points run stably for an hour on one 2-vCPU machine"}}
   M5["<b>M5 · OCPP 2.0.1</b><br/>OCPP 2.0.1 adapter: Device Model, TransactionEvent<br/>CitrineOS as the test target"]
   M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5
 ```
 
-Each phase ends with an exit criterion; the next phase starts once it is met. The M4 scale target is a proposal and can be adjusted to real needs.
+Each phase ends with an exit criterion; the next phase starts once it is met. The M4 thresholds are set in "M4 scale" and can be adjusted to real needs.
 
 ## Open questions
 
@@ -641,4 +791,4 @@ Each phase ends with an exit criterion; the next phase starts once it is met. Th
 - [ ] Open source or commercial: decides how much load testing, UI and documentation to build, and which license to use.
 - [x] Ship OCA's OCPP 1.6 JSON Schema files: yes, unchanged and with attribution, as a second check next to core's own definitions (#18).
 - [ ] Whether the energy multiplier is on by default, and how reports mark it.
-- [ ] Which real charge point the first persona is modelled on, and where sample logs come from (they must be anonymised and must not use client project data).
+- [ ] Which real charge point the first persona is modelled on. Sample logs for tests are synthetic, recorded from ocpp-mimic itself (M4); real logs must be masked and must not use client project data.

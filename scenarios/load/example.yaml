@@ -1,0 +1,35 @@
+# A load plan for `ocpp-mimic load` (docs/design.md, "M4 scale").
+name: Two groups for an hour, with a reconnect storm
+csms: ws://127.0.0.1:9100/ocpp # or builtin: in-process, for small plans
+seed: 1
+duration: 60m
+rampUp: { rate: 10, jitter: 0.5 }
+groups:
+  - name: ac
+    count: 900
+    id: LOAD-AC-{0001}
+    persona: load-ac-1.6
+    tags: [ac]
+  - name: busy
+    count: 100
+    id: LOAD-BUSY-{0001}
+    persona: load-ac-1.6
+    usage: { sessionsPerHour: 4, stay: { min: 5m, max: 20m } }
+events:
+  - at: 30m
+    reconnectStorm: {}
+  - at: 45m
+    inject: { type: powerLoss, off: 30s }
+    stations: { share: 0.05, group: ac } # or count; or tag
+thresholds:
+  bootAcceptedWithin: 60s
+  recoverWithin: 120s
+  unexpectedDisconnects: 0
+  lateWork: { p99: 1s, max: 5s }
+  csmsLatency: { p95: 1s } # per action and overall
+  timeouts: 0
+  callErrors: 0
+  schemaViolations: 0
+  eventLoopDelay: { p99: 100ms }
+  memory: { rss: 2GB, heapGrowth: 10% }
+  sessions: { min: 0.8 } # share of the expected number

@@ -48,8 +48,11 @@ describe('scenario files', () => {
 
   it('validates every scenario file in the repository', async () => {
     const root = fileURLToPath(new URL('../../../../scenarios/', import.meta.url));
-    // scenarios/personas holds personas, not scenarios.
-    const files = (await findScenarioFiles([root])).filter((f) => !f.includes('/personas/'));
+    // These hold personas, load plans, import mappings and logs, not scenarios.
+    const other = ['/personas/', '/load/', '/import/', '/logs/'];
+    const files = (await findScenarioFiles([root])).filter(
+      (f) => !other.some((dir) => f.slice(root.length - 1).startsWith(dir)),
+    );
     expect(files.length).toBeGreaterThan(6);
     const problems: string[] = [];
     for (const file of files) {
