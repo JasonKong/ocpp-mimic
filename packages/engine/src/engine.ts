@@ -9,6 +9,7 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer } from 'ws';
 import { handleApi, sendJson, type ApiEvent } from './api.js';
 import { createFleet, type Fleet } from './fleet.js';
+import { loadOcaSchemas } from './oca-schemas.js';
 import { BUILT_IN_PERSONAS_DIR, loadPersonas, type PersonaRegistry } from './personas.js';
 import { createRecorder, type Recorder } from './recorder.js';
 import { openStateStore, type StateStore } from './state-store.js';
@@ -44,7 +45,11 @@ export interface Engine {
 
 export function createEngine(options: EngineOptions = {}): Engine {
   const { port = DEFAULT_PORT, host = '127.0.0.1' } = options;
-  const recorder = createRecorder();
+  // Every frame is also checked against OCA's official schemas; problems show up on the record.
+  const oca = loadOcaSchemas();
+  const recorder = createRecorder({
+    check: (action, kind, payload) => oca.check(action, kind, payload),
+  });
   let fleet: Fleet | undefined;
   let personas: PersonaRegistry | undefined;
   let store: StateStore | undefined;

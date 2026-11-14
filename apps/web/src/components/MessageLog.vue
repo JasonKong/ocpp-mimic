@@ -79,6 +79,12 @@ function pretty(record: FrameRecord): string {
             messageTypeLabel(entry)
           }}</span>
           <span class="action">{{ entry.action ?? '?' }}</span>
+          <span
+            v-if="entry.schemaErrors"
+            class="schema"
+            :title="`Breaks the official OCA schema:\n${entry.schemaErrors.join('\n')}`"
+            >OCA schema</span
+          >
           <span class="summary">{{ summarize(entry) }}</span>
           <button class="link" @click="open = entry">Raw</button>
         </template>
@@ -92,6 +98,9 @@ function pretty(record: FrameRecord): string {
           <strong>{{ open.action }} · {{ messageTypeLabel(open) }} · {{ open.uniqueId }}</strong>
           <button @click="open = undefined">Close</button>
         </header>
+        <ul v-if="open.schemaErrors" class="schema-errors">
+          <li v-for="problem in open.schemaErrors" :key="problem">{{ problem }}</li>
+        </ul>
         <pre>{{ pretty(open) }}</pre>
       </div>
     </div>
@@ -180,6 +189,22 @@ li.log {
 .action {
   width: 170px;
   font-weight: 600;
+}
+.schema {
+  color: var(--bad);
+  font-weight: 600;
+}
+.schema-errors {
+  margin: 0;
+  padding: 8px 8px 8px 24px;
+  color: var(--bad);
+  font-size: 12px;
+}
+.schema-errors li {
+  display: list-item;
+  border: none;
+  padding: 0;
+  white-space: normal;
 }
 .summary {
   flex: 1;

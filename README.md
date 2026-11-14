@@ -31,3 +31,7 @@ An OCPP charge point simulator: a headless engine runs many virtual charge point
 | `packages/cli`    | The `ocpp-mimic` command: starts the engine, and later runs scenarios                                                                                                                     |
 | `apps/web`        | Vue 3 Web UI; calls only the engine API and holds no simulation logic                                                                                                                     |
 | `docs`            | Design documents                                                                                                                                                                          |
+
+## Third-party material
+
+`packages/engine/oca-schemas/ocpp16/` contains the Open Charge Alliance's official OCPP 1.6 JSON Schema files, © 2010 – 2025 Open Charge Alliance, shipped unchanged under the [Creative Commons Attribution-NoDerivatives 4.0 International licence](https://creativecommons.org/licenses/by-nd/4.0/legalcode). See [its README](packages/engine/oca-schemas/README.md) for the source and the rules for keeping them unchanged.

@@ -18,6 +18,11 @@ export interface FrameRecord {
   uniqueId?: string;
   action?: string;
   payload?: unknown;
+  /**
+   * Problems the official OCA JSON Schema found in the payload. Absent when
+   * it passed, or when no schema applies (CALLERROR, unknown action).
+   */
+  schemaErrors?: string[];
   text: string;
 }
 
@@ -47,7 +52,15 @@ export interface Recorder {
   subscribe(listener: (entry: RecordEntry) => void): () => void;
 }
 
-export function createRecorder(options: { limit?: number; now?: () => number } = {}): Recorder {
+export interface RecorderOptions {
+  /** Entries kept per station. Default 1000. */
+  limit?: number;
+  now?: () => number;
+  /** Checks a CALL or CALLRESULT payload; non-empty problems are kept as `schemaErrors`. */
+  check?: (action: string, kind: 'request' | 'response', payload: unknown) => string[] | undefined;
+}
+
+export function createRecorder(options: RecorderOptions = {}): Recorder {
   const limit = options.limit ?? 1000;
   const now = options.now ?? Date.now;
   const buffers = new Map<string, RecordEntry[]>();
@@ -55,6 +68,16 @@ export function createRecorder(options: { limit?: number; now?: () => number } =
   const actions = new Map<string, string>();
   const listeners = new Set<(entry: RecordEntry) => void>();
   let seq = 0;
+
+  function schemaErrors(
+    action: string | undefined,
+    kind: 'request' | 'response',
+    payload: unknown,
+  ) {
+    if (action === undefined || options.check === undefined) return {};
+    const problems = options.check(action, kind, payload);
+    return problems !== undefined && problems.length > 0 ? { schemaErrors: problems } : {};
+  }
 
   function push(entry: RecordEntry): void {
     const buffer = buffers.get(entry.stationId) ?? [];
@@ -87,6 +110,7 @@ export function createRecorder(options: { limit?: number; now?: () => number } =
             uniqueId: frame.id,
             action: frame.action,
             payload: frame.payload,
+            ...schemaErrors(frame.action, 'request', frame.payload),
           };
         } else {
           const action = actions.get(key);
@@ -104,6 +128,8 @@ export function createRecorder(options: { limit?: number; now?: () => number } =
                     errorDescription: frame.errorDescription,
                     errorDetails: frame.errorDetails,
                   },
+            ...(frame.type === MessageTypeId.CallResult &&
+              schemaErrors(action, 'response', frame.payload)),
           };
         }
       }

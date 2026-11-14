@@ -4,3 +4,5 @@ pnpm-lock.yaml
 *.tsbuildinfo
 # exported from the design doc; keep it byte-for-byte as exported
 docs/
+# OCA's official schemas are shipped unchanged (CC BY-ND 4.0); never reformat them
+packages/engine/oca-schemas/

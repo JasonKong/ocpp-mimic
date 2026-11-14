@@ -143,6 +143,10 @@ describe('engine API', () => {
       'cp-to-csms:2:StopTransaction',
       'csms-to-cp:3:StopTransaction',
     ]);
+    // Every frame of the session passes OCA's official schemas too.
+    expect(
+      (messages.body?.entries as Array<{ schemaErrors?: string[] }>).filter((e) => e.schemaErrors),
+    ).toEqual([]);
     const stops = await api('GET', '/api/stations/SIM-1/messages?action=StopTransaction&limit=1');
     expect(stops.body?.entries).toMatchObject([{ action: 'StopTransaction', messageType: 3 }]);
   });
@@ -182,6 +186,21 @@ describe('engine API', () => {
     );
     await api('POST', '/api/stations/SIM-1/online');
     await csms!.waitForConnection('SIM-1', 3000, connection);
+  });
+
+  it('flags frames that break the official OCA schema', async () => {
+    const { api, csmsUrl } = await start();
+    await addStation(api, csmsUrl);
+    const connection = await csms!.waitForConnection('SIM-1');
+
+    const answer = await connection.call('RemoteStartTransaction', { idTag: 'REMOTE', bogus: 1 });
+    expect(answer.type).toBe(4);
+    const calls = await api('GET', '/api/stations/SIM-1/messages?action=RemoteStartTransaction');
+    expect(calls.body?.entries).toMatchObject([
+      { messageType: 2, schemaErrors: ['$: must NOT have additional properties (bogus)'] },
+      { messageType: 4 },
+    ]);
+    expect(calls.body?.entries[1].schemaErrors).toBeUndefined();
   });
 
   it('flips test switches and refuses to unplug a locked cable', async () => {
