@@ -70,11 +70,21 @@ export interface ChargePointTiming {
   startTransactionDelayMs: number;
   /** Delay between answering a CSMS command (RemoteStop, Reset, Unlock, Trigger) and acting on it. */
   actionDelayMs: number;
+  /** Per-command overrides of actionDelayMs. */
+  actionDelaysMs?: Partial<Record<DelayedCommand, number>>;
   /** How long the charge point stays offline during a reset, by reset type. */
   resetDowntimeMs: { Soft: number; Hard: number };
   /** Retry delay for BootNotification when the CSMS gives no usable interval. */
   bootRetryMs: number;
 }
+
+/** CSMS commands the charge point answers first and acts on after a delay. */
+export type DelayedCommand =
+  | 'RemoteStartTransaction'
+  | 'RemoteStopTransaction'
+  | 'Reset'
+  | 'UnlockConnector'
+  | 'TriggerMessage';
 
 export const DEFAULT_TIMING: ChargePointTiming = {
   startTransactionDelayMs: 500,
@@ -188,6 +198,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
   const online = () => rpc !== undefined && registration === 'Accepted';
   const now = () => clock.now();
   const later = (delayMs: number, fn: () => unknown) => clock.setTimer(delayMs, () => void fn());
+  const delayFor = (command: DelayedCommand) =>
+    timing.actionDelaysMs?.[command] ?? timing.actionDelayMs;
   const stopTimer = (timer: TimerHandle | undefined) => {
     if (timer !== undefined) clock.clearTimer(timer);
   };
@@ -588,7 +600,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       ) {
         return { status: 'Rejected' };
       }
-      later(timing.actionDelayMs, async () => {
+      later(delayFor('RemoteStartTransaction'), async () => {
         if (
           configBool(config, 'AuthorizeRemoteTxRequests') &&
           !(await authorizeWithCsms(request.idTag))
@@ -606,12 +618,12 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         ([, transaction]) => transaction.transactionId === request.transactionId,
       )?.[0];
       if (connectorId === undefined) return { status: 'Rejected' };
-      later(timing.actionDelayMs, () => endTransaction(connectorId, 'Remote'));
+      later(delayFor('RemoteStopTransaction'), () => endTransaction(connectorId, 'Remote'));
       return { status: 'Accepted' };
     },
 
     Reset(request) {
-      later(timing.actionDelayMs, () => resetChargePoint(request.type));
+      later(delayFor('Reset'), () => resetChargePoint(request.type));
       return { status: 'Accepted' };
     },
 
@@ -630,13 +642,13 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
           : [connectorId];
       switch (request.requestedMessage) {
         case 'BootNotification':
-          later(timing.actionDelayMs, () => sendIfOnline('BootNotification', options.boot));
+          later(delayFor('TriggerMessage'), () => sendIfOnline('BootNotification', options.boot));
           return { status: 'Accepted' };
         case 'Heartbeat':
-          later(timing.actionDelayMs, () => sendIfOnline('Heartbeat', {}));
+          later(delayFor('TriggerMessage'), () => sendIfOnline('Heartbeat', {}));
           return { status: 'Accepted' };
         case 'StatusNotification':
-          later(timing.actionDelayMs, () => {
+          later(delayFor('TriggerMessage'), () => {
             const timestamp = new Date(now()).toISOString();
             if (connectorId === undefined || connectorId === 0) {
               void sendIfOnline('StatusNotification', {
@@ -658,7 +670,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
           });
           return { status: 'Accepted' };
         case 'MeterValues':
-          later(timing.actionDelayMs, () =>
+          later(delayFor('TriggerMessage'), () =>
             targets.forEach((id) => sendMeterValues(id, 'MeterValuesSampledData', 'Trigger')),
           );
           return { status: 'Accepted' };
@@ -671,7 +683,9 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       if (findConnector(station, request.connectorId) === undefined)
         return { status: 'NotSupported' };
       if (transactions.has(request.connectorId)) {
-        later(timing.actionDelayMs, () => endTransaction(request.connectorId, 'UnlockCommand'));
+        later(delayFor('UnlockConnector'), () =>
+          endTransaction(request.connectorId, 'UnlockCommand'),
+        );
       }
       applyDevice({ type: 'Unlock', connectorId: request.connectorId });
       return { status: 'Unlocked' } satisfies ResponseOf<'UnlockConnector'>;

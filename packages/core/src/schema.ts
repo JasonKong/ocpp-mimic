@@ -205,3 +205,37 @@ export function object<R extends Shape, O extends Shape = Record<never, never>>(
     },
   };
 }
+
+/** A JSON object whose every property matches `value` (any property names). */
+export function record<T>(value: Schema<T>): Schema<Record<string, T>> {
+  return {
+    check(input, path, issues) {
+      if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+        issues.push(typeIssue(path, 'object', input));
+        return;
+      }
+      for (const [key, item] of Object.entries(input as Record<string, unknown>)) {
+        value.check(item, `${path}.${key}`, issues);
+      }
+    },
+  };
+}
+
+/** A value matching at least one of `schemas`. */
+export function union<S extends readonly Schema<unknown>[]>(
+  ...schemas: S
+): Schema<Infer<S[number]>> {
+  return {
+    check(value, path, issues) {
+      const attempts = schemas.map((schema) => {
+        const found: ValidationIssue[] = [];
+        schema.check(value, path, found);
+        return found;
+      });
+      if (attempts.some((found) => found.length === 0)) return;
+      // Report the alternative that got furthest (fewest problems).
+      const best = attempts.reduce((a, b) => (b.length < a.length ? b : a));
+      issues.push(...best);
+    },
+  };
+}

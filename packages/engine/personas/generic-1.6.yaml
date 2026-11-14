@@ -1,0 +1,28 @@
+# A plain OCPP 1.6J AC charge point with spec-default behaviour.
+# Other personas can `extends: generic-1.6` and override only what differs.
+persona: generic-1.6
+description: Generic OCPP 1.6J AC charge point
+boot:
+  chargePointVendor: ocpp-mimic
+  chargePointModel: Generic-AC
+  firmwareVersion: 0.0.0
+connectors: 1
+power:
+  offeredW: 7360
+features: [Core, RemoteTrigger]
+config:
+  HeartbeatInterval: 300
+  MeterValueSampleInterval: 60
+  ConnectionTimeOut: 60
+timing:
+  startTransactionDelay: 500ms
+  actionDelay: 100ms
+  resetDowntime:
+    soft: 30s
+    hard: 3m
+  bootRetry: 60s
+faults:
+  - { name: Ground fault, errorCode: GroundFailure }
+  - { name: Over temperature, errorCode: HighTemperature }
+  - { name: Connector lock failure, errorCode: ConnectorLockFailure }
+  - { name: Power meter failure, errorCode: PowerMeterFailure }

@@ -3,6 +3,7 @@ import { createChargePoint, type ChargePointTiming } from './charge-point.js';
 import { ManualClock } from './clock.js';
 import { sequentialIds } from './ids.js';
 import { parseFrame, type CallFrame, type Frame, type JsonObject } from './ocppj.js';
+import { resolvePersonas } from './persona.js';
 
 const T0 = Date.parse('2026-11-14T10:00:00Z');
 const BOOT = { chargePointVendor: 'VendorX', chargePointModel: 'AC-7' };
@@ -547,5 +548,36 @@ describe('offline behaviour', () => {
     h.cp.plugIn(1);
     await h.settle();
     expect(h.actions()).toEqual(['BootNotification']);
+  });
+});
+
+describe('personas', () => {
+  it('the same remote stop runs with different timing under two personas', async () => {
+    const { personas } = resolvePersonas(
+      [
+        { delay: '100ms', id: 'quick' },
+        { delay: '800ms', id: 'slow' },
+      ].map(({ delay, id }) => ({
+        source: `${id}.yaml`,
+        data: {
+          persona: id,
+          boot: BOOT,
+          connectors: 2,
+          timing: { commandDelays: { RemoteStopTransaction: delay } },
+        },
+      })),
+    );
+    const stopTimes: string[] = [];
+    for (const id of ['quick', 'slow']) {
+      const h = setup({ timing: personas.get(id)?.options.timing ?? {} });
+      await h.boot();
+      const transactionId = await h.startSession();
+      await h.csmsCall('RemoteStopTransaction', { transactionId });
+      await h.advance(100);
+      await h.advance(700);
+      stopTimes.push(String(h.lastCall('StopTransaction')?.payload.timestamp));
+    }
+    // Both sessions start at the same clock time, so the stop times differ by 700 ms.
+    expect(stopTimes.map((t) => Date.parse(t) - Date.parse(stopTimes[0] ?? ''))).toEqual([0, 700]);
   });
 });
