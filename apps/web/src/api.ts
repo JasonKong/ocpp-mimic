@@ -15,6 +15,12 @@ export interface ConnectorSnapshot {
   powerW: number;
 }
 
+/** Test switches; see ChargePointBehaviour in core. */
+export interface Behaviour {
+  refuseRemoteStart: boolean;
+  cableLock: boolean;
+}
+
 export interface StationSnapshot {
   id: string;
   persona: string;
@@ -27,6 +33,7 @@ export interface StationSnapshot {
   connectors: ConnectorSnapshot[];
   config: Record<string, string>;
   queuedMessages: number;
+  behaviour: Behaviour;
 }
 
 export interface FaultInfo {
@@ -108,6 +115,8 @@ export const api = {
   offline: (id: string, mode: 'clean' | 'half-open') =>
     request<StationSnapshot>('POST', `${station(id)}/offline`, { mode }),
   online: (id: string) => request<StationSnapshot>('POST', `${station(id)}/online`),
+  setBehaviour: (id: string, changes: Partial<Behaviour>) =>
+    request<StationSnapshot>('PATCH', `${station(id)}/behaviour`, changes),
   plug: (id: string, c: number) => request<StationSnapshot>('POST', `${connector(id, c)}/plug`),
   unplug: (id: string, c: number) => request<StationSnapshot>('POST', `${connector(id, c)}/unplug`),
   idTag: (id: string, c: number, idTag: string) =>

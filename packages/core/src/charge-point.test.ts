@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createChargePoint,
+  type ChargePointBehaviour,
   type ChargePointTiming,
   type PersistedChargePoint,
 } from './charge-point.js';
@@ -24,6 +25,7 @@ interface SetupOptions {
   csms?: Record<string, Responder>;
   config?: Record<string, string>;
   timing?: Partial<ChargePointTiming>;
+  behaviour?: Partial<ChargePointBehaviour>;
 }
 
 /**
@@ -64,6 +66,7 @@ function setup(options: SetupOptions = {}) {
     },
     restart: (downtimeMs) => restarts.push(downtimeMs),
     ...(options.restore !== undefined && { restore: options.restore }),
+    ...(options.behaviour !== undefined && { behaviour: options.behaviour }),
   });
 
   let answered = 0;
@@ -665,7 +668,83 @@ describe('transaction message retries', () => {
   });
 });
 
+describe('test switches', () => {
+  it('refuses remote starts while the switch is on', async () => {
+    const h = setup({ behaviour: { refuseRemoteStart: true } });
+    await h.boot();
+    expect(await h.csmsCall('RemoteStartTransaction', { idTag: 'REMOTE', connectorId: 1 })).toEqual(
+      { status: 'Rejected' },
+    );
+    await h.advance(1000);
+    expect(h.calls('StartTransaction')).toHaveLength(0);
+
+    h.cp.setBehaviour({ refuseRemoteStart: false });
+    expect(await h.csmsCall('RemoteStartTransaction', { idTag: 'REMOTE', connectorId: 1 })).toEqual(
+      { status: 'Accepted' },
+    );
+  });
+
+  it('locks the cable during a transaction and will not unplug it', async () => {
+    const h = setup({ behaviour: { cableLock: true } });
+    await h.boot();
+    await h.startSession(1);
+    expect(h.cp.snapshot().connectors[0]).toMatchObject({ locked: true, status: 'Charging' });
+    expect(h.cp.snapshot().connectors[1]).toMatchObject({ locked: false });
+
+    expect(h.cp.unplug(1)).toBe('locked');
+    await h.settle();
+    expect(h.calls('StopTransaction')).toHaveLength(0);
+    expect(h.cp.snapshot().connectors[0]).toMatchObject({ plugged: true, status: 'Charging' });
+
+    // Ending the transaction releases the lock.
+    expect(await h.cp.presentIdTag(1, 'TAG')).toBe('stopping');
+    await h.settle();
+    expect(h.cp.snapshot().connectors[0]).toMatchObject({ locked: false, status: 'Finishing' });
+    expect(h.cp.unplug(1)).toBe('unplugged');
+  });
+
+  it('releases the lock on UnlockConnector', async () => {
+    const h = setup({ behaviour: { cableLock: true } });
+    await h.boot();
+    await h.startSession(1);
+    expect(await h.csmsCall('UnlockConnector', { connectorId: 1 })).toEqual({ status: 'Unlocked' });
+    expect(h.cp.snapshot().connectors[0]?.locked).toBe(false);
+    await h.advance(100);
+    expect(h.lastCall('StopTransaction')?.payload).toMatchObject({ reason: 'UnlockCommand' });
+    expect(h.cp.unplug(1)).toBe('unplugged');
+  });
+
+  it('applies the cable lock switch to running transactions', async () => {
+    const h = setup();
+    await h.boot();
+    await h.startSession(1);
+    expect(h.cp.snapshot().connectors[0]?.locked).toBe(false);
+    h.cp.setBehaviour({ cableLock: true });
+    expect(h.cp.snapshot().connectors[0]?.locked).toBe(true);
+    expect(h.cp.snapshot().behaviour).toEqual({ refuseRemoteStart: false, cableLock: true });
+    h.cp.setBehaviour({ cableLock: false });
+    expect(h.cp.snapshot().connectors[0]?.locked).toBe(false);
+    expect(h.cp.unplug(1)).toBe('unplugged');
+  });
+});
+
 describe('persistence across restarts', () => {
+  it('keeps the test switches, and defaults them for states saved without any', async () => {
+    const before = setup();
+    before.cp.setBehaviour({ refuseRemoteStart: true });
+    const saved = before.cp.persistentState();
+    expect(saved.behaviour).toEqual({ refuseRemoteStart: true, cableLock: false });
+    expect(setup({ restore: saved }).cp.snapshot().behaviour).toEqual({
+      refuseRemoteStart: true,
+      cableLock: false,
+    });
+
+    const { behaviour: _dropped, ...older } = saved;
+    expect(
+      setup({ restore: older, behaviour: { cableLock: true } }).cp.snapshot().behaviour,
+    ).toEqual({ refuseRemoteStart: false, cableLock: true });
+  });
+
   it('ends a running transaction with PowerLoss at the time of the last save', async () => {
     const before = setup();
     await before.boot();

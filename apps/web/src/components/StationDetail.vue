@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { reactive } from 'vue';
-import type { ConnectorSnapshot, FaultInfo, PersonaInfo, StationSnapshot } from '../api.js';
+import type {
+  Behaviour,
+  ConnectorSnapshot,
+  FaultInfo,
+  PersonaInfo,
+  StationSnapshot,
+} from '../api.js';
 import { formatEnergy, formatPower } from '../format.js';
 
 const props = defineProps<{
@@ -31,6 +37,10 @@ function presentCard(connector: ConnectorSnapshot) {
 function raiseFault(connector: ConnectorSnapshot) {
   const fault = faultCatalogue()[faults[connector.connectorId] ?? 0];
   if (fault !== undefined) emit('action', 'fault', connector.connectorId, fault);
+}
+
+function toggle(name: keyof Behaviour, event: Event) {
+  emit('action', 'behaviour', undefined, { [name]: (event.target as HTMLInputElement).checked });
 }
 
 function statusTone(status: string): string {
@@ -80,6 +90,25 @@ function statusTone(status: string): string {
       </div>
     </header>
 
+    <div class="switches">
+      <label>
+        <input
+          type="checkbox"
+          :checked="station.behaviour.refuseRemoteStart"
+          @change="toggle('refuseRemoteStart', $event)"
+        />
+        Refuse remote starts
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          :checked="station.behaviour.cableLock"
+          @change="toggle('cableLock', $event)"
+        />
+        Lock the cable while charging
+      </label>
+    </div>
+
     <div class="connectors">
       <article
         v-for="connector in station.connectors"
@@ -88,7 +117,12 @@ function statusTone(status: string): string {
       >
         <div class="top">
           <h3>Connector {{ connector.connectorId }}</h3>
-          <span class="status" :class="statusTone(connector.status)">{{ connector.status }}</span>
+          <span>
+            <span v-if="connector.locked" class="status muted" title="The cable is locked">
+              Locked
+            </span>
+            <span class="status" :class="statusTone(connector.status)">{{ connector.status }}</span>
+          </span>
         </div>
         <dl>
           <div>
@@ -117,7 +151,14 @@ function statusTone(status: string): string {
           >
             Plug in
           </button>
-          <button v-else @click="emit('action', 'unplug', connector.connectorId)">Unplug</button>
+          <button
+            v-else
+            :disabled="connector.locked"
+            :title="connector.locked ? 'The cable is locked' : undefined"
+            @click="emit('action', 'unplug', connector.connectorId)"
+          >
+            Unplug
+          </button>
           <input v-model="idTags[connector.connectorId]" placeholder="TAG-001" class="tag" />
           <button @click="presentCard(connector)">
             {{ connector.transactionId !== undefined ? 'Present card (stop)' : 'Present card' }}
@@ -179,6 +220,17 @@ h2 {
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 13px;
+}
+.switches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 13px;
+}
+.switches label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
 }
 .buttons,
 .row {
@@ -243,6 +295,9 @@ dd {
 .status.bad {
   background: var(--bad-bg);
   color: var(--bad);
+}
+.status + .status {
+  margin-left: 6px;
 }
 .status.muted {
   color: var(--muted);

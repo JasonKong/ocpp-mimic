@@ -3,7 +3,13 @@
  * every action is also available to scripts and curl.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { OCPP16_SUBPROTOCOL, VERSION, type Fault } from '@ocpp-mimic/core';
+import {
+  DEFAULT_BEHAVIOUR,
+  OCPP16_SUBPROTOCOL,
+  VERSION,
+  type ChargePointBehaviour,
+  type Fault,
+} from '@ocpp-mimic/core';
 import type { Fleet, VirtualStation } from './fleet.js';
 import type { PersonaRegistry } from './personas.js';
 import type { RecordEntry, Recorder } from './recorder.js';
@@ -80,6 +86,22 @@ function stringField(
     throw new HttpError(400, `"${name}" must be a non-empty string`);
   }
   return value;
+}
+
+/** Reads a partial set of behaviour switches; unknown names and non-booleans are errors. */
+function behaviourChanges(body: Record<string, unknown>): Partial<ChargePointBehaviour> {
+  const changes: Partial<ChargePointBehaviour> = {};
+  for (const [name, value] of Object.entries(body)) {
+    if (!(name in DEFAULT_BEHAVIOUR)) {
+      throw new HttpError(
+        400,
+        `unknown switch "${name}" (known: ${Object.keys(DEFAULT_BEHAVIOUR).join(', ')})`,
+      );
+    }
+    if (typeof value !== 'boolean') throw new HttpError(400, `"${name}" must be true or false`);
+    changes[name as keyof ChargePointBehaviour] = value;
+  }
+  return changes;
 }
 
 /** Runs `fn` on a connector, then answers with the station's snapshot. */
@@ -191,6 +213,12 @@ const routes: Route[] = [
     return station.snapshot();
   }),
 
+  route('PATCH', '/api/stations/:param/behaviour', async (request, context) => {
+    const station = stationOf(context, request.params[0]);
+    station.chargePoint.setBehaviour(behaviourChanges(await request.body()));
+    return station.snapshot();
+  }),
+
   route(
     'POST',
     '/api/stations/:param/connectors/:param/plug',
@@ -199,7 +227,14 @@ const routes: Route[] = [
   route(
     'POST',
     '/api/stations/:param/connectors/:param/unplug',
-    connectorAction((s, c) => s.chargePoint.unplug(c)),
+    connectorAction((s, c) => {
+      if (s.chargePoint.unplug(c) === 'locked') {
+        throw new HttpError(
+          409,
+          `connector ${c} is locked; unlock it or end the transaction first`,
+        );
+      }
+    }),
   ),
   route(
     'POST',
