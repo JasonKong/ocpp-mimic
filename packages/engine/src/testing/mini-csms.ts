@@ -37,24 +37,39 @@ export interface MiniCsmsOptions {
   host?: string;
   /** Handlers by action; they replace the defaults for those actions. */
   handlers?: Record<string, CsmsHandler>;
+  /** Accepts or refuses (HTTP 401) a connection, given its Authorization header. */
+  authorize?: (chargeBoxId: string, authorization: string | undefined) => boolean;
 }
 
 export interface MiniCsmsConnection {
   readonly chargeBoxId: string;
   readonly protocol: string;
+  /** Headers of the WebSocket upgrade request. */
+  readonly headers: IncomingMessage['headers'];
+  /** WebSocket pings received from the charge point. */
+  readonly pings: number;
   /** Every frame received from the charge point, in order. */
   readonly received: readonly Frame[];
   /** Resolves with the next CALL of `action` not yet returned by an earlier wait. */
   waitForCall(action: string, timeoutMs?: number): Promise<CallFrame>;
   /** Sends a CALL and resolves with the CALLRESULT or CALLERROR frame. */
   call(action: string, payload: JsonObject, timeoutMs?: number): Promise<Frame>;
+  /** Sends a WebSocket ping and resolves with whether a pong came back in time. */
+  ping(timeoutMs?: number): Promise<boolean>;
   close(): void;
+  /** Resolves when the connection closes. */
+  readonly closed: Promise<void>;
 }
 
 export interface MiniCsms {
   /** Base URL; a charge point connects to `${url}/<chargeBoxId>`. */
   readonly url: string;
-  waitForConnection(chargeBoxId: string, timeoutMs?: number): Promise<MiniCsmsConnection>;
+  /** Resolves with the charge point's current connection; with `previous`, waits for a newer one. */
+  waitForConnection(
+    chargeBoxId: string,
+    timeoutMs?: number,
+    previous?: MiniCsmsConnection,
+  ): Promise<MiniCsmsConnection>;
   stop(): Promise<void>;
 }
 
@@ -104,9 +119,15 @@ function waitUntil<T>(
 function createConnection(
   socket: WebSocket,
   chargeBoxId: string,
+  headers: IncomingMessage['headers'],
   handlers: Record<string, CsmsHandler>,
 ): MiniCsmsConnection {
   const received: Frame[] = [];
+  let pings = 0;
+  socket.on('ping', () => {
+    pings += 1;
+  });
+  const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
   const returned = new Set<Frame>();
   const listeners = new Set<() => void>();
   const ids = sequentialIds('csms-');
@@ -119,6 +140,11 @@ function createConnection(
   const connection: MiniCsmsConnection = {
     chargeBoxId,
     protocol: socket.protocol,
+    headers,
+    get pings() {
+      return pings;
+    },
+    closed,
     received,
     waitForCall(action, timeoutMs = 2000) {
       return waitUntil(
@@ -144,6 +170,20 @@ function createConnection(
         timeoutMs,
         `the answer to ${action} (${id})`,
       );
+    },
+    ping(timeoutMs = 500) {
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          socket.off('pong', onPong);
+          resolve(false);
+        }, timeoutMs);
+        const onPong = () => {
+          clearTimeout(timer);
+          resolve(true);
+        };
+        socket.once('pong', onPong);
+        socket.ping();
+      });
     },
     close() {
       socket.close();
@@ -218,13 +258,23 @@ export async function startMiniCsms(options: MiniCsmsOptions = {}): Promise<Mini
       return;
     }
     const chargeBoxId = decodeURIComponent(match[1]);
+    if (
+      options.authorize !== undefined &&
+      !options.authorize(chargeBoxId, req.headers.authorization)
+    ) {
+      socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      return;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       if (ws.protocol !== OCPP16_SUBPROTOCOL) {
         ws.close(1002, 'ocpp1.6 subprotocol required');
         return;
       }
-      connections.set(chargeBoxId, createConnection(ws, chargeBoxId, handlers));
-      ws.on('close', () => connections.delete(chargeBoxId));
+      const connection = createConnection(ws, chargeBoxId, req.headers, handlers);
+      connections.set(chargeBoxId, connection);
+      ws.on('close', () => {
+        if (connections.get(chargeBoxId) === connection) connections.delete(chargeBoxId);
+      });
       listeners.forEach((listener) => listener());
     });
   });
@@ -237,9 +287,12 @@ export async function startMiniCsms(options: MiniCsmsOptions = {}): Promise<Mini
 
   return {
     url: `ws://${host}:${boundPort}/ocpp`,
-    waitForConnection(chargeBoxId, timeoutMs = 2000) {
+    waitForConnection(chargeBoxId, timeoutMs = 2000, previous) {
       return waitUntil(
-        () => connections.get(chargeBoxId),
+        () => {
+          const current = connections.get(chargeBoxId);
+          return current === previous ? undefined : current;
+        },
         (listener) => {
           listeners.add(listener);
           return () => listeners.delete(listener);
