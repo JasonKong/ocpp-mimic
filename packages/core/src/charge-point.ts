@@ -49,6 +49,18 @@ import {
   type EvProfile,
   type EvState,
 } from './ev.js';
+import {
+  clearProfiles,
+  compositeSchedule,
+  connectorLimit,
+  endTransactionProfiles,
+  installProfile,
+  stationLimit,
+  toWatts,
+  type ChargingRateUnit,
+  type InstallContext,
+  type InstalledProfile,
+} from './charging-profile.js';
 import type { IdGenerator } from './ids.js';
 import { OCPP16_ACTION_PROFILES } from './ocpp16.js';
 import {
@@ -180,6 +192,8 @@ export interface PersistedChargePoint {
   localList?: LocalAuthList;
   /** Reservations not yet used or expired; missing in states saved before they existed. */
   reservations?: Reservation[];
+  /** Installed charging profiles; missing in states saved before Smart Charging. */
+  chargingProfiles?: InstalledProfile[];
 }
 
 /** A ReserveNow the station holds: a connector, or any connector with connectorId 0. */
@@ -246,6 +260,8 @@ export interface ConnectorSnapshot {
   powerW: number;
   /** The plugged-in EV, when the cable was plugged in with one. */
   ev?: { name?: string; soc: number; profile: EvProfile };
+  /** The Smart Charging limit in force, in W, when a charging profile applies. */
+  limitW?: number;
 }
 
 export interface ChargePointSnapshot {
@@ -261,6 +277,12 @@ export interface ChargePointSnapshot {
   /** GetLocalListVersion's answer and the number of entries. */
   localList: { version: number; size: number };
   reservations: { reservationId: number; connectorId: number; idTag: string; expiryDate: string }[];
+  chargingProfiles: {
+    chargingProfileId: number;
+    connectorId: number;
+    purpose: string;
+    stackLevel: number;
+  }[];
 }
 
 export type IdTagResult = 'stopping' | 'authorized' | 'rejected' | 'busy' | 'unknown-connector';
@@ -473,6 +495,89 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     return result;
   }
 
+  // ---- Smart Charging -----------------------------------------------------
+
+  // TxProfiles belonged to transactions that a restart ends.
+  let chargingProfiles: InstalledProfile[] = (options.restore?.chargingProfiles ?? []).filter(
+    (p) => p.profile.chargingProfilePurpose !== 'TxProfile',
+  );
+  let limitTimer: TimerHandle | undefined;
+  /** connectorId → the TxProfile a RemoteStartTransaction brought, installed when its transaction starts. */
+  const pendingTxProfiles = new Map<number, InstalledProfile['profile']>();
+
+  const txInfo = (connectorId: number) => {
+    const transaction = transactions.get(connectorId);
+    if (transaction === undefined) return undefined;
+    return {
+      ...(transaction.transactionId !== undefined && { id: transaction.transactionId }),
+      startedAt: transaction.startedAt,
+    };
+  };
+  const conversionFor = (connectorId: number) => ({
+    voltageV: meters.get(connectorId)?.voltageV ?? 230,
+    phases: evs.get(connectorId)?.state.profile.phases ?? 3,
+  });
+
+  function profileContext(): InstallContext {
+    const units = configList(config, 'ChargingScheduleAllowedChargingRateUnit')
+      .map((unit) => (unit === 'Current' ? 'A' : unit === 'Power' ? 'W' : undefined))
+      .filter((unit): unit is ChargingRateUnit => unit !== undefined);
+    return {
+      maxStackLevel: configInt(config, 'ChargeProfileMaxStackLevel'),
+      maxPeriods: configInt(config, 'ChargingScheduleMaxPeriods'),
+      maxInstalled: configInt(config, 'MaxChargingProfilesInstalled'),
+      allowedUnits: units,
+      connectorIds: connectors(station).map((c) => c.connectorId),
+      transactionId: (connectorId) =>
+        transactions.has(connectorId)
+          ? (transactions.get(connectorId)?.transactionId ?? 0)
+          : undefined,
+      now: now(),
+    };
+  }
+
+  /**
+   * The Smart Charging limit on a connector now, in W: its TxProfile or
+   * TxDefaultProfile, and its share of the ChargePointMaxProfile, which the
+   * connectors with a transaction split equally. Undefined without profiles.
+   */
+  function profileLimitW(connectorId: number): number | undefined {
+    const at = now();
+    const conversion = conversionFor(connectorId);
+    const own = connectorLimit(chargingProfiles, connectorId, at, txInfo(connectorId));
+    let watts = own.limit === undefined ? undefined : toWatts(own.limit, conversion);
+    const total = stationLimit(chargingProfiles, at).limit;
+    if (total !== undefined) {
+      const share = toWatts(total, conversion) / Math.max(1, transactions.size);
+      watts = watts === undefined ? share : Math.min(watts, share);
+    }
+    return watts;
+  }
+
+  /** Re-evaluates every connector at the next moment a limit changes. */
+  function scheduleLimitChange(): void {
+    stopTimer(limitTimer);
+    limitTimer = undefined;
+    const at = now();
+    const changes = [
+      stationLimit(chargingProfiles, at).next,
+      ...connectors(station).map(
+        (c) => connectorLimit(chargingProfiles, c.connectorId, at, txInfo(c.connectorId)).next,
+      ),
+    ].filter((t): t is number => t !== undefined && t > at);
+    if (changes.length === 0) return;
+    limitTimer = later(Math.min(...changes) - at, () => {
+      limitTimer = undefined;
+      updateAllPowers();
+    });
+  }
+
+  function updateAllPowers(): void {
+    for (const connector of connectors(station)) updatePower(connector.connectorId);
+    scheduleLimitChange();
+    changed();
+  }
+
   // ---- Reservations -------------------------------------------------------
 
   const reservations = new Map<number, Reservation>();
@@ -683,12 +788,15 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       !connector.evSuspended &&
       !connector.evseSuspended;
     const ev = evs.get(connectorId);
+    // The Smart Charging limit becomes the power offered (and Power.Offered).
+    const current = syncMeter(connectorId);
+    const offered = Math.max(0, Math.min(offeredW, profileLimitW(connectorId) ?? Infinity));
+    if (current.offeredW !== offered) meters.set(connectorId, { ...current, offeredW: offered });
     if (ev === undefined) {
-      setPower(connectorId, running ? evPowerW : 0);
+      setPower(connectorId, running ? Math.min(evPowerW, offered) : 0);
       return;
     }
-    const current = syncMeter(connectorId);
-    setPower(connectorId, running ? evDrawW(ev.state, current.offeredW) : 0);
+    setPower(connectorId, running ? evDrawW(ev.state, offered) : 0);
   }
 
   /** While an EV draws power, a timer moves the connector to SuspendedEV when the battery is full. */
@@ -840,7 +948,19 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     // Charging starts now, also offline (section 3.5.4): the transaction runs
     // with a placeholder id until the CSMS answers StartTransaction.
     applyDevice({ type: 'TransactionStarted', connectorId, transactionId: 0 });
-    updatePower(connectorId);
+    const remoteProfile = pendingTxProfiles.get(connectorId);
+    pendingTxProfiles.delete(connectorId);
+    if (remoteProfile !== undefined) {
+      const installed = installProfile(
+        chargingProfiles,
+        connectorId,
+        remoteProfile,
+        profileContext(),
+      );
+      if (installed.status === 'Accepted') chargingProfiles = installed.profiles;
+      else log(`TxProfile from RemoteStartTransaction not installed: ${installed.reason ?? ''}`);
+    }
+    updateAllPowers();
     schedulePeriodic(connectorId);
     updateLock(connectorId);
 
@@ -915,6 +1035,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     const stopCall = ref !== undefined ? enqueue('StopTransaction', request, ref) : undefined;
     applyDevice({ type: 'TransactionEnded', connectorId });
     updateLock(connectorId);
+    chargingProfiles = endTransactionProfiles(chargingProfiles, connectorId);
+    updateAllPowers();
 
     const outcome = await stopCall;
     if (outcome?.ok === true && outcome.payload.idTagInfo !== undefined) {
@@ -990,6 +1112,64 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       scheduleExpiry(reservation);
       changed();
       return { status: 'Accepted' };
+    },
+
+    SetChargingProfile(request) {
+      const result = installProfile(
+        chargingProfiles,
+        request.connectorId,
+        request.csChargingProfiles,
+        profileContext(),
+      );
+      if (result.status !== 'Accepted') {
+        log(
+          `SetChargingProfile ${request.csChargingProfiles.chargingProfileId} rejected: ${result.reason ?? ''}`,
+        );
+        return { status: 'Rejected' };
+      }
+      chargingProfiles = result.profiles;
+      updateAllPowers();
+      return { status: 'Accepted' };
+    },
+
+    ClearChargingProfile(request) {
+      const result = clearProfiles(chargingProfiles, {
+        ...(request.id !== undefined && { id: request.id }),
+        ...(request.connectorId !== undefined && { connectorId: request.connectorId }),
+        ...(request.chargingProfilePurpose !== undefined && {
+          purpose: request.chargingProfilePurpose,
+        }),
+        ...(request.stackLevel !== undefined && { stackLevel: request.stackLevel }),
+      });
+      if (result.status === 'Accepted') {
+        chargingProfiles = result.profiles;
+        updateAllPowers();
+      }
+      return { status: result.status };
+    },
+
+    GetCompositeSchedule(request) {
+      const { connectorId } = request;
+      if (connectorId !== 0 && findConnector(station, connectorId) === undefined) {
+        return { status: 'Rejected' };
+      }
+      const ids = connectors(station).map((c) => c.connectorId);
+      const chargingSchedule = compositeSchedule(chargingProfiles, {
+        connectorId,
+        from: now(),
+        durationS: request.duration,
+        unit: request.chargingRateUnit ?? 'W',
+        conversion: connectorId === 0 ? { voltageV: 230, phases: 3 } : conversionFor(connectorId),
+        ratingW: connectorId === 0 ? offeredW * ids.length : offeredW,
+        connectorIds: ids,
+        transaction: txInfo,
+      });
+      return {
+        status: 'Accepted',
+        connectorId,
+        scheduleStart: new Date(now()).toISOString(),
+        chargingSchedule,
+      };
     },
 
     CancelReservation(request) {
@@ -1094,6 +1274,15 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         authorized.has(connectorId)
       ) {
         return { status: 'Rejected' };
+      }
+      if (request.chargingProfile !== undefined) {
+        // Section 5.16.2: only a TxProfile, without transactionId.
+        const remote = request.chargingProfile;
+        if (remote.chargingProfilePurpose !== 'TxProfile' || remote.transactionId !== undefined) {
+          return { status: 'Rejected' };
+        }
+        if (!supports('SmartCharging')) return { status: 'Rejected' };
+        pendingTxProfiles.set(connectorId, remote);
       }
       const reservationId = reservationCheck(connectorId, request.idTag).reservationId;
       if (reservationId !== undefined) sessionReservations.set(connectorId, reservationId);
@@ -1460,6 +1649,9 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
                 profile: ev.state.profile,
               },
             }),
+            ...((limit) => (limit === undefined ? {} : { limitW: Math.round(limit * 10) / 10 }))(
+              profileLimitW(connector.connectorId),
+            ),
           };
         }),
         config: config.values,
@@ -1475,6 +1667,12 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
           connectorId: r.connectorId,
           idTag: r.idTag,
           expiryDate: new Date(r.expiresAt).toISOString(),
+        })),
+        chargingProfiles: chargingProfiles.map((p) => ({
+          chargingProfileId: p.profile.chargingProfileId,
+          connectorId: p.connectorId,
+          purpose: p.profile.chargingProfilePurpose,
+          stackLevel: p.profile.stackLevel,
         })),
       };
     },
@@ -1506,6 +1704,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         energyMultiplier,
         localList,
         reservations: [...reservations.values()].map((r) => ({ ...r })),
+        chargingProfiles: chargingProfiles.map((p) => ({ ...p })),
       };
     },
   };

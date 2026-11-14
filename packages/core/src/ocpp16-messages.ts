@@ -275,6 +275,36 @@ export const OCPP16_MESSAGES = {
     request: object({}),
     response: acceptedOrRejected,
   },
+  ClearChargingProfile: {
+    request: object(
+      {},
+      {
+        id: integer(),
+        connectorId: integer(),
+        chargingProfilePurpose: oneOf(['ChargePointMaxProfile', 'TxDefaultProfile', 'TxProfile']),
+        stackLevel: integer(),
+      },
+    ),
+    response: object({ status: oneOf(['Accepted', 'Unknown']) }),
+  },
+  GetCompositeSchedule: {
+    request: object(
+      { connectorId: integer(), duration: integer() },
+      { chargingRateUnit: oneOf(['A', 'W']) },
+    ),
+    response: object(
+      { status: oneOf(['Accepted', 'Rejected']) },
+      {
+        connectorId: integer(),
+        scheduleStart: dateTime(),
+        chargingSchedule: ChargingScheduleSchema,
+      },
+    ),
+  },
+  SetChargingProfile: {
+    request: object({ connectorId: integer(), csChargingProfiles: ChargingProfileSchema }),
+    response: object({ status: oneOf(['Accepted', 'Rejected', 'NotSupported']) }),
+  },
   CancelReservation: {
     request: object({ reservationId: integer() }),
     response: object({ status: oneOf(['Accepted', 'Rejected']) }),
@@ -382,7 +412,9 @@ export const CSMS_ACTIONS = [
   'ChangeAvailability',
   'ChangeConfiguration',
   'ClearCache',
+  'ClearChargingProfile',
   'DataTransfer',
+  'GetCompositeSchedule',
   'GetConfiguration',
   'GetLocalListVersion',
   'RemoteStartTransaction',
@@ -390,6 +422,7 @@ export const CSMS_ACTIONS = [
   'ReserveNow',
   'Reset',
   'SendLocalList',
+  'SetChargingProfile',
   'TriggerMessage',
   'UnlockConnector',
 ] as const satisfies readonly Ocpp16Action[];

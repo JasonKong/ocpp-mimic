@@ -153,12 +153,12 @@ describe('installing charging profiles', () => {
     ]);
   });
 
-  it('stores the running transaction on a TxProfile sent without one', () => {
+  it('accepts a TxProfile without transactionId for the running transaction', () => {
     const [stored] = install(
       [[1, profile({ chargingProfileId: 1, chargingProfilePurpose: 'TxProfile' })]],
       context({ 1: 42 }),
     );
-    expect(stored?.profile.transactionId).toBe(42);
+    expect(stored?.profile.transactionId).toBeUndefined();
   });
 });
 
@@ -266,6 +266,7 @@ describe('limits in force', () => {
           profile({
             chargingProfileId: 3,
             chargingProfilePurpose: 'TxProfile',
+            transactionId: 7,
             chargingProfileKind: 'Relative',
             chargingSchedule: {
               chargingRateUnit: 'A',

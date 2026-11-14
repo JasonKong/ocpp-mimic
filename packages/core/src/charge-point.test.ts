@@ -800,6 +800,194 @@ describe('EV model', () => {
   });
 });
 
+describe('smart charging', () => {
+  const schedule = (
+    periods: Array<[number, number]>,
+    unit: 'W' | 'A' = 'W',
+    extra: Record<string, unknown> = {},
+  ) => ({
+    chargingRateUnit: unit,
+    chargingSchedulePeriod: periods.map(([startPeriod, limit]) => ({ startPeriod, limit })),
+    ...extra,
+  });
+  const txProfile = (id: number, periods: Array<[number, number]>, unit: 'W' | 'A' = 'W') => ({
+    chargingProfileId: id,
+    stackLevel: 0,
+    chargingProfilePurpose: 'TxProfile',
+    chargingProfileKind: 'Relative',
+    chargingSchedule: schedule(periods, unit),
+  });
+  const power = (h: ReturnType<typeof setup>, connector = 1) =>
+    h.cp.snapshot().connectors.find((c) => c.connectorId === connector)?.powerW;
+
+  it('caps a running session with a TxProfile until it is cleared', async () => {
+    const h = setup();
+    await h.boot();
+    expect(
+      await h.csmsCall('SetChargingProfile', {
+        connectorId: 1,
+        csChargingProfiles: txProfile(1, [[0, 3680]]),
+      }),
+    ).toEqual({
+      status: 'Rejected',
+    });
+    await h.startSession(1);
+    expect(power(h)).toBe(7360);
+    expect(
+      await h.csmsCall('SetChargingProfile', {
+        connectorId: 1,
+        csChargingProfiles: txProfile(1, [[0, 3680]]),
+      }),
+    ).toEqual({
+      status: 'Accepted',
+    });
+    expect(power(h)).toBe(3680);
+    expect(h.cp.snapshot().connectors[0]?.limitW).toBe(3680);
+    expect(await h.csmsCall('ClearChargingProfile', { id: 1 })).toEqual({ status: 'Accepted' });
+    expect(power(h)).toBe(7360);
+    expect(await h.csmsCall('ClearChargingProfile', { id: 1 })).toEqual({ status: 'Unknown' });
+  });
+
+  it('follows the schedule periods over time, in amperes too', async () => {
+    const h = setup();
+    await h.boot();
+    await h.startSession(1);
+    await h.csmsCall('SetChargingProfile', {
+      connectorId: 1,
+      csChargingProfiles: txProfile(
+        1,
+        [
+          [0, 10],
+          [600, 6],
+        ],
+        'A',
+      ),
+    });
+    // Relative to the transaction start: 10 A × 230 V × 3 phases.
+    expect(power(h)).toBe(6900);
+    await h.advance(600_000);
+    expect(power(h)).toBe(4140);
+  });
+
+  it('applies a TxDefaultProfile to the next session and deletes TxProfiles when it ends', async () => {
+    const h = setup();
+    await h.boot();
+    await h.csmsCall('SetChargingProfile', {
+      connectorId: 0,
+      csChargingProfiles: {
+        chargingProfileId: 7,
+        stackLevel: 0,
+        chargingProfilePurpose: 'TxDefaultProfile',
+        chargingProfileKind: 'Relative',
+        chargingSchedule: schedule([[0, 5000]]),
+      },
+    });
+    await h.startSession(1);
+    expect(power(h)).toBe(5000);
+    await h.csmsCall('SetChargingProfile', {
+      connectorId: 1,
+      csChargingProfiles: txProfile(1, [[0, 2000]]),
+    });
+    expect(power(h)).toBe(2000);
+    const stop = h.cp.presentIdTag(1, 'TAG');
+    await h.settle();
+    expect(await stop).toBe('stopping');
+    expect(h.cp.snapshot().chargingProfiles.map((p) => p.purpose)).toEqual(['TxDefaultProfile']);
+  });
+
+  it('shares a ChargePointMaxProfile between the charging connectors', async () => {
+    const h = setup();
+    await h.boot();
+    await h.csmsCall('SetChargingProfile', {
+      connectorId: 0,
+      csChargingProfiles: {
+        chargingProfileId: 9,
+        stackLevel: 0,
+        chargingProfilePurpose: 'ChargePointMaxProfile',
+        chargingProfileKind: 'Absolute',
+        chargingSchedule: schedule([[0, 10_000]], 'W', {
+          startSchedule: new Date(h.clock.now()).toISOString(),
+        }),
+      },
+    });
+    await h.startSession(1);
+    expect(power(h, 1)).toBe(7360);
+    await h.startSession(2, 'TAG-2');
+    expect([power(h, 1), power(h, 2)]).toEqual([5000, 5000]);
+  });
+
+  it('reports the composite schedule and takes a TxProfile from RemoteStartTransaction', async () => {
+    const h = setup();
+    await h.boot();
+    expect(await h.csmsCall('GetCompositeSchedule', { connectorId: 9, duration: 60 })).toEqual({
+      status: 'Rejected',
+    });
+    expect(
+      await h.csmsCall('RemoteStartTransaction', {
+        idTag: 'R',
+        connectorId: 1,
+        chargingProfile: {
+          ...txProfile(3, [[0, 3000]]),
+          chargingProfilePurpose: 'TxDefaultProfile',
+        },
+      }),
+    ).toEqual({ status: 'Rejected' });
+    expect(
+      await h.csmsCall('RemoteStartTransaction', {
+        idTag: 'R',
+        connectorId: 1,
+        chargingProfile: txProfile(3, [[0, 3000]]),
+      }),
+    ).toEqual({ status: 'Accepted' });
+    h.cp.plugIn(1);
+    await h.advance(2000);
+    expect(power(h)).toBe(3000);
+    expect(
+      await h.csmsCall('GetCompositeSchedule', {
+        connectorId: 1,
+        duration: 300,
+        chargingRateUnit: 'W',
+      }),
+    ).toMatchObject({
+      status: 'Accepted',
+      connectorId: 1,
+      chargingSchedule: {
+        chargingRateUnit: 'W',
+        duration: 300,
+        chargingSchedulePeriod: [{ startPeriod: 0, limit: 3000 }],
+      },
+    });
+  });
+
+  it('keeps TxDefaultProfiles across a restart but not TxProfiles, and is NotSupported without the profile', async () => {
+    const before = setup();
+    await before.boot();
+    await before.csmsCall('SetChargingProfile', {
+      connectorId: 0,
+      csChargingProfiles: {
+        chargingProfileId: 7,
+        stackLevel: 0,
+        chargingProfilePurpose: 'TxDefaultProfile',
+        chargingProfileKind: 'Relative',
+        chargingSchedule: schedule([[0, 5000]]),
+      },
+    });
+    await before.startSession(1);
+    await before.csmsCall('SetChargingProfile', {
+      connectorId: 1,
+      csChargingProfiles: txProfile(1, [[0, 2000]]),
+    });
+    const after = setup({ restore: before.cp.persistentState() });
+    expect(after.cp.snapshot().chargingProfiles.map((p) => p.chargingProfileId)).toEqual([7]);
+
+    const plain = setup({ config: { SupportedFeatureProfiles: 'Core,RemoteTrigger' } });
+    await plain.boot();
+    expect(
+      await plain.csmsCall('GetCompositeSchedule', { connectorId: 1, duration: 60 }),
+    ).toMatchObject({ type: 4, errorCode: 'NotSupported' });
+  });
+});
+
 describe('reservations', () => {
   const inMinutes = (h: ReturnType<typeof setup>, minutes: number) =>
     new Date(h.clock.now() + minutes * 60_000).toISOString();

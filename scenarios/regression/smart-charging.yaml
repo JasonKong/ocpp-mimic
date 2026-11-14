@@ -1,0 +1,73 @@
+# Smart Charging (SetChargingProfile, ClearChargingProfile, GetCompositeSchedule).
+name: A TxProfile caps the power of a running session
+station: { id: REG-SC-TX, persona: regression-1.6 }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: { ev: compact-40kwh }
+  - expect: { sent: StartTransaction, save: { tx: $.answer.transactionId } }
+  - expectConnector: { status: Charging, powerW: { $gt: 7000 } }
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        connectorId: 1
+        csChargingProfiles:
+          chargingProfileId: 1
+          transactionId: '{{tx}}'
+          stackLevel: 0
+          chargingProfilePurpose: TxProfile
+          chargingProfileKind: Relative
+          chargingSchedule:
+            chargingRateUnit: W
+            chargingSchedulePeriod: [{ startPeriod: 0, limit: 3680 }]
+      answer: { status: Accepted }
+  - expectConnector: { powerW: 3680, limitW: 3680 }
+  - csmsCall:
+      action: GetCompositeSchedule
+      payload: { connectorId: 1, duration: 600, chargingRateUnit: W }
+      answer:
+        status: Accepted
+        chargingSchedule:
+          { chargingRateUnit: W, chargingSchedulePeriod: [{ startPeriod: 0, limit: 3680 }] }
+  - csmsCall: { action: ClearChargingProfile, payload: { id: 1 }, answer: { status: Accepted } }
+  - expectConnector: { powerW: { $gt: 7000 }, limitW: { $exists: false } }
+---
+name: A TxDefaultProfile applies to new sessions, and a TxProfile needs a transaction
+station: { id: REG-SC-DEFAULT, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        connectorId: 1
+        csChargingProfiles:
+          chargingProfileId: 2
+          stackLevel: 0
+          chargingProfilePurpose: TxProfile
+          chargingProfileKind: Relative
+          chargingSchedule:
+            { chargingRateUnit: W, chargingSchedulePeriod: [{ startPeriod: 0, limit: 2000 }] }
+      answer: { status: Rejected }
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        connectorId: 0
+        csChargingProfiles:
+          chargingProfileId: 3
+          stackLevel: 0
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Relative
+          chargingSchedule:
+            { chargingRateUnit: A, chargingSchedulePeriod: [{ startPeriod: 0, limit: 8 }] }
+      answer: { status: Accepted }
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  # 8 A × 230 V × 3 phases
+  - expectConnector: { status: Charging, powerW: 5520 }
+  - expectStation: { chargingProfiles: [{ chargingProfileId: 3, purpose: TxDefaultProfile }] }
+---
+name: A station without Smart Charging refuses the messages
+station: { id: REG-SC-NONE, persona: core-only-1.6 }
+steps:
+  - csmsCall:
+      action: GetCompositeSchedule
+      payload: { connectorId: 1, duration: 60 }
+      error: NotSupported

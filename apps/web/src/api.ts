@@ -14,6 +14,7 @@ export interface ConnectorSnapshot {
   energyWh: number;
   powerW: number;
   ev?: { name?: string; soc: number; profile: EvProfile };
+  limitW?: number;
 }
 export interface EvProfile {
   capacityKWh: number;
@@ -46,6 +47,12 @@ export interface StationSnapshot {
   energyMultiplier: number;
   localList: { version: number; size: number };
   reservations: { reservationId: number; connectorId: number; idTag: string; expiryDate: string }[];
+  chargingProfiles: {
+    chargingProfileId: number;
+    connectorId: number;
+    purpose: string;
+    stackLevel: number;
+  }[];
 }
 
 export interface FaultInfo {

@@ -188,6 +188,8 @@ const KNOWN_DIFFERENCES: string[] = [
   'MeterValues request: $.meterValue empty — OCA accepts, core rejects',
   'MeterValues request: $.meterValue[0].sampledValue empty — OCA accepts, core rejects',
   'StopTransaction request: $.transactionData[0].sampledValue empty — OCA accepts, core rejects',
+  'GetCompositeSchedule response: $.chargingSchedule.chargingSchedulePeriod empty — OCA accepts, core rejects',
+  'SetChargingProfile request: $.csChargingProfiles.chargingSchedule.chargingSchedulePeriod empty — OCA accepts, core rejects',
   'RemoteStartTransaction request: $.chargingProfile.chargingSchedule.chargingSchedulePeriod empty — OCA accepts, core rejects',
 ];
 

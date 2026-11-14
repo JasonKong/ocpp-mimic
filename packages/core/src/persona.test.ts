@@ -128,9 +128,9 @@ describe('resolvePersonas', () => {
   });
 
   it('warns about feature profiles that are not implemented yet', () => {
-    const { personas } = resolveOne({ ...BASE, features: ['Core', 'SmartCharging'] });
+    const { personas } = resolveOne({ ...BASE, features: ['Core', 'FirmwareManagement'] });
     expect(personas.get('base')?.warnings).toEqual([
-      'test.yaml: feature profile SmartCharging is advertised but not implemented yet',
+      'test.yaml: feature profile FirmwareManagement is advertised but not implemented yet',
     ]);
   });
 });
