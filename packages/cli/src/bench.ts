@@ -44,6 +44,8 @@ export interface BenchOptions {
   out?: string;
   /** SQLite file for station state, as `serve --store`; none by default. */
   store?: string;
+  /** Records kept per station, as `serve --record-limit` (default 1000). */
+  recordLimit?: number;
   heapSnapshot: boolean;
 }
 
@@ -102,7 +104,7 @@ export interface BenchSummary {
   /** Over all samples after the ramp-up. */
   steady: { cpuMean: number; cpuMax: number; loopP99MaxMs: number; loopMaxMs: number };
   rssMaxMb: number;
-  /** Lowest heap of the first and the last quarter of the run (GC floors). */
+  /** Lowest heap of the first and the last quarter after the ramp-up (GC floors). */
   heapFloorMb: { first: number; last: number };
   frames: { out: number; in: number };
   csms: { cpuSeconds?: number; rssMb?: number };
@@ -246,6 +248,7 @@ export async function runBench(
       port: 0,
       personaDirs: options.personaDirs,
       ...(options.store !== undefined && { storePath: options.store }),
+      ...(options.recordLimit !== undefined && { recordLimit: options.recordLimit }),
     });
     await engine.start();
     const fleet = engine.fleet;
@@ -337,8 +340,10 @@ export async function runBench(
     }
 
     const steady = samples.filter((s) => s.t > rampS + options.sampleMs / 1000);
-    const quarter = Math.max(1, Math.floor(samples.length / 4));
-    const floor = (list: Sample[]) => Math.min(...list.map((s) => s.heapMb));
+    // Heap floors after the ramp-up: its first quarter against its last.
+    const quarter = Math.max(1, Math.floor(steady.length / 4));
+    const floor = (list: Sample[]) =>
+      list.length === 0 ? 0 : Math.min(...list.map((s) => s.heapMb));
     const summary: BenchSummary = {
       stations: options.stations,
       durationS: round((performance.now() - started) / 1000),
@@ -354,8 +359,8 @@ export async function runBench(
       },
       rssMaxMb: Math.max(0, ...samples.map((s) => s.rssMb)),
       heapFloorMb: {
-        first: floor(samples.slice(0, quarter)),
-        last: floor(samples.slice(-quarter)),
+        first: floor(steady.slice(0, quarter)),
+        last: floor(steady.slice(-quarter)),
       },
       frames: { out: framesOut, in: framesIn },
       csms: csms.child.pid === undefined ? {} : await processUsage(csms.child.pid),

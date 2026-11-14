@@ -596,7 +596,7 @@ Collected in the engine from the wire and the transport, so they work with the E
 
 - **Benchmark first.** `pnpm bench --stations N --duration D` runs the engine in-process against `ocpp-mimic csms` in a child process and samples every 5 s: event-loop delay, CPU, RSS and heap, frames a second, connect times and late work. The baseline at 100, 500 and 1,000 stations, with CPU profiles and heap snapshots, decides what T45 changes; the numbers go into this document.
 - **Candidates**, each kept only if the baseline shows it matters: one shared scheduler (a heap of due times behind one Node timer) instead of a Node timer per timer; frames parsed once on the wire instead of by the Fault Injector, the recorder and core separately; state saves batched into one SQLite transaction a second; snapshots built only when asked for.
-- **Event Recorder.** A per-station limit: 1,000 entries for `serve`, 100 for `load`, 0 to keep none (`--record-limit`). Schema checks keep counting into metrics when nothing is kept.
+- **Event Recorder.** A per-station limit: 1,000 entries for `serve`, 10 for `load`, 0 to keep none (`--record-limit`). A load station records about 3 entries a minute, so a limit of 10 fills during the warm-up and the heap-growth threshold measures leaks rather than a buffer still filling; `--log-dir` keeps the whole log. Schema checks keep counting into metrics when nothing is kept.
 - **Events WebSocket.** A client subscribes to the stations it shows (`{ type: subscribe, stations: [...] }`): records and full snapshots go only to their subscribers, and so does the 2-second push of charging stations. Everyone gets fleet summaries (the `?view=summary` fields of changed stations), batched at most once a second.
 
 **Record & replay**
@@ -670,6 +670,39 @@ Bottlenecks, most important first:
 - Mappings (`engine/src/logs/import.ts`): `format: jsonl | csv | lines`; `fields.at | station | direction | frame` each name a `column` (CSV, by header name or index), a `path` (JSONL, dotted) or a `group` (lines; by default the field's own name); `fields.at.time` is `iso`, `epoch-s` or `epoch-ms`, and `timeZone` (IANA, default UTC) applies to ISO times without an offset, daylight saving included; `fields.direction.values` maps the log's words. A `frame` may be the OCPP-J text or an array. CSV fields may be quoted, with doubled quotes and line breaks.
 - Masking (`core/src/mask.ts`, HMAC-SHA-256 in the engine): pseudonyms are a prefix and 10 base-32 characters: `CP-` for stations, `T` for `idTag` and `parentIdTag` (wherever they occur, local lists included), `S` for serial numbers, `SIM` for `iccid` and `imsi`, `X` for paths added by the mapping. Answers are matched to their CALL, so a DataTransfer answer's `data` goes too. Text that is not a message is removed, since it may hold anything. The salt comes from `--salt`, `--salt-file` or `OCPP_MIMIC_MASK_SALT`; without one a random salt is used and a warning printed. A log already marked masked is not masked again.
 - `scenarios/logs/` holds three synthetic sample logs recorded from the repository's scenarios.
+
+**Implemented: the engine at 1,000 stations (T45)**
+
+The baseline's two bottlenecks, plus one the baseline did not cover:
+
+- **Nothing is built for nobody.** Without a client on the events WebSocket the engine builds no snapshot and serializes no record for it, and the 2-second push of charging stations is skipped.
+- **Recorder limit.** `serve --record-limit <n>` (default 1000, 0 keeps none); load runs keep 10 per station (T49).
+- **State saves.** With `--store`, each station's state was saved in its own SQLite transaction: 50 ms after every change, and every station every 10 s. At 1,000 stations the 10-second save held the event loop for about 300 ms. Changes are now collected for a second and written in one transaction, and the periodic save writes a tenth of the stations every second, so every station is still saved every 10 s but no transaction holds the loop for long. The store uses WAL with `synchronous=NORMAL`: on the CI runner a single commit's fsync once held the loop for 2.5 s; now commits do not wait for the disk (a crash can lose the last ones).
+- **Not changed**, as the baseline showed no need: the shared scheduler, and parsing each frame once.
+
+Measured with `pnpm bench`, 1,000 stations of `load-ac-1.6` with `--store`, 20 started a second, 30 % charging, 5 minutes, on the same laptop as the baseline:
+
+| | Before | After |
+| --- | --- | --- |
+| Engine CPU after the ramp-up, mean / max (% of a core) | 9.8 / 13.9 | 4.0 / 6.2 |
+| Event-loop delay, worst 5-second p99 / max (ms) | 14 / 372 | 15 / 46 |
+| Heartbeats late, p99 / max (ms) | 19 / 45 | 10 / 42 |
+| Meter values late, p99 / max (ms) | 7 / 24 | 8 / 20 |
+| RSS peak (MB) | 249 | 183 |
+
+On the reference machine (the `bench` workflow: a GitHub-hosted runner, 2 vCPUs, 8 GB), 1,000 stations for 10 minutes, 10 started a second, 30 % charging:
+
+| | Baseline (no store, 1,000 records per station) | After (`--store`, 10 records per station) |
+| --- | --- | --- |
+| Engine CPU after the ramp-up, mean / max (% of a core) | 4.1 / 6.6 | 5.0 / 7.7 |
+| Event-loop delay, worst 5-second p99 / max (ms) | 1.7 / 29 | 2.4 / 20 |
+| Heartbeats late, p99 / max (ms) | 1.2 / 16 | 1.3 / 13 |
+| WebSocket connect, p99 / max (ms) | 3.8 / 33 | 4.8 / 19 |
+| BootNotification accepted, p99 / max (ms) | 101 / 121 | 101 / 111 |
+| RSS peak (MB) | 269 | 249 |
+| Heap floor after the ramp-up, first quarter → last (MB) | 21 → 54 | 46.8 → 47.1 |
+
+Every number is within the exit thresholds; the heap no longer grows. The exit run itself (T54) uses `load`, which keeps no store.
 
 **Where the files go**
 

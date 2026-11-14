@@ -62,7 +62,7 @@ export interface Recorder {
 }
 
 export interface RecorderOptions {
-  /** Entries kept per station. Default 1000. */
+  /** Entries kept per station. Default 1000; 0 keeps none (listeners still get every entry). */
   limit?: number;
   now?: () => number;
   /** Checks a CALL or CALLRESULT payload; non-empty problems are kept as `schemaErrors`. */
@@ -90,10 +90,12 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
   }
 
   function push(entry: RecordEntry): void {
-    const buffer = buffers.get(entry.stationId) ?? [];
-    buffer.push(entry);
-    if (buffer.length > limit) buffer.splice(0, buffer.length - limit);
-    buffers.set(entry.stationId, buffer);
+    if (limit > 0) {
+      const buffer = buffers.get(entry.stationId) ?? [];
+      buffer.push(entry);
+      if (buffer.length > limit) buffer.splice(0, buffer.length - limit);
+      buffers.set(entry.stationId, buffer);
+    }
     listeners.forEach((listener) => listener(entry));
   }
 

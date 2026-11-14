@@ -67,7 +67,11 @@ describe('state store', () => {
       group: 'a',
     }));
     store.saveStations(definitions);
-    store.saveState('A-2', STATE);
+    store.saveStates([
+      ['A-2', STATE],
+      ['A-3', { ...STATE, sequence: 9 }],
+    ]);
+    expect(store.loadState('A-3')?.sequence).toBe(9);
     expect(store.listStations()).toEqual(definitions);
     store.deleteStations(['A-1', 'A-2']);
     expect(store.listStations().map((d) => d.id)).toEqual(['A-3']);

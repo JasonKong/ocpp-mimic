@@ -63,6 +63,8 @@ export interface StateStore {
   deleteStations(ids: readonly string[]): void;
   loadState(id: string): PersistedChargePoint | undefined;
   saveState(id: string, state: PersistedChargePoint): void;
+  /** Saves many stations' states in one transaction. */
+  saveStates(states: Iterable<[id: string, state: PersistedChargePoint]>): void;
   close(): void;
 }
 
@@ -70,6 +72,10 @@ export interface StateStore {
 export function openStateStore(path: string): StateStore {
   const { DatabaseSync } = sqlite();
   const db = new DatabaseSync(path);
+  // WAL with synchronous=NORMAL: a commit does not wait for the disk (only
+  // checkpoints do), so saves never stall the event loop on a slow fsync. A
+  // crash can lose the last commits, which a simulator's state can afford.
+  if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
   db.exec(`
     CREATE TABLE IF NOT EXISTS stations (
       id TEXT PRIMARY KEY,
@@ -133,6 +139,11 @@ export function openStateStore(path: string): StateStore {
     },
     saveState: (id, state) => {
       upsertState.run(id, JSON.stringify(state), state.savedAt);
+    },
+    saveStates: (states) => {
+      transaction(() => {
+        for (const [id, state] of states) upsertState.run(id, JSON.stringify(state), state.savedAt);
+      });
     },
     close: () => db.close(),
   };

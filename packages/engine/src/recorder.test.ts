@@ -2,6 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { createRecorder } from './recorder.js';
 
 describe('recorder', () => {
+  it('keeps nothing with a limit of 0, but still tells listeners and matches answers', () => {
+    const recorder = createRecorder({ limit: 0 });
+    const seen: string[] = [];
+    recorder.subscribe((entry) =>
+      seen.push(entry.kind === 'frame' ? (entry.action ?? '?') : 'log'),
+    );
+    recorder.frame('A', 'cp-to-csms', '[2,"1","Heartbeat",{}]');
+    recorder.frame('A', 'csms-to-cp', '[3,"1",{"currentTime":"2026-11-15T09:00:00Z"}]');
+    recorder.log('A', 'hello');
+    expect(seen).toEqual(['Heartbeat', 'Heartbeat', 'log']);
+    expect(recorder.query('A')).toEqual([]);
+  });
+
   it('matches responses to requests and keeps schema problems from the check', () => {
     const checked: string[] = [];
     const recorder = createRecorder({

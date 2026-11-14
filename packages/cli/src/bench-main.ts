@@ -18,6 +18,7 @@ const USAGE = `Usage: pnpm bench [options]
   --sample <d>           Sample interval (default 5s)
   --out <dir>            Write samples.csv and summary.json there
   --store <file>         Keep station state in this SQLite file, as serve --store
+  --record-limit <n>     Records kept per station, as serve --record-limit
   --heap-snapshot        Also write a heap snapshot at the end (needs --out)
 
 CPU profile: node --cpu-prof --cpu-prof-dir=<dir> packages/cli/dist/bench-main.js ...`;
@@ -38,6 +39,7 @@ const { values } = parseArgs({
     sample: { type: 'string' },
     out: { type: 'string' },
     store: { type: 'string' },
+    'record-limit': { type: 'string' },
     'heap-snapshot': { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
   },
@@ -57,6 +59,13 @@ const duration = (name: string, value: string | undefined, fallback: number) => 
   if (ms === undefined || ms <= 0) fail(`--${name} needs a duration such as 30s, got ${value}`);
   return ms;
 };
+function recordLimit(value: string): number {
+  const number = Number(value);
+  if (!(Number.isInteger(number) && number >= 0))
+    fail(`--record-limit needs a whole number, got ${value}`);
+  return number;
+}
+
 const charging = values.charging === undefined ? DEFAULT_BENCH.charging : Number(values.charging);
 if (!(charging >= 0 && charging <= 1)) fail(`--charging needs 0 to 1, got ${values.charging}`);
 
@@ -71,6 +80,7 @@ const options: BenchOptions = {
   sampleMs: duration('sample', values.sample, DEFAULT_BENCH.sampleMs),
   ...(values.out !== undefined && { out: values.out }),
   ...(values.store !== undefined && { store: values.store }),
+  ...(values['record-limit'] !== undefined && { recordLimit: recordLimit(values['record-limit']) }),
   heapSnapshot: values['heap-snapshot'] ?? false,
 };
 

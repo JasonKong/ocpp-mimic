@@ -118,6 +118,8 @@ export interface FleetOptions {
   backoff?: Partial<BackoffPolicy>;
   /** How often every running station's state (meters included) is saved. Default 10 s. */
   saveIntervalMs?: number;
+  /** How long changes collect before they are saved together. Default 1 s. */
+  saveBatchMs?: number;
   onEvent?: (event: FleetEvent) => void;
 }
 
@@ -190,7 +192,9 @@ export function createFleet(options: FleetOptions): Fleet {
     listeners.forEach((listener) => listener(event));
   };
   const entries = new Map<string, Entry>();
-  const pendingSaves = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Stations with changes not saved yet; written together, in one transaction. */
+  const pendingSaves = new Set<string>();
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
   /** Set by shutdown(): stopping connections still emits changes, which must not schedule saves. */
   let shuttingDown = false;
 
@@ -200,24 +204,46 @@ export function createFleet(options: FleetOptions): Fleet {
     options.store.saveState(id, entry.station.chargePoint.persistentState());
   }
 
-  /** Coalesces the many 'changed' events of a burst into one write. */
-  function scheduleSave(id: string): void {
-    if (options.store === undefined || shuttingDown || pendingSaves.has(id)) return;
-    pendingSaves.set(
-      id,
-      setTimeout(() => {
-        pendingSaves.delete(id);
-        save(id);
-      }, 50),
-    );
+  /** Saves stations' states in one transaction. */
+  function saveMany(ids: Iterable<string>): void {
+    const store = options.store;
+    if (store === undefined) return;
+    const states: [string, PersistedChargePoint][] = [];
+    for (const id of ids) {
+      const entry = entries.get(id);
+      if (entry !== undefined) states.push([id, entry.station.chargePoint.persistentState()]);
+    }
+    if (states.length > 0) store.saveStates(states);
   }
 
+  /** Collects the many 'changed' events of all stations into one write a batch interval. */
+  function scheduleSave(id: string): void {
+    if (options.store === undefined || shuttingDown) return;
+    pendingSaves.add(id);
+    flushTimer ??= setTimeout(() => {
+      flushTimer = undefined;
+      const ids = [...pendingSaves];
+      pendingSaves.clear();
+      saveMany(ids);
+    }, options.saveBatchMs ?? 1000);
+  }
+
+  // Meters advance without events, so every running station is saved every
+  // saveIntervalMs: a tenth of them each tenth of the interval, so no single
+  // transaction holds the event loop for long.
+  const SAVE_SLICES = 10;
+  let saveTick = 0;
   const saveTimer =
     options.store === undefined
       ? undefined
-      : setInterval(() => {
-          for (const [id, entry] of entries) if (entry.running) save(id);
-        }, options.saveIntervalMs ?? 10_000);
+      : setInterval(
+          () => {
+            const slice = saveTick++ % SAVE_SLICES;
+            const running = [...entries].filter(([, entry]) => entry.running).map(([id]) => id);
+            saveMany(running.filter((_, i) => i % SAVE_SLICES === slice));
+          },
+          (options.saveIntervalMs ?? 10_000) / SAVE_SLICES,
+        );
   saveTimer?.unref();
 
   function build(
@@ -534,7 +560,7 @@ export function createFleet(options: FleetOptions): Fleet {
         throw error;
       }
       options.store?.saveStations(definitions);
-      for (const station of built) save(station.id);
+      saveMany(built.map((station) => station.id));
       if (addOptions.start !== false) {
         startMany(
           built.map((station) => station.id),
@@ -553,8 +579,6 @@ export function createFleet(options: FleetOptions): Fleet {
     async removeMany(ids) {
       await Promise.all(ids.map((id) => stopStation(id)));
       for (const id of ids) {
-        const pending = pendingSaves.get(id);
-        if (pending !== undefined) clearTimeout(pending);
         pendingSaves.delete(id);
         entries.delete(id);
         randoms.delete(id);
@@ -623,8 +647,6 @@ export function createFleet(options: FleetOptions): Fleet {
 
     async remove(id) {
       await stopStation(id);
-      const pending = pendingSaves.get(id);
-      if (pending !== undefined) clearTimeout(pending);
       pendingSaves.delete(id);
       entries.delete(id);
       randoms.delete(id);
@@ -647,11 +669,12 @@ export function createFleet(options: FleetOptions): Fleet {
       if (saveTimer !== undefined) clearInterval(saveTimer);
       for (const timer of pendingStarts.values()) clearTimeout(timer);
       pendingStarts.clear();
-      for (const timer of pendingSaves.values()) clearTimeout(timer);
+      if (flushTimer !== undefined) clearTimeout(flushTimer);
+      flushTimer = undefined;
       pendingSaves.clear();
       await Promise.all([...entries.keys()].map((id) => stopStation(id)));
-      // One final save per station; nothing is written after this.
-      for (const id of entries.keys()) save(id);
+      // One final save of every station, in one transaction; nothing is written after this.
+      saveMany(entries.keys());
     },
   };
 }

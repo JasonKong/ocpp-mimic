@@ -43,6 +43,8 @@ describe('parseCommand', () => {
       personas: ['./personas', './more'],
       allowCsms: ['wss://csms.example.com'],
     });
+    expect(parseCommand(['serve', '--record-limit', '0'])).toMatchObject({ recordLimit: 0 });
+    expect(parseCommand(['serve', '--record-limit', 'lots'])).toMatchObject({ kind: 'error' });
     expect(parseCommand(['serve', '--allow-csms', 'csms.example.com'])).toMatchObject({
       kind: 'error',
     });
