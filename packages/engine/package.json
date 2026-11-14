@@ -12,6 +12,7 @@
   },
   "files": [
     "dist",
+    "oca-schemas",
     "personas"
   ],
   "scripts": {
@@ -19,6 +20,9 @@
   },
   "dependencies": {
     "@ocpp-mimic/core": "workspace:*",
+    "ajv": "^8.20.0",
+    "ajv-draft-04": "^1.0.0",
+    "ajv-formats": "^3.0.1",
     "ws": "^8.22.1",
     "yaml": "^2.9.1"
   },

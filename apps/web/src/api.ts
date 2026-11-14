@@ -61,6 +61,8 @@ export interface FrameRecord {
   uniqueId?: string;
   action?: string;
   payload?: unknown;
+  /** Problems found by the official OCA JSON Schema, when there are any. */
+  schemaErrors?: string[];
   text: string;
 }
 

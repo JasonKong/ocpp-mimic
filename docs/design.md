@@ -128,7 +128,7 @@ The transport layer makes sure connections work and fail realistically; the RPC 
 
 - Requests and responses are correlated by uniqueId; every CALL has a timeout.
 - The spec says (SHOULD) a party does not send the next CALL until the previous one is answered or times out, so the charge point needs an outbound queue.
-- Messages in both directions are validated against core's 1.6 message definitions, written from the specification with a small dependency-free schema module that also yields the TypeScript types: what we send is guaranteed compliant, and non-compliant messages from the CSMS are flagged, which doubles as a CSMS compliance checker. Whether to also ship OCA's JSON Schema files is an open question (#18).
+- Messages in both directions are validated against core's 1.6 message definitions, written from the specification with a small dependency-free schema module that also yields the TypeScript types: what we send is guaranteed compliant, and non-compliant messages from the CSMS are flagged, which doubles as a CSMS compliance checker. As a second check, the engine validates every frame against OCA's official OCPP 1.6 JSON Schemas, shipped unchanged with attribution under their CC BY-ND 4.0 licence in `packages/engine/oca-schemas/` and read by a generic draft-04 validator (Ajv); nothing is generated from them. Problems show up on the frame's record and in the Web UI's message log. A test cross-checks core's definitions against the official schemas with generated payloads; the only differences are the 1..* array cardinalities from the specification text, which the schemas leave out and core enforces (#18).
 - CallError strictly follows `[4, uniqueId, errorCode, errorDescription, errorDetails]`; unsupported actions get `NotImplemented`.
 
 ## Device model and EV / meter model
@@ -354,6 +354,6 @@ Each phase ends with an exit criterion; the next phase starts once it is met. Th
 - [ ] Deployment: a local tool (CLI / desktop) or a hosted SaaS? A SaaS connects to other people's CSMSs over the internet, which brings multi-tenancy and abuse prevention.
 - [ ] When to start OCPP 2.0.1: do target users already need it?
 - [ ] Open source or commercial: decides how much load testing, UI and documentation to build, and which license to use.
-- [ ] Whether to ship OCA's OCPP 1.6 JSON Schema files, given their CC BY-ND licence (#18).
+- [x] Ship OCA's OCPP 1.6 JSON Schema files: yes, unchanged and with attribution, as a second check next to core's own definitions (#18).
 - [ ] Whether the energy multiplier is on by default, and how reports mark it.
 - [ ] Which real charge point the first persona is modelled on, and where sample logs come from (they must be anonymised and must not use client project data).
