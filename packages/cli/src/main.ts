@@ -2,7 +2,7 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { VERSION } from '@ocpp-mimic/core';
-import { createEngine, DEFAULT_ALLOWED_CSMS } from '@ocpp-mimic/engine';
+import { createEngine, DEFAULT_ALLOWED_CSMS, otlpFromEnvironment } from '@ocpp-mimic/engine';
 import { USAGE, parseCommand } from './command.js';
 import { startCsmsCommand } from './csms.js';
 import { runImportCommand } from './import.js';
@@ -12,6 +12,31 @@ import { runCommand } from './run.js';
 const WEB_ROOT = fileURLToPath(new URL('../../../apps/web/dist/', import.meta.url));
 
 const command = parseCommand(process.argv.slice(2));
+
+/**
+ * OTLP settings: the standard environment variables, with `--otlp-endpoint`
+ * and `--otlp-header` taking the endpoint's and headers' place when given.
+ */
+function otlpOf(options: { otlpEndpoint?: string; otlpHeaders?: Record<string, string> }) {
+  const env =
+    options.otlpEndpoint === undefined
+      ? process.env
+      : {
+          ...process.env,
+          OTEL_EXPORTER_OTLP_ENDPOINT: options.otlpEndpoint,
+          OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: undefined,
+        };
+  const otlp = otlpFromEnvironment(env);
+  if (otlp === undefined) return {};
+  return {
+    otlp: {
+      ...otlp,
+      ...(options.otlpHeaders !== undefined && {
+        headers: { ...otlp.headers, ...options.otlpHeaders },
+      }),
+    },
+  };
+}
 
 switch (command.kind) {
   case 'version':
@@ -57,6 +82,7 @@ switch (command.kind) {
       allowedCsms: [...DEFAULT_ALLOWED_CSMS, ...command.allowCsms],
       ...(command.store !== undefined && { storePath: command.store }),
       ...(command.recordLimit !== undefined && { recordLimit: command.recordLimit }),
+      ...otlpOf(command),
       ...(existsSync(WEB_ROOT) && { webRoot: WEB_ROOT }),
     });
     try {

@@ -25,6 +25,8 @@ const LOG_MIN = 1e-5;
 export class Histogram {
   count = 0;
   sum = 0;
+  /** The largest value seen. */
+  max = 0;
   readonly bucketCounts: number[];
   /** Log bucket index → count. */
   private readonly fine = new Map<number, number>();
@@ -37,6 +39,7 @@ export class Histogram {
     const value = Math.max(0, seconds);
     this.count += 1;
     this.sum += value;
+    if (value > this.max) this.max = value;
     for (let i = 0; i < this.buckets.length; i++) {
       if (value <= (this.buckets[i] ?? 0)) this.bucketCounts[i] = (this.bucketCounts[i] ?? 0) + 1;
     }
@@ -48,6 +51,7 @@ export class Histogram {
   merge(other: Histogram): void {
     this.count += other.count;
     this.sum += other.sum;
+    this.max = Math.max(this.max, other.max);
     other.bucketCounts.forEach((n, i) => {
       this.bucketCounts[i] = (this.bucketCounts[i] ?? 0) + n;
     });
@@ -147,6 +151,7 @@ export interface LatencySummary {
   p50: number;
   p95: number;
   p99: number;
+  max: number;
 }
 
 export interface Metrics {
@@ -160,6 +165,8 @@ export interface Metrics {
   usage(stationId: string, event: UsageEvent): void;
   /** A station was removed: its in-flight CALLs and connector statuses are forgotten. */
   forget(stationId: string): void;
+  /** Every metric with its current samples. */
+  families(): MetricFamily[];
   prometheus(): string;
   summary(): MetricsSummary;
   stop(): void;
@@ -175,6 +182,7 @@ const latencySummary = (h: Histogram | undefined): LatencySummary => ({
   p50: round((h?.percentile(0.5) ?? 0) * 1000),
   p95: round((h?.percentile(0.95) ?? 0) * 1000),
   p99: round((h?.percentile(0.99) ?? 0) * 1000),
+  max: round((h?.max ?? 0) * 1000),
 });
 const round = (value: number) => Math.round(value * 10) / 10;
 
@@ -249,6 +257,25 @@ export function createMetrics(options: MetricsOptions): Metrics {
       transactions.get({ outcome: 'stopped' }).value += 1;
     }
   }
+
+  const families = () =>
+    familiesOf(gauges(), {
+      csmsResponse,
+      answers,
+      callsReceived,
+      callErrors,
+      schemaViolations,
+      frames,
+      frameBytes,
+      connections,
+      disconnects,
+      transactions,
+      energy,
+      turnedAway,
+      lateWork,
+      loopWindow,
+      version: options.version,
+    });
 
   return {
     frame(record) {
@@ -336,24 +363,10 @@ export function createMetrics(options: MetricsOptions): Metrics {
       attempting.delete(stationId);
     },
 
+    families,
+
     prometheus() {
-      return prometheusText(gauges(), {
-        csmsResponse,
-        answers,
-        callsReceived,
-        callErrors,
-        schemaViolations,
-        frames,
-        frameBytes,
-        connections,
-        disconnects,
-        transactions,
-        energy,
-        turnedAway,
-        lateWork,
-        loopWindow,
-        version: options.version,
-      });
+      return prometheusText(families());
     },
 
     summary() {
@@ -470,74 +483,78 @@ const labelText = (labels: Record<string, string>, extra: Record<string, string>
   return parts.length === 0 ? '' : `{${parts.join(',')}}`;
 };
 
-function prometheusText(
-  g: Gauges,
-  m: {
-    csmsResponse: Family<Histogram>;
-    answers: Family<Counter>;
-    callsReceived: Family<Counter>;
-    callErrors: Family<Counter>;
-    schemaViolations: Family<Counter>;
-    frames: Family<Counter>;
-    frameBytes: Family<Counter>;
-    connections: Family<Counter>;
-    disconnects: Family<Counter>;
-    transactions: Family<Counter>;
-    energy: Family<Counter>;
-    turnedAway: Family<Counter>;
-    lateWork: Histogram;
-    loopWindow: { p50: number; p99: number; max: number; count: number; sumMs: number };
-    version: string | undefined;
-  },
-): string {
-  const lines: string[] = [];
-  const header = (name: string, type: string, help: string) => {
-    lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`);
-  };
-  const gaugeSeries = (name: string, help: string, series: Series) => {
-    header(name, 'gauge', help);
-    for (const { labels, value } of series.values())
-      lines.push(`${name}${labelText(labels)} ${value}`);
-  };
-  const counter = (name: string, help: string, family: Family<Counter>) => {
-    header(name, 'counter', help);
-    for (const { labels, value } of family.series.values()) {
-      lines.push(`${name}${labelText(labels)} ${value.value}`);
-    }
-  };
-  const histogram = (
-    name: string,
-    help: string,
-    entries: { labels: Record<string, string>; value: Histogram }[],
-  ) => {
-    header(name, 'histogram', help);
-    for (const { labels, value } of entries) {
-      value.buckets.forEach((bound, i) => {
-        lines.push(
-          `${name}_bucket${labelText(labels, { le: String(bound) })} ${value.bucketCounts[i] ?? 0}`,
-        );
-      });
-      lines.push(`${name}_bucket${labelText(labels, { le: '+Inf' })} ${value.count}`);
-      lines.push(`${name}_sum${labelText(labels)} ${value.sum}`);
-      lines.push(`${name}_count${labelText(labels)} ${value.count}`);
-    }
-  };
+/** One sample of a metric family. */
+export type MetricPoint =
+  | { labels: Record<string, string>; value: number }
+  | { labels: Record<string, string>; histogram: Histogram }
+  | {
+      labels: Record<string, string>;
+      summary: { quantiles: [number, number][]; sum: number; count: number };
+    };
+
+/** A metric with its samples, written as Prometheus text or OTLP. */
+export interface MetricFamily {
+  name: string;
+  help: string;
+  type: 'gauge' | 'counter' | 'histogram' | 'summary';
+  points: MetricPoint[];
+}
+
+type FamilyInputs = {
+  csmsResponse: Family<Histogram>;
+  answers: Family<Counter>;
+  callsReceived: Family<Counter>;
+  callErrors: Family<Counter>;
+  schemaViolations: Family<Counter>;
+  frames: Family<Counter>;
+  frameBytes: Family<Counter>;
+  connections: Family<Counter>;
+  disconnects: Family<Counter>;
+  transactions: Family<Counter>;
+  energy: Family<Counter>;
+  turnedAway: Family<Counter>;
+  lateWork: Histogram;
+  loopWindow: { p50: number; p99: number; max: number; count: number; sumMs: number };
+  version: string | undefined;
+};
+
+function familiesOf(g: Gauges, m: FamilyInputs): MetricFamily[] {
+  const families: MetricFamily[] = [];
+  const gauge = (name: string, help: string, points: MetricPoint[]) =>
+    families.push({ name, help, type: 'gauge', points });
+  const counter = (name: string, help: string, family: Family<Counter>) =>
+    families.push({
+      name,
+      help,
+      type: 'counter',
+      points: [...family.series.values()].map(({ labels, value }) => ({
+        labels,
+        value: value.value,
+      })),
+    });
+  const series = (map: Series): MetricPoint[] =>
+    [...map.values()].map(({ labels, value }) => ({ labels, value }));
 
   if (m.version !== undefined) {
-    header('ocpp_mimic_info', 'gauge', 'The ocpp-mimic version.');
-    lines.push(`ocpp_mimic_info${labelText({ version: m.version })} 1`);
+    gauge('ocpp_mimic_info', 'The ocpp-mimic version.', [
+      { labels: { version: m.version }, value: 1 },
+    ]);
   }
-  gaugeSeries('ocpp_mimic_stations', 'Stations by connection state.', g.stationSeries);
-  gaugeSeries(
+  gauge('ocpp_mimic_stations', 'Stations by connection state.', series(g.stationSeries));
+  gauge(
     'ocpp_mimic_connectors',
     'Connectors by their last reported status.',
-    g.connectorSeries,
+    series(g.connectorSeries),
   );
-  histogram(
-    'ocpp_mimic_csms_response_seconds',
-    "Time from a station's CALL to the CSMS's answer.",
-    [...m.csmsResponse.series.values()],
-  );
+  families.push({
+    name: 'ocpp_mimic_csms_response_seconds',
+    help: "Time from a station's CALL to the CSMS's answer.",
+    type: 'histogram',
+    points: [...m.csmsResponse.series.values()].map(({ labels, value }) => ({
+      labels,
+      histogram: value,
+    })),
+  });
   counter(
     'ocpp_mimic_csms_answers_total',
     'Answers to station CALLs: result, error or timeout.',
@@ -569,29 +586,75 @@ function prometheusText(
     'Usage model drivers who found no free connector.',
     m.turnedAway,
   );
-  header('ocpp_mimic_offline_queue_messages', 'gauge', 'Messages waiting for delivery.');
-  lines.push(`ocpp_mimic_offline_queue_messages ${g.queued}`);
-  histogram('ocpp_mimic_work_lateness_seconds', 'How late scheduled work ran.', [
-    { labels: {}, value: m.lateWork },
+  gauge('ocpp_mimic_offline_queue_messages', 'Messages waiting for delivery.', [
+    { labels: {}, value: g.queued },
   ]);
+  families.push({
+    name: 'ocpp_mimic_work_lateness_seconds',
+    help: 'How late scheduled work ran.',
+    type: 'histogram',
+    points: [{ labels: {}, histogram: m.lateWork }],
+  });
   // A summary over the last 10-second window; quantile 1 is the maximum.
-  header('ocpp_mimic_eventloop_delay_seconds', 'summary', 'Event-loop delay over the last 10 s.');
-  for (const [quantile, ms] of [
-    ['0.5', m.loopWindow.p50],
-    ['0.99', m.loopWindow.p99],
-    ['1', m.loopWindow.max],
-  ] as const) {
-    lines.push(`ocpp_mimic_eventloop_delay_seconds${labelText({ quantile })} ${ms / 1000}`);
-  }
-  lines.push(`ocpp_mimic_eventloop_delay_seconds_sum ${m.loopWindow.sumMs / 1000}`);
-  lines.push(`ocpp_mimic_eventloop_delay_seconds_count ${m.loopWindow.count}`);
+  families.push({
+    name: 'ocpp_mimic_eventloop_delay_seconds',
+    help: 'Event-loop delay over the last 10 s.',
+    type: 'summary',
+    points: [
+      {
+        labels: {},
+        summary: {
+          quantiles: [
+            [0.5, m.loopWindow.p50 / 1000],
+            [0.99, m.loopWindow.p99 / 1000],
+            [1, m.loopWindow.max / 1000],
+          ],
+          sum: m.loopWindow.sumMs / 1000,
+          count: m.loopWindow.count,
+        },
+      },
+    ],
+  });
   const cpu = process.cpuUsage();
   const memory = process.memoryUsage();
-  header('process_cpu_seconds_total', 'counter', 'User and system CPU time.');
-  lines.push(`process_cpu_seconds_total ${(cpu.user + cpu.system) / 1e6}`);
-  header('process_resident_memory_bytes', 'gauge', 'Resident memory.');
-  lines.push(`process_resident_memory_bytes ${memory.rss}`);
-  header('nodejs_heap_size_used_bytes', 'gauge', 'V8 heap in use.');
-  lines.push(`nodejs_heap_size_used_bytes ${memory.heapUsed}`);
+  families.push({
+    name: 'process_cpu_seconds_total',
+    help: 'User and system CPU time.',
+    type: 'counter',
+    points: [{ labels: {}, value: (cpu.user + cpu.system) / 1e6 }],
+  });
+  gauge('process_resident_memory_bytes', 'Resident memory.', [{ labels: {}, value: memory.rss }]);
+  gauge('nodejs_heap_size_used_bytes', 'V8 heap in use.', [{ labels: {}, value: memory.heapUsed }]);
+  return families;
+}
+
+/** The Prometheus text format (0.0.4). */
+export function prometheusText(families: readonly MetricFamily[]): string {
+  const lines: string[] = [];
+  for (const family of families) {
+    const { name } = family;
+    lines.push(`# HELP ${name} ${family.help}`, `# TYPE ${name} ${family.type}`);
+    for (const point of family.points) {
+      if ('value' in point) {
+        lines.push(`${name}${labelText(point.labels)} ${point.value}`);
+      } else if ('histogram' in point) {
+        const h = point.histogram;
+        h.buckets.forEach((bound, i) => {
+          lines.push(
+            `${name}_bucket${labelText(point.labels, { le: String(bound) })} ${h.bucketCounts[i] ?? 0}`,
+          );
+        });
+        lines.push(`${name}_bucket${labelText(point.labels, { le: '+Inf' })} ${h.count}`);
+        lines.push(`${name}_sum${labelText(point.labels)} ${h.sum}`);
+        lines.push(`${name}_count${labelText(point.labels)} ${h.count}`);
+      } else {
+        for (const [quantile, value] of point.summary.quantiles) {
+          lines.push(`${name}${labelText(point.labels, { quantile: String(quantile) })} ${value}`);
+        }
+        lines.push(`${name}_sum${labelText(point.labels)} ${point.summary.sum}`);
+        lines.push(`${name}_count${labelText(point.labels)} ${point.summary.count}`);
+      }
+    }
+  }
   return `${lines.join('\n')}\n`;
 }

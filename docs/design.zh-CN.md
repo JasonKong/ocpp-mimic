@@ -665,6 +665,12 @@ thresholds:
 
 所有数字都在出口阈值以内；堆不再增长。出口运行本身（T54）使用不带 store 的 `load`。
 
+**已实现：OpenTelemetry 导出（T47）**
+
+- `engine/src/otlp.ts` 把与 `/metrics` 相同的指标写成 OTLP/HTTP JSON 的 `ExportMetricsServiceRequest`：gauge；counter 写成累计的单调 sum（按 OpenTelemetry 的习惯去掉 `_total`，Prometheus exporter 会加回来）；显式分桶的 histogram（把 Prometheus 的累计桶换成每个桶自己的计数，并带最大值）；以及事件循环的 summary。单位 `s` 和 `By` 由名称推断。
+- 用 `serve --otlp-endpoint <url>`（URL 不以 `/v1/metrics` 结尾时自动补上）和 `--otlp-header name=value`，或标准环境变量 `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`、`OTEL_EXPORTER_OTLP_HEADERS`、`OTEL_METRIC_EXPORT_INTERVAL`（默认 10 秒）、`OTEL_SERVICE_NAME` 和 `OTEL_RESOURCE_ATTRIBUTES` 配置。资源属性有 `service.name`（默认 `ocpp-mimic`）、`service.version`、`ocpp_mimic.run`（未指定时每次运行随机生成）。按间隔推送，engine 停止时再推送一次；collector 失败时只报告一次，直到恢复正常。
+- CI 向 OpenTelemetry Collector（otel/opentelemetry-collector 0.120.0，debug exporter）推送，并检查指标确实到达。
+
 **文件放在哪里**
 
 压测计划放 `scenarios/load/`，导入映射放 `scenarios/import/`，样本日志放 `scenarios/logs/`，压测用的 persona 放 `scenarios/personas/`。测试会把 `scenarios/` 下其余所有文件当作场景校验，所以 `scenarios/examples/` 只放场景。

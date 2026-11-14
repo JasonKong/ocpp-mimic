@@ -53,6 +53,36 @@ jobs:
           sleep 5
           curl -sf localhost:7300/metrics | tee metrics.txt | head -20
           docker run --rm -i --entrypoint promtool prom/prometheus:v3.5.0 check metrics < metrics.txt
+      - name: Check the OTLP export with an OpenTelemetry Collector
+        run: |
+          cat > otel.yaml <<'YAML'
+          receivers:
+            otlp:
+              protocols:
+                http:
+                  endpoint: 0.0.0.0:4318
+          exporters:
+            debug:
+              verbosity: detailed
+          service:
+            pipelines:
+              metrics:
+                receivers: [otlp]
+                exporters: [debug]
+          YAML
+          docker run -d --name otel -p 4318:4318 -v "$PWD/otel.yaml:/etc/otelcol/config.yaml" otel/opentelemetry-collector:0.120.0
+          node packages/cli/dist/main.js csms --port 9101 --status 0 &
+          OTEL_METRIC_EXPORT_INTERVAL=1000 node packages/cli/dist/main.js serve --port 7301 \
+            --otlp-endpoint http://127.0.0.1:4318 > serve-otlp.log 2>&1 &
+          for i in $(seq 1 50); do curl -sf localhost:7301/api/health > /dev/null && break; sleep 0.2; done
+          curl -sf -X POST localhost:7301/api/stations/bulk -H 'content-type: application/json' \
+            -d '{"count":2,"id":"OTEL-{1}","persona":"generic-1.6","csmsUrl":"ws://127.0.0.1:9101/ocpp"}'
+          sleep 8
+          if ! docker logs otel 2>&1 | grep -q 'ocpp_mimic_stations'; then
+            docker logs otel; cat serve-otlp.log; exit 1
+          fi
+          if grep -q 'OTLP export' serve-otlp.log; then cat serve-otlp.log; exit 1; fi
+          docker logs otel 2>&1 | grep -m 5 'Name: ocpp_mimic'
       - name: Add the results to the job summary
         if: always()
         run: |

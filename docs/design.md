@@ -704,6 +704,12 @@ On the reference machine (the `bench` workflow: a GitHub-hosted runner, 2 vCPUs,
 
 Every number is within the exit thresholds; the heap no longer grows. The exit run itself (T54) uses `load`, which keeps no store.
 
+**Implemented: OpenTelemetry export (T47)**
+
+- `engine/src/otlp.ts` writes the same metric families as `/metrics` into an OTLP/HTTP JSON `ExportMetricsServiceRequest`: gauges, cumulative monotonic sums for counters (named without `_total`, as OpenTelemetry does; a Prometheus exporter adds it back), explicit-bucket histograms (the Prometheus buckets turned into per-bucket counts, plus the maximum), and the event-loop summary. Units `s` and `By` follow the name.
+- `serve --otlp-endpoint <url>` (`/v1/metrics` is added unless the URL ends with it) and `--otlp-header name=value`, or the standard variables `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_METRIC_EXPORT_INTERVAL` (default 10 s), `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`. Resource attributes: `service.name` (default `ocpp-mimic`), `service.version`, `ocpp_mimic.run` (random per engine run unless given). It pushes on the interval and once more when the engine stops; a failing collector is reported once until it works again.
+- CI sends to an OpenTelemetry Collector (otel/opentelemetry-collector 0.120.0, debug exporter) and checks that the metrics arrive.
+
 **Where the files go**
 
 Load plans go in `scenarios/load/`, import mappings in `scenarios/import/`, sample logs in `scenarios/logs/`, and load personas in `scenarios/personas/`. The tests validate every other file under `scenarios/` as a scenario, so `scenarios/examples/` stays scenario-only.
