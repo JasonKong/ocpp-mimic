@@ -63,3 +63,12 @@ export {
   type CsmsHandler,
   type CsmsReply,
 } from './csms/builtin-csms.js';
+export {
+  prepareScenarioFiles,
+  runPreparedScenarios,
+  type FileRun,
+  type FilesRunOptions,
+  type PreparedRun,
+  type RunSummary,
+} from './scenario/run.js';
+export { formatScenarioResult, formatSummary } from './scenario/report.js';
