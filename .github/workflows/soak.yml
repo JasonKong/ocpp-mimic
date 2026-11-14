@@ -1,0 +1,65 @@
+name: soak
+
+# The M4 exit criterion (docs/design.md, "M4 scale"): scenarios/load/m4-exit.yaml,
+# 1,000 stations for an hour, on a GitHub-hosted ubuntu-latest runner (2 vCPUs
+# and 8 GB for a private repository) against `ocpp-mimic csms` running beside
+# it. Weekly and by hand; the report, the JUnit file and the CSMS's summary are
+# uploaded.
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: Duration (empty for the plan's hour)
+        default: ''
+  schedule:
+    - cron: '0 18 * * 0'
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Describe the machine
+        run: |
+          mkdir -p reports/soak
+          { nproc; free -m; node --version; } | tee reports/soak/machine.txt
+      - name: Run the M4 exit plan against ocpp-mimic csms
+        env:
+          DURATION: ${{ inputs.duration }}
+        run: |
+          set -o pipefail
+          node packages/cli/dist/main.js csms --port 9100 --delay 20ms-100ms --status 5m \
+            > reports/soak/csms.log 2>&1 &
+          CSMS=$!
+          sleep 1
+          extra=()
+          if [ -n "$DURATION" ]; then extra+=(--duration "$DURATION"); fi
+          code=0
+          node packages/cli/dist/main.js load scenarios/load/m4-exit.yaml \
+            --personas scenarios/personas --report-dir reports/soak --junit reports/soak.xml \
+            "${extra[@]}" | tee reports/soak/console.txt || code=$?
+          # The CSMS prints its summary of requests by action when stopped.
+          kill -INT "$CSMS" || true
+          sleep 2
+          exit $code
+      - name: Add the report to the job summary
+        if: always()
+        run: |
+          if [ -f reports/soak/report.md ]; then cat reports/soak/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-report
+          path: |
+            reports/soak/
+            reports/soak.xml
+          if-no-files-found: warn
