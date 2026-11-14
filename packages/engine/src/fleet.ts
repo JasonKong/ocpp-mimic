@@ -124,6 +124,8 @@ export interface Fleet {
    * here, and a reconnect storm hits every station.
    */
   inject(id: string, request: InjectionRequest): void;
+  /** Listens to every fleet event beside `onEvent`; returns the unsubscribe function. */
+  subscribe(listener: (event: FleetEvent) => void): () => void;
 }
 
 /** True when `url` starts with one of `allowed` at a boundary (end, ':', '/' or '?'). */
@@ -146,7 +148,11 @@ export function createFleet(options: FleetOptions): Fleet {
   const ids = options.ids ?? randomIds;
   const certificateTools = createCertificateTools();
   const allowed = options.allowedCsms ?? DEFAULT_ALLOWED_CSMS;
-  const emit = options.onEvent ?? (() => {});
+  const listeners = new Set<(event: FleetEvent) => void>();
+  const emit = (event: FleetEvent) => {
+    options.onEvent?.(event);
+    listeners.forEach((listener) => listener(event));
+  };
   const entries = new Map<string, Entry>();
   const pendingSaves = new Map<string, ReturnType<typeof setTimeout>>();
   /** Set by shutdown(): stopping connections still emits changes, which must not schedule saves. */
@@ -415,6 +421,10 @@ export function createFleet(options: FleetOptions): Fleet {
       for (const entry of entries.values()) {
         if (entry.running) entry.station.transport.restartAfter(0);
       }
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
     list: () => [...entries.values()].map((entry) => entry.station),
     start: startStation,

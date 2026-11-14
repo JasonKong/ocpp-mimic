@@ -71,6 +71,29 @@ describe('fleet', () => {
     });
   });
 
+  it('tells subscribers about frames and connection changes until they unsubscribe', async () => {
+    csms = await startBuiltinCsms();
+    const fleet = await fleetWith();
+    const seen: string[] = [];
+    const unsubscribe = fleet.subscribe((event) => {
+      if (event.type === 'frame' && event.direction === 'cp-to-csms') seen.push('frame');
+      if (event.type === 'transport' && event.event.type === 'state') seen.push(event.event.state);
+    });
+    const station = fleet.add({ id: 'SIM-1', persona: 'generic-1.6', csmsUrl: csms.url });
+    await until(() => station.snapshot().registration === 'Accepted');
+    expect(seen).toContain('open');
+    expect(seen).toContain('frame');
+    unsubscribe();
+    const count = seen.length;
+    fleet.reconnectStorm();
+    await until(
+      () =>
+        station.snapshot().registration === 'Accepted' && station.snapshot().transport === 'open',
+    );
+    await sleep(50);
+    expect(seen).toHaveLength(count);
+  });
+
   it('refuses CSMS addresses outside the allow-list, unknown personas and duplicate ids', async () => {
     const fleet = await fleetWith();
     expect(() =>

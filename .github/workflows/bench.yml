@@ -1,0 +1,66 @@
+name: bench
+
+# The benchmark harness (`pnpm bench`) on the M4 reference machine: a
+# GitHub-hosted ubuntu-latest runner (2 vCPUs and 8 GB for a private
+# repository). Started by hand; the samples, the summary and a CPU profile
+# are uploaded as an artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      stations:
+        description: Stations
+        default: '1000'
+      duration:
+        description: Duration, ramp-up included
+        default: 10m
+      rate:
+        description: Stations started a second
+        default: '10'
+      charging:
+        description: Share of stations charging
+        default: '0.3'
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc -b
+      - name: Describe the machine
+        run: |
+          mkdir -p bench-results
+          { nproc; free -m; node --version; } | tee bench-results/machine.txt
+      - name: Run the benchmark
+        env:
+          STATIONS: ${{ inputs.stations }}
+          DURATION: ${{ inputs.duration }}
+          RATE: ${{ inputs.rate }}
+          CHARGING: ${{ inputs.charging }}
+        run: |
+          set -o pipefail
+          node --cpu-prof --cpu-prof-dir=bench-results packages/cli/dist/bench-main.js \
+            --stations "$STATIONS" --duration "$DURATION" --rate "$RATE" \
+            --charging "$CHARGING" --out bench-results | tee bench-results/console.txt
+      - name: Add the summary to the job summary
+        if: always()
+        run: |
+          {
+            echo '### Benchmark'
+            echo '```'
+            sed -n '/^Summary:/,$p' bench-results/console.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results/
+          if-no-files-found: warn
