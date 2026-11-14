@@ -56,4 +56,27 @@ describe('state store', () => {
     expect(store.loadState('SIM-1')).toBeUndefined();
     store.close();
   });
+
+  it('saves and deletes many stations in one transaction each', () => {
+    const store = openStateStore(':memory:');
+    const definitions = ['A-1', 'A-2', 'A-3'].map((id) => ({
+      id,
+      persona: 'a',
+      csmsUrl: 'ws://localhost/ocpp',
+      tags: ['load'],
+      group: 'a',
+    }));
+    store.saveStations(definitions);
+    store.saveState('A-2', STATE);
+    expect(store.listStations()).toEqual(definitions);
+    store.deleteStations(['A-1', 'A-2']);
+    expect(store.listStations().map((d) => d.id)).toEqual(['A-3']);
+    expect(store.loadState('A-2')).toBeUndefined();
+    // A failing write rolls the whole batch back.
+    const broken = { id: 'B-2', persona: 'a', csmsUrl: 'x' } as never as (typeof definitions)[0];
+    Object.defineProperty(broken, 'id', { get: () => Symbol('not an id') });
+    expect(() => store.saveStations([{ ...definitions[0]!, id: 'B-1' }, broken])).toThrow();
+    expect(store.listStations().map((d) => d.id)).toEqual(['A-3']);
+    store.close();
+  });
 });

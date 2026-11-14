@@ -8,6 +8,9 @@ import {
   configInt,
   createChargePoint,
   createConfig,
+  DEFAULT_RAMP_UP,
+  rampUpDelays,
+  type RampUp,
   type ChargePoint,
   type ChargePointEvent,
   type ChargePointSnapshot,
@@ -77,6 +80,8 @@ export interface StationSnapshot extends ChargePointSnapshot {
   injections: ActiveInjection[];
   /** Why the last connection attempt failed, until a connection opens. */
   connectionError?: string;
+  tags: string[];
+  group?: string;
 }
 
 export interface VirtualStation {
@@ -106,6 +111,20 @@ export interface FleetOptions {
 export interface Fleet {
   /** Adds a station; it starts unless `start` is false. Throws on invalid definitions. */
   add(definition: StationDefinition, options?: { start?: boolean }): VirtualStation;
+  /**
+   * Adds many stations, all or none: one invalid definition throws and adds
+   * nothing. They are saved in one transaction and, unless `start` is false,
+   * started along the ramp-up (default 20 a second).
+   */
+  addMany(
+    definitions: readonly StationDefinition[],
+    options?: { start?: boolean; rampUp?: RampUp | false },
+  ): VirtualStation[];
+  /** Starts stations along a ramp-up; one that is stopped or removed before its turn stays stopped. */
+  startMany(ids: readonly string[], rampUp?: RampUp | false): void;
+  stopMany(ids: readonly string[]): Promise<void>;
+  /** Stops stations and deletes them from the store in one transaction. */
+  removeMany(ids: readonly string[]): Promise<void>;
   get(id: string): VirtualStation | undefined;
   list(): VirtualStation[];
   start(id: string): void;
@@ -321,6 +340,8 @@ export function createFleet(options: FleetOptions): Fleet {
         transport: transport.state,
         injections: injector.list(),
         ...(connectionError !== undefined && { connectionError }),
+        tags: definition.tags ?? [],
+        ...(definition.group !== undefined && { group: definition.group }),
       }),
     };
     entries.set(definition.id, { station, running: false });
@@ -359,15 +380,45 @@ export function createFleet(options: FleetOptions): Fleet {
     }
   }
 
+  /** Stations waiting for their turn in a ramp-up. */
+  const pendingStarts = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function cancelPendingStart(id: string): void {
+    const timer = pendingStarts.get(id);
+    if (timer !== undefined) clearTimeout(timer);
+    pendingStarts.delete(id);
+  }
+
   function startStation(id: string): void {
     const entry = entries.get(id);
     if (entry === undefined) throw new Error(`unknown station ${id}`);
+    cancelPendingStart(id);
     if (entry.running) return;
     entry.running = true;
     entry.station.transport.start();
   }
 
+  function startMany(ids: readonly string[], rampUp: RampUp | false = DEFAULT_RAMP_UP): void {
+    const delays = rampUpDelays(ids.length, rampUp, Math.random);
+    ids.forEach((id, i) => {
+      if (!entries.has(id)) throw new Error(`unknown station ${id}`);
+      const delay = delays[i] ?? 0;
+      if (delay <= 0) {
+        startStation(id);
+        return;
+      }
+      cancelPendingStart(id);
+      const timer = setTimeout(() => {
+        pendingStarts.delete(id);
+        if (entries.has(id)) startStation(id);
+      }, delay);
+      timer.unref();
+      pendingStarts.set(id, timer);
+    });
+  }
+
   async function stopStation(id: string): Promise<void> {
+    cancelPendingStart(id);
     const entry = entries.get(id);
     if (entry === undefined || !entry.running) return;
     entry.running = false;
@@ -382,6 +433,48 @@ export function createFleet(options: FleetOptions): Fleet {
       save(definition.id);
       if (addOptions.start !== false) startStation(definition.id);
       return station;
+    },
+
+    addMany(definitions, addOptions = {}) {
+      const ids = new Set<string>();
+      for (const { id } of definitions) {
+        if (ids.has(id)) throw new Error(`station ${id} is listed twice`);
+        ids.add(id);
+      }
+      const built: VirtualStation[] = [];
+      try {
+        for (const definition of definitions) built.push(build(definition));
+      } catch (error) {
+        // All or none: the stations built so far never started; forget them.
+        for (const station of built) entries.delete(station.id);
+        throw error;
+      }
+      options.store?.saveStations(definitions);
+      for (const station of built) save(station.id);
+      if (addOptions.start !== false) {
+        startMany(
+          built.map((station) => station.id),
+          addOptions.rampUp ?? DEFAULT_RAMP_UP,
+        );
+      }
+      return built;
+    },
+
+    startMany,
+
+    async stopMany(ids) {
+      await Promise.all(ids.map((id) => stopStation(id)));
+    },
+
+    async removeMany(ids) {
+      await Promise.all(ids.map((id) => stopStation(id)));
+      for (const id of ids) {
+        const pending = pendingSaves.get(id);
+        if (pending !== undefined) clearTimeout(pending);
+        pendingSaves.delete(id);
+        entries.delete(id);
+      }
+      options.store?.deleteStations(ids);
     },
 
     get: (id) => entries.get(id)?.station,
@@ -453,6 +546,8 @@ export function createFleet(options: FleetOptions): Fleet {
     async shutdown() {
       shuttingDown = true;
       if (saveTimer !== undefined) clearInterval(saveTimer);
+      for (const timer of pendingStarts.values()) clearTimeout(timer);
+      pendingStarts.clear();
       for (const timer of pendingSaves.values()) clearTimeout(timer);
       pendingSaves.clear();
       await Promise.all([...entries.keys()].map((id) => stopStation(id)));

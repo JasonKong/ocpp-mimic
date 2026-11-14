@@ -68,6 +68,120 @@ async function addStation(
   );
 }
 
+describe('engine API: bulk stations', () => {
+  it('creates stations from a template, all or none', async () => {
+    const { api, csmsUrl } = await start();
+    const template = { persona: 'generic-1.6', csmsUrl, tags: ['load'], group: 'ac' };
+    const created = await api('POST', '/api/stations/bulk', {
+      ...template,
+      count: 5,
+      id: 'LOAD-{001}',
+      rampUp: { rate: 50 },
+    });
+    expect(created).toEqual({
+      status: 201,
+      body: { created: 5, ids: ['LOAD-001', 'LOAD-002', 'LOAD-003', 'LOAD-004', 'LOAD-005'] },
+    });
+    await until(async () => {
+      const list = await api('GET', '/api/stations?view=summary&state=connected');
+      return list.body?.stations.length === 5;
+    });
+    const summary = await api('GET', '/api/stations?view=summary&tag=load');
+    expect(summary.body?.stations[0]).toEqual({
+      id: 'LOAD-001',
+      persona: 'generic-1.6',
+      group: 'ac',
+      tags: ['load'],
+      state: 'connected',
+      registration: 'Accepted',
+      connectors: [{ connectorId: 1, status: 'Available' }],
+    });
+
+    expect(
+      await api('POST', '/api/stations/bulk', { ...template, count: 2, id: 'LOAD-{005}' }),
+    ).toEqual({ status: 409, body: { error: 'station LOAD-005 already exists' } });
+    for (const bad of [
+      { ...template, count: 2, id: 'NO-COUNTER' },
+      { ...template, count: 0, id: 'X-{1}' },
+      { ...template, count: 2, id: 'X-{1}', persona: 'nope' },
+      { ...template, count: 2, id: 'X-{1}', tags: ['two words'] },
+      { ...template, count: 2, id: 'X-{1}', rampUp: { rate: -1 } },
+    ]) {
+      expect((await api('POST', '/api/stations/bulk', bad)).status, JSON.stringify(bad)).toBe(400);
+    }
+    expect((await api('GET', '/api/stations')).body?.stations).toHaveLength(5);
+  });
+
+  it('acts on stations selected by ids, tag or group, and refuses an empty selection', async () => {
+    const { api, csmsUrl } = await start();
+    for (const [group, id] of [
+      ['a', 'A-{1}'],
+      ['b', 'B-{1}'],
+    ] as const) {
+      await api('POST', '/api/stations/bulk', {
+        persona: 'generic-1.6',
+        csmsUrl,
+        count: 2,
+        id,
+        group,
+        tags: ['load', group],
+        rampUp: false,
+      });
+    }
+    const states = async (query: string) =>
+      (
+        (await api('GET', `/api/stations?view=summary&${query}`)).body?.stations as {
+          id: string;
+          state: string;
+        }[]
+      ).map((s) => `${s.id}:${s.state}`);
+    await until(async () => (await states('state=connected')).length === 4);
+
+    expect(await api('POST', '/api/stations/bulk/stop', {})).toMatchObject({ status: 400 });
+    expect(await api('POST', '/api/stations/bulk/stop', { group: 'a' })).toEqual({
+      status: 200,
+      body: { stations: 2, ids: ['A-1', 'A-2'] },
+    });
+    expect(await states('group=a')).toEqual(['A-1:stopped', 'A-2:stopped']);
+    expect(await states('state=stopped')).toEqual(['A-1:stopped', 'A-2:stopped']);
+
+    await api('POST', '/api/stations/bulk/offline', { ids: ['B-1'] });
+    expect(await states('tag=b')).toEqual(['B-1:offline', 'B-2:connected']);
+    await api('POST', '/api/stations/bulk/online', { tag: 'b' });
+    await api('POST', '/api/stations/bulk/start', { tag: 'load', rampUp: { rate: 100 } });
+    await until(async () => (await states('state=connected')).length === 4);
+    expect((await api('POST', '/api/stations/bulk/explode', { all: true })).status).toBe(404);
+
+    expect(await api('DELETE', '/api/stations/bulk', { tag: 'a' })).toEqual({
+      status: 200,
+      body: { deleted: 2 },
+    });
+    expect(await states('tag=load')).toEqual(['B-1:connected', 'B-2:connected']);
+    expect(await api('DELETE', '/api/stations/bulk', { all: true })).toMatchObject({
+      body: { deleted: 2 },
+    });
+    expect((await api('GET', '/api/stations')).body?.stations).toEqual([]);
+  });
+
+  it('creates and removes 1,000 stations with one call each', { timeout: 30_000 }, async () => {
+    const { api, csmsUrl } = await start();
+    const created = await api('POST', '/api/stations/bulk', {
+      persona: 'generic-1.6',
+      csmsUrl,
+      count: 1000,
+      id: 'K-{0001}',
+      start: false,
+    });
+    expect(created.body?.created).toBe(1000);
+    expect(
+      (await api('GET', '/api/stations?view=summary&state=stopped')).body?.stations,
+    ).toHaveLength(1000);
+    expect((await api('DELETE', '/api/stations/bulk', { all: true })).body).toEqual({
+      deleted: 1000,
+    });
+  });
+});
+
 describe('engine API', () => {
   it('reports health and lists personas', async () => {
     const { api } = await start();

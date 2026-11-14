@@ -5,15 +5,20 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   DEFAULT_BEHAVIOUR,
+  expandIdPattern,
+  nameProblem,
   OCPP16_SUBPROTOCOL,
   parseInjection,
+  parseRampUp,
+  tagsProblem,
   VERSION,
+  type RampUp,
   type ChargePointBehaviour,
   type Fault,
   type PluggedEv,
 } from '@ocpp-mimic/core';
 import { resolveEv } from './evs.js';
-import type { Fleet, VirtualStation } from './fleet.js';
+import type { Fleet, StationSnapshot, VirtualStation } from './fleet.js';
 import type { PersonaRegistry } from './personas.js';
 import type { RecordEntry, Recorder } from './recorder.js';
 import type { StationDefinition, StationSecurity } from './state-store.js';
@@ -155,6 +160,105 @@ function evOf(station: VirtualStation, value: unknown): PluggedEv | undefined {
   }
 }
 
+/**
+ * A station definition from a request body (`id` given separately for
+ * templates). Unknown fields are ignored, as before.
+ */
+function definitionFrom(body: Record<string, unknown>, id: string): StationDefinition {
+  const config = body.config;
+  if (
+    config !== undefined &&
+    (typeof config !== 'object' || config === null || Array.isArray(config))
+  ) {
+    throw new HttpError(400, '"config" must be an object of strings');
+  }
+  if (body.tags !== undefined) {
+    const problem = tagsProblem(body.tags);
+    if (problem !== undefined) throw new HttpError(400, `"tags": ${problem}`);
+  }
+  if (body.group !== undefined) {
+    const problem = nameProblem(body.group, 'the group');
+    if (problem !== undefined) throw new HttpError(400, `"group": ${problem}`);
+  }
+  return {
+    id,
+    persona: stringField(body, 'persona', true),
+    csmsUrl: stringField(body, 'csmsUrl', true),
+    ...(body.password !== undefined && { password: stringField(body, 'password') ?? '' }),
+    ...(config !== undefined && {
+      config: Object.fromEntries(
+        Object.entries(config).map(([key, value]) => [key, String(value)]),
+      ),
+    }),
+    ...(body.energyMultiplier !== undefined && {
+      energyMultiplier: multiplierField(body),
+    }),
+    ...(body.security !== undefined && { security: securityField(body.security) }),
+    ...(body.tags !== undefined && { tags: body.tags as string[] }),
+    ...(body.group !== undefined && { group: body.group as string }),
+  };
+}
+
+function rampUpField(value: unknown): RampUp | false {
+  const parsed = parseRampUp(value);
+  if (!parsed.ok) throw new HttpError(400, parsed.problem);
+  return parsed.ramp;
+}
+
+/** How a station's connection stands, for filters and summaries. */
+export type ConnectionState = 'connected' | 'connecting' | 'offline' | 'stopped';
+
+export function connectionState(snapshot: StationSnapshot): ConnectionState {
+  if (!snapshot.running || snapshot.transport === 'stopped') return 'stopped';
+  if (snapshot.transport === 'open') return 'connected';
+  if (snapshot.transport === 'offline' || snapshot.transport === 'half-open') return 'offline';
+  return 'connecting';
+}
+
+/** The few fields a fleet list needs. */
+export function stationSummary(snapshot: StationSnapshot) {
+  return {
+    id: snapshot.id,
+    persona: snapshot.persona,
+    ...(snapshot.group !== undefined && { group: snapshot.group }),
+    tags: snapshot.tags,
+    state: connectionState(snapshot),
+    registration: snapshot.registration,
+    connectors: snapshot.connectors.map((c) => ({
+      connectorId: c.connectorId,
+      status: c.status,
+    })),
+  };
+}
+
+/**
+ * The stations a bulk action applies to: `{ ids?, tag?, group? }` (all must
+ * match), or `{ all: true }`. An empty selector is refused, so a slip cannot
+ * stop or delete the whole fleet.
+ */
+function select(fleet: Fleet, body: Record<string, unknown>): VirtualStation[] {
+  const { ids, tag, group, all } = body;
+  if (ids === undefined && tag === undefined && group === undefined && all !== true) {
+    throw new HttpError(400, 'select stations with "ids", "tag" or "group", or "all": true');
+  }
+  if (ids !== undefined && (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string'))) {
+    throw new HttpError(400, '"ids" must be a list of station ids');
+  }
+  if (tag !== undefined && typeof tag !== 'string')
+    throw new HttpError(400, '"tag" must be a name');
+  if (group !== undefined && typeof group !== 'string') {
+    throw new HttpError(400, '"group" must be a name');
+  }
+  const wanted = ids === undefined ? undefined : new Set(ids as string[]);
+  return fleet.list().filter((station) => {
+    const { definition } = station;
+    if (wanted !== undefined && !wanted.has(station.id)) return false;
+    if (tag !== undefined && !(definition.tags ?? []).includes(tag)) return false;
+    if (group !== undefined && definition.group !== group) return false;
+    return true;
+  });
+}
+
 /** Runs `fn` on a connector, then answers with the station's snapshot. */
 function connectorAction(
   fn: (station: VirtualStation, connectorId: number, body: Record<string, unknown>) => unknown,
@@ -187,37 +291,90 @@ const routes: Route[] = [
     errors: personas.errors,
   })),
 
-  route('GET', '/api/stations', (_request, { fleet }) => ({
-    stations: fleet.list().map((station) => station.snapshot()),
-  })),
+  route('GET', '/api/stations', (request, { fleet }) => {
+    const tag = request.query.get('tag');
+    const group = request.query.get('group');
+    const state = request.query.get('state');
+    const view = request.query.get('view');
+    if (state !== null && !['connected', 'connecting', 'offline', 'stopped'].includes(state)) {
+      throw new HttpError(400, '"state" must be connected, connecting, offline or stopped');
+    }
+    if (view !== null && view !== 'summary' && view !== 'full') {
+      throw new HttpError(400, '"view" must be summary or full');
+    }
+    const snapshots = fleet
+      .list()
+      .filter(({ definition }) => tag === null || (definition.tags ?? []).includes(tag))
+      .filter(({ definition }) => group === null || definition.group === group)
+      .map((station) => station.snapshot())
+      .filter((snapshot) => state === null || connectionState(snapshot) === state);
+    return { stations: view === 'summary' ? snapshots.map(stationSummary) : snapshots };
+  }),
+
+  // Bulk routes come before /api/stations/:param, which would match them too.
+  route(
+    'POST',
+    '/api/stations/bulk',
+    async (request, { fleet }) => {
+      const body = await request.body();
+      const pattern = stringField(body, 'id', true);
+      const expanded = expandIdPattern(pattern, Number(body.count));
+      if (!expanded.ok) throw new HttpError(400, expanded.problem);
+      const taken = expanded.ids.find((id) => fleet.get(id) !== undefined);
+      if (taken !== undefined) throw new HttpError(409, `station ${taken} already exists`);
+      const rampUp = rampUpField(body.rampUp);
+      const definitions = expanded.ids.map((id) => definitionFrom(body, id));
+      try {
+        fleet.addMany(definitions, { start: body.start !== false, rampUp });
+      } catch (error) {
+        throw new HttpError(400, error instanceof Error ? error.message : String(error));
+      }
+      return { created: definitions.length, ids: expanded.ids };
+    },
+    201,
+  ),
+
+  route('POST', '/api/stations/bulk/:param', async (request, { fleet }) => {
+    const action = request.params[0];
+    const body = await request.body();
+    const stations = select(fleet, body);
+    const ids = stations.map((station) => station.id);
+    switch (action) {
+      case 'start':
+        fleet.startMany(ids, rampUpField(body.rampUp));
+        break;
+      case 'stop':
+        await fleet.stopMany(ids);
+        break;
+      case 'offline':
+        for (const station of stations) station.transport.goOffline('clean');
+        break;
+      case 'online':
+        for (const station of stations) station.transport.goOnline();
+        break;
+      default:
+        throw new HttpError(404, `no bulk action ${String(action)} (start, stop, offline, online)`);
+    }
+    return { stations: ids.length, ids };
+  }),
+
+  route('DELETE', '/api/stations/bulk', async (request, context) => {
+    const stations = select(context.fleet, await request.body());
+    const ids = stations.map((station) => station.id);
+    await context.fleet.removeMany(ids);
+    for (const id of ids) context.recorder.forget(id);
+    return { deleted: ids.length };
+  }),
 
   route(
     'POST',
     '/api/stations',
     async (request, { fleet }) => {
       const body = await request.body();
-      const config = body.config;
-      if (
-        config !== undefined &&
-        (typeof config !== 'object' || config === null || Array.isArray(config))
-      ) {
-        throw new HttpError(400, '"config" must be an object of strings');
+      const definition = definitionFrom(body, stringField(body, 'id', true));
+      if (definition.id === 'bulk') {
+        throw new HttpError(400, '"bulk" is reserved for the bulk routes; pick another id');
       }
-      const definition: StationDefinition = {
-        id: stringField(body, 'id', true),
-        persona: stringField(body, 'persona', true),
-        csmsUrl: stringField(body, 'csmsUrl', true),
-        ...(body.password !== undefined && { password: stringField(body, 'password') ?? '' }),
-        ...(config !== undefined && {
-          config: Object.fromEntries(
-            Object.entries(config).map(([key, value]) => [key, String(value)]),
-          ),
-        }),
-        ...(body.energyMultiplier !== undefined && {
-          energyMultiplier: multiplierField(body),
-        }),
-        ...(body.security !== undefined && { security: securityField(body.security) }),
-      };
       if (fleet.get(definition.id) !== undefined) {
         throw new HttpError(409, `station ${definition.id} already exists`);
       }

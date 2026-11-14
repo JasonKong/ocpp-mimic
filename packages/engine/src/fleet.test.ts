@@ -94,6 +94,59 @@ describe('fleet', () => {
     expect(seen).toHaveLength(count);
   });
 
+  it('adds many stations all or none, and starts them along the ramp-up', async () => {
+    csms = await startBuiltinCsms();
+    const dir = await mkdtemp(join(tmpdir(), 'ocpp-mimic-fleet-'));
+    dirs.push(dir);
+    const store = openStateStore(join(dir, 'state.db'));
+    stores.push(store);
+    const fleet = await fleetWith(store);
+    const definition = (id: string, persona = 'generic-1.6') => ({
+      id,
+      persona,
+      csmsUrl: csms!.url,
+      tags: ['load'],
+      group: 'g',
+    });
+    expect(() => fleet.addMany([definition('B-1'), definition('B-2', 'no-such-persona')])).toThrow(
+      /unknown persona/,
+    );
+    expect(fleet.list()).toEqual([]);
+    expect(store.listStations()).toEqual([]);
+    expect(() => fleet.addMany([definition('B-1'), definition('B-1')])).toThrow(/twice/);
+
+    const started = Date.now();
+    const stations = fleet.addMany(
+      ['B-1', 'B-2', 'B-3'].map((id) => definition(id)),
+      { rampUp: { rate: 10, jitter: 0 } },
+    );
+    expect(stations.map((s) => s.snapshot().tags)).toEqual([['load'], ['load'], ['load']]);
+    expect(store.listStations().map((d) => d.id)).toEqual(['B-1', 'B-2', 'B-3']);
+    expect(stations.map((s) => s.running)).toEqual([true, false, false]);
+    await until(() => stations.every((s) => s.snapshot().registration === 'Accepted'));
+    // The third station's slot starts 200 ms in.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(190);
+
+    await fleet.stopMany(['B-1', 'B-2']);
+    expect(stations.map((s) => s.running)).toEqual([false, false, true]);
+    await fleet.removeMany(['B-1', 'B-2', 'B-3']);
+    expect(fleet.list()).toEqual([]);
+    expect(store.listStations()).toEqual([]);
+  });
+
+  it('keeps a station stopped when it is stopped before its ramp-up turn', async () => {
+    csms = await startBuiltinCsms();
+    const fleet = await fleetWith();
+    const [first, second] = fleet.addMany(
+      ['C-1', 'C-2'].map((id) => ({ id, persona: 'generic-1.6', csmsUrl: csms!.url })),
+      { rampUp: { rate: 5, jitter: 0 } },
+    );
+    await fleet.stop('C-2');
+    await sleep(300);
+    expect(first?.running).toBe(true);
+    expect(second?.running).toBe(false);
+  });
+
   it('refuses CSMS addresses outside the allow-list, unknown personas and duplicate ids', async () => {
     const fleet = await fleetWith();
     expect(() =>
