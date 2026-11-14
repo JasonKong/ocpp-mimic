@@ -545,7 +545,7 @@ thresholds:
 | `ocpp_mimic_energy_wh_total` | counter | persona、group |
 | `ocpp_mimic_offline_queue_messages` | gauge | — |
 | `ocpp_mimic_work_lateness_seconds` | histogram | —：定时任务实际执行时间减去应执行时间 |
-| `ocpp_mimic_eventloop_delay_seconds` | gauge | `quantile`（0.5、0.99、max） |
+| `ocpp_mimic_eventloop_delay_seconds` | summary | `quantile`（0.5、0.99，以及表示最大值的 1），统计最近 10 秒 |
 | `process_cpu_seconds_total`、`process_resident_memory_bytes`、`nodejs_heap_size_used_bytes` | — | —（沿用常见名称，现成的看板可以直接用） |
 
 - 直方图桶（秒）：0.005、0.01、0.025、0.05、0.1、0.25、0.5、1、2.5、5、10、30。内部用误差约 2% 的对数分桶记录延迟，所以报告给出真实的 p50 / p95 / p99；Prometheus 的桶由它折算。

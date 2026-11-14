@@ -584,7 +584,7 @@ Collected in the engine from the wire and the transport, so they work with the E
 | `ocpp_mimic_energy_wh_total` | counter | persona, group |
 | `ocpp_mimic_offline_queue_messages` | gauge | — |
 | `ocpp_mimic_work_lateness_seconds` | histogram | — : scheduled work run time minus its due time |
-| `ocpp_mimic_eventloop_delay_seconds` | gauge | `quantile` (0.5, 0.99, max) |
+| `ocpp_mimic_eventloop_delay_seconds` | summary | `quantile` (0.5, 0.99, and 1 for the maximum), over the last 10 s |
 | `process_cpu_seconds_total`, `process_resident_memory_bytes`, `nodejs_heap_size_used_bytes` | — | — (the usual names, so existing dashboards fit) |
 
 - Histogram buckets (seconds): 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30. Internally latencies go into log-scaled buckets with about 2 % error, so reports give real p50 / p95 / p99; the Prometheus buckets are folded from them.

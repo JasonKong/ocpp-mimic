@@ -205,14 +205,18 @@ export function createMetrics(options: MetricsOptions): Metrics {
 
   const loop = monitorEventLoopDelay({ resolution: LOOP_RESOLUTION_MS });
   loop.enable();
-  let loopWindow = { p50: 0, p99: 0, max: 0 };
+  /** The last 10-second window: quantiles in ms, plus its count and sum for the summary. */
+  let loopWindow = { p50: 0, p99: 0, max: 0, count: 0, sumMs: 0 };
   const loopMs = (nanoseconds: number) =>
     round(Math.max(0, nanoseconds / 1e6 - LOOP_RESOLUTION_MS));
   const loopTimer = setInterval(() => {
+    const count = loop.count;
     loopWindow = {
       p50: loopMs(loop.percentile(50)),
       p99: loopMs(loop.percentile(99)),
       max: loopMs(loop.max),
+      count,
+      sumMs: count === 0 ? 0 : Math.max(0, loop.mean / 1e6 - LOOP_RESOLUTION_MS) * count,
     };
     loop.reset();
   }, LOOP_WINDOW_MS);
@@ -398,7 +402,7 @@ export function createMetrics(options: MetricsOptions): Metrics {
         energyWh: sum(energy),
         offlineQueue: g.queued,
         lateWork: latencySummary(lateWork),
-        eventLoopDelayMs: loopWindow,
+        eventLoopDelayMs: { p50: loopWindow.p50, p99: loopWindow.p99, max: loopWindow.max },
         process: {
           cpuSeconds: round((cpu.user + cpu.system) / 1e6),
           rssBytes: memory.rss,
@@ -471,7 +475,7 @@ function prometheusText(
     transactions: Family<Counter>;
     energy: Family<Counter>;
     lateWork: Histogram;
-    loopWindow: { p50: number; p99: number; max: number };
+    loopWindow: { p50: number; p99: number; max: number; count: number; sumMs: number };
     version: string | undefined;
   },
 ): string {
@@ -554,14 +558,17 @@ function prometheusText(
   histogram('ocpp_mimic_work_lateness_seconds', 'How late scheduled work ran.', [
     { labels: {}, value: m.lateWork },
   ]);
-  header('ocpp_mimic_eventloop_delay_seconds', 'gauge', 'Event-loop delay over the last 10 s.');
+  // A summary over the last 10-second window; quantile 1 is the maximum.
+  header('ocpp_mimic_eventloop_delay_seconds', 'summary', 'Event-loop delay over the last 10 s.');
   for (const [quantile, ms] of [
     ['0.5', m.loopWindow.p50],
     ['0.99', m.loopWindow.p99],
-    ['max', m.loopWindow.max],
+    ['1', m.loopWindow.max],
   ] as const) {
     lines.push(`ocpp_mimic_eventloop_delay_seconds${labelText({ quantile })} ${ms / 1000}`);
   }
+  lines.push(`ocpp_mimic_eventloop_delay_seconds_sum ${m.loopWindow.sumMs / 1000}`);
+  lines.push(`ocpp_mimic_eventloop_delay_seconds_count ${m.loopWindow.count}`);
   const cpu = process.cpuUsage();
   const memory = process.memoryUsage();
   header('process_cpu_seconds_total', 'counter', 'User and system CPU time.');
