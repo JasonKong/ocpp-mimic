@@ -299,6 +299,35 @@ describe('registration', () => {
 });
 
 describe('local sessions', () => {
+  it('forgets the CSMS ids of finished transactions once their messages are sent', async () => {
+    const h = setup();
+    await h.boot();
+    for (let i = 0; i < 5; i++) {
+      await h.startSession(1, `TAG-${i}`);
+      expect(await h.cp.presentIdTag(1, `TAG-${i}`)).toBe('stopping');
+      await h.settle();
+      h.cp.unplug(1);
+      await h.advance(1000);
+    }
+    expect(h.calls('StopTransaction')).toHaveLength(5);
+    expect(h.cp.persistentState().csmsIds).toEqual({});
+    await h.startSession(1, 'TAG-LAST');
+    expect(Object.keys(h.cp.persistentState().csmsIds)).toHaveLength(1);
+  });
+
+  it('stops every timer for good when halted, even with a session running', async () => {
+    const h = setup({ config: { MeterValueSampleInterval: '60' } });
+    await h.boot();
+    await h.startSession();
+    await h.advance(60_000);
+    const before = h.frames.length;
+    expect(h.clock.nextTimerAt()).toBeDefined();
+    h.cp.halt();
+    expect(h.clock.nextTimerAt()).toBeUndefined();
+    await h.advance(10 * 60_000);
+    expect(h.frames).toHaveLength(before);
+  });
+
   it('authorizes a card, starts when plugged in, samples, and stops with the same card', async () => {
     const h = setup({ config: { MeterValueSampleInterval: '60' } });
     await h.boot();

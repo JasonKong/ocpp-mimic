@@ -393,6 +393,13 @@ export interface ChargePoint {
   clearFault(connectorId: number): void;
   /** Changes test switches; turning the cable lock on or off applies to running transactions too. */
   setBehaviour(changes: Partial<ChargePointBehaviour>): void;
+  /**
+   * Stops the charge point for good: every timer (meter samples, EV and
+   * schedule changes, retries) is cleared and none is set again, so nothing
+   * holds it in memory. The fleet calls it when it replaces the station after
+   * a power loss or removes it.
+   */
+  halt(): void;
   /** Changes the energy multiplier from now on. Throws a RangeError unless it is above 0. */
   setEnergyMultiplier(multiplier: number): void;
   dataTransfer(request: RequestOf<'DataTransfer'>): Promise<CallOutcome<'DataTransfer'>>;
@@ -483,11 +490,23 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
 
   const online = () => rpc !== undefined && registration === 'Accepted';
   const now = () => clock.now();
-  const later = (delayMs: number, fn: () => unknown) => clock.setTimer(delayMs, () => void fn());
+  /** Every timer set and not yet fired or stopped, so halt() can stop them all. */
+  const timers = new Set<TimerHandle>();
+  let halted = false;
+  const later = (delayMs: number, fn: () => unknown): TimerHandle => {
+    const handle: TimerHandle = clock.setTimer(delayMs, () => {
+      timers.delete(handle);
+      if (!halted) void fn();
+    });
+    timers.add(handle);
+    return handle;
+  };
   const delayFor = (command: DelayedCommand) =>
     timing.actionDelaysMs?.[command] ?? timing.actionDelayMs;
   const stopTimer = (timer: TimerHandle | undefined) => {
-    if (timer !== undefined) clock.clearTimer(timer);
+    if (timer === undefined) return;
+    clock.clearTimer(timer);
+    timers.delete(timer);
   };
 
   // ---- Sending ------------------------------------------------------------
@@ -532,7 +551,19 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     if (outbox[0] === entry) outbox.shift();
     waiters.get(entry.key)?.(outcome);
     waiters.delete(entry.key);
+    pruneTransactionIds();
     changed();
+  }
+
+  /**
+   * Forgets the CSMS ids of transactions that are over and have nothing left
+   * to send, so the map (and the saved state) does not grow with every session.
+   */
+  function pruneTransactionIds(): void {
+    if (csmsIds.size === 0) return;
+    const needed = new Set<string>(refs.values());
+    for (const queued of outbox) if (queued.txRef !== undefined) needed.add(queued.txRef);
+    for (const ref of csmsIds.keys()) if (!needed.has(ref)) csmsIds.delete(ref);
   }
 
   function pump(): void {
@@ -2156,6 +2187,14 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         onEvent: (event) => emit({ type: 'rpc', event }),
       });
       void boot();
+    },
+
+    halt() {
+      halted = true;
+      rpc?.close();
+      rpc = undefined;
+      for (const timer of timers) clock.clearTimer(timer);
+      timers.clear();
     },
 
     disconnected() {
