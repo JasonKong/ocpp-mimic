@@ -272,7 +272,7 @@ ocpp-mimic 的差异化在四点：来自真实桩经验的 persona、把场景�
 | RemoteStopTransaction | transactionId 匹配就接受，结束交易（reason=Remote） |
 | Reset | Soft / Hard：先结束交易，再断开，按 persona 设定的延时重连并重新发 BootNotification |
 | UnlockConnector | 回 Unlocked / UnlockFailed / NotSupported；有交易时先结束交易（reason=UnlockCommand） |
-| ChangeAvailability | 设为 Operative / Inoperative；有交易时回 Scheduled，等交易结束再生效 |
+| ChangeAvailability | 设为 Operative / Inoperative；先回响应，过 persona 的命令延迟后再上报新状态；有交易时回 Scheduled，等交易结束再生效。connectorId 0 只由针对 connectorId 0 的请求改变，逐个改完所有连接器不会带动它 |
 | GetConfiguration | 返回配置项并标明哪些只读；不认识的 key 放进 unknownKey |
 | ChangeConfiguration | 回 Accepted / Rejected / RebootRequired / NotSupported，并且实际生效 |
 | ClearCache | 清空授权缓存 |

@@ -81,6 +81,7 @@ export interface ChargePointTiming {
 
 /** CSMS commands the charge point answers first and acts on after a delay. */
 export type DelayedCommand =
+  | 'ChangeAvailability'
   | 'RemoteStartTransaction'
   | 'RemoteStopTransaction'
   | 'Reset'
@@ -660,12 +661,17 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       if (request.connectorId !== 0 && findConnector(station, request.connectorId) === undefined) {
         return { status: 'Rejected' };
       }
-      const result = applyDevice({
+      const event: DeviceEvent = {
         type: 'ChangeAvailability',
         connectorId: request.connectorId,
         availability: request.type,
-      });
-      return { status: result.changeAvailability ?? 'Rejected' };
+      };
+      // Answer first and apply the change after the command delay, so the
+      // StatusNotification follows the CALLRESULT as on real charge points.
+      const preview = reduce(station, event, now());
+      if (preview.error !== undefined) return { status: 'Rejected' };
+      later(delayFor('ChangeAvailability'), () => applyDevice(event));
+      return { status: preview.changeAvailability ?? 'Rejected' };
     },
 
     ChangeConfiguration(request) {

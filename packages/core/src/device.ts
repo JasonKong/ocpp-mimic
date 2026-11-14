@@ -58,6 +58,13 @@ export interface StationState {
   readonly evses: readonly EvseState[];
   /** A fault of the whole charge point (connectorId 0). */
   readonly fault?: Fault;
+  /**
+   * Availability of the whole charge point. Only ChangeAvailability with
+   * connectorId 0 sets it; changing every connector one by one does not.
+   */
+  readonly availability: Availability;
+  /** Availability requested for connectorId 0 while transactions run, applied when the last one ends. */
+  readonly scheduledAvailability?: Availability;
   /** What was last reported for connectorId 0. */
   readonly reported?: ReportedStatus;
 }
@@ -93,6 +100,7 @@ export function createStation(connectors: number): StationState {
     throw new RangeError(`a charge point needs at least one connector, got ${connectors}`);
   }
   return {
+    availability: 'Operative',
     evses: Array.from({ length: connectors }, (_, index) => ({
       id: index + 1,
       connectors: [
@@ -149,13 +157,13 @@ export function connectorStatus(connector: ConnectorState, station: StationState
   return withFault('Available', undefined);
 }
 
-/** The status of connectorId 0: only Available, Unavailable or Faulted. */
+/**
+ * The status of connectorId 0: only Available, Unavailable or Faulted. It
+ * follows the charge point's own availability and faults, not its connectors.
+ */
 export function stationStatus(station: StationState): ReportedStatus {
   if (station.fault !== undefined) return withFault('Faulted', station.fault);
-  const all = connectors(station);
-  if (all.every((connector) => connector.availability === 'Inoperative')) {
-    return withFault('Unavailable', undefined);
-  }
+  if (station.availability === 'Inoperative') return withFault('Unavailable', undefined);
   return withFault('Available', undefined);
 }
 
@@ -204,6 +212,23 @@ function endTransaction(connector: ConnectorState): ConnectorState {
   };
 }
 
+/** Applies a scheduled connectorId 0 availability once no transaction is running. */
+function applyScheduledStation(station: StationState): StationState {
+  const { scheduledAvailability, ...rest } = station;
+  if (scheduledAvailability === undefined) return station;
+  if (connectors(station).some((c) => c.transactionId !== undefined)) return station;
+  return { ...rest, availability: scheduledAvailability };
+}
+
+function setStationAvailability(station: StationState, availability: Availability): StationState {
+  const { scheduledAvailability: _dropped, ...rest } = station;
+  const busy = connectors(station).some((c) => c.transactionId !== undefined);
+  if (busy && availability !== station.availability) {
+    return { ...rest, scheduledAvailability: availability };
+  }
+  return { ...rest, availability };
+}
+
 function clearFault(connector: ConnectorState): ConnectorState {
   const { fault: _cleared, ...rest } = connector;
   return rest;
@@ -246,7 +271,7 @@ function applyEvent(
         finishing: false,
       }));
     case 'TransactionEnded':
-      return update(endTransaction);
+      return { station: applyScheduledStation(updateConnectors(station, target, endTransaction)) };
     case 'EvSuspend':
       return update((c) => ({ ...c, evSuspended: true }));
     case 'EvResume':
@@ -272,16 +297,15 @@ function applyEvent(
       return update(clearFault);
     }
     case 'ChangeAvailability': {
-      const matches =
-        event.connectorId === 0 ? () => true : (connector: ConnectorState) => target(connector);
-      const affected = connectors(station).filter(matches);
-      const scheduled = affected.some(
-        (c) => c.transactionId !== undefined && c.availability !== event.availability,
-      );
-      return {
-        station: updateConnectors(station, matches, (c) => setAvailability(c, event.availability)),
-        changeAvailability: scheduled ? 'Scheduled' : 'Accepted',
-      };
+      // connectorId 0 changes the charge point itself and every connector with it.
+      const whole = event.connectorId === 0;
+      const matches = whole ? () => true : (connector: ConnectorState) => target(connector);
+      let next = updateConnectors(station, matches, (c) => setAvailability(c, event.availability));
+      if (whole) next = setStationAvailability(next, event.availability);
+      const scheduled =
+        (whole && next.scheduledAvailability !== undefined) ||
+        connectors(next).some((c) => matches(c) && c.scheduledAvailability !== undefined);
+      return { station: next, changeAvailability: scheduled ? 'Scheduled' : 'Accepted' };
     }
   }
 }

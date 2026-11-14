@@ -413,7 +413,38 @@ describe('commands from the CSMS', () => {
     expect(await h.csmsCall('ChangeAvailability', { connectorId: 7, type: 'Inoperative' })).toEqual(
       { status: 'Rejected' },
     );
+    await h.advance(100);
     expect(h.statuses(mark)).toEqual(['2:Unavailable']);
+  });
+
+  it('ChangeAvailability: answers before reporting the new status', async () => {
+    const h = setup();
+    await h.boot();
+    const mark = h.frames.length;
+    expect(await h.csmsCall('ChangeAvailability', { connectorId: 1, type: 'Inoperative' })).toEqual(
+      { status: 'Accepted' },
+    );
+    expect(h.statuses(mark)).toEqual([]);
+    await h.advance(100);
+    // The CALLRESULT (type 3) goes out first, then the StatusNotification CALL.
+    expect(h.frames.slice(mark).map((f) => f.type)).toEqual([3, 2]);
+    expect(h.statuses(mark)).toEqual(['1:Unavailable']);
+  });
+
+  it('ChangeAvailability: connectorId 0 changes only through connectorId 0', async () => {
+    const h = setup();
+    await h.boot();
+    const mark = h.frames.length;
+    await h.csmsCall('ChangeAvailability', { connectorId: 1, type: 'Inoperative' });
+    await h.csmsCall('ChangeAvailability', { connectorId: 2, type: 'Inoperative' });
+    await h.advance(100);
+    expect(h.statuses(mark)).toEqual(['1:Unavailable', '2:Unavailable']);
+    expect(h.cp.snapshot().station.status).toBe('Available');
+
+    const before = h.frames.length;
+    await h.csmsCall('ChangeAvailability', { connectorId: 0, type: 'Inoperative' });
+    await h.advance(100);
+    expect(h.statuses(before)).toEqual(['0:Unavailable']);
   });
 
   it('GetConfiguration and ChangeConfiguration, with changes taking effect', async () => {

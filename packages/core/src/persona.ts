@@ -88,6 +88,7 @@ export const PersonaSchema = object(
         commandDelays: object(
           {},
           {
+            ChangeAvailability: durationSchema,
             RemoteStartTransaction: durationSchema,
             RemoteStopTransaction: durationSchema,
             Reset: durationSchema,
