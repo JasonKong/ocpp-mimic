@@ -60,6 +60,27 @@ export const OCPP16_ACTION_NAMES = [
   'UpdateFirmware',
 ] as const;
 
+export type Ocpp16ActionName = (typeof OCPP16_ACTION_NAMES)[number];
+
+/** Actions a charge point sends to the CSMS. DataTransfer goes both ways. */
+export const OCPP16_CHARGE_POINT_INITIATED = [
+  'Authorize',
+  'BootNotification',
+  'DataTransfer',
+  'DiagnosticsStatusNotification',
+  'FirmwareStatusNotification',
+  'Heartbeat',
+  'MeterValues',
+  'StartTransaction',
+  'StatusNotification',
+  'StopTransaction',
+] as const satisfies readonly Ocpp16ActionName[];
+
+/** Actions the CSMS sends to a charge point. */
+export const OCPP16_CSMS_INITIATED = OCPP16_ACTION_NAMES.filter(
+  (action) => action === 'DataTransfer' || !OCPP16_CHARGE_POINT_INITIATED.some((a) => a === action),
+);
+
 /** Connector statuses reported in StatusNotification (OCPP 1.6 ChargePointStatus). */
 export const CHARGE_POINT_STATUSES = [
   'Available',
