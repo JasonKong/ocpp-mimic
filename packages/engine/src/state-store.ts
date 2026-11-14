@@ -3,8 +3,13 @@
  * (configuration, meters, authorization cache, running transactions, queued
  * messages) in SQLite, through Node's built-in node:sqlite.
  */
-import { DatabaseSync } from 'node:sqlite';
 import type { PersistedChargePoint } from '@ocpp-mimic/core';
+
+/**
+ * node:sqlite, loaded on first use: it is still experimental and prints a
+ * warning when loaded, which only commands that keep state should show.
+ */
+const sqlite = () => process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
 /** What the fleet needs to recreate a virtual charge point. */
 export interface StationDefinition {
@@ -33,6 +38,7 @@ export interface StateStore {
 
 /** Opens (and creates if needed) a store at `path`; ':memory:' keeps it in memory. */
 export function openStateStore(path: string): StateStore {
+  const { DatabaseSync } = sqlite();
   const db = new DatabaseSync(path);
   db.exec(`
     CREATE TABLE IF NOT EXISTS stations (

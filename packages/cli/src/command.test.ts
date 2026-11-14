@@ -58,6 +58,67 @@ describe('parseCommand', () => {
     expect(parseCommand(['serve', '--nope'])).toMatchObject({ kind: 'error' });
   });
 
+  it('parses run with its options', () => {
+    expect(
+      parseCommand([
+        'run',
+        'scenarios/regression',
+        'extra.yaml',
+        '--csms',
+        'ws://localhost:9000/ocpp',
+        '--var',
+        'TAG=TAG-1',
+        '--var',
+        'URL=http://x/?a=b',
+        '--timeout',
+        '2m',
+        '--bail',
+        '--personas',
+        'scenarios/personas',
+        '--allow-csms',
+        'wss://csms.example.com',
+      ]),
+    ).toEqual({
+      kind: 'run',
+      paths: ['scenarios/regression', 'extra.yaml'],
+      csms: 'ws://localhost:9000/ocpp',
+      vars: { TAG: 'TAG-1', URL: 'http://x/?a=b' },
+      timeoutMs: 120_000,
+      bail: true,
+      personas: ['scenarios/personas'],
+      allowCsms: ['wss://csms.example.com'],
+    });
+    expect(parseCommand(['run', 'a.yaml'])).toEqual({
+      kind: 'run',
+      paths: ['a.yaml'],
+      vars: {},
+      bail: false,
+      personas: [],
+      allowCsms: [],
+    });
+  });
+
+  it('rejects bad run arguments and options that belong to the other command', () => {
+    expect(parseCommand(['run'])).toEqual({
+      kind: 'error',
+      message: 'run needs a scenario file or directory',
+    });
+    expect(parseCommand(['run', 'a.yaml', '--var', 'oops'])).toEqual({
+      kind: 'error',
+      message: '--var needs NAME=value, got oops',
+    });
+    expect(parseCommand(['run', 'a.yaml', '--timeout', 'soon'])).toMatchObject({ kind: 'error' });
+    expect(parseCommand(['run', 'a.yaml', '--csms', 'http://x'])).toMatchObject({ kind: 'error' });
+    expect(parseCommand(['run', 'a.yaml', '--port', '1'])).toEqual({
+      kind: 'error',
+      message: '--port is an option of serve',
+    });
+    expect(parseCommand(['serve', '--bail'])).toEqual({
+      kind: 'error',
+      message: '--bail is an option of run',
+    });
+  });
+
   it('prints help with no command, and the version with -v', () => {
     expect(parseCommand([])).toEqual({ kind: 'help' });
     expect(parseCommand(['-v'])).toEqual({ kind: 'version' });

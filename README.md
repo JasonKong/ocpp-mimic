@@ -22,6 +22,16 @@ An OCPP charge point simulator: a headless engine runs many virtual charge point
 | `pnpm serve`     | Build everything and start the engine with the Web UI at `http://127.0.0.1:7300` |
 | `pnpm dev:web`   | Start the Web UI dev server; `/api` is proxied to the local engine               |
 
+## Running scenarios
+
+Scenarios are YAML files of steps and expectations (see "Scenario format v1" in [docs/design.md](docs/design.md)). After `pnpm build`:
+
+```bash
+node packages/cli/dist/main.js run scenarios/examples
+```
+
+Each scenario runs on its own embedded engine, by default against the built-in test CSMS, and prints `PASS`, `FAIL` or `ERROR` with the failing step. Useful options: `--csms <url>` (with `--allow-csms <prefix>`) to test another CSMS, `--var NAME=value`, `--personas <dir>`, `--timeout <duration>` and `--bail`. The exit code is 0 when everything passed, 1 when something failed and 2 when a file does not validate.
+
 ## Layout
 
 | Directory         | Contents                                                                                                                                                                                  |

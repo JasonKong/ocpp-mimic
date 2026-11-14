@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { VERSION } from '@ocpp-mimic/core';
 import { createEngine, DEFAULT_ALLOWED_CSMS } from '@ocpp-mimic/engine';
 import { USAGE, parseCommand } from './command.js';
+import { runCommand } from './run.js';
 
 /** The Web UI build in this monorepo (apps/web/dist), when it has been built. */
 const WEB_ROOT = fileURLToPath(new URL('../../../apps/web/dist/', import.meta.url));
@@ -19,7 +20,10 @@ switch (command.kind) {
     break;
   case 'error':
     console.error(`${command.message}\n\n${USAGE}`);
-    process.exitCode = 1;
+    process.exitCode = 2;
+    break;
+  case 'run':
+    process.exitCode = await runCommand(command);
     break;
   case 'serve': {
     const engine = createEngine({
