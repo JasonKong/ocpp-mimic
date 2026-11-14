@@ -151,19 +151,20 @@ Persona 有三种来源：手写；从真实日志统计生成（见录制与回
 
 **场景引擎**
 
-场景由动作和断言组成，用 YAML（或 TS DSL）编写，由 CLI 运行，输出 JUnit 报告供 CI 使用。`http` 步骤可以调用被测业务系统的 API，把 App 端的操作串进同一个场景。
+场景由动作和断言组成，用 YAML 编写，由 CLI 运行，输出 JUnit 报告供 CI 使用。`http` 步骤可以调用被测业务系统的 API，把 App 端的操作串进同一个场景。具体格式见后面的「场景格式 v1」。
 
 ```yaml
 name: 充电中拔枪，CSMS 应结束订单且不再发 RemoteStop
+csms: wss://csms.example.com/ocpp # 被测 CSMS（示例地址）
 station: { id: SIM-001, persona: vendorX-fw2.5 }
 steps:
   - plugIn: { connector: 1 }
-  - http: { POST: "{{APP_API}}/charges/start" }
-  - expect: { receive: RemoteStartTransaction, within: 10s }
-  - charge: { duration: 20m }
+  - http: { method: POST, url: "{{APP_API}}/charges/start", json: { station: SIM-001 } }
+  - expect: { received: RemoteStartTransaction, within: 10s }
+  - charge: { connector: 1, duration: 20m }
   - unplug: { connector: 1 }
-  - expect: { sent: StopTransaction, reason: EVDisconnected }
-  - expectNo: { receive: RemoteStopTransaction, within: 30s }
+  - expect: { sent: StopTransaction, payload: { reason: EVDisconnected } }
+  - expectNo: { received: RemoteStopTransaction, within: 30s }
 ```
 
 **故障注入**
@@ -180,6 +181,122 @@ steps:
 - 导入真实桩日志（方向、action、payload、时间戳），回放成场景，复现线上问题。
 - 统计日志里消息之间的间隔，自动生成或校准 persona。
 - 导入时自动脱敏 idTag、序列号等标识。
+
+## 场景格式 v1
+
+M2 确定（#38）。场景文件是 YAML，文件里的每个 YAML 文档（用 `---` 分隔）是一个场景。runner 逐个执行场景，每个场景用一个全新的内嵌 engine；报告里每个文件是一个 test suite，每个场景是一个 test case。`scenarios/examples/` 里的文件是参考示例。
+
+```yaml
+name: 刷卡充电并定期上报电表
+station:
+  id: SIM-001
+  persona: generic-1.6
+  config: { MeterValueSampleInterval: 10 }
+vars:
+  TAG: TAG-001
+steps:
+  - presentCard: { connector: 1, idTag: "{{TAG}}", result: authorized }
+  - plugIn: { connector: 1 }
+  - expect: { sent: StartTransaction, payload: { connectorId: 1, idTag: "{{TAG}}" } }
+  - expectConnector: { connector: 1, status: Charging }
+  - expect: { sent: MeterValues, within: 15s }
+  - presentCard: { connector: 1, idTag: "{{TAG}}", result: stopping }
+  - expect: { sent: StopTransaction, payload: { reason: Local } }
+  - unplug: { connector: 1 }
+  - expectConnector: { connector: 1, status: Available }
+```
+
+**场景字段**
+
+| 字段 | 必填 | 含义 |
+| --- | --- | --- |
+| `name` | 是 | 用例名 |
+| `description` | 否 | 说明，显示在报告里 |
+| `csms` | 否 | `builtin`（默认）或 CSMS 的 WebSocket 地址；和普通桩一样，地址后面会接上桩 id。命令行的 `--csms` 优先 |
+| `station` 或 `stations` | 是 | 一个桩或一组桩。字段：`id`、`persona`，可选 `password`、`config`（覆盖配置键）、`behaviour`（测试开关）、`energyMultiplier`、`waitForBoot` |
+| `vars` | 否 | 模板变量的默认值 |
+| `timeout` | 否 | 整个场景的时限，默认 5 分钟 |
+| `checkSchemas` | 否 | 默认 `true`：只要有一帧不符合 OCA 官方 schema，场景就失败 |
+
+准备阶段会创建并启动所有桩；`waitForBoot` 为真（默认）时还会等到 BootNotification 被 Accepted。要测试注册过程本身，就设 `waitForBoot: false`。
+
+**步骤**
+
+每个步骤是一个只有一个步骤键的 map，值是步骤参数。作用于桩的步骤接受 `station`（桩 id，默认第一个桩），作用于连接器的步骤接受 `connector`（默认 1）。任何步骤都可以写 `name`，报告里用它代替自动生成的标签。
+
+桩侧动作，和 API 提供的操作一致：
+
+| 步骤 | 参数 | 作用 |
+| --- | --- | --- |
+| `plugIn` | `connector`、`ev` | 插枪；`ev` 指定 EV 配置 |
+| `unplug` | `connector` | 拔枪 |
+| `presentCard` | `connector`、`idTag`、`result` | 在连接器上刷卡；`result` 可断言 `authorized`、`rejected`、`stopping` 或 `busy` |
+| `evSuspend`、`evResume` | `connector` | EV 暂停或恢复 |
+| `fault` | `connector`（0 表示整桩）、`errorCode`、`info`、`vendorErrorCode` | 触发故障 |
+| `clearFault` | `connector` | 清除故障 |
+| `offline` | `mode`：`clean` 或 `half-open` | 模拟断网 |
+| `online` | — | 恢复网络 |
+| `stopStation`、`startStation` | — | 断开或重新连接桩 |
+| `setBehaviour` | `refuseRemoteStart`、`cableLock` | 测试开关 |
+| `wait` | 一个时长 | 等待 |
+| `charge` | `connector`、`duration` | 等待 `duration`；开始和结束时连接器都必须有进行中的交易，否则失败 |
+
+engine 拒绝的动作（比如枪锁着时拔枪）会让步骤失败。写了 `expectError: <文字>` 时则反过来：必须被拒绝，且拒绝信息包含这段文字。
+
+断言：
+
+| 步骤 | 参数 | 通过条件 |
+| --- | --- | --- |
+| `expect` | `sent` 或 `received`（action）、`payload`、`answer`、`within`、`from` | 规定时间内记录到匹配的 CALL。`sent` 指桩 → CSMS，`received` 指 CSMS → 桩。`payload` 匹配 CALL，`answer` 匹配对它的 CALLRESULT |
+| `expectNo` | `sent` 或 `received`、`payload`、`within` | `within` 期间没有记录到匹配的 CALL |
+| `expectConnector` | `connector` 加连接器快照字段（`status`、`errorCode`、`plugged`、`locked`、`transactionId` 等）、`within` | 规定时间内连接器快照匹配 |
+| `expectStation` | 桩快照字段（`registration`、`transport`、`queuedMessages`、`behaviour` 等）、`within` | 规定时间内桩快照匹配 |
+
+`within` 默认 10 秒。消息断言是有顺序的：搜索从上一个 `expect` 匹配到的消息之后开始（`from: last`，默认），所以连续的 `expect` 也在断言消息的先后顺序。`from: step` 忽略步骤开始前的消息，`from: start` 从场景开始处搜索。
+
+CSMS 侧步骤，只能配合内置 CSMS 使用：
+
+| 步骤 | 参数 | 作用 |
+| --- | --- | --- |
+| `csmsCall` | `action`、`payload`、`answer`、`error` | 内置 CSMS 向桩发一个 CALL。`answer` 必须匹配 CALLRESULT；`error` 则指定预期的 CALLERROR 错误码 |
+| `csmsReply` | `action`，再加 `payload`、`error` 或 `ignore: true` 之一，以及 `times` | 内置 CSMS 如何应答桩接下来 `times` 次（默认所有）`action` 调用 |
+
+HTTP，用于调用被测系统：
+
+| 步骤 | 参数 | 作用 |
+| --- | --- | --- |
+| `http` | `method`、`url`、`headers`、`json`、`expect`（`status`、`json`）、`save` | 发请求并检查响应 |
+
+`save: { NAME: <路径> }` 把一个值存成变量，供后面的步骤使用。可用于 `expect`（路径根是 `{ payload, answer }`）、`expectConnector` 和 `expectStation`（快照）、`csmsCall`（`{ answer }`）和 `http`（`{ status, json }`）。路径写法如 `$.answer.transactionId`。
+
+**匹配规则**
+
+`payload`、`answer`、快照断言和 `http` 的 `expect.json` 都是部分匹配：写出的字段必须存在且相等，没写的字段不管。数组逐个元素匹配，长度必须相同。字段的值也可以换成一个运算符：`$exists`、`$regex`、`$ne`、`$gt`、`$gte`、`$lt` 或 `$lte`。
+
+**模板和变量**
+
+字符串里的 `{{NAME}}` 在步骤执行前替换。取值优先级从低到高：`vars`、命令行的 `--var NAME=value`、前面步骤保存的变量。`{{env.NAME}}` 读取环境变量，这类值在输出和报告里显示为 `***`。如果整个字符串只有一个模板，替换后保留原值的类型，所以 `"{{tx}}"` 可以代表数字。未知的变量名在场景开始前就报错；保存的变量只在保存它的步骤之后才算已定义。
+
+**时长**沿用 persona 的写法：数字表示毫秒，或以 `ms`、`s`、`m`、`h` 结尾的字符串。
+
+**代码放在哪里**
+
+| 包 | 部分 |
+| --- | --- |
+| core | 场景模型和校验（用 schema 模块）、模板、匹配、步骤标签。和 persona 一样是纯逻辑 |
+| engine | runner：每个场景一个全新的内嵌 engine（以及内置 CSMS），在进程内对 fleet 和 recorder 执行步骤，失败后也照样清理；结果模型；控制台和 JUnit 报告 |
+| cli | `ocpp-mimic run`：解析参数、读取 YAML 文件、调用 runner、返回退出码 |
+
+M2 不需要通过 HTTP API 连接远程 engine：CLI 自带内嵌 engine，CI 里不用另外部署。
+
+**运行和报告**
+
+`ocpp-mimic run <file|dir>...` 运行给出的所有 `.yaml` / `.yml` 文件，目录递归查找并排序，一次一个场景。选项：`--csms <url>`、`--var NAME=value`（可重复）、`--timeout <时长>`（场景默认时限）、`--bail`（遇到第一个没通过的场景就停）、`--junit <file>`，以及和 `serve` 一样的 `--allow-csms`、`--personas`。
+
+- 场景结果分三种：通过；失败（某一步失败，后面的步骤记为跳过）；出错（文件无效、engine 故障、超时）。无论结果如何都会清理。
+- 控制台每个场景一行，带耗时；失败时显示失败的步骤以及预期值和实际值。
+- JUnit：每个文件一个 `testsuite`，每个场景一个 `testcase`（classname 是文件名），`failure` 或 `error` 里写失败的步骤，带耗时，以及 persona、CSMS、能量倍率等 `properties`。
+- 退出码：全部通过为 0，有失败或出错为 1，用法错误或文件校验不通过为 2。
 
 ## 观测与 UI
 

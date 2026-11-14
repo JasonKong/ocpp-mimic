@@ -1,0 +1,22 @@
+# The built-in CSMS starts and stops a session remotely.
+name: Remote start and stop from the CSMS
+csms: builtin
+station: { id: SIM-REMOTE, persona: generic-1.6 }
+steps:
+  - plugIn: { connector: 1 }
+  - csmsCall:
+      action: RemoteStartTransaction
+      payload: { idTag: REMOTE-1, connectorId: 1 }
+      answer: { status: Accepted }
+  - expect:
+      sent: StartTransaction
+      payload: { connectorId: 1, idTag: REMOTE-1 }
+      answer: { transactionId: { $exists: true } }
+      save: { tx: $.answer.transactionId }
+  - expectConnector: { connector: 1, status: Charging, transactionId: '{{tx}}' }
+  - csmsCall:
+      action: RemoteStopTransaction
+      payload: { transactionId: '{{tx}}' }
+      answer: { status: Accepted }
+  - expect: { sent: StopTransaction, payload: { transactionId: '{{tx}}', reason: Remote } }
+  - expectConnector: { connector: 1, status: Finishing }

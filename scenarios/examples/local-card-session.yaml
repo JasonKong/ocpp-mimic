@@ -1,0 +1,18 @@
+# A local card session against the built-in CSMS.
+name: Card session with periodic meter values
+station:
+  id: SIM-CARD
+  persona: generic-1.6
+  config: { MeterValueSampleInterval: 10 }
+vars:
+  TAG: TAG-001
+steps:
+  - presentCard: { connector: 1, idTag: '{{TAG}}', result: authorized }
+  - plugIn: { connector: 1 }
+  - expect: { sent: StartTransaction, payload: { connectorId: 1, idTag: '{{TAG}}' } }
+  - expectConnector: { connector: 1, status: Charging }
+  - expect: { sent: MeterValues, within: 15s }
+  - presentCard: { connector: 1, idTag: '{{TAG}}', result: stopping }
+  - expect: { sent: StopTransaction, payload: { reason: Local } }
+  - unplug: { connector: 1 }
+  - expectConnector: { connector: 1, status: Available }

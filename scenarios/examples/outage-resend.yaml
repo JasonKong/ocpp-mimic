@@ -1,0 +1,30 @@
+# A transaction ends during an outage; StopTransaction waits in the queue and
+# is sent after reconnecting.
+name: StopTransaction is resent after an outage
+station: { id: SIM-OUTAGE, persona: generic-1.6 }
+steps:
+  - presentCard: { connector: 1, idTag: TAG-OUTAGE, result: authorized }
+  - plugIn: { connector: 1 }
+  - expectConnector: { connector: 1, status: Charging }
+  - offline: { mode: clean }
+  - expectStation: { transport: offline }
+  - unplug: { connector: 1 }
+  - expectStation: { queuedMessages: 1 }
+  - online: {}
+  - expect: { sent: StopTransaction, payload: { reason: EVDisconnected }, within: 30s }
+  - expectStation: { registration: Accepted, queuedMessages: 0 }
+---
+# The same with a half-open connection: the socket stays up but nothing gets through.
+name: StopTransaction is resent after a half-open connection
+station: { id: SIM-HALF-OPEN, persona: generic-1.6 }
+steps:
+  - presentCard: { connector: 1, idTag: TAG-OUTAGE, result: authorized }
+  - plugIn: { connector: 1 }
+  - expectConnector: { connector: 1, status: Charging }
+  - offline: { mode: half-open }
+  - expectStation: { transport: half-open }
+  - unplug: { connector: 1 }
+  - expectStation: { queuedMessages: 1 }
+  - online: {}
+  - expect: { sent: StopTransaction, payload: { reason: EVDisconnected }, within: 30s }
+  - expectStation: { registration: Accepted, queuedMessages: 0 }
