@@ -215,6 +215,12 @@ export function createMetrics(options: MetricsOptions): Metrics {
   const open = new Set<string>();
   const attempting = new Set<string>();
 
+  /** CALLs in flight when a connection goes can never be answered on it. */
+  const dropPending = (stationId: string) => {
+    const prefix = `${stationId} `;
+    for (const key of pending.keys()) if (key.startsWith(prefix)) pending.delete(key);
+  };
+
   const loop = monitorEventLoopDelay({ resolution: LOOP_RESOLUTION_MS });
   loop.enable();
   /** The last 10-second window: quantiles in ms, plus its count and sum for the summary. */
@@ -331,11 +337,13 @@ export function createMetrics(options: MetricsOptions): Metrics {
         // The CSMS closed it, or the connection broke (1006: no close frame).
         open.delete(stationId);
         disconnects.get({ cause: event.code === 1006 ? 'error' : 'remote' }).value += 1;
+        dropPending(stationId);
       } else if (event.type === 'state' && event.state !== 'open' && event.state !== 'connecting') {
         if (attempting.delete(stationId)) connections.get({ outcome: 'failed' }).value += 1;
         // Closed without a close event: the station dropped it itself (stopped,
         // taken offline, an injection, a reset).
         if (open.delete(stationId)) disconnects.get({ cause: 'local' }).value += 1;
+        dropPending(stationId);
       }
     },
 

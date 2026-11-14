@@ -195,6 +195,26 @@ describe('fleet', () => {
     },
   );
 
+  it('halts a removed station, so a session it had stops metering', async () => {
+    csms = await startBuiltinCsms();
+    const fleet = await fleetWith();
+    const station = fleet.add({
+      id: 'HALT-1',
+      persona: 'generic-1.6',
+      csmsUrl: csms.url,
+      config: { MeterValueSampleInterval: '1' },
+    });
+    await until(() => station.snapshot().registration === 'Accepted');
+    station.chargePoint.plugIn(1);
+    await station.chargePoint.presentIdTag(1, 'TAG');
+    await until(() => station.snapshot().connectors[0]?.status === 'Charging');
+    await fleet.remove('HALT-1');
+    // Offline now: a running charge point would queue a MeterValues every second.
+    const queued = station.chargePoint.snapshot().queuedMessages;
+    await sleep(2500);
+    expect(station.chargePoint.snapshot().queuedMessages).toBe(queued);
+  });
+
   it('refuses CSMS addresses outside the allow-list, unknown personas and duplicate ids', async () => {
     const fleet = await fleetWith();
     expect(() =>

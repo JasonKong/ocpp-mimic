@@ -58,6 +58,8 @@ export interface Recorder {
   /** Entries for a station, oldest first. */
   query(stationId: string, query?: RecordQuery): RecordEntry[];
   forget(stationId: string): void;
+  /** The station's connection went: CALLs still waiting for an answer never get one on it. */
+  closed(stationId: string): void;
   subscribe(listener: (entry: RecordEntry) => void): () => void;
 }
 
@@ -174,6 +176,10 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
 
     forget(stationId) {
       buffers.delete(stationId);
+      for (const key of actions.keys()) if (key.startsWith(`${stationId} `)) actions.delete(key);
+    },
+
+    closed(stationId) {
       for (const key of actions.keys()) if (key.startsWith(`${stationId} `)) actions.delete(key);
     },
 

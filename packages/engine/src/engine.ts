@@ -264,6 +264,9 @@ export function createEngine(options: EngineOptions = {}): Engine {
             recorder.log(event.stationId, usageLine(event.event));
           } else {
             metrics.transport(event.stationId, event.event);
+            if (event.event.type === 'state' && event.event.state !== 'open') {
+              recorder.closed(event.stationId);
+            }
             if (event.event.type === 'state') {
               recorder.log(event.stationId, `connection ${event.event.state}`);
               scheduleStationUpdate(event.stationId);

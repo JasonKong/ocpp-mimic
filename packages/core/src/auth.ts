@@ -17,6 +17,12 @@ export function isAccepted(info: IdTagInfo, now: number): boolean {
 }
 
 /**
+ * Cards the authorization cache holds; like a real charge point's, it is
+ * finite, and the card not seen for longest goes first.
+ */
+export const AUTHORIZATION_CACHE_SIZE = 100;
+
+/**
  * Records the IdTagInfo from an Authorize, StartTransaction or
  * StopTransaction response. Does nothing when AuthorizationCacheEnabled is
  * false.
@@ -28,7 +34,10 @@ export function rememberAuthorization(
   info: IdTagInfo,
 ): AuthorizationCache {
   if (!configBool(config, 'AuthorizationCacheEnabled')) return cache;
-  return { ...cache, [idTag]: info };
+  // Kept as entries in the order last seen: the latest card goes to the end.
+  const entries = Object.entries(cache).filter(([tag]) => tag !== idTag);
+  entries.push([idTag, info]);
+  return Object.fromEntries(entries.slice(-AUTHORIZATION_CACHE_SIZE));
 }
 
 /** Answers ClearCache. */

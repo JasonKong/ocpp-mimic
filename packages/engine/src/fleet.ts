@@ -497,6 +497,8 @@ export function createFleet(options: FleetOptions): Fleet {
       station.usage?.stop();
       entry.running = false;
       await station.transport.stop();
+      // The station that went dark is replaced; its timers must not keep it alive.
+      station.chargePoint.halt();
       await new Promise((resolve) => setTimeout(resolve, offMs).unref());
       if (shuttingDown || entries.get(id) !== entry) return;
       build(station.definition, state, true);
@@ -596,6 +598,7 @@ export function createFleet(options: FleetOptions): Fleet {
     async removeMany(ids) {
       await Promise.all(ids.map((id) => stopStation(id)));
       for (const id of ids) {
+        entries.get(id)?.station.chargePoint.halt();
         pendingSaves.delete(id);
         entries.delete(id);
         randoms.delete(id);
@@ -664,6 +667,7 @@ export function createFleet(options: FleetOptions): Fleet {
 
     async remove(id) {
       await stopStation(id);
+      entries.get(id)?.station.chargePoint.halt();
       pendingSaves.delete(id);
       entries.delete(id);
       randoms.delete(id);
@@ -692,6 +696,7 @@ export function createFleet(options: FleetOptions): Fleet {
       await Promise.all([...entries.keys()].map((id) => stopStation(id)));
       // One final save of every station, in one transaction; nothing is written after this.
       saveMany(entries.keys());
+      for (const entry of entries.values()) entry.station.chargePoint.halt();
     },
   };
 }

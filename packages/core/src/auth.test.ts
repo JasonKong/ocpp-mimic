@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AUTHORIZATION_CACHE_SIZE,
   cachedAuthorization,
   clearAuthorizationCache,
   decideLocalAuthorization,
@@ -84,5 +85,21 @@ describe('decideLocalAuthorization', () => {
     expect(decide(blocked, 'BAD', false, withValues({ AllowOfflineTxForUnknownId: 'true' }))).toBe(
       'reject',
     );
+  });
+
+  it('keeps the authorization cache to its size, dropping the card seen longest ago', () => {
+    const config = createConfig({ numberOfConnectors: 1 });
+    let cache = EMPTY_AUTHORIZATION_CACHE;
+    for (let i = 0; i < AUTHORIZATION_CACHE_SIZE + 5; i++) {
+      cache = rememberAuthorization(cache, config, `TAG-${i}`, { status: 'Accepted' });
+    }
+    // Seeing TAG-5 again makes it the newest.
+    cache = rememberAuthorization(cache, config, 'TAG-5', { status: 'Blocked' });
+    cache = rememberAuthorization(cache, config, 'NEW', { status: 'Accepted' });
+    expect(Object.keys(cache)).toHaveLength(AUTHORIZATION_CACHE_SIZE);
+    expect(cache['TAG-5']).toEqual({ status: 'Blocked' });
+    expect(cache['TAG-6']).toBeUndefined();
+    expect(cache['TAG-7']).toBeDefined();
+    expect(Object.keys(cache).slice(-2)).toEqual(['TAG-5', 'NEW']);
   });
 });
