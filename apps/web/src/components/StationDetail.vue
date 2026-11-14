@@ -189,6 +189,10 @@ function statusTone(status: string): string {
             <dt>Reserved for</dt>
             <dd>{{ r.idTag }} until {{ r.expiryDate.slice(11, 16) }}</dd>
           </div>
+          <div v-if="connector.limitW !== undefined">
+            <dt>Limit</dt>
+            <dd>{{ formatPower(connector.limitW) }}</dd>
+          </div>
           <div v-if="connector.ev">
             <dt>EV</dt>
             <dd>

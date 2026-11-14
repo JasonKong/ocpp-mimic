@@ -153,13 +153,10 @@ export function installProfile(
   if (kept.length + 1 > context.maxInstalled) {
     return reject(`more than MaxChargingProfilesInstalled ${context.maxInstalled} profiles`);
   }
-  const running = purpose === 'TxProfile' ? context.transactionId(connectorId) : undefined;
-  const stored: ChargingProfile =
-    running !== undefined && profile.transactionId === undefined
-      ? { ...profile, transactionId: running }
-      : profile;
+  // A TxProfile without transactionId applies to the transaction running on
+  // the connector; endTransactionProfiles() removes it when that ends.
   return {
-    profiles: [...kept, { connectorId, profile: stored, installedAt: context.now }],
+    profiles: [...kept, { connectorId, profile, installedAt: context.now }],
     status: 'Accepted',
   };
 }
