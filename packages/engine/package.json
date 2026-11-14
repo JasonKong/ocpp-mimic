@@ -17,6 +17,10 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@ocpp-mimic/core": "workspace:*"
+    "@ocpp-mimic/core": "workspace:*",
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
   }
 }

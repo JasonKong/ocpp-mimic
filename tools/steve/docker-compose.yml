@@ -1,0 +1,31 @@
+# SteVe, an open-source OCPP 1.6 CSMS, for manual testing and M1 acceptance.
+# See README.md in this folder. The image builds SteVe from its Git tag; the
+# container compiles it with Maven on first start, which takes a few minutes.
+name: ocpp-mimic-steve
+
+services:
+  db:
+    image: mariadb:10.11.16
+    restart: unless-stopped
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: 'yes'
+      TZ: '+00:00'
+      MYSQL_DATABASE: stevedb
+      MYSQL_USER: steve
+      MYSQL_PASSWORD: changeme
+    volumes:
+      - db-data:/var/lib/mysql
+
+  steve:
+    build:
+      context: https://github.com/steve-community/steve.git#steve-3.14.1
+    restart: unless-stopped
+    links:
+      - 'db:mariadb'
+    ports:
+      - '8180:8180'
+    depends_on:
+      - db
+
+volumes:
+  db-data:
