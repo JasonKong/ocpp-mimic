@@ -511,9 +511,10 @@ usage:
   idTags: { prefix: LOAD-, count: 500, unknownShare: 0.05, unknownPrefix: UNKNOWN- }
   cardFirst: 0.3 # share of drivers who present the card before plugging in
   stopBy: { card: 0.7, unplug: 0.3 } # how the driver ends the session when leaving
+  steps: { min: 5s, max: 30s } # waits between card and plug, and before unplugging
 ```
 
-- A session: an arrival picks an EV, a card, the order and the stay; card and plug follow each other 5 to 30 s apart. A refused card makes the driver unplug 30 to 60 s later. At the end of the stay the driver presents the card again (StopTransaction reason Local) and unplugs 10 to 60 s later, or just unplugs (EVDisconnected); an EV that is full first waits in SuspendedEV.
+- A session: an arrival picks an EV, a card, the order and the stay; card and plug follow each other a step apart (`steps`, 5 to 30 s by default). A refused card makes the driver unplug a step later. At the end of the stay the driver presents the card again (StopTransaction reason Local) and unplugs a step later, or just unplugs (EVDisconnected); an EV that is full first waits in SuspendedEV.
 - A connector that is not free (Unavailable, Faulted, Reserved, or still occupied) turns arrivals away; they are counted. Remote starts are not part of the model: they need the CSMS to begin them.
 - Each station's generator is seeded from the run's `seed` and the station id, so a station repeats its sessions when the CSMS answers the same way, whatever the other stations do. After a restart the driver of a plugged-in connector picks a new stay.
 - The built-in CSMS answers Invalid for idTags starting with the unknown prefix (`UNKNOWN-` by default) when asked to, so the unknown share is visible to it.
@@ -652,6 +653,15 @@ Bottlenecks, most important first:
 - Transactions count as `started` or `refused` from the StartTransaction answer and `stopped` from the StopTransaction answer; `ocpp_mimic_energy_wh_total` adds meterStop − meterStart of finished transactions. Connector gauges use the last StatusNotification of each connector (not connector 0).
 - `ocpp_mimic_info{version}` names the version. `ocpp_mimic_sessions_turned_away_total` comes with the usage model (T48).
 - CI checks the output of a running engine with `promtool check metrics` (prom/prometheus v3.5.0).
+
+**Implemented: the usage model (T48)**
+
+- `core/src/usage.ts`: the model, its validation, a seeded generator (mulberry32) and the driver. A persona's `usage` is a complete model; a station's `usage` (API, template, scenario) is `true` (the persona's), an object of changes merged onto it (`evs` is replaced), or `false` / absent (off). `seed` on a station is the run's seed; the station's generator is seeded with it and the station id (FNV-1a), 0 when absent, and kept across power losses, so sessions continue rather than repeat.
+- `steps: { min, max }` (default 5 s to 30 s) is how long a driver waits between card and plug, before giving up after a refused card, and before unplugging after stopping with the card. Short steps and stays make a session fit in a regression scenario.
+- The driver acts through the charge point's inputs: a connector is free when it is Available with no cable in; the card ends the session only while a transaction runs (Charging, SuspendedEV or SuspendedEVSE), otherwise the driver unplugs, since a card would start a new one. EV names must exist in the persona.
+- It runs while its station runs (stopped with it, and during a power loss); `PATCH /api/stations/:id/usage { enabled }` switches it (409 without a model), and a switch carries over a power loss but not a restart of the engine. Snapshots carry `usage: true | false` when the station has a model.
+- Driver events go into the station's log (`usage: a driver arrives at connector 1 with LOAD-0042 and EV compact-40kwh`) and `ocpp_mimic_sessions_turned_away_total`.
+- `load-ac-1.6` carries a usage model; `scenarios/regression/usage.yaml` runs sessions that end with the card and by unplugging.
 
 **Where the files go**
 

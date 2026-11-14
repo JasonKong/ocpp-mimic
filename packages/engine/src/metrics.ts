@@ -7,7 +7,7 @@
  * as JSON.
  */
 import { monitorEventLoopDelay } from 'node:perf_hooks';
-import type { RpcEvent } from '@ocpp-mimic/core';
+import type { RpcEvent, UsageEvent } from '@ocpp-mimic/core';
 import type { FrameRecord } from './recorder.js';
 import type { TransportEvent } from './transport.js';
 
@@ -134,6 +134,7 @@ export interface MetricsSummary {
   disconnects: Record<string, number>;
   transactions: Record<string, number>;
   energyWh: number;
+  sessionsTurnedAway: number;
   offlineQueue: number;
   lateWork: LatencySummary;
   eventLoopDelayMs: { p50: number; p99: number; max: number };
@@ -155,6 +156,8 @@ export interface Metrics {
   rpc(stationId: string, event: RpcEvent): void;
   /** How late scheduled work ran, in milliseconds. */
   lateness(ms: number): void;
+  /** Something a usage model driver did. */
+  usage(stationId: string, event: UsageEvent): void;
   /** A station was removed: its in-flight CALLs and connector statuses are forgotten. */
   forget(stationId: string): void;
   prometheus(): string;
@@ -190,6 +193,7 @@ export function createMetrics(options: MetricsOptions): Metrics {
   const disconnects = new Family(() => new Counter());
   const transactions = new Family(() => new Counter());
   const energy = new Family(() => new Counter());
+  const turnedAway = new Family(() => new Counter());
   const lateWork = new Histogram();
   const overall = new Histogram();
 
@@ -319,6 +323,10 @@ export function createMetrics(options: MetricsOptions): Metrics {
       lateWork.observe(ms / 1000);
     },
 
+    usage(stationId, event) {
+      if (event.type === 'turned-away') turnedAway.get(labels(stationId)).value += 1;
+    },
+
     forget(stationId) {
       const prefix = `${stationId} `;
       for (const key of pending.keys()) if (key.startsWith(prefix)) pending.delete(key);
@@ -341,6 +349,7 @@ export function createMetrics(options: MetricsOptions): Metrics {
         disconnects,
         transactions,
         energy,
+        turnedAway,
         lateWork,
         loopWindow,
         version: options.version,
@@ -400,6 +409,7 @@ export function createMetrics(options: MetricsOptions): Metrics {
         disconnects: byLabel(disconnects, 'cause'),
         transactions: byLabel(transactions, 'outcome'),
         energyWh: sum(energy),
+        sessionsTurnedAway: sum(turnedAway),
         offlineQueue: g.queued,
         lateWork: latencySummary(lateWork),
         eventLoopDelayMs: { p50: loopWindow.p50, p99: loopWindow.p99, max: loopWindow.max },
@@ -474,6 +484,7 @@ function prometheusText(
     disconnects: Family<Counter>;
     transactions: Family<Counter>;
     energy: Family<Counter>;
+    turnedAway: Family<Counter>;
     lateWork: Histogram;
     loopWindow: { p50: number; p99: number; max: number; count: number; sumMs: number };
     version: string | undefined;
@@ -553,6 +564,11 @@ function prometheusText(
     m.transactions,
   );
   counter('ocpp_mimic_energy_wh_total', 'Energy of finished transactions, in Wh.', m.energy);
+  counter(
+    'ocpp_mimic_sessions_turned_away_total',
+    'Usage model drivers who found no free connector.',
+    m.turnedAway,
+  );
   header('ocpp_mimic_offline_queue_messages', 'gauge', 'Messages waiting for delivery.');
   lines.push(`ocpp_mimic_offline_queue_messages ${g.queued}`);
   histogram('ocpp_mimic_work_lateness_seconds', 'How late scheduled work ran.', [

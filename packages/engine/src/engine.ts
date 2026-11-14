@@ -6,7 +6,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Duplex } from 'node:stream';
-import { VERSION } from '@ocpp-mimic/core';
+import { VERSION, type UsageEvent } from '@ocpp-mimic/core';
 import { WebSocketServer } from 'ws';
 import { handleApi, sendJson, type ApiEvent } from './api.js';
 import { createFleet, type Fleet } from './fleet.js';
@@ -45,6 +45,20 @@ export interface Engine {
   readonly personas: PersonaRegistry | undefined;
   readonly recorder: Recorder;
   readonly metrics: Metrics;
+}
+
+/** A usage model event as a log line. */
+function usageLine(event: UsageEvent): string {
+  switch (event.type) {
+    case 'arrived':
+      return `usage: a driver arrives at connector ${event.connectorId} with ${event.idTag}${event.ev === undefined ? '' : ` and EV ${event.ev}`}`;
+    case 'turned-away':
+      return `usage: connector ${event.connectorId} is not free; the driver leaves`;
+    case 'refused':
+      return `usage: ${event.idTag} is refused at connector ${event.connectorId}; the driver gives up`;
+    case 'left':
+      return `usage: the driver at connector ${event.connectorId} leaves (${event.by === 'card' ? 'card' : 'unplugs'})`;
+  }
 }
 
 export function createEngine(options: EngineOptions = {}): Engine {
@@ -175,6 +189,9 @@ export function createEngine(options: EngineOptions = {}): Engine {
             }
           } else if (event.type === 'injections') {
             scheduleStationUpdate(event.stationId);
+          } else if (event.type === 'usage') {
+            metrics.usage(event.stationId, event.event);
+            recorder.log(event.stationId, usageLine(event.event));
           } else {
             metrics.transport(event.stationId, event.event);
             if (event.event.type === 'state') {

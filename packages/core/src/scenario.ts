@@ -7,7 +7,7 @@
 import { isJsonPath, operatorProblems } from './match.js';
 import { ChargePointErrorCodeSchema, type ChargePointErrorCode } from './ocpp16-messages.js';
 import { OCPP16_CHARGE_POINT_INITIATED, OCPP16_CSMS_INITIATED, RPC_ERROR_CODES } from './ocpp16.js';
-import { durationSchema, parseDuration } from './persona.js';
+import { durationSchema, parseDuration } from './duration.js';
 import {
   boolean,
   integer,
@@ -22,6 +22,7 @@ import {
 } from './schema.js';
 import { parseInjection, type InjectionRequest } from './injections.js';
 import { templateRefs, VARIABLE_NAME } from './template.js';
+import { UsageOverrideSchema, type UsageOverride } from './usage.js';
 
 export type JsonValue =
   null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -44,6 +45,10 @@ export interface ScenarioStation {
     key?: string;
     manufacturerRoot?: string;
   };
+  /** The usage model: true runs the persona's, an object changes it. */
+  usage?: boolean | UsageOverride;
+  /** Seeds the usage model's random numbers, with the station id. */
+  seed?: number;
   /** Setup waits until BootNotification is Accepted. Default true. */
   waitForBoot: boolean;
 }
@@ -245,6 +250,8 @@ const stationSchema = object(
     behaviour: behaviourSchema,
     energyMultiplier: positive,
     waitForBoot: boolean(),
+    usage: union(boolean(), UsageOverrideSchema),
+    seed: integer({ minimum: 0 }),
     security: object(
       {},
       {
@@ -737,6 +744,8 @@ export function parseScenario(document: unknown, label?: string): ScenarioResult
         'behaviour',
         'energyMultiplier',
         'security',
+        'usage',
+        'seed',
       ] as const) as Partial<ScenarioStation>),
       ...(isObject(raw.config) && {
         config: Object.fromEntries(Object.entries(raw.config).map(([k, v]) => [k, String(v)])),

@@ -14,6 +14,8 @@ import {
   type DelayedCommand,
 } from './charge-point.js';
 import { createConfig } from './config.js';
+import { durationSchema, parseDuration } from './duration.js';
+import { UsageSchema, usageProblems } from './usage.js';
 import { evProfileProblems, type EvProfile } from './ev.js';
 import type { FirmwareSettings } from './firmware.js';
 import { ChargePointErrorCodeSchema, OCPP16_MESSAGES } from './ocpp16-messages.js';
@@ -29,33 +31,9 @@ import {
   union,
   validate,
   type Infer,
-  type Schema,
 } from './schema.js';
 
-const DURATION = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/;
-const UNIT_MS = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 } as const;
-
-/** Milliseconds for a duration: a number (ms) or a string such as `200ms`, `6s`, `3m`, `1h`. */
-export function parseDuration(value: number | string): number | undefined {
-  if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : undefined;
-  const match = DURATION.exec(value.trim());
-  if (match === null) return undefined;
-  return Number(match[1]) * UNIT_MS[match[2] as keyof typeof UNIT_MS];
-}
-
-export const durationSchema: Schema<number | string> = {
-  check(value, path, issues) {
-    if (typeof value !== 'number' && typeof value !== 'string') {
-      issues.push({ path, errorCode: 'TypeConstraintViolation', message: 'expected a duration' });
-    } else if (parseDuration(value) === undefined) {
-      issues.push({
-        path,
-        errorCode: 'PropertyConstraintViolation',
-        message: `not a duration (use milliseconds or e.g. "500ms", "6s", "3m"): ${JSON.stringify(value)}`,
-      });
-    }
-  },
-};
+export { durationSchema, parseDuration } from './duration.js';
 
 /** The feature profiles a charge point can advertise in SupportedFeatureProfiles. */
 export const FEATURE_PROFILES = [
@@ -128,6 +106,7 @@ export const PersonaSchema = object(
         { taperSoc: number(), targetSoc: number() },
       ),
     ),
+    usage: UsageSchema,
     faults: array(
       object(
         { errorCode: ChargePointErrorCodeSchema },
@@ -317,6 +296,12 @@ export function resolvePersonas(sources: readonly PersonaSource[]): ResolvePerso
     );
     if (evProblems.length > 0) {
       errors.push(...evProblems);
+      continue;
+    }
+    const usageIssues =
+      definition.usage === undefined ? [] : usageProblems(definition.usage, '$.usage');
+    if (usageIssues.length > 0) {
+      errors.push(...usageIssues.map((issue) => `${source}: ${issue.path}: ${issue.message}`));
       continue;
     }
     let options: PersonaChargePointOptions;

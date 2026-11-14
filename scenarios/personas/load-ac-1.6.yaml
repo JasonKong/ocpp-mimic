@@ -13,3 +13,12 @@ config:
   MeterValueSampleInterval: 60
 evs:
   suv-77kwh: { capacityKWh: 77, initialSoc: 25, maxPowerW: 11000, phases: 3 }
+# The usage model a station runs when it is switched on (usage: true, or
+# changes to this in a station, template or load plan).
+usage:
+  sessionsPerHour: 1
+  stay: { min: 20m, max: 2h }
+  evs: { compact-40kwh: 2, sedan-75kwh: 1, suv-77kwh: 1 }
+  idTags: { prefix: LOAD-, count: 500, unknownShare: 0.05, unknownPrefix: UNKNOWN- }
+  cardFirst: 0.3
+  stopBy: { card: 0.7, unplug: 0.3 }

@@ -182,6 +182,42 @@ describe('engine API: bulk stations', () => {
   });
 });
 
+describe('engine API: usage model', () => {
+  it('creates stations with a usage model and switches it', async () => {
+    const { api, csmsUrl } = await start();
+    const usage = { sessionsPerHour: 1, stay: { min: '10m', max: '20m' } };
+    const created = await api('POST', '/api/stations', {
+      id: 'USE-1',
+      persona: 'generic-1.6',
+      csmsUrl,
+      usage,
+      seed: 9,
+    });
+    expect(created.body).toMatchObject({ usage: true });
+    expect(
+      (await api('PATCH', '/api/stations/USE-1/usage', { enabled: false })).body,
+    ).toMatchObject({
+      usage: false,
+    });
+    expect((await api('PATCH', '/api/stations/USE-1/usage', { enabled: 'yes' })).status).toBe(400);
+    await api('POST', '/api/stations', { id: 'PLAIN', persona: 'generic-1.6', csmsUrl });
+    expect((await api('PATCH', '/api/stations/PLAIN/usage', { enabled: true })).status).toBe(409);
+    for (const bad of [
+      { usage: { sessionsPerHour: 'often' } },
+      { usage, seed: -1 },
+      { usage: true },
+    ]) {
+      const res = await api('POST', '/api/stations', {
+        id: 'BAD',
+        persona: 'generic-1.6',
+        csmsUrl,
+        ...bad,
+      });
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+    }
+  });
+});
+
 describe('engine metrics', () => {
   it('serves Prometheus text at /metrics and a summary at /api/metrics', async () => {
     const { url, api, csmsUrl } = await start();

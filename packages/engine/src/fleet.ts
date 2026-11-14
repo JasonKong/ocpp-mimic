@@ -9,8 +9,14 @@ import {
   createChargePoint,
   createConfig,
   DEFAULT_RAMP_UP,
+  createUsageDriver,
   rampUpDelays,
+  resolveUsage,
+  seededRandom,
+  stationSeed,
   type RampUp,
+  type UsageDriver,
+  type UsageEvent,
   type ChargePoint,
   type ChargePointEvent,
   type ChargePointSnapshot,
@@ -27,6 +33,7 @@ import {
   type FaultInjector,
   type WireDirection,
 } from './fault-injector.js';
+import { resolveEv } from './evs.js';
 import { createHttpFileTransfer } from './file-transfer.js';
 import { createCertificateTools } from './x509.js';
 import type { PersonaRegistry } from './personas.js';
@@ -56,6 +63,8 @@ export type FleetEvent =
   | { stationId: string; type: 'transport'; event: TransportEvent }
   /** The station's active fault injections changed. */
   | { stationId: string; type: 'injections' }
+  /** Something the usage model's driver did. */
+  | { stationId: string; type: 'usage'; event: UsageEvent }
   /**
    * A frame on the wire, after the Fault Injector: `injected` names the
    * injection that changed or made it, `dropped` marks one that never reached
@@ -82,6 +91,8 @@ export interface StationSnapshot extends ChargePointSnapshot {
   connectionError?: string;
   tags: string[];
   group?: string;
+  /** Whether the usage model runs; absent when the station has none. */
+  usage?: boolean;
 }
 
 export interface VirtualStation {
@@ -91,6 +102,8 @@ export interface VirtualStation {
   readonly chargePoint: ChargePoint;
   readonly transport: Transport;
   readonly injector: FaultInjector;
+  /** The usage model's driver, when the station has a model. */
+  readonly usage?: UsageDriver;
   readonly running: boolean;
   snapshot(): StationSnapshot;
 }
@@ -143,6 +156,8 @@ export interface Fleet {
    * here, and a reconnect storm hits every station.
    */
   inject(id: string, request: InjectionRequest): void;
+  /** Switches a station's usage model on or off; throws when it has none. */
+  setUsage(id: string, enabled: boolean): void;
   /** Listens to every fleet event beside `onEvent`; returns the unsubscribe function. */
   subscribe(listener: (event: FleetEvent) => void): () => void;
 }
@@ -160,6 +175,8 @@ export function isAllowedCsms(url: string, allowed: readonly string[]): boolean 
 interface Entry {
   station: VirtualStation;
   running: boolean;
+  /** Whether the usage model should run while the station runs. */
+  usage: boolean;
 }
 
 export function createFleet(options: FleetOptions): Fleet {
@@ -227,6 +244,16 @@ export function createFleet(options: FleetOptions): Fleet {
       ...definition.config,
     };
     const pem = readStationCertificates(definition.security);
+    const usage = resolveUsage(persona.definition.usage, definition.usage);
+    const unknownEvs = Object.keys(usage.model?.evs ?? {}).filter(
+      (name) => persona.definition.evs?.[name] === undefined,
+    );
+    if (unknownEvs.length > 0) {
+      usage.problems.push(`$.usage.evs: persona ${persona.id} has no EV ${unknownEvs.join(', ')}`);
+    }
+    if (usage.problems.length > 0) {
+      throw new Error(`station ${definition.id}: ${usage.problems.join('; ')}`);
+    }
     // Throws on invalid overrides, before anything starts.
     const config = createConfig({
       numberOfConnectors: personaOptions.connectors,
@@ -321,6 +348,38 @@ export function createFleet(options: FleetOptions): Fleet {
     });
 
     holder.chargePoint = cp;
+    const connectorOf = (connectorId: number) =>
+      cp.snapshot().connectors.find((c) => c.connectorId === connectorId);
+    const driver =
+      usage.model === undefined
+        ? undefined
+        : createUsageDriver({
+            clock,
+            random: randomFor(definition),
+            model: usage.model,
+            actions: {
+              connectorIds: () =>
+                Array.from({ length: personaOptions.connectors }, (_, i) => i + 1),
+              isFree: (connectorId) => {
+                const connector = connectorOf(connectorId);
+                return connector?.status === 'Available' && !connector.plugged;
+              },
+              plugIn: (connectorId, ev) => cp.plugIn(connectorId, resolveEv(station, ev)),
+              unplug: (connectorId) => {
+                cp.unplug(connectorId);
+              },
+              presentIdTag: async (connectorId, idTag) => {
+                const result = await cp.presentIdTag(connectorId, idTag);
+                return result === 'authorized' || result === 'stopping' ? result : 'other';
+              },
+              isPluggedIn: (connectorId) => connectorOf(connectorId)?.plugged ?? false,
+              hasTransaction: (connectorId) =>
+                ['Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(
+                  connectorOf(connectorId)?.status ?? '',
+                ),
+            },
+            onEvent: (event) => emit({ stationId: definition.id, type: 'usage', event }),
+          });
     const station: VirtualStation = {
       id: definition.id,
       definition,
@@ -328,6 +387,7 @@ export function createFleet(options: FleetOptions): Fleet {
       chargePoint: cp,
       transport,
       injector,
+      ...(driver !== undefined && { usage: driver }),
       get running() {
         return entries.get(definition.id)?.running ?? false;
       },
@@ -342,10 +402,31 @@ export function createFleet(options: FleetOptions): Fleet {
         ...(connectionError !== undefined && { connectionError }),
         tags: definition.tags ?? [],
         ...(definition.group !== undefined && { group: definition.group }),
+        ...(driver !== undefined && { usage: driver.running }),
       }),
     };
-    entries.set(definition.id, { station, running: false });
+    const previous = entries.get(definition.id);
+    entries.set(definition.id, {
+      station,
+      running: false,
+      // A power loss rebuilds the station; a usage switch made since carries over.
+      usage:
+        replace && previous !== undefined
+          ? previous.usage
+          : definition.usage !== undefined && definition.usage !== false,
+    });
     return station;
+  }
+
+  /** One random generator per station id, kept across power losses so sessions go on. */
+  const randoms = new Map<string, () => number>();
+  function randomFor(definition: StationDefinition): () => number {
+    let random = randoms.get(definition.id);
+    if (random === undefined) {
+      random = seededRandom(stationSeed(definition.seed ?? 0, definition.id));
+      randoms.set(definition.id, random);
+    }
+    return random;
   }
 
   /**
@@ -370,6 +451,7 @@ export function createFleet(options: FleetOptions): Fleet {
         event: { type: 'log', message: `power loss for ${offMs} ms` },
       });
       station.injector.clear();
+      station.usage?.stop();
       entry.running = false;
       await station.transport.stop();
       await new Promise((resolve) => setTimeout(resolve, offMs).unref());
@@ -396,6 +478,7 @@ export function createFleet(options: FleetOptions): Fleet {
     if (entry.running) return;
     entry.running = true;
     entry.station.transport.start();
+    if (entry.usage) entry.station.usage?.start();
   }
 
   function startMany(ids: readonly string[], rampUp: RampUp | false = DEFAULT_RAMP_UP): void {
@@ -421,6 +504,7 @@ export function createFleet(options: FleetOptions): Fleet {
     cancelPendingStart(id);
     const entry = entries.get(id);
     if (entry === undefined || !entry.running) return;
+    entry.station.usage?.stop();
     entry.running = false;
     await entry.station.transport.stop();
     save(id);
@@ -473,6 +557,7 @@ export function createFleet(options: FleetOptions): Fleet {
         if (pending !== undefined) clearTimeout(pending);
         pendingSaves.delete(id);
         entries.delete(id);
+        randoms.delete(id);
       }
       options.store?.deleteStations(ids);
     },
@@ -515,6 +600,19 @@ export function createFleet(options: FleetOptions): Fleet {
         if (entry.running) entry.station.transport.restartAfter(0);
       }
     },
+    setUsage(id, enabled) {
+      const entry = entries.get(id);
+      if (entry === undefined) throw new Error(`unknown station ${id}`);
+      const driver = entry.station.usage;
+      if (driver === undefined) {
+        throw new Error(`station ${id} has no usage model (give one in its persona or definition)`);
+      }
+      entry.usage = enabled;
+      if (enabled && entry.running) driver.start();
+      if (!enabled) driver.stop();
+      emit({ stationId: id, type: 'charge-point', event: { type: 'changed' } });
+    },
+
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -529,6 +627,7 @@ export function createFleet(options: FleetOptions): Fleet {
       if (pending !== undefined) clearTimeout(pending);
       pendingSaves.delete(id);
       entries.delete(id);
+      randoms.delete(id);
       options.store?.deleteStation(id);
     },
 
