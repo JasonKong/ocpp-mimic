@@ -1,0 +1,20 @@
+{
+  "name": "@ocpp-mimic/cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The ocpp-mimic command: starts the engine and, later, runs scenarios.",
+  "type": "module",
+  "bin": {
+    "ocpp-mimic": "./dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@ocpp-mimic/core": "workspace:*",
+    "@ocpp-mimic/engine": "workspace:*"
+  }
+}
