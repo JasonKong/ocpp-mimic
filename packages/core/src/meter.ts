@@ -34,13 +34,16 @@ export function createMeter(options: CreateMeterOptions): MeterState {
   };
 }
 
-/** The meter brought up to `now`: the current power integrated since the last update. */
-export function meterAt(meter: MeterState, now: number): MeterState {
+/**
+ * The meter brought up to `now`: the current power integrated since the last
+ * update, `energyMultiplier` times faster than real time.
+ */
+export function meterAt(meter: MeterState, now: number, energyMultiplier = 1): MeterState {
   const elapsedMs = Math.max(0, now - meter.updatedAt);
   if (elapsedMs === 0) return meter;
   return {
     ...meter,
-    energyWh: meter.energyWh + (meter.powerW * elapsedMs) / 3_600_000,
+    energyWh: meter.energyWh + (meter.powerW * elapsedMs * energyMultiplier) / 3_600_000,
     updatedAt: Math.max(now, meter.updatedAt),
   };
 }

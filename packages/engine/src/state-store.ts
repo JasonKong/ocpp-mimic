@@ -18,6 +18,8 @@ export interface StationDefinition {
   password?: string;
   /** Configuration values on top of the persona's. */
   config?: Record<string, string>;
+  /** Initial energy multiplier; the saved charge point state keeps later changes. */
+  energyMultiplier?: number;
 }
 
 export interface StateStore {

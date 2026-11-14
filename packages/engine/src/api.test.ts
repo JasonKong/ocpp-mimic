@@ -188,6 +188,37 @@ describe('engine API', () => {
     await csms!.waitForConnection('SIM-1', 3000, connection);
   });
 
+  it('sets the energy multiplier at creation and at run time', async () => {
+    const { api, csmsUrl } = await start();
+    const created = await api('POST', '/api/stations', {
+      id: 'SIM-X',
+      persona: 'generic-1.6',
+      csmsUrl,
+      energyMultiplier: 60,
+    });
+    expect(created.body?.energyMultiplier).toBe(60);
+    const changed = await api('PATCH', '/api/stations/SIM-X/energy-multiplier', {
+      energyMultiplier: 10,
+    });
+    expect(changed.body?.energyMultiplier).toBe(10);
+    for (const bad of [0, -1, '5', null]) {
+      expect(
+        (await api('PATCH', '/api/stations/SIM-X/energy-multiplier', { energyMultiplier: bad }))
+          .status,
+      ).toBe(400);
+    }
+    expect(
+      (
+        await api('POST', '/api/stations', {
+          id: 'SIM-Y',
+          persona: 'generic-1.6',
+          csmsUrl,
+          energyMultiplier: 0,
+        })
+      ).status,
+    ).toBe(400);
+  });
+
   it('plugs in with an EV from the persona or an inline profile', async () => {
     const { api, csmsUrl } = await start();
     await addStation(api, csmsUrl);

@@ -91,4 +91,9 @@ describe('sampling schedule', () => {
     ).toBe('2026-11-15T00:00:00.000Z');
     expect(nextAlignedSample(0, at)).toBeUndefined();
   });
+  it('integrates faster with an energy multiplier', () => {
+    const meter = withPower(createMeter({ now: 0 }), 0, 7200);
+    expect(meterAt(meter, 60_000).energyWh).toBeCloseTo(120, 9);
+    expect(meterAt(meter, 60_000, 60).energyWh).toBeCloseTo(7200, 9);
+  });
 });

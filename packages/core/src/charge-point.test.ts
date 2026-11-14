@@ -26,6 +26,7 @@ interface SetupOptions {
   config?: Record<string, string>;
   timing?: Partial<ChargePointTiming>;
   behaviour?: Partial<ChargePointBehaviour>;
+  energyMultiplier?: number;
 }
 
 /**
@@ -67,6 +68,7 @@ function setup(options: SetupOptions = {}) {
     restart: (downtimeMs) => restarts.push(downtimeMs),
     ...(options.restore !== undefined && { restore: options.restore }),
     ...(options.behaviour !== undefined && { behaviour: options.behaviour }),
+    ...(options.energyMultiplier !== undefined && { energyMultiplier: options.energyMultiplier }),
   });
 
   let answered = 0;
@@ -757,6 +759,73 @@ describe('EV model', () => {
     expect(() => h.cp.plugIn(1, { profile: { ...SMALL, capacityKWh: 0 } })).toThrow(RangeError);
     expect(h.cp.snapshot().connectors[0]).toMatchObject({ plugged: false });
     expect(h.cp.snapshot().connectors[0]?.ev).toBeUndefined();
+  });
+});
+
+describe('energy multiplier', () => {
+  const quiet = {
+    BootNotification: () => ({
+      status: 'Accepted',
+      currentTime: new Date().toISOString(),
+      interval: 0,
+    }),
+  };
+
+  it('books energy faster than real time while timestamps stay real', async () => {
+    const h = setup({
+      energyMultiplier: 60,
+      csms: quiet,
+      config: {
+        MeterValueSampleInterval: '60',
+        MeterValuesSampledData: 'Energy.Active.Import.Register',
+      },
+    });
+    await h.boot();
+    await h.startSession(1);
+    const startedAt = h.clock.now();
+    await h.advance(60_000);
+    // One real minute at 7360 W counts as one hour.
+    expect(h.cp.snapshot().connectors[0]?.energyWh).toBeCloseTo(7360, 0);
+    expect(h.cp.snapshot().energyMultiplier).toBe(60);
+    const sample = h.lastCall('MeterValues')?.payload.meterValue as Array<{ timestamp: string }>;
+    expect(Date.parse(sample[0]?.timestamp ?? '')).toBeLessThanOrEqual(h.clock.now());
+    expect(Date.parse(sample[0]?.timestamp ?? '')).toBeGreaterThan(startedAt);
+  });
+
+  it('fills an EV in a fraction of the real time', async () => {
+    const h = setup({ energyMultiplier: 60, csms: quiet });
+    await h.boot();
+    const card = h.cp.presentIdTag(1, 'TAG');
+    await h.settle();
+    expect(await card).toBe('authorized');
+    h.cp.plugIn(1, { profile: { capacityKWh: 10, initialSoc: 20, maxPowerW: 7400, phases: 1 } });
+    await h.advance(500);
+    // About 1 h 30 min of energy: full after about 90 s of clock time.
+    for (let i = 0; i < 9; i++) await h.advance(10_000);
+    expect(h.cp.snapshot().connectors[0]?.status).toBe('Charging');
+    for (let i = 0; i < 3; i++) await h.advance(10_000);
+    expect(h.cp.snapshot().connectors[0]).toMatchObject({
+      status: 'SuspendedEV',
+      ev: { soc: 100 },
+    });
+  });
+
+  it('applies a change from then on, survives a restart and rejects bad values', async () => {
+    const h = setup({ csms: quiet });
+    await h.boot();
+    await h.startSession(1);
+    const before = h.cp.snapshot().connectors[0]?.energyWh ?? NaN;
+    await h.advance(30_000);
+    h.cp.setEnergyMultiplier(10);
+    await h.advance(30_000);
+    const expected = (7360 * (30 + 300)) / 3600;
+    expect((h.cp.snapshot().connectors[0]?.energyWh ?? NaN) - before).toBeCloseTo(expected, 3);
+    expect(() => h.cp.setEnergyMultiplier(0)).toThrow(RangeError);
+    expect(() => setup({ energyMultiplier: -1 })).toThrow(RangeError);
+
+    const saved = h.cp.persistentState();
+    expect(saved.energyMultiplier).toBe(10);
+    expect(setup({ restore: saved, energyMultiplier: 2 }).cp.snapshot().energyMultiplier).toBe(10);
   });
 });
 
