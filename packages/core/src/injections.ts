@@ -40,7 +40,15 @@ export type Injection =
   | { type: 'outOfOrder' }
   | { type: 'noAnswer'; action?: string; count?: number }
   | { type: 'callError'; errorCode: RpcErrorCode; action?: string; count?: number }
-  | { type: 'schemaViolation'; action?: string; count: number };
+  | { type: 'schemaViolation'; action?: string; count: number }
+  // Device
+  | { type: 'meterRollback'; wh: number; connector: number }
+  | { type: 'meterReset'; connector: number }
+  /** Every timestamp the station sends is shifted by `ms` (negative: behind). */
+  | { type: 'clockDrift'; ms: number }
+  | { type: 'badTimestamp'; count: number }
+  // Power
+  | { type: 'powerLoss'; offMs: number; onMs: number; times: number };
 
 export type InjectionType = Injection['type'];
 
@@ -78,6 +86,11 @@ const PARAMETERS = {
   noAnswer: object({}, { action, count }),
   callError: object({}, { errorCode: oneOf(RPC_ERROR_CODES), action, count }),
   schemaViolation: object({}, { action, count }),
+  meterRollback: object({ wh: integer({ minimum: 1 }) }, { connector: integer({ minimum: 1 }) }),
+  meterReset: object({}, { connector: integer({ minimum: 1 }) }),
+  clockDrift: object({ ms: integer() }),
+  badTimestamp: object({}, { count }),
+  powerLoss: object({ off: durationSchema }, { on: durationSchema, times: count }),
 } as const satisfies Record<InjectionType, Schema<unknown>>;
 
 export const INJECTION_TYPES = Object.keys(PARAMETERS) as InjectionType[];
@@ -164,6 +177,28 @@ export function parseInjection(
         ...optional('action'),
       };
       break;
+    case 'meterRollback':
+      injection = {
+        type: 'meterRollback',
+        wh: p.wh as number,
+        connector: (p.connector as number | undefined) ?? 1,
+      };
+      break;
+    case 'meterReset':
+      injection = { type: 'meterReset', connector: (p.connector as number | undefined) ?? 1 };
+      break;
+    case 'clockDrift':
+      injection = { type: 'clockDrift', ms: p.ms as number };
+      break;
+    case 'powerLoss':
+      injection = {
+        type: 'powerLoss',
+        offMs: ms(p.off),
+        onMs: p.on === undefined ? 5000 : ms(p.on),
+        times: (p.times as number | undefined) ?? 1,
+      };
+      break;
+    case 'badTimestamp':
     case 'malformedJson':
     case 'duplicateId':
     case 'unknownId':

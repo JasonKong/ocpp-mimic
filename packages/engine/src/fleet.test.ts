@@ -172,6 +172,53 @@ describe('fleet', () => {
     });
   });
 
+  it('a power loss restarts the station from its saved state, keeping queued timestamps', async () => {
+    csms = await startBuiltinCsms();
+    const fleet = await fleetWith();
+    const station = fleet.add({ id: 'SIM-PL', persona: 'generic-1.6', csmsUrl: csms.url });
+    const first = await csms.waitForConnection('SIM-PL');
+    await until(() => station.snapshot().registration === 'Accepted');
+    await station.chargePoint.presentIdTag(1, 'TAG');
+    station.chargePoint.plugIn(1);
+    await first.waitForCall('StartTransaction');
+    // Offline, a card stops the session: its StopTransaction waits in the queue.
+    station.transport.goOffline('clean');
+    await until(() => station.snapshot().transport === 'offline');
+    await station.chargePoint.presentIdTag(1, 'TAG');
+    await until(() => station.snapshot().queuedMessages > 0);
+    const stoppedAt = Date.now();
+
+    fleet.inject('SIM-PL', { injection: { type: 'powerLoss', offMs: 300, onMs: 0, times: 1 } });
+    await until(() => fleet.get('SIM-PL')?.snapshot().running === false);
+    const second = await csms.waitForConnection('SIM-PL', 5000, first);
+    const stop = await second.waitForCall('StopTransaction', 5000);
+    expect(stop.payload).toMatchObject({ reason: 'Local' });
+    // Sent after the restart with the time it happened, not the time it was sent.
+    expect(Date.parse(String(stop.payload.timestamp))).toBeLessThanOrEqual(stoppedAt + 50);
+    const fresh = fleet.get('SIM-PL');
+    expect(fresh).not.toBe(station);
+    expect(fresh?.snapshot()).toMatchObject({ running: true });
+    expect((await second.waitForCall('SecurityEventNotification', 3000)).payload).toMatchObject({
+      type: 'StartupOfTheDevice',
+    });
+  });
+
+  it('sets the meter register for meter faults', async () => {
+    const fleet = await fleetWith();
+    const station = fleet.add(
+      { id: 'SIM-M', persona: 'generic-1.6', csmsUrl: 'ws://localhost:1/ocpp' },
+      { start: false },
+    );
+    station.chargePoint.setMeterRegister(1, 5000);
+    fleet.inject('SIM-M', { injection: { type: 'meterRollback', wh: 1200, connector: 1 } });
+    expect(station.snapshot().connectors[0]?.energyWh).toBeCloseTo(3800, 3);
+    fleet.inject('SIM-M', { injection: { type: 'meterReset', connector: 1 } });
+    expect(station.snapshot().connectors[0]?.energyWh).toBe(0);
+    expect(() =>
+      fleet.inject('SIM-M', { injection: { type: 'meterRollback', wh: 1, connector: 9 } }),
+    ).toThrow(/no connector 9/);
+  });
+
   it('remove() stops the station and deletes it from the store', async () => {
     const store = openStateStore(':memory:');
     stores.push(store);

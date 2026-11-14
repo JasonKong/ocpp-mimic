@@ -348,7 +348,7 @@ M3 确定（#65）。M3 补齐 OCPP 1.6 其余的功能 profile、Security White
 | 网络 | `latency`（每个方向的延迟毫秒数）、`drop`（丢弃某个方向的帧，按数量或概率）、`flap`（断开、恢复的时长和次数）、`reconnectStorm`（所有桩同时重连，作用于整个 fleet） |
 | 协议 | `malformedJson`（接下来发送的 N 帧）、`duplicateId`、`unknownId`（用 CSMS 没发过的 uniqueId 应答）、`outOfOrder`（调换接下来两个 CALL 的顺序）、`noAnswer`（不应答 CSMS 某个 action 的 CALL）、`callError`（用 CALLERROR 应答这些 CALL）、`schemaViolation`（某个 action 的下一个 CALL 多一个字段） |
 | 设备 | `meterRollback`（回退的 Wh 数）、`meterReset`、`clockDrift`（每个时间戳加上的毫秒数）、`badTimestamp`（接下来 N 个时间戳格式错误） |
-| 断电 | `powerLoss`（`for`：断电一段时间，然后从保存的状态重启：交易以 PowerLoss 结束，排队的消息保留原时间戳），可以用 `times` 重复 |
+| 断电 | `powerLoss`（`off`：断电这么久，然后从保存的状态重启：交易以 PowerLoss 结束，排队的消息保留原时间戳），用 `times` 重复，间隔 `on` |
 
 - 注入产生的帧会记录注入类型，在 Web UI 的消息日志里标出，并且不参加 OCA schema 检查，因为它们本来就是故意出错的。
 
@@ -358,6 +358,15 @@ M3 确定（#65）。M3 补齐 OCPP 1.6 其余的功能 profile、Security White
 - 参数：`latency { ms, direction: sent | received | both }`；`drop { direction, count?, probability?, action? }`；`flap { down, up, times? }`；`malformedJson`、`duplicateId`、`unknownId`、`schemaViolation` 接受 `count`（默认 1），`schemaViolation` 以及 `noAnswer` / `callError` 接受 `action`，`callError` 接受 `errorCode`（默认 InternalError）。都可以用 `for` 设定持续时间；计数类用完即止；`outOfOrder` 调换接下来发送的两帧（只有一帧时 1 秒后发出）。重复 uniqueId 的应答会被改回原 id，桩自己不会因此混乱。
 - `GET`、`POST`、`DELETE /api/stations/:id/injections`；`reconnectStorm` 不管发给哪个桩都作用于整个 fleet。快照列出正在生效的注入，Web UI 显示它们并提供清除按钮。
 - `csmsCall` 支持 `noAnswer: <时长>`，用来断言 CSMS 侧超时。
+
+设备层和断电已实现（T31）：
+
+- `meterRollback { wh, connector? }` 和 `meterReset { connector? }` 直接设置充电桩里连接器的电能寄存器；之后的电表值和 meterStop 都从这里继续，所以 meterStop 可能小于 meterStart，和真实的故障电表一样（不再强制不小于 meterStart）。
+- `clockDrift { ms }`（负数表示落后）把桩发出的每个 `timestamp` 平移，`badTimestamp { count? }` 把它们换成 `not-a-timestamp`；两者都在线路层生效，在桩自己的校验之后。
+- `powerLoss { off, on?, times? }`：fleet 保存桩的状态、断开连接（快照显示 `running: false`），`off` 之后从这个状态重建桩，就像断电后重启：进行中的交易以 PowerLoss 结束，排队的消息保留原时间戳，并上报 StartupOfTheDevice。多次断电之间间隔 `on`（默认 5 秒）。
+- persona 故障目录里的故障（errorCode、info、vendorErrorCode）照旧通过 `fault` 步骤和 Web UI 触发。
+- Web UI 的桩详情有一行 Inject：选择故障类型，填 `key=value` 参数，例如断电填 `off=10s`。
+- 比较操作符（`$lt` 等）可以接受模板，因此可以拿保存下来的读数和之后的读数比较。
 
 **安全（OCPP 1.6 Security Whitepaper）**
 

@@ -18,7 +18,17 @@ describe('fault injections', () => {
     expect(parseInjection({ type: 'malformedJson' })).toMatchObject({
       request: { injection: { type: 'malformedJson', count: 1 } },
     });
-    expect(INJECTION_TYPES).toHaveLength(11);
+    expect(parseInjection({ type: 'powerLoss', off: '10s', times: 3 })).toEqual({
+      ok: true,
+      request: { injection: { type: 'powerLoss', offMs: 10_000, onMs: 5000, times: 3 } },
+    });
+    expect(parseInjection({ type: 'meterRollback', wh: 500 })).toMatchObject({
+      request: { injection: { type: 'meterRollback', wh: 500, connector: 1 } },
+    });
+    expect(parseInjection({ type: 'clockDrift', ms: -90_000 })).toMatchObject({
+      request: { injection: { type: 'clockDrift', ms: -90_000 } },
+    });
+    expect(INJECTION_TYPES).toHaveLength(16);
   });
 
   it('reports unknown types and bad parameters with their path', () => {

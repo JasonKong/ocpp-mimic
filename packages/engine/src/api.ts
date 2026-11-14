@@ -279,10 +279,12 @@ const routes: Route[] = [
     if (!parsed.ok) {
       throw new HttpError(400, parsed.issues.map((i) => `${i.path}: ${i.message}`).join('; '));
     }
-    // A reconnect storm hits every station at once.
-    if (parsed.request.injection.type === 'reconnectStorm') context.fleet.reconnectStorm();
-    else station.injector.add(parsed.request);
-    return station.snapshot();
+    try {
+      context.fleet.inject(station.id, parsed.request);
+    } catch (error) {
+      throw new HttpError(400, error instanceof Error ? error.message : String(error));
+    }
+    return stationOf(context, station.id).snapshot();
   }),
 
   route('DELETE', '/api/stations/:param/injections', (request, context) => {

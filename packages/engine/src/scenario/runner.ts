@@ -371,7 +371,7 @@ export async function runScenario(
           return;
         case 'inject':
           if (step.request.injection.type === 'reconnectStorm') fleet.reconnectStorm();
-          else station!.injector.add(step.request);
+          else fleet.inject(station!.id, step.request);
           return;
         case 'clearInjections':
           station!.injector.clear();

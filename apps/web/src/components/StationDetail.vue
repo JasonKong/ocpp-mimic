@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import type {
   Behaviour,
   ConnectorSnapshot,
@@ -55,6 +55,43 @@ function setMultiplier(event: Event) {
 
 function toggle(name: keyof Behaviour, event: Event) {
   emit('action', 'behaviour', undefined, { [name]: (event.target as HTMLInputElement).checked });
+}
+
+/** Fault injections offered in the UI, with example parameters (`key=value`, space-separated). */
+const INJECTIONS = [
+  { type: 'powerLoss', label: 'Power loss', example: 'off=10s' },
+  { type: 'meterRollback', label: 'Meter rollback', example: 'wh=1000 connector=1' },
+  { type: 'meterReset', label: 'Meter reset', example: 'connector=1' },
+  { type: 'clockDrift', label: 'Clock drift', example: 'ms=-60000' },
+  { type: 'badTimestamp', label: 'Malformed timestamp', example: 'count=1' },
+  { type: 'latency', label: 'Latency', example: 'ms=2000 direction=both for=1m' },
+  { type: 'drop', label: 'Drop frames', example: 'direction=sent count=1' },
+  { type: 'flap', label: 'Flapping connection', example: 'down=5s up=10s times=3' },
+  { type: 'noAnswer', label: 'Ignore CSMS calls', example: 'action=RemoteStartTransaction' },
+  { type: 'callError', label: 'CALLERROR answers', example: 'errorCode=InternalError' },
+  { type: 'malformedJson', label: 'Malformed JSON', example: 'count=1' },
+  { type: 'reconnectStorm', label: 'Reconnect storm (all)', example: '' },
+] as const;
+const injectType = ref<string>(INJECTIONS[0].type);
+const injectParams = ref<string>(INJECTIONS[0].example);
+const injectExample = computed(
+  () => INJECTIONS.find((i) => i.type === injectType.value)?.example ?? '',
+);
+
+function pickInjection(event: Event) {
+  injectType.value = (event.target as HTMLSelectElement).value;
+  injectParams.value = injectExample.value;
+}
+
+function inject() {
+  const parameters: Record<string, string | number> = {};
+  for (const pair of injectParams.value.split(/\s+/).filter(Boolean)) {
+    const [key, ...rest] = pair.split('=');
+    const value = rest.join('=');
+    if (key === undefined || key === '') continue;
+    parameters[key] = /^-?\d+(\.\d+)?$/.test(value) ? Number(value) : value;
+  }
+  emit('action', 'inject', undefined, { type: injectType.value, ...parameters });
 }
 
 function statusTone(status: string): string {
@@ -128,6 +165,19 @@ function statusTone(status: string): string {
       </span>
       <button class="link" @click="emit('action', 'clearInjections')">Clear</button>
     </p>
+
+    <div class="inject">
+      <label>
+        Inject
+        <select :value="injectType" @change="pickInjection">
+          <option v-for="option in INJECTIONS" :key="option.type" :value="option.type">
+            {{ option.label }}
+          </option>
+        </select>
+      </label>
+      <input v-model="injectParams" :placeholder="injectExample" aria-label="Parameters" />
+      <button @click="inject">Inject</button>
+    </div>
 
     <div class="switches">
       <label>
@@ -308,6 +358,16 @@ h2 {
 .injection {
   margin-left: 6px;
   font-weight: 600;
+}
+.inject {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.inject input {
+  flex: 1;
+  min-width: 160px;
 }
 .switches {
   display: flex;

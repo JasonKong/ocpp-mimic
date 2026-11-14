@@ -625,6 +625,23 @@ describe('commands from the CSMS', () => {
   });
 });
 
+describe('meter faults', () => {
+  it('a rolled-back register shows in meter values and gives a meterStop below meterStart', async () => {
+    const h = setup();
+    h.cp.setMeterRegister(1, 10_000);
+    await h.boot();
+    await h.startSession(1);
+    expect(h.lastCall('StartTransaction')?.payload.meterStart).toBe(10_000);
+    h.cp.setMeterRegister(1, 4000);
+    expect(h.cp.snapshot().connectors[0]?.energyWh).toBe(4000);
+    await h.csmsCall('RemoteStopTransaction', { transactionId: 100 });
+    await h.advance(1000);
+    expect(h.lastCall('StopTransaction')?.payload.meterStop).toBe(4000);
+    h.cp.setMeterRegister(1, -5);
+    expect(h.cp.snapshot().connectors[0]?.energyWh).toBe(0);
+  });
+});
+
 describe('device events', () => {
   it('a fault during a transaction ends it with reason Other; clearing restores the status', async () => {
     const h = setup();

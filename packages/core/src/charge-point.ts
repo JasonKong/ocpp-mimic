@@ -385,6 +385,11 @@ export interface ChargePoint {
   evSuspend(connectorId: number): void;
   evResume(connectorId: number): void;
   raiseFault(connectorId: number, fault: Fault): void;
+  /**
+   * Sets a connector's energy register (Wh), as a faulty meter that rolls
+   * back or resets would; readings and meterStop continue from there.
+   */
+  setMeterRegister(connectorId: number, energyWh: number): void;
   clearFault(connectorId: number): void;
   /** Changes test switches; turning the cable lock on or off applies to running transactions too. */
   setBehaviour(changes: Partial<ChargePointBehaviour>): void;
@@ -2273,6 +2278,19 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       }
       if (applyDevice({ type: 'EvResume', connectorId }).error === undefined)
         updatePower(connectorId);
+    },
+
+    setMeterRegister(connectorId, energyWh) {
+      if (findConnector(station, connectorId) === undefined) {
+        log(`meter: unknown connector ${connectorId}`);
+        return;
+      }
+      const before = syncMeter(connectorId).energyWh;
+      meters.set(connectorId, { ...syncMeter(connectorId), energyWh: Math.max(0, energyWh) });
+      log(
+        `meter of connector ${connectorId} set from ${Math.round(before)} to ${Math.round(Math.max(0, energyWh))} Wh`,
+      );
+      changed();
     },
 
     raiseFault(connectorId, fault) {

@@ -138,6 +138,8 @@ export function createEngine(options: EngineOptions = {}): Engine {
             } else if (cpEvent.type === 'changed') {
               scheduleStationUpdate(event.stationId);
             }
+          } else if (event.type === 'injections') {
+            scheduleStationUpdate(event.stationId);
           } else if (event.event.type === 'state') {
             recorder.log(event.stationId, `connection ${event.event.state}`);
             scheduleStationUpdate(event.stationId);

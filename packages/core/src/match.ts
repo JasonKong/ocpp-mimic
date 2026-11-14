@@ -70,7 +70,10 @@ function checkOperator(op: string, arg: unknown, path: string): Mismatch[] {
       return problem('$regex is not a valid regular expression');
     }
   }
-  if (COMPARISONS.includes(op) && typeof arg !== 'number') return problem(`${op} takes a number`);
+  // A template ("{{before}}") becomes a number before matching.
+  const template = typeof arg === 'string' && /^\{\{[^{}]+\}\}$/.test(arg.trim());
+  if (COMPARISONS.includes(op) && typeof arg !== 'number' && !template)
+    return problem(`${op} takes a number (or a template for one)`);
   if (op === '$contains') return operatorProblems(arg, `${path}.$contains`);
   if (op === '$size') {
     const size = operatorsOf(arg);
