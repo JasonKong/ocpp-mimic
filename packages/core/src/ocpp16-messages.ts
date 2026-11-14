@@ -4,7 +4,7 @@
  * enumerations); see docs/design.md, "OCPP 1.6J coverage". Each entry
  * validates at runtime and gives the TypeScript type of its payload.
  */
-import { CHARGE_POINT_STATUSES } from './ocpp16.js';
+import { CHARGE_POINT_STATUSES, MEASURANDS } from './ocpp16.js';
 import {
   array,
   boolean,
@@ -22,10 +22,10 @@ import {
 
 // ---- Shared types --------------------------------------------------------
 
-/** IdToken: a CiString20. */
-export const IdToken = string({ maxLength: 20 });
+/** IdTokenSchema: a CiString20. */
+export const IdTokenSchema = string({ maxLength: 20 });
 
-export const AuthorizationStatus = oneOf([
+export const AuthorizationStatusSchema = oneOf([
   'Accepted',
   'Blocked',
   'Expired',
@@ -33,12 +33,12 @@ export const AuthorizationStatus = oneOf([
   'ConcurrentTx',
 ]);
 
-export const IdTagInfo = object(
-  { status: AuthorizationStatus },
-  { expiryDate: dateTime(), parentIdTag: IdToken },
+export const IdTagInfoSchema = object(
+  { status: AuthorizationStatusSchema },
+  { expiryDate: dateTime(), parentIdTag: IdTokenSchema },
 );
 
-export const ChargePointErrorCode = oneOf([
+export const ChargePointErrorCodeSchema = oneOf([
   'ConnectorLockFailure',
   'EVCommunicationError',
   'GroundFailure',
@@ -57,7 +57,7 @@ export const ChargePointErrorCode = oneOf([
   'WeakSignal',
 ]);
 
-export const ReadingContext = oneOf([
+export const ReadingContextSchema = oneOf([
   'Interruption.Begin',
   'Interruption.End',
   'Sample.Clock',
@@ -68,37 +68,14 @@ export const ReadingContext = oneOf([
   'Other',
 ]);
 
-export const Measurand = oneOf([
-  'Energy.Active.Export.Register',
-  'Energy.Active.Import.Register',
-  'Energy.Reactive.Export.Register',
-  'Energy.Reactive.Import.Register',
-  'Energy.Active.Export.Interval',
-  'Energy.Active.Import.Interval',
-  'Energy.Reactive.Export.Interval',
-  'Energy.Reactive.Import.Interval',
-  'Power.Active.Export',
-  'Power.Active.Import',
-  'Power.Offered',
-  'Power.Reactive.Export',
-  'Power.Reactive.Import',
-  'Power.Factor',
-  'Current.Import',
-  'Current.Export',
-  'Current.Offered',
-  'Voltage',
-  'Frequency',
-  'Temperature',
-  'SoC',
-  'RPM',
-]);
+export const MeasurandSchema = oneOf(MEASURANDS);
 
-export const SampledValue = object(
+export const SampledValueSchema = object(
   { value: string() },
   {
-    context: ReadingContext,
+    context: ReadingContextSchema,
     format: oneOf(['Raw', 'SignedData']),
-    measurand: Measurand,
+    measurand: MeasurandSchema,
     phase: oneOf(['L1', 'L2', 'L3', 'N', 'L1-N', 'L2-N', 'L3-N', 'L1-L2', 'L2-L3', 'L3-L1']),
     location: oneOf(['Cable', 'EV', 'Inlet', 'Outlet', 'Body']),
     // "Celcius" is the spelling in the 1.6 specification; "Celsius" is accepted too.
@@ -124,31 +101,31 @@ export const SampledValue = object(
   },
 );
 
-export const MeterValue = object({
+export const MeterValueSchema = object({
   timestamp: dateTime(),
-  sampledValue: array(SampledValue, { minItems: 1 }),
+  sampledValue: array(SampledValueSchema, { minItems: 1 }),
 });
 
-export const ChargingSchedulePeriod = object(
+export const ChargingSchedulePeriodSchema = object(
   { startPeriod: integer(), limit: number() },
   { numberPhases: integer() },
 );
 
-export const ChargingSchedule = object(
+export const ChargingScheduleSchema = object(
   {
     chargingRateUnit: oneOf(['A', 'W']),
-    chargingSchedulePeriod: array(ChargingSchedulePeriod, { minItems: 1 }),
+    chargingSchedulePeriod: array(ChargingSchedulePeriodSchema, { minItems: 1 }),
   },
   { duration: integer(), startSchedule: dateTime(), minChargingRate: number() },
 );
 
-export const ChargingProfile = object(
+export const ChargingProfileSchema = object(
   {
     chargingProfileId: integer(),
     stackLevel: integer({ minimum: 0 }),
     chargingProfilePurpose: oneOf(['ChargePointMaxProfile', 'TxDefaultProfile', 'TxProfile']),
     chargingProfileKind: oneOf(['Absolute', 'Recurring', 'Relative']),
-    chargingSchedule: ChargingSchedule,
+    chargingSchedule: ChargingScheduleSchema,
   },
   {
     transactionId: integer(),
@@ -158,7 +135,7 @@ export const ChargingProfile = object(
   },
 );
 
-export const StopReason = oneOf([
+export const StopReasonSchema = oneOf([
   'EmergencyStop',
   'EVDisconnected',
   'HardReset',
@@ -172,6 +149,19 @@ export const StopReason = oneOf([
   'DeAuthorized',
 ]);
 
+/** TypeScript types of the shared definitions above. */
+export type IdToken = Infer<typeof IdTokenSchema>;
+export type AuthorizationStatus = Infer<typeof AuthorizationStatusSchema>;
+export type IdTagInfo = Infer<typeof IdTagInfoSchema>;
+export type ChargePointErrorCode = Infer<typeof ChargePointErrorCodeSchema>;
+export type ReadingContext = Infer<typeof ReadingContextSchema>;
+export type SampledValue = Infer<typeof SampledValueSchema>;
+export type MeterValue = Infer<typeof MeterValueSchema>;
+export type ChargingSchedulePeriod = Infer<typeof ChargingSchedulePeriodSchema>;
+export type ChargingSchedule = Infer<typeof ChargingScheduleSchema>;
+export type ChargingProfile = Infer<typeof ChargingProfileSchema>;
+export type StopReason = Infer<typeof StopReasonSchema>;
+
 const acceptedOrRejected = object({ status: oneOf(['Accepted', 'Rejected']) });
 
 // ---- Messages ------------------------------------------------------------
@@ -180,8 +170,8 @@ const acceptedOrRejected = object({ status: oneOf(['Accepted', 'Rejected']) });
 export const OCPP16_MESSAGES = {
   // Initiated by the charge point
   Authorize: {
-    request: object({ idTag: IdToken }),
-    response: object({ idTagInfo: IdTagInfo }),
+    request: object({ idTag: IdTokenSchema }),
+    response: object({ idTagInfo: IdTagInfoSchema }),
   },
   BootNotification: {
     request: object(
@@ -211,7 +201,10 @@ export const OCPP16_MESSAGES = {
   },
   MeterValues: {
     request: object(
-      { connectorId: integer({ minimum: 0 }), meterValue: array(MeterValue, { minItems: 1 }) },
+      {
+        connectorId: integer({ minimum: 0 }),
+        meterValue: array(MeterValueSchema, { minItems: 1 }),
+      },
       { transactionId: integer() },
     ),
     response: object({}),
@@ -220,19 +213,19 @@ export const OCPP16_MESSAGES = {
     request: object(
       {
         connectorId: integer({ minimum: 1 }),
-        idTag: IdToken,
+        idTag: IdTokenSchema,
         meterStart: integer(),
         timestamp: dateTime(),
       },
       { reservationId: integer() },
     ),
-    response: object({ idTagInfo: IdTagInfo, transactionId: integer() }),
+    response: object({ idTagInfo: IdTagInfoSchema, transactionId: integer() }),
   },
   StatusNotification: {
     request: object(
       {
         connectorId: integer({ minimum: 0 }),
-        errorCode: ChargePointErrorCode,
+        errorCode: ChargePointErrorCodeSchema,
         status: oneOf(CHARGE_POINT_STATUSES),
       },
       {
@@ -247,9 +240,9 @@ export const OCPP16_MESSAGES = {
   StopTransaction: {
     request: object(
       { meterStop: integer(), timestamp: dateTime(), transactionId: integer() },
-      { idTag: IdToken, reason: StopReason, transactionData: array(MeterValue) },
+      { idTag: IdTokenSchema, reason: StopReasonSchema, transactionData: array(MeterValueSchema) },
     ),
-    response: object({}, { idTagInfo: IdTagInfo }),
+    response: object({}, { idTagInfo: IdTagInfoSchema }),
   },
 
   // Initiated by either side
@@ -299,8 +292,8 @@ export const OCPP16_MESSAGES = {
   },
   RemoteStartTransaction: {
     request: object(
-      { idTag: IdToken },
-      { connectorId: integer(), chargingProfile: ChargingProfile },
+      { idTag: IdTokenSchema },
+      { connectorId: integer(), chargingProfile: ChargingProfileSchema },
     ),
     response: acceptedOrRejected,
   },
