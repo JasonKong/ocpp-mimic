@@ -36,7 +36,13 @@ export interface ScenarioStation {
   behaviour?: { refuseRemoteStart?: boolean; cableLock?: boolean };
   energyMultiplier?: number;
   /** Security Profile and certificate files (paths relative to the scenario file). */
-  security?: { profile?: number; ca?: string; cert?: string; key?: string };
+  security?: {
+    profile?: number;
+    ca?: string;
+    cert?: string;
+    key?: string;
+    manufacturerRoot?: string;
+  };
   /** Setup waits until BootNotification is Accepted. Default true. */
   waitForBoot: boolean;
 }
@@ -236,6 +242,7 @@ const stationSchema = object(
         ca: nonEmpty,
         cert: nonEmpty,
         key: nonEmpty,
+        manufacturerRoot: nonEmpty,
       },
     ),
   },

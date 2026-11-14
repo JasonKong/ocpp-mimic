@@ -18,6 +18,7 @@ import {
   type ResolvedPersona,
 } from '@ocpp-mimic/core';
 import { createHttpFileTransfer } from './file-transfer.js';
+import { createCertificateTools } from './x509.js';
 import type { PersonaRegistry } from './personas.js';
 import type { StateStore, StationDefinition, StationSecurity } from './state-store.js';
 import { createSystemClock, randomIds } from './system-clock.js';
@@ -110,6 +111,7 @@ interface Entry {
 export function createFleet(options: FleetOptions): Fleet {
   const clock = options.clock ?? createSystemClock();
   const ids = options.ids ?? randomIds;
+  const certificateTools = createCertificateTools();
   const allowed = options.allowedCsms ?? DEFAULT_ALLOWED_CSMS;
   const emit = options.onEvent ?? (() => {});
   const entries = new Map<string, Entry>();
@@ -179,7 +181,7 @@ export function createFleet(options: FleetOptions): Fleet {
       connectionSettings: () =>
         holder.chargePoint === undefined
           ? {}
-          : connectionSettings(definition.csmsUrl, holder.chargePoint.connectionSecurity(), pem),
+          : connectionSettings(definition.csmsUrl, holder.chargePoint.connectionSecurity()),
       onConnectFailed: () => holder.chargePoint?.connectionFailed(),
       pingIntervalMs: configInt(config, 'WebSocketPingInterval') * 1000,
       ...(options.backoff !== undefined && { backoff: options.backoff }),
@@ -216,10 +218,15 @@ export function createFleet(options: FleetOptions): Fleet {
       send: (text) => transport.send(text),
       restart: (downtimeMs) => transport.restartAfter(downtimeMs),
       reconnect: () => transport.restartAfter(0),
-      certificates: () => ({
-        centralSystemRoot: pem.ca !== undefined,
-        chargePoint: pem.cert !== undefined && pem.key !== undefined,
-      }),
+      // The PEM files are where a new station starts; its saved certificates take over later.
+      certificates: {
+        centralSystemRoots: pem.ca === undefined ? [] : [pem.ca],
+        manufacturerRoots: pem.manufacturerRoot === undefined ? [] : [pem.manufacturerRoot],
+        ...(pem.cert !== undefined &&
+          pem.key !== undefined && { chargePoint: { certificate: pem.cert, privateKey: pem.key } }),
+      },
+      certificateTools,
+      serialNumber: definition.id,
       onEvent: (event) => {
         if (event.type === 'changed') scheduleSave(definition.id);
         emit({ stationId: definition.id, type: 'charge-point', event });
@@ -318,6 +325,7 @@ interface StationCertificates {
   ca?: string;
   cert?: string;
   key?: string;
+  manufacturerRoot?: string;
 }
 
 function readStationCertificates(security: StationSecurity | undefined): StationCertificates {
@@ -335,10 +343,12 @@ function readStationCertificates(security: StationSecurity | undefined): Station
   const ca = read(security?.ca, 'CA certificate');
   const cert = read(security?.cert, 'client certificate');
   const key = read(security?.key, 'client key');
+  const manufacturerRoot = read(security?.manufacturerRoot, 'manufacturer root certificate');
   return {
     ...(ca !== undefined && { ca }),
     ...(cert !== undefined && { cert }),
     ...(key !== undefined && { key }),
+    ...(manufacturerRoot !== undefined && { manufacturerRoot }),
   };
 }
 
@@ -352,17 +362,16 @@ function readStationCertificates(security: StationSecurity | undefined): Station
 export function connectionSettings(
   csmsUrl: string,
   security: ConnectionSecurity,
-  pem: StationCertificates,
 ): ConnectionSettings {
-  const { profile, authorizationKey } = security;
-  const ca = pem.ca !== undefined ? { ca: pem.ca } : {};
+  const { profile, authorizationKey, centralSystemRoots, chargePointCertificate } = security;
+  const ca = centralSystemRoots.length > 0 ? { ca: centralSystemRoots.join('\n') } : {};
   if (profile <= 1) {
     if (profile === 1 && authorizationKey === undefined) {
       return { error: 'Security Profile 1 needs an AuthorizationKey' };
     }
     return {
       ...(authorizationKey !== undefined && { password: authorizationKey }),
-      ...(pem.ca !== undefined && { tls: ca }),
+      ...(centralSystemRoots.length > 0 && { tls: ca }),
     };
   }
   if (!csmsUrl.startsWith('wss://')) {
@@ -374,10 +383,17 @@ export function connectionSettings(
     }
     return { password: authorizationKey, tls: { ...ca, minVersion: 'TLSv1.2' } };
   }
-  if (pem.cert === undefined || pem.key === undefined) {
+  if (chargePointCertificate === undefined) {
     return { error: 'Security Profile 3 needs a client certificate and key' };
   }
-  return { tls: { ...ca, cert: pem.cert, key: pem.key, minVersion: 'TLSv1.2' } };
+  return {
+    tls: {
+      ...ca,
+      cert: chargePointCertificate.certificate,
+      key: chargePointCertificate.privateKey,
+      minVersion: 'TLSv1.2',
+    },
+  };
 }
 
 /**

@@ -73,6 +73,12 @@ import {
   type FileTransfer,
   type FirmwareSettings,
 } from './firmware.js';
+import {
+  sameCertificate,
+  type CertificateTools,
+  type CertificateUse,
+  type ChargePointCertificate,
+} from './certificates.js';
 import type { IdGenerator } from './ids.js';
 import {
   isCriticalSecurityEvent,
@@ -218,6 +224,11 @@ export interface PersistedChargePoint {
   firmwareVersion?: string;
   /** The security log (Security Whitepaper A04); missing in older states. */
   securityLog?: SecurityLogEntry[];
+  /** Installed CA certificates and the station's own certificate; missing in older states. */
+  certificates?: {
+    installed: { certificateType: CertificateUse; certificate: string }[];
+    chargePoint?: ChargePointCertificate;
+  };
 }
 
 /** A ReserveNow the station holds: a connector, or any connector with connectorId 0. */
@@ -256,10 +267,19 @@ export interface ChargePointOptions {
    */
   reconnect?: () => void;
   /**
-   * The certificates installed for the Security Profiles, which raising
-   * SecurityProfile requires (Security Whitepaper A05); none by default.
+   * Certificates the station starts with (e.g. from its PEM files); a
+   * restored state's certificates take precedence. Raising SecurityProfile
+   * needs them (Security Whitepaper A05).
    */
-  certificates?: () => InstalledCertificates;
+  certificates?: {
+    centralSystemRoots?: readonly string[];
+    manufacturerRoots?: readonly string[];
+    chargePoint?: ChargePointCertificate;
+  };
+  /** X.509 support for certificate management and signed firmware; without it those messages fail. */
+  certificateTools?: CertificateTools;
+  /** The serial number put in the CN of a CSR; default the BootNotification serial numbers. */
+  serialNumber?: string;
   onEvent?: (event: ChargePointEvent) => void;
   /** Initial test switches; a restored state's switches take precedence. */
   behaviour?: Partial<ChargePointBehaviour>;
@@ -281,20 +301,16 @@ export interface ChargePointOptions {
   restore?: PersistedChargePoint;
 }
 
-/** Which certificates a station has for TLS (Security Profiles 2 and 3). */
-export interface InstalledCertificates {
-  /** A CentralSystemRootCertificate to check the CSMS's server certificate with. */
-  centralSystemRoot: boolean;
-  /** A ChargePointCertificate with its private key, for TLS client authentication. */
-  chargePoint: boolean;
-}
-
-/** What the transport needs to connect: the Security Profile and the Basic Auth password. */
+/** What the transport needs to connect: Security Profile, password and certificates. */
 export interface ConnectionSecurity {
   /** SecurityProfile: 0 (none configured), 1, 2 or 3. */
   profile: number;
   /** AuthorizationKey, when set. */
   authorizationKey?: string;
+  /** Installed CentralSystemRootCertificates (PEM), to check the CSMS's server certificate. */
+  centralSystemRoots: string[];
+  /** The station's client certificate and key, for Security Profile 3. */
+  chargePointCertificate?: ChargePointCertificate;
 }
 
 /** An EV plugged into a connector: a profile, with the persona's name for it when it has one. */
@@ -334,6 +350,10 @@ export interface ChargePointSnapshot {
   diagnosticsStatus: string;
   /** The GetLog upload in progress, or Idle. */
   logStatus: string;
+  /** The signed firmware update in progress, or Idle. */
+  signedFirmwareStatus: string;
+  /** How many CA certificates of each type are installed, and whether the station has its own. */
+  certificates: { centralSystemRoots: number; manufacturerRoots: number; chargePoint: boolean };
   /** The latest security events, newest last (at most 20). */
   securityEvents: SecurityLogEntry[];
   behaviour: ChargePointBehaviour;
@@ -634,7 +654,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     const downloaded = await withRetries(
       async () => {
         if (options.transfer !== undefined && isHttpLocation(request.location)) {
-          return options.transfer.download(request.location);
+          return (await options.transfer.download(request.location)) !== undefined;
         }
         await delay(firmwareSettings.downloadMs);
         return firmwareSettings.download === 'succeed';
@@ -833,12 +853,253 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
             : { status: logStatus, requestId: logUpload.requestId },
         ),
       SignedFirmwareStatusNotification: () =>
-        void sendIfOnline('SignedFirmwareStatusNotification', { status: 'Idle' }),
+        void sendIfOnline(
+          'SignedFirmwareStatusNotification',
+          signedUpdate === undefined || signedFirmwareStatus === 'Idle'
+            ? { status: signedFirmwareStatus }
+            : { status: signedFirmwareStatus, requestId: signedUpdate.requestId },
+        ),
+      // A new key pair and CSR (A02.FR.02); without X.509 support it cannot be done.
+      ...(tools !== undefined && {
+        SignChargePointCertificate: () => {
+          pendingCsr = undefined;
+          requestCertificate(0);
+        },
+      }),
     };
     const send = senders[requested];
     if (send === undefined) return 'NotImplemented';
     later(delayFor('TriggerMessage'), send);
     return 'Accepted';
+  }
+
+  // ---- Certificates (Security Whitepaper M03 to M05, A02, A03) -------------
+
+  const tools = options.certificateTools;
+  const seeds = options.certificates;
+  let installed: { certificateType: CertificateUse; certificate: string }[] = options.restore
+    ?.certificates
+    ? options.restore.certificates.installed.map((c) => ({ ...c }))
+    : [
+        ...(seeds?.centralSystemRoots ?? []).map((certificate) => ({
+          certificateType: 'CentralSystemRootCertificate' as const,
+          certificate,
+        })),
+        ...(seeds?.manufacturerRoots ?? []).map((certificate) => ({
+          certificateType: 'ManufacturerRootCertificate' as const,
+          certificate,
+        })),
+      ];
+  let chargePointCertificate: ChargePointCertificate | undefined = options.restore?.certificates
+    ? options.restore.certificates.chargePoint
+    : seeds?.chargePoint;
+  /** The client certificate a renewal replaced, kept until the new one connects (A02.FR.10, .28). */
+  let previousChargePointCertificate: ChargePointCertificate | undefined;
+  /** The key pair and CSR waiting for CertificateSigned. */
+  let pendingCsr: { csr: string; privateKey: string } | undefined;
+  let csrTimer: TimerHandle | undefined;
+
+  const rootsOf = (type: CertificateUse) =>
+    installed.filter((c) => c.certificateType === type).map((c) => c.certificate);
+  const hashOf = (certificate: string) =>
+    tools?.inspect(
+      certificate,
+      installed.map((c) => c.certificate),
+    )?.hashData;
+
+  /** Sends SignCertificate with a CSR, resending with back-off until CertificateSigned (A02.FR.17 to .19). */
+  function requestCertificate(attempt: number): void {
+    stopTimer(csrTimer);
+    csrTimer = undefined;
+    if (tools === undefined) return;
+    if (pendingCsr === undefined) {
+      const cpoName = configValue(config, 'CpoName') ?? '';
+      pendingCsr = tools.createCsr({
+        commonName:
+          options.serialNumber ??
+          options.boot.chargePointSerialNumber ??
+          options.boot.chargeBoxSerialNumber ??
+          options.boot.chargePointModel,
+        ...(cpoName !== '' && { organization: cpoName }),
+      });
+      log('new key pair generated for a ChargePointCertificate');
+    }
+    const csr = pendingCsr.csr;
+    void sendIfOnline('SignCertificate', { csr })?.then((outcome) => {
+      if (!outcome.ok || outcome.payload.status !== 'Accepted') {
+        log(`SignCertificate ${outcome.ok ? outcome.payload.status : outcome.failure.kind}`);
+        return;
+      }
+      if (pendingCsr?.csr !== csr || attempt >= configInt(config, 'CertSigningRepeatTimes')) return;
+      const waitMs = configInt(config, 'CertSigningWaitMinimum') * 1000 * 2 ** attempt;
+      csrTimer = later(waitMs, () => {
+        csrTimer = undefined;
+        if (pendingCsr?.csr === csr) requestCertificate(attempt + 1);
+      });
+    });
+  }
+
+  function certificateSigned(chain: string): 'Accepted' | 'Rejected' {
+    const reject = (reason: string) => {
+      log(`CertificateSigned rejected: ${reason}`);
+      securityEvent('InvalidChargePointCertificate', reason);
+      // No back-off resending until the CSMS asks again (A02.FR.20).
+      stopTimer(csrTimer);
+      csrTimer = undefined;
+      return 'Rejected' as const;
+    };
+    if (tools === undefined || pendingCsr === undefined) return reject('no CSR pending');
+    if (chain.length > configInt(config, 'CertificateSignedMaxChainSize'))
+      return reject('certificate chain too long');
+    if (!tools.verifyChain(chain, rootsOf('CentralSystemRootCertificate'), now()))
+      return reject('not a valid certificate of the CPO hierarchy');
+    if (!tools.matchesKey(chain, pendingCsr.privateKey))
+      return reject('not for the key of the CSR');
+    previousChargePointCertificate = chargePointCertificate;
+    chargePointCertificate = { certificate: chain, privateKey: pendingCsr.privateKey };
+    pendingCsr = undefined;
+    stopTimer(csrTimer);
+    csrTimer = undefined;
+    log('new ChargePointCertificate installed');
+    securityEvent('ReconfigurationOfSecurityParameters', 'ChargePointCertificate renewed');
+    // Switch to it by reconnecting when it is in use (A02.FR.08).
+    if (configInt(config, 'SecurityProfile') === 3) later(0, () => options.reconnect?.());
+    else previousChargePointCertificate = undefined;
+    return 'Accepted';
+  }
+
+  function installCertificate(
+    request: RequestOf<'InstallCertificate'>,
+  ): ResponseOf<'InstallCertificate'>['status'] {
+    if (tools === undefined) return 'Failed';
+    const info = tools.inspect(request.certificate);
+    if (info === undefined || now() < info.validFrom || now() > info.validTo) return 'Rejected';
+    const sameType = installed.filter((c) => c.certificateType === request.certificateType);
+    const existing = sameType.find((c) => {
+      const hash = hashOf(c.certificate);
+      return hash !== undefined && sameCertificate(hash, info.hashData);
+    });
+    const entry = { certificateType: request.certificateType, certificate: request.certificate };
+    if (existing !== undefined) {
+      // Already there: replace it (M05.FR.14).
+      installed = installed.map((c) => (c === existing ? entry : c));
+    } else if (
+      request.certificateType === 'CentralSystemRootCertificate' &&
+      configBool(config, 'AdditionalRootCertificateCheck') &&
+      sameType.length > 0
+    ) {
+      // Only one root, and the new one must be signed by the old one (M05.FR.09, .10).
+      if (!sameType.some((c) => tools.verifyChain(request.certificate, [c.certificate], now())))
+        return 'Rejected';
+      installed = [
+        ...installed.filter((c) => c.certificateType !== request.certificateType),
+        entry,
+      ];
+    } else {
+      if (installed.length >= configInt(config, 'CertificateStoreMaxLength')) return 'Rejected';
+      installed = [...installed, entry];
+    }
+    log(`${request.certificateType} installed`);
+    changed();
+    return 'Accepted';
+  }
+
+  function deleteCertificate(
+    hashData: RequestOf<'DeleteCertificate'>['certificateHashData'],
+  ): ResponseOf<'DeleteCertificate'>['status'] {
+    if (tools === undefined) return 'Failed';
+    const own =
+      chargePointCertificate === undefined ? undefined : hashOf(chargePointCertificate.certificate);
+    // The station's own certificate cannot be deleted this way (M04.FR.05).
+    if (own !== undefined && sameCertificate(own, hashData)) return 'Failed';
+    const found = installed.find((c) => {
+      const hash = hashOf(c.certificate);
+      return hash !== undefined && sameCertificate(hash, hashData);
+    });
+    if (found === undefined) return 'NotFound';
+    // Nor can a CentralSystemRootCertificate (M04.FR.06).
+    if (found.certificateType === 'CentralSystemRootCertificate') return 'Failed';
+    installed = installed.filter((c) => c !== found);
+    log(`${found.certificateType} deleted`);
+    changed();
+    return 'Accepted';
+  }
+
+  // ---- Signed firmware update (Security Whitepaper L01) -------------------
+
+  type SignedFirmwareStatus = RequestOf<'SignedFirmwareStatusNotification'>['status'];
+  let signedFirmwareStatus: SignedFirmwareStatus = 'Idle';
+  let signedUpdate: { requestId: number; cancelled: boolean } | undefined;
+  /** requestId of the update whose Installed is reported after the reboot. */
+  let signedInstalledPendingReport: number | undefined;
+
+  function reportSigned(status: SignedFirmwareStatus, requestId: number): void {
+    signedFirmwareStatus = status;
+    void sendIfOnline('SignedFirmwareStatusNotification', { status, requestId });
+    changed();
+  }
+
+  async function runSignedFirmwareUpdate(
+    request: RequestOf<'SignedUpdateFirmware'>,
+  ): Promise<void> {
+    const update = { requestId: request.requestId, cancelled: false };
+    signedUpdate = update;
+    const { firmware, requestId } = request;
+    const done = (status?: SignedFirmwareStatus) => {
+      if (status !== undefined) reportSigned(status, requestId);
+      signedFirmwareStatus = 'Idle';
+      if (signedUpdate === update) signedUpdate = undefined;
+    };
+    const waitUntil = async (at: string | undefined, scheduled: SignedFirmwareStatus) => {
+      const ms = at === undefined ? 0 : Date.parse(at) - now();
+      if (ms > 0) {
+        reportSigned(scheduled, requestId);
+        await delay(ms);
+      }
+    };
+    await waitUntil(firmware.retrieveDateTime, 'DownloadScheduled');
+    if (update.cancelled) return;
+    reportSigned('Downloading', requestId);
+    let image: Uint8Array | undefined;
+    const downloaded = await withRetries(
+      async () => {
+        if (update.cancelled) return true;
+        if (options.transfer !== undefined && isHttpLocation(firmware.location)) {
+          image = await options.transfer.download(firmware.location);
+          return image !== undefined;
+        }
+        await delay(firmwareSettings.downloadMs);
+        return firmwareSettings.download === 'succeed';
+      },
+      request.retries,
+      request.retryInterval,
+    );
+    if (update.cancelled) return;
+    if (!downloaded) return done('DownloadFailed');
+    reportSigned('Downloaded', requestId);
+    // A real image is checked against the signature; a simulated one per the persona.
+    const verified =
+      image !== undefined && tools !== undefined
+        ? tools.verifySignature(image, firmware.signature, firmware.signingCertificate)
+        : firmwareSettings.signature === 'succeed';
+    if (!verified) {
+      securityEvent('InvalidFirmwareSignature', firmware.location.slice(0, 200));
+      return done('InvalidSignature');
+    }
+    reportSigned('SignatureVerified', requestId);
+    await waitUntil(firmware.installDateTime, 'InstallScheduled');
+    await noTransactions();
+    if (update.cancelled) return;
+    reportSigned('Installing', requestId);
+    await delay(firmwareSettings.installMs);
+    if (update.cancelled) return;
+    if (firmwareSettings.install === 'fail') return done('InstallationFailed');
+    firmwareVersion = firmwareVersionFrom(firmware.location, firmwareVersion);
+    signedInstalledPendingReport = requestId;
+    reportSigned('InstallRebooting', requestId);
+    log(`firmware ${firmwareVersion} installed`);
+    signedUpdate = undefined;
+    await resetChargePoint('Hard');
   }
 
   // ---- Security Profiles (Security Whitepaper) ----------------------------
@@ -858,11 +1119,12 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     const downgrade =
       current === 3 && next === 2 && configBool(config, 'AllowSecurityProfileDowngrade');
     if (next <= current && !downgrade) return reject(`not higher than ${current}`);
-    const installed = options.certificates?.() ?? { centralSystemRoot: false, chargePoint: false };
     if ((next === 1 || next === 2) && (configValue(config, 'AuthorizationKey') ?? '') === '')
       return reject('no AuthorizationKey');
-    if (next >= 2 && !installed.centralSystemRoot) return reject('no CentralSystemRootCertificate');
-    if (next === 3 && !installed.chargePoint) return reject('no ChargePointCertificate');
+    if (next >= 2 && rootsOf('CentralSystemRootCertificate').length === 0)
+      return reject('no CentralSystemRootCertificate');
+    if (next === 3 && chargePointCertificate === undefined)
+      return reject('no ChargePointCertificate');
     config = changeConfiguration(config, { key: 'SecurityProfile', value: String(next) }).config;
     securityFallback = current;
     log(`SecurityProfile ${current} -> ${next}; reconnecting`);
@@ -1098,6 +1360,12 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       installedPendingReport = false;
       reportFirmware('Installed');
       firmwareStatus = 'Idle';
+      securityEvent('FirmwareUpdated', `firmware ${firmwareVersion ?? 'unknown'}`);
+    }
+    if (signedInstalledPendingReport !== undefined) {
+      reportSigned('Installed', signedInstalledPendingReport);
+      signedInstalledPendingReport = undefined;
+      signedFirmwareStatus = 'Idle';
       securityEvent('FirmwareUpdated', `firmware ${firmwareVersion ?? 'unknown'}`);
     }
     pump();
@@ -1732,6 +2000,46 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       return { status: trigger(requested, request.connectorId) };
     },
 
+    CertificateSigned(request) {
+      return { status: certificateSigned(request.certificateChain) };
+    },
+
+    InstallCertificate(request) {
+      return { status: installCertificate(request) };
+    },
+
+    GetInstalledCertificateIds(request) {
+      const hashes = rootsOf(request.certificateType)
+        .map(hashOf)
+        .filter((hash) => hash !== undefined);
+      const [first, ...rest] = hashes;
+      return first === undefined
+        ? { status: 'NotFound' }
+        : { status: 'Accepted', certificateHashData: [first, ...rest] };
+    },
+
+    DeleteCertificate(request) {
+      return { status: deleteCertificate(request.certificateHashData) };
+    },
+
+    SignedUpdateFirmware(request) {
+      if (tools === undefined) return { status: 'Rejected' };
+      if (
+        !tools.verifyChain(
+          request.firmware.signingCertificate,
+          rootsOf('ManufacturerRootCertificate'),
+          now(),
+        )
+      ) {
+        securityEvent('InvalidFirmwareSigningCertificate', 'not signed by a manufacturer root');
+        return { status: 'InvalidCertificate' };
+      }
+      const cancelled = signedUpdate !== undefined;
+      if (signedUpdate !== undefined) signedUpdate.cancelled = true;
+      void runSignedFirmwareUpdate(request);
+      return { status: cancelled ? 'AcceptedCanceled' : 'Accepted' };
+    },
+
     GetLog(request) {
       const cancelled = logUpload !== undefined;
       if (logUpload !== undefined) logUpload.cancelled = true;
@@ -1826,6 +2134,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     connected() {
       // The new Security Profile worked: no way back (A05.FR.09).
       securityFallback = undefined;
+      // Connected with the renewed certificate: drop the old one (A02.FR.10).
+      previousChargePointCertificate = undefined;
       rpc?.close();
       rpc = createRpc({
         clock,
@@ -2044,6 +2354,12 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         firmwareStatus,
         diagnosticsStatus,
         logStatus,
+        signedFirmwareStatus,
+        certificates: {
+          centralSystemRoots: rootsOf('CentralSystemRootCertificate').length,
+          manufacturerRoots: rootsOf('ManufacturerRootCertificate').length,
+          chargePoint: chargePointCertificate !== undefined,
+        },
         securityEvents: securityLog.slice(-20).map((entry) => ({ ...entry })),
         behaviour: { ...behaviour },
         energyMultiplier,
@@ -2073,10 +2389,23 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       return {
         profile: configInt(config, 'SecurityProfile'),
         ...(authorizationKey !== '' && { authorizationKey }),
+        centralSystemRoots: rootsOf('CentralSystemRootCertificate'),
+        ...(chargePointCertificate !== undefined && {
+          chargePointCertificate: { ...chargePointCertificate },
+        }),
       };
     },
 
     connectionFailed() {
+      if (previousChargePointCertificate !== undefined) {
+        // The renewed certificate does not work: back to the old one (A02.FR.28, .29).
+        chargePointCertificate = previousChargePointCertificate;
+        previousChargePointCertificate = undefined;
+        log('could not connect with the renewed ChargePointCertificate; back to the old one');
+        securityEvent('DiscardedRenewedClientCertificate');
+        options.reconnect?.();
+        return;
+      }
       if (securityFallback === undefined) return;
       const previous = securityFallback;
       securityFallback = undefined;
@@ -2120,6 +2449,12 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         ...(firmwareVersion !== options.boot.firmwareVersion &&
           firmwareVersion !== undefined && { firmwareVersion }),
         securityLog: securityLog.map((entry) => ({ ...entry })),
+        certificates: {
+          installed: installed.map((c) => ({ ...c })),
+          ...(chargePointCertificate !== undefined && {
+            chargePoint: { ...chargePointCertificate },
+          }),
+        },
       };
     },
   };

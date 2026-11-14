@@ -13,6 +13,8 @@ export interface FirmwareSettings {
   download: StepOutcome;
   install: StepOutcome;
   upload: StepOutcome;
+  /** Whether a simulated signed firmware image passes its signature check. */
+  signature: StepOutcome;
 }
 
 export const DEFAULT_FIRMWARE_SETTINGS: FirmwareSettings = {
@@ -22,15 +24,17 @@ export const DEFAULT_FIRMWARE_SETTINGS: FirmwareSettings = {
   download: 'succeed',
   install: 'succeed',
   upload: 'succeed',
+  signature: 'succeed',
 };
 
 /**
  * Real file transfers, provided by the engine when a persona asks for them.
- * Each resolves to whether the transfer worked. `upload` puts `content` at
- * `url` exactly; `fileName` names the file in the request.
+ * `download` resolves to the file's bytes, or undefined when it failed;
+ * `upload` puts `content` at `url` exactly (`fileName` names the file in the
+ * request) and resolves to whether it worked.
  */
 export interface FileTransfer {
-  download(location: string): Promise<boolean>;
+  download(location: string): Promise<Uint8Array | undefined>;
   upload(url: string, fileName: string, content: string): Promise<boolean>;
 }
 

@@ -21,6 +21,8 @@ export interface StationSecurity {
   /** ChargePointCertificate and its private key, for Security Profile 3. */
   cert?: string;
   key?: string;
+  /** ManufacturerRootCertificate, to check firmware signing certificates with. */
+  manufacturerRoot?: string;
 }
 
 export interface StationDefinition {

@@ -61,6 +61,8 @@ export const STANDARD_CONFIG_KEYS: Readonly<Record<string, ConfigKeyDefinition>>
   AuthorizeRemoteTxRequests: { type: 'boolean', readonly: false, value: 'false' },
   CertificateSignedMaxChainSize: { type: 'integer', readonly: true, value: '10000', minimum: 0 },
   CertificateStoreMaxLength: { type: 'integer', readonly: true, value: '10', minimum: 0 },
+  CertSigningRepeatTimes: { type: 'integer', readonly: false, value: '3', minimum: 0 },
+  CertSigningWaitMinimum: { type: 'integer', readonly: false, value: '60', minimum: 1 },
   ChargeProfileMaxStackLevel: { type: 'integer', readonly: true, value: '10', minimum: 0 },
   ChargingScheduleAllowedChargingRateUnit: { type: 'list', readonly: true, value: 'Current,Power' },
   ChargingScheduleMaxPeriods: { type: 'integer', readonly: true, value: '24', minimum: 1 },
