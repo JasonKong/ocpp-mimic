@@ -45,9 +45,17 @@ describe('parseCommand', () => {
     });
     expect(parseCommand(['serve', '--record-limit', '0'])).toMatchObject({ recordLimit: 0 });
     expect(
-      parseCommand(['serve', '--otlp-endpoint', 'http://localhost:4318', '--otlp-header', 'x-key=v=1']),
+      parseCommand([
+        'serve',
+        '--otlp-endpoint',
+        'http://localhost:4318',
+        '--otlp-header',
+        'x-key=v=1',
+      ]),
     ).toMatchObject({ otlpEndpoint: 'http://localhost:4318', otlpHeaders: { 'x-key': 'v=1' } });
-    expect(parseCommand(['serve', '--otlp-endpoint', 'localhost:4318'])).toMatchObject({ kind: 'error' });
+    expect(parseCommand(['serve', '--otlp-endpoint', 'localhost:4318'])).toMatchObject({
+      kind: 'error',
+    });
     expect(parseCommand(['serve', '--otlp-header', 'a=b'])).toMatchObject({ kind: 'error' });
     expect(parseCommand(['serve', '--record-limit', 'lots'])).toMatchObject({ kind: 'error' });
     expect(parseCommand(['serve', '--allow-csms', 'csms.example.com'])).toMatchObject({

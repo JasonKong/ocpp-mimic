@@ -3,21 +3,20 @@ import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createEngine } from './engine.js';
 import { Histogram, type MetricFamily } from './metrics.js';
-import {
-  otlpFromEnvironment,
-  otlpRequest,
-  parseKeyValues,
-  startOtlpExporter,
-} from './otlp.js';
+import { otlpFromEnvironment, otlpRequest, parseKeyValues, startOtlpExporter } from './otlp.js';
 
 const servers: Server[] = [];
 afterEach(async () => {
   for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
 });
 
+/** Loosely typed OTLP JSON keeps the assertions short. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Loose = any;
+
 /** A fake collector: keeps each request's path, headers and JSON body. */
 async function collector(status = 200) {
-  const requests: { path: string; headers: Record<string, unknown>; body: any }[] = [];
+  const requests: { path: string; headers: Record<string, unknown>; body: Loose }[] = [];
   const server = createServer((req, res) => {
     let text = '';
     req.on('data', (chunk) => (text += chunk));
@@ -37,21 +36,54 @@ function families(): MetricFamily[] {
   h.observe(0.5);
   h.observe(2);
   return [
-    { name: 'ocpp_mimic_stations', help: 'Stations.', type: 'gauge', points: [{ labels: { state: 'connected' }, value: 3 }] },
-    { name: 'ocpp_mimic_frames_total', help: 'Frames.', type: 'counter', points: [{ labels: { direction: 'sent' }, value: 7 }] },
-    { name: 'ocpp_mimic_csms_response_seconds', help: 'Latency.', type: 'histogram', points: [{ labels: { action: 'Heartbeat' }, histogram: h }] },
+    {
+      name: 'ocpp_mimic_stations',
+      help: 'Stations.',
+      type: 'gauge',
+      points: [{ labels: { state: 'connected' }, value: 3 }],
+    },
+    {
+      name: 'ocpp_mimic_frames_total',
+      help: 'Frames.',
+      type: 'counter',
+      points: [{ labels: { direction: 'sent' }, value: 7 }],
+    },
+    {
+      name: 'ocpp_mimic_csms_response_seconds',
+      help: 'Latency.',
+      type: 'histogram',
+      points: [{ labels: { action: 'Heartbeat' }, histogram: h }],
+    },
     {
       name: 'ocpp_mimic_eventloop_delay_seconds',
       help: 'Delay.',
       type: 'summary',
-      points: [{ labels: {}, summary: { quantiles: [[0.5, 0.001], [1, 0.02]], sum: 0.5, count: 100 } }],
+      points: [
+        {
+          labels: {},
+          summary: {
+            quantiles: [
+              [0.5, 0.001],
+              [1, 0.02],
+            ],
+            sum: 0.5,
+            count: 100,
+          },
+        },
+      ],
     },
   ];
 }
 
 describe('OTLP encoding', () => {
   it('writes gauges, cumulative sums without _total, histograms with per-bucket counts, and summaries', () => {
-    const request = otlpRequest(families(), { 'service.name': 'ocpp-mimic' }, { name: 'ocpp-mimic', version: '1' }, 1000, 3000) as any;
+    const request = otlpRequest(
+      families(),
+      { 'service.name': 'ocpp-mimic' },
+      { name: 'ocpp-mimic', version: '1' },
+      1000,
+      3000,
+    ) as Loose;
     const [resourceMetrics] = request.resourceMetrics;
     expect(resourceMetrics.resource.attributes).toEqual([
       { key: 'service.name', value: { stringValue: 'ocpp-mimic' } },
@@ -147,13 +179,19 @@ describe('OTLP exporter', () => {
 describe('engine OTLP export', () => {
   it('pushes the engine metrics while it runs and once more when it stops', async () => {
     const fake = await collector();
-    const engine = createEngine({ port: 0, otlp: { endpoint: fake.url, intervalMs: 50 }, runId: 'test-run' });
+    const engine = createEngine({
+      port: 0,
+      otlp: { endpoint: fake.url, intervalMs: 50 },
+      runId: 'test-run',
+    });
     await engine.start();
     await new Promise((resolve) => setTimeout(resolve, 120));
     await engine.stop();
     expect(fake.requests.length).toBeGreaterThanOrEqual(2);
     const last = fake.requests.at(-1)?.body;
-    const names = last.resourceMetrics[0].scopeMetrics[0].metrics.map((m: { name: string }) => m.name);
+    const names = last.resourceMetrics[0].scopeMetrics[0].metrics.map(
+      (m: { name: string }) => m.name,
+    );
     expect(names).toContain('ocpp_mimic_stations');
     expect(names).toContain('process_cpu_seconds');
     expect(last.resourceMetrics[0].resource.attributes).toContainEqual({

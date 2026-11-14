@@ -271,7 +271,10 @@ export function parseCommand(argv: readonly string[]): Command {
 }
 
 /** `--otlp-endpoint` and `--otlp-header`, checked; throws a readable Error. */
-function otlpOptions(values: Values): { otlpEndpoint?: string; otlpHeaders?: Record<string, string> } {
+function otlpOptions(values: Values): {
+  otlpEndpoint?: string;
+  otlpHeaders?: Record<string, string>;
+} {
   const endpoint = values['otlp-endpoint'];
   const headers: Record<string, string> = {};
   for (const entry of values['otlp-header'] ?? []) {
@@ -286,7 +289,10 @@ function otlpOptions(values: Values): { otlpEndpoint?: string; otlpHeaders?: Rec
   if (!/^https?:\/\/\S+$/.test(endpoint)) {
     throw new Error(`--otlp-endpoint needs an http:// or https:// URL, got ${endpoint}`);
   }
-  return { otlpEndpoint: endpoint, ...(Object.keys(headers).length > 0 && { otlpHeaders: headers }) };
+  return {
+    otlpEndpoint: endpoint,
+    ...(Object.keys(headers).length > 0 && { otlpHeaders: headers }),
+  };
 }
 
 function parsePort(value: string | undefined, fallback: number): number | undefined {

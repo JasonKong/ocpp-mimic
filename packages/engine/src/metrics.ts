@@ -25,6 +25,8 @@ const LOG_MIN = 1e-5;
 export class Histogram {
   count = 0;
   sum = 0;
+  /** The largest value seen. */
+  max = 0;
   readonly bucketCounts: number[];
   /** Log bucket index → count. */
   private readonly fine = new Map<number, number>();
@@ -37,6 +39,7 @@ export class Histogram {
     const value = Math.max(0, seconds);
     this.count += 1;
     this.sum += value;
+    if (value > this.max) this.max = value;
     for (let i = 0; i < this.buckets.length; i++) {
       if (value <= (this.buckets[i] ?? 0)) this.bucketCounts[i] = (this.bucketCounts[i] ?? 0) + 1;
     }
@@ -48,6 +51,7 @@ export class Histogram {
   merge(other: Histogram): void {
     this.count += other.count;
     this.sum += other.sum;
+    this.max = Math.max(this.max, other.max);
     other.bucketCounts.forEach((n, i) => {
       this.bucketCounts[i] = (this.bucketCounts[i] ?? 0) + n;
     });
@@ -147,6 +151,7 @@ export interface LatencySummary {
   p50: number;
   p95: number;
   p99: number;
+  max: number;
 }
 
 export interface Metrics {
@@ -177,6 +182,7 @@ const latencySummary = (h: Histogram | undefined): LatencySummary => ({
   p50: round((h?.percentile(0.5) ?? 0) * 1000),
   p95: round((h?.percentile(0.95) ?? 0) * 1000),
   p99: round((h?.percentile(0.99) ?? 0) * 1000),
+  max: round((h?.max ?? 0) * 1000),
 });
 const round = (value: number) => Math.round(value * 10) / 10;
 
