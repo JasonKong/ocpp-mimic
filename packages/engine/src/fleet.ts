@@ -17,6 +17,12 @@ import {
   type PersistedChargePoint,
   type ResolvedPersona,
 } from '@ocpp-mimic/core';
+import {
+  createFaultInjector,
+  type ActiveInjection,
+  type FaultInjector,
+  type WireDirection,
+} from './fault-injector.js';
 import { createHttpFileTransfer } from './file-transfer.js';
 import { createCertificateTools } from './x509.js';
 import type { PersonaRegistry } from './personas.js';
@@ -43,7 +49,20 @@ export const DEFAULT_ALLOWED_CSMS = [
 
 export type FleetEvent =
   | { stationId: string; type: 'charge-point'; event: ChargePointEvent }
-  | { stationId: string; type: 'transport'; event: TransportEvent };
+  | { stationId: string; type: 'transport'; event: TransportEvent }
+  /**
+   * A frame on the wire, after the Fault Injector: `injected` names the
+   * injection that changed or made it, `dropped` marks one that never reached
+   * the other side.
+   */
+  | {
+      stationId: string;
+      type: 'frame';
+      direction: WireDirection;
+      text: string;
+      injected?: string;
+      dropped?: boolean;
+    };
 
 export interface StationSnapshot extends ChargePointSnapshot {
   id: string;
@@ -51,6 +70,8 @@ export interface StationSnapshot extends ChargePointSnapshot {
   csmsUrl: string;
   running: boolean;
   transport: TransportState;
+  /** Fault injections active on the station. */
+  injections: ActiveInjection[];
   /** Why the last connection attempt failed, until a connection opens. */
   connectionError?: string;
 }
@@ -61,6 +82,7 @@ export interface VirtualStation {
   readonly persona: ResolvedPersona;
   readonly chargePoint: ChargePoint;
   readonly transport: Transport;
+  readonly injector: FaultInjector;
   readonly running: boolean;
   snapshot(): StationSnapshot;
 }
@@ -91,6 +113,8 @@ export interface Fleet {
   restore(): Promise<VirtualStation[]>;
   /** Saves every station and closes all connections. */
   shutdown(): Promise<void>;
+  /** A reconnect storm: every running station drops its connection and reconnects at once. */
+  reconnectStorm(): void;
 }
 
 /** True when `url` starts with one of `allowed` at a boundary (end, ':', '/' or '?'). */
@@ -185,7 +209,7 @@ export function createFleet(options: FleetOptions): Fleet {
       onConnectFailed: () => holder.chargePoint?.connectionFailed(),
       pingIntervalMs: configInt(config, 'WebSocketPingInterval') * 1000,
       ...(options.backoff !== undefined && { backoff: options.backoff }),
-      onText: (text) => holder.chargePoint?.receive(text),
+      onText: (text) => injector.incoming(text),
       onOpen: () => holder.chargePoint?.connected(),
       onClose: () => holder.chargePoint?.disconnected(),
       onEvent: (event) => {
@@ -204,6 +228,28 @@ export function createFleet(options: FleetOptions): Fleet {
         emit({ stationId: definition.id, type: 'transport', event });
       },
     });
+    const frame = (direction: WireDirection, text: string, injected?: string, dropped = false) =>
+      emit({
+        stationId: definition.id,
+        type: 'frame',
+        direction,
+        text,
+        ...(injected !== undefined && { injected }),
+        ...(dropped && { dropped }),
+      });
+    const injector = createFaultInjector({
+      toCsms: (text, injected) => {
+        frame('cp-to-csms', text, injected);
+        transport.send(text);
+      },
+      toChargePoint: (text) => {
+        frame('csms-to-cp', text);
+        holder.chargePoint?.receive(text);
+      },
+      swallowed: (direction, text, injected) => frame(direction, text, injected, true),
+      goOffline: () => transport.goOffline('clean'),
+      goOnline: () => transport.goOnline(),
+    });
     const cp = createChargePoint({
       ...personaOptions,
       config: { ...personaOptions.config, values: configValues },
@@ -215,7 +261,7 @@ export function createFleet(options: FleetOptions): Fleet {
       ...(persona.definition.firmware?.transfer === 'real' && {
         transfer: createHttpFileTransfer(),
       }),
-      send: (text) => transport.send(text),
+      send: (text) => injector.outgoing(text),
       restart: (downtimeMs) => transport.restartAfter(downtimeMs),
       reconnect: () => transport.restartAfter(0),
       // The PEM files are where a new station starts; its saved certificates take over later.
@@ -241,6 +287,7 @@ export function createFleet(options: FleetOptions): Fleet {
       persona,
       chargePoint: cp,
       transport,
+      injector,
       get running() {
         return entries.get(definition.id)?.running ?? false;
       },
@@ -251,6 +298,7 @@ export function createFleet(options: FleetOptions): Fleet {
         csmsUrl: definition.csmsUrl,
         running: station.running,
         transport: transport.state,
+        injections: injector.list(),
         ...(connectionError !== undefined && { connectionError }),
       }),
     };
@@ -284,6 +332,12 @@ export function createFleet(options: FleetOptions): Fleet {
     },
 
     get: (id) => entries.get(id)?.station,
+
+    reconnectStorm() {
+      for (const entry of entries.values()) {
+        if (entry.running) entry.station.transport.restartAfter(0);
+      }
+    },
     list: () => [...entries.values()].map((entry) => entry.station),
     start: startStation,
     stop: stopStation,

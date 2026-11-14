@@ -20,6 +20,7 @@ import {
   type Schema,
   type ValidationIssue,
 } from './schema.js';
+import { parseInjection, type InjectionRequest } from './injections.js';
 import { templateRefs, VARIABLE_NAME } from './template.js';
 
 export type JsonValue =
@@ -135,6 +136,8 @@ export type ScenarioStep =
       payload: JsonValue;
       answer?: JsonValue;
       error?: string;
+      /** Passes only when no answer arrives for this long (a CSMS-side timeout). */
+      noAnswerMs?: number;
       save?: SaveMap;
     })
   | (StepBase & {
@@ -143,6 +146,13 @@ export type ScenarioStep =
       reply: { payload: JsonValue } | { error: string } | { ignore: true };
       times?: number;
     })
+  | (StepBase & {
+      kind: 'inject';
+      station?: string;
+      /** The fault; a reconnectStorm hits every station. */
+      request: InjectionRequest;
+    })
+  | (StepBase & { kind: 'clearInjections'; station?: string })
   | (StepBase & {
       kind: 'http';
       method: HttpMethod;
@@ -323,6 +333,7 @@ const ARGUMENTS = {
       payload: record(anyJson),
       answer: anyJson,
       error: oneOf(RPC_ERROR_CODES),
+      noAnswer: durationSchema,
       save: saveSchema,
       station: nonEmpty,
     },
@@ -348,6 +359,7 @@ const ARGUMENTS = {
       save: saveSchema,
     },
   ),
+  clearInjections: object({}, { station: nonEmpty }),
 } as const;
 
 /** Snapshot steps: these keys configure the step, every other key is a field to match. */
@@ -366,6 +378,7 @@ const SNAPSHOT_KEYS = {
 export const STEP_KINDS: readonly StepKind[] = [
   ...(Object.keys(ARGUMENTS) as StepKind[]),
   'wait',
+  'inject',
   ...(Object.keys(SNAPSHOT_KEYS) as StepKind[]),
 ];
 
@@ -436,6 +449,22 @@ function parseStep(
     durationSchema.check(value, at, issues);
     if (issues.length > before) return undefined;
     return { kind, ...named, durationMs: durationMs(value, 0) };
+  }
+  if (kind === 'inject') {
+    const parsed = parseInjection(value, at);
+    if (!parsed.ok) {
+      issues.push(...parsed.issues);
+      return undefined;
+    }
+    const station = isObject(value) ? value.station : undefined;
+    if (station !== undefined) nonEmpty.check(station, `${at}.station`, issues);
+    if (issues.length > before) return undefined;
+    return {
+      kind,
+      ...named,
+      ...(typeof station === 'string' && { station }),
+      request: parsed.request,
+    };
   }
 
   // No-argument steps may be written `online:` (null) as well as `online: {}`.
@@ -522,6 +551,8 @@ function parseStep(
     case 'stopStation':
     case 'startStation':
       return { kind: argsKind, ...base };
+    case 'clearInjections':
+      return { kind: argsKind, ...named, ...pick(args, ['station'] as const) } as ScenarioStep;
     case 'setBehaviour': {
       const behaviour = pick(args, ['refuseRemoteStart', 'cableLock'] as const);
       if (Object.keys(behaviour).length === 0) {
@@ -577,11 +608,11 @@ function parseStep(
         : ({ kind, ...common } as ScenarioStep);
     }
     case 'csmsCall':
-      if (args.answer !== undefined && args.error !== undefined) {
+      if ([args.answer, args.error, args.noAnswer].filter((v) => v !== undefined).length > 1) {
         issues.push({
           path: at,
           errorCode: 'OccurenceConstraintViolation',
-          message: 'give either answer or error, not both',
+          message: 'give one of answer, error and noAnswer',
         });
         return undefined;
       }
@@ -593,6 +624,7 @@ function parseStep(
         kind: argsKind,
         ...named,
         ...pick(args, ['station', 'answer', 'error', 'save'] as const),
+        ...(args.noAnswer !== undefined && { noAnswerMs: durationMs(args.noAnswer, 0) }),
         action: args.action as string,
         payload: (args.payload as JsonValue | undefined) ?? {},
       } as ScenarioStep;
@@ -895,5 +927,14 @@ export function stepLabel(step: ScenarioStep): string {
       return `${at}csmsReply ${step.action}`;
     case 'http':
       return `http ${step.method} ${step.url}`;
+    case 'inject': {
+      const { type, ...parameters } = step.request.injection;
+      const details = fields(parameters as Record<string, JsonValue>);
+      const duration =
+        step.request.forMs === undefined ? '' : ` for ${formatDuration(step.request.forMs)}`;
+      return `${type === 'reconnectStorm' ? '' : at}inject ${type}${details === '' ? '' : ` ${details}`}${duration}`;
+    }
+    case 'clearInjections':
+      return `${at}clearInjections`;
   }
 }

@@ -119,6 +119,16 @@ function statusTone(status: string): string {
       </div>
     </header>
 
+    <p v-if="station.injections && station.injections.length > 0" class="injections">
+      Fault injections:
+      <span v-for="active in station.injections" :key="active.id" class="injection">
+        {{ active.injection.type
+        }}<template v-if="active.remaining !== undefined"> ×{{ active.remaining }}</template
+        ><template v-if="active.until"> until {{ active.until.slice(11, 19) }}</template>
+      </span>
+      <button class="link" @click="emit('action', 'clearInjections')">Clear</button>
+    </p>
+
     <div class="switches">
       <label>
         <input
@@ -287,6 +297,17 @@ h2 {
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 13px;
+}
+.injections {
+  margin: 0;
+  padding: 6px 10px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-radius: 6px;
+}
+.injection {
+  margin-left: 6px;
+  font-weight: 600;
 }
 .switches {
   display: flex;

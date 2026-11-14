@@ -23,6 +23,10 @@ export interface FrameRecord {
    * it passed, or when no schema applies (CALLERROR, unknown action).
    */
   schemaErrors?: string[];
+  /** The fault injection that changed, made or kept back this frame; its schema is not checked. */
+  injected?: string;
+  /** The frame never reached the other side (dropped, or a CALL left unanswered). */
+  dropped?: true;
   text: string;
 }
 
@@ -44,7 +48,12 @@ export interface RecordQuery {
 }
 
 export interface Recorder {
-  frame(stationId: string, direction: Direction, text: string): FrameRecord;
+  frame(
+    stationId: string,
+    direction: Direction,
+    text: string,
+    marks?: { injected?: string; dropped?: true },
+  ): FrameRecord;
   log(stationId: string, message: string): LogRecord;
   /** Entries for a station, oldest first. */
   query(stationId: string, query?: RecordQuery): RecordEntry[];
@@ -73,8 +82,9 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
     action: string | undefined,
     kind: 'request' | 'response',
     payload: unknown,
+    check = true,
   ) {
-    if (action === undefined || options.check === undefined) return {};
+    if (!check || action === undefined || options.check === undefined) return {};
     const problems = options.check(action, kind, payload);
     return problems !== undefined && problems.length > 0 ? { schemaErrors: problems } : {};
   }
@@ -88,15 +98,18 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
   }
 
   return {
-    frame(stationId, direction, text) {
+    frame(stationId, direction, text, marks = {}) {
       const base = {
         kind: 'frame' as const,
         seq: ++seq,
         stationId,
         at: new Date(now()).toISOString(),
         direction,
+        ...marks,
         text,
       };
+      // A frame that is wrong on purpose is not held against the schema.
+      const check = marks.injected === undefined;
       const parsed = parseFrame(text);
       let entry: FrameRecord = base;
       if (parsed.ok) {
@@ -110,7 +123,7 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
             uniqueId: frame.id,
             action: frame.action,
             payload: frame.payload,
-            ...schemaErrors(frame.action, 'request', frame.payload),
+            ...schemaErrors(frame.action, 'request', frame.payload, check),
           };
         } else {
           const action = actions.get(key);
@@ -129,7 +142,7 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
                     errorDetails: frame.errorDetails,
                   },
             ...(frame.type === MessageTypeId.CallResult &&
-              schemaErrors(action, 'response', frame.payload)),
+              schemaErrors(action, 'response', frame.payload, check)),
           };
         }
       }

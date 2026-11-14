@@ -125,18 +125,15 @@ export function createEngine(options: EngineOptions = {}): Engine {
         ...(options.allowedCsms !== undefined && { allowedCsms: options.allowedCsms }),
         ...(options.backoff !== undefined && { backoff: options.backoff }),
         onEvent: (event) => {
-          if (event.type === 'charge-point') {
+          if (event.type === 'frame') {
+            // Frames are recorded on the wire, after the Fault Injector.
+            recorder.frame(event.stationId, event.direction, event.text, {
+              ...(event.injected !== undefined && { injected: event.injected }),
+              ...(event.dropped === true && { dropped: true }),
+            });
+          } else if (event.type === 'charge-point') {
             const cpEvent = event.event;
-            if (
-              cpEvent.type === 'rpc' &&
-              (cpEvent.event.type === 'sent' || cpEvent.event.type === 'received')
-            ) {
-              recorder.frame(
-                event.stationId,
-                cpEvent.event.type === 'sent' ? 'cp-to-csms' : 'csms-to-cp',
-                cpEvent.event.text,
-              );
-            } else if (cpEvent.type === 'log') {
+            if (cpEvent.type === 'log') {
               recorder.log(event.stationId, cpEvent.message);
             } else if (cpEvent.type === 'changed') {
               scheduleStationUpdate(event.stationId);

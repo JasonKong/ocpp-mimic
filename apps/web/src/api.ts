@@ -53,6 +53,8 @@ export interface StationSnapshot {
     purpose: string;
     stackLevel: number;
   }[];
+  /** Fault injections active on the station. */
+  injections?: { id: string; injection: { type: string }; until?: string; remaining?: number }[];
 }
 
 export interface FaultInfo {
@@ -83,6 +85,10 @@ export interface FrameRecord {
   payload?: unknown;
   /** Problems found by the official OCA JSON Schema, when there are any. */
   schemaErrors?: string[];
+  /** The fault injection that changed, made or kept back the frame. */
+  injected?: string;
+  /** The frame never reached the other side. */
+  dropped?: true;
   text: string;
 }
 
@@ -137,6 +143,7 @@ export const api = {
   offline: (id: string, mode: 'clean' | 'half-open') =>
     request<StationSnapshot>('POST', `${station(id)}/offline`, { mode }),
   online: (id: string) => request<StationSnapshot>('POST', `${station(id)}/online`),
+  clearInjections: (id: string) => request<StationSnapshot>('DELETE', `${station(id)}/injections`),
   setEnergyMultiplier: (id: string, energyMultiplier: number) =>
     request<StationSnapshot>('PATCH', `${station(id)}/energy-multiplier`, { energyMultiplier }),
   setBehaviour: (id: string, changes: Partial<Behaviour>) =>

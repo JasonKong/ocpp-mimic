@@ -241,6 +241,8 @@ steps:
 | `stopStation`、`startStation` | — | 断开或重新连接桩 |
 | `setBehaviour` | `refuseRemoteStart`、`cableLock` | 测试开关 |
 | `wait` | 一个时长 | 等待 |
+| `inject` | `type` 及其参数、`for` | 开始一个故障注入（见 M3 的「故障注入」）；`reconnectStorm` 作用于所有桩 |
+| `clearInjections` | — | 结束该桩的所有故障注入 |
 | `charge` | `connector`、`duration` | 等待 `duration`；开始和结束时连接器都必须有进行中的交易，否则失败 |
 
 engine 拒绝的动作（比如枪锁着时拔枪）会让步骤失败。写了 `expectError: <文字>` 时则反过来：必须被拒绝，且拒绝信息包含这段文字。
@@ -260,7 +262,7 @@ CSMS 侧步骤，只能配合内置 CSMS 使用：
 
 | 步骤 | 参数 | 作用 |
 | --- | --- | --- |
-| `csmsCall` | `action`、`payload`、`answer`、`error` | 内置 CSMS 向桩发一个 CALL。`answer` 必须匹配 CALLRESULT；`error` 则指定预期的 CALLERROR 错误码 |
+| `csmsCall` | `action`、`payload`、`answer`、`error`、`noAnswer` | 内置 CSMS 向桩发一个 CALL。`answer` 必须匹配 CALLRESULT；`error` 则指定预期的 CALLERROR 错误码；`noAnswer: <时长>` 表示在这段时间内收不到应答才算通过 |
 | `csmsReply` | `action`，再加 `payload`、`error` 或 `ignore: true` 之一，以及 `times` | 内置 CSMS 如何应答桩接下来 `times` 次（默认所有）`action` 调用 |
 
 HTTP，用于调用被测系统：
@@ -349,6 +351,13 @@ M3 确定（#65）。M3 补齐 OCPP 1.6 其余的功能 profile、Security White
 | 断电 | `powerLoss`（`for`：断电一段时间，然后从保存的状态重启：交易以 PowerLoss 结束，排队的消息保留原时间戳），可以用 `times` 重复 |
 
 - 注入产生的帧会记录注入类型，在 Web UI 的消息日志里标出，并且不参加 OCA schema 检查，因为它们本来就是故意出错的。
+
+网络层和协议层已实现（T30）：
+
+- Fault Injector 位于桩和传输层之间的“线路”上，帧在它之后记录：消息日志显示的就是连接上实际传输的内容。被注入修改或产生的帧带 `injected`（注入类型）；没有到达对方的帧（被丢弃，或没有应答的 CALL）另带 `dropped`，`expect` 步骤会忽略它们。
+- 参数：`latency { ms, direction: sent | received | both }`；`drop { direction, count?, probability?, action? }`；`flap { down, up, times? }`；`malformedJson`、`duplicateId`、`unknownId`、`schemaViolation` 接受 `count`（默认 1），`schemaViolation` 以及 `noAnswer` / `callError` 接受 `action`，`callError` 接受 `errorCode`（默认 InternalError）。都可以用 `for` 设定持续时间；计数类用完即止；`outOfOrder` 调换接下来发送的两帧（只有一帧时 1 秒后发出）。重复 uniqueId 的应答会被改回原 id，桩自己不会因此混乱。
+- `GET`、`POST`、`DELETE /api/stations/:id/injections`；`reconnectStorm` 不管发给哪个桩都作用于整个 fleet。快照列出正在生效的注入，Web UI 显示它们并提供清除按钮。
+- `csmsCall` 支持 `noAnswer: <时长>`，用来断言 CSMS 侧超时。
 
 **安全（OCPP 1.6 Security Whitepaper）**
 
