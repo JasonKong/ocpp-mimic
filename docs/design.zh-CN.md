@@ -684,6 +684,14 @@ thresholds:
 - `ocpp-mimic load <plan> [--csms <url>] [--duration <d>] [--report-dir <dir>] [--junit <file>] [--port <n>] [--record-limit <n>] [--log-dir <dir>]`：`--log-dir` 把每一帧流式写入 `frames.jsonl`；recorder 默认每个桩保留 10 条记录。所有阈值都满足时退出码为 0，有阈值不满足时为 1，计划无法运行时为 2。`--port` 在运行期间提供 API、Web UI 和 `/metrics`。
 - CI 每次改动都对 `ocpp-mimic csms` 运行 `scenarios/load/smoke-100.yaml`（100 个桩、两分钟、一次重连风暴），并把报告加到 job summary。
 
+**已实现：回放（T52）**
+
+- `replay: true` 的桩（场景、API 定义）让充电桩逻辑脱离线路：它看不到连接打开，因此不发送任何内容，场景准备阶段也不等待它的 BootNotification。由 `replay` 步骤驱动连接：`replay: { log: <file> | frames: [{ at, sent | received }], logStation?, speed?, maxGap?, compare? }`，日志路径相对场景文件。
+- `engine/src/replay/replay.ts` 按顺序发送桩的 CALL，等待记录的间隔除以 `speed`（最长 `maxGap`，默认 30 秒），并等待每个回答（30 秒）；桩对 CSMS CALL 的记录回答在这些 CALL 到来时发出，按 action 和日志顺序对应。uniqueId 为 `replay-<n>`；之后帧里的 `transactionId` 换成 CSMS 在 StartTransaction 回答中给出的值；所有 `timestamp` 平移日志第一帧到当前时间的差值。
+- `compare: status`（默认）检查结果还是错误、错误码以及所有 `status` 字段；`strict` 检查整个 payload（不含 `currentTime`、`transactionId`、`timestamp`、`expiryDate`），也检查 CSMS 发来的 CALL，日志里有但没来的 CALL、日志里没有的 CALL 都算失败；`none` 只回放。没有可用回答的 CSMS CALL 回 CALLERROR NotImplemented。差异会让步骤失败，并按 action 和日志行号列出。
+- `ocpp-mimic replay <log> [--station] [--csms] [--persona] [--speed] [--max-gap] [--compare] [--write <file>]` 直接运行（默认对内置 CSMS），像 `run` 一样报告，退出码 0、1 或 2；`--write` 改为写出场景，帧以内联形式写入，可编辑保存。
+- 日志从充电中途开始时不会补发 BootNotification：日志按原样回放，需要先 boot 的 CSMS 会在差异里体现出来。
+
 **文件放在哪里**
 
 压测计划放 `scenarios/load/`，导入映射放 `scenarios/import/`，样本日志放 `scenarios/logs/`，压测用的 persona 放 `scenarios/personas/`。测试会把 `scenarios/` 下其余所有文件当作场景校验，所以 `scenarios/examples/` 只放场景。

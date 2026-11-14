@@ -7,6 +7,7 @@ import { USAGE, parseCommand } from './command.js';
 import { startCsmsCommand } from './csms.js';
 import { runImportCommand } from './import.js';
 import { runLoadCommand } from './load.js';
+import { runReplayCommand } from './replay.js';
 import { runCommand } from './run.js';
 
 /** The Web UI build in this monorepo (apps/web/dist), when it has been built. */
@@ -55,6 +56,9 @@ switch (command.kind) {
     break;
   case 'import':
     process.exitCode = await runImportCommand(command);
+    break;
+  case 'replay':
+    process.exitCode = await runReplayCommand(command);
     break;
   case 'load':
     process.exitCode = await runLoadCommand(

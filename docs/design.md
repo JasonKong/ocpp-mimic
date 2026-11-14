@@ -723,6 +723,14 @@ Every number is within the exit thresholds; the heap no longer grows. The exit r
 - `ocpp-mimic load <plan> [--csms <url>] [--duration <d>] [--report-dir <dir>] [--junit <file>] [--port <n>] [--record-limit <n>] [--log-dir <dir>]`: `--log-dir` streams every frame to `frames.jsonl`; the recorder keeps 10 records per station by default. Exit code 0 when every threshold passes, 1 when one fails, 2 when the plan cannot run. `--port` serves the API, the Web UI and `/metrics` while it runs.
 - CI runs `scenarios/load/smoke-100.yaml` (100 stations for two minutes with a reconnect storm) against `ocpp-mimic csms` on every change and adds its report to the job summary.
 
+**Implemented: replay (T52)**
+
+- A station with `replay: true` (scenario, API definition) keeps its charge point off the wire: it never sees the connection open, so it sends nothing, and setup does not wait for its BootNotification. The `replay` step drives the connection instead: `replay: { log: <file> | frames: [{ at, sent | received }], logStation?, speed?, maxGap?, compare? }`, with a log path relative to the scenario file.
+- `engine/src/replay/replay.ts` sends the charge point's CALLs in order, waiting the recorded gap divided by `speed` (at most `maxGap`, default 30 s) and for each answer (30 s); the station's recorded answers to the CSMS's CALLs go out when those CALLs come, matched by action in log order. uniqueIds are `replay-<n>`; `transactionId` in later frames follows the one the CSMS gave in the StartTransaction answer; every `timestamp` moves by the time between the log's first frame and now.
+- `compare: status` (default) checks result against error, the error code, and every `status` field; `strict` checks whole payloads except `currentTime`, `transactionId`, `timestamp` and `expiryDate`, also of the CSMS's CALLs, and fails on recorded CALLs that never came or CALLs not in the log; `none` only replays. A CSMS CALL with nothing to answer from gets a CALLERROR NotImplemented. Differences fail the step and are listed by action and log line.
+- `ocpp-mimic replay <log> [--station] [--csms] [--persona] [--speed] [--max-gap] [--compare] [--write <file>]` runs it (against the built-in CSMS by default) and reports like `run`, exit code 0, 1 or 2; `--write` writes the scenario with the frames inline instead, to edit and keep.
+- A BootNotification is not added when the log starts mid-session: the log is replayed as it is, and a CSMS that needs a boot first shows it in the differences.
+
 **Where the files go**
 
 Load plans go in `scenarios/load/`, import mappings in `scenarios/import/`, sample logs in `scenarios/logs/`, and load personas in `scenarios/personas/`. The tests validate every other file under `scenarios/` as a scenario, so `scenarios/examples/` stays scenario-only.

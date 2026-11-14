@@ -122,4 +122,8 @@ export function resolveCertificatePaths(scenario: Scenario, directory: string): 
       if (value !== undefined) security[field] = resolveOne(value);
     }
   }
+  // Replay logs are relative to the scenario file too.
+  for (const step of scenario.steps) {
+    if (step.kind === 'replay' && step.log !== undefined) step.log = resolve(directory, step.log);
+  }
 }

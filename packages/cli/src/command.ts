@@ -50,6 +50,21 @@ export interface ImportCommand {
   out?: string;
 }
 
+export interface ReplayCommand {
+  kind: 'replay';
+  log: string;
+  station?: string;
+  csms?: string;
+  persona?: string;
+  speed?: number;
+  maxGapMs?: number;
+  compare?: 'status' | 'strict' | 'none';
+  /** Write the scenario (frames inline) here instead of running it. */
+  write?: string;
+  personas: string[];
+  allowCsms: string[];
+}
+
 export type ClientCertificateMode = 'none' | 'optional' | 'required';
 
 export interface CsmsCommand {
@@ -95,6 +110,7 @@ export type Command =
   | RunCommand
   | CsmsCommand
   | ImportCommand
+  | ReplayCommand
   | LoadCommand
   | { kind: 'version' }
   | { kind: 'help' }
@@ -112,6 +128,8 @@ Commands:
   csms                   Run the built-in test CSMS on its own, e.g. as the
                          target of a load test
   import <file>...       Turn logs into ocpp-mimic's log format, masked
+  replay <log>           Replay a station's log against a CSMS and compare
+                         its answers with the log's
   load <plan>            Run a load plan and judge its thresholds
 
 Options for serve:
@@ -154,7 +172,16 @@ Options for load:
   --otlp-endpoint <url>, --otlp-header <k=v>
                          Push metrics over OTLP/HTTP, as for serve
 
-Options for serve, run and load:
+Options for replay:
+  --station <id>         The log's station, when it has several
+  --csms <url>           The CSMS to replay against (default builtin)
+  --persona <id>         Persona of the replay station (default generic-1.6)
+  --speed <n>            Divide the recorded gaps by <n> (default 1)
+  --max-gap <d>          Longest wait between two frames (default 30s)
+  --compare <mode>       status (default), strict or none
+  --write <file>         Write the scenario, frames inline, instead of running
+
+Options for serve, run, load and replay:
   --personas <dir>       Extra persona directory; repeat for more
   --allow-csms <prefix>  Also allow CSMS URLs starting with <prefix>; repeat
                          for more (default: ${DEFAULT_ALLOWED_CSMS.slice(0, 2).join(', ')}, ...)
@@ -200,6 +227,12 @@ const OPTIONS = {
   'client-certificates': { type: 'string' },
   status: { type: 'string' },
   'log-dir': { type: 'string' },
+  station: { type: 'string' },
+  persona: { type: 'string' },
+  speed: { type: 'string' },
+  'max-gap': { type: 'string' },
+  compare: { type: 'string' },
+  write: { type: 'string' },
   'record-limit': { type: 'string' },
   'otlp-endpoint': { type: 'string' },
   'otlp-header': { type: 'string', multiple: true },
@@ -244,6 +277,17 @@ const COMMANDS = {
     'status',
   ],
   import: ['map', 'mask', 'no-mask', 'salt', 'salt-file', 'out'],
+  replay: [
+    'station',
+    'csms',
+    'persona',
+    'speed',
+    'max-gap',
+    'compare',
+    'write',
+    'personas',
+    'allow-csms',
+  ],
   load: [
     'csms',
     'duration',
@@ -295,6 +339,7 @@ export function parseCommand(argv: readonly string[]): Command {
     }
     if (command === 'run') return parseRun(rest, values);
     if (command === 'import') return parseImport(rest, values);
+    if (command === 'replay') return parseReplay(rest, values);
     if (command === 'load') return parseLoad(rest, values);
     if (rest.length > 0) return error(`Unexpected argument: ${rest[0]}`);
     if (command === 'csms') return parseCsms(values);
@@ -404,6 +449,43 @@ function parseImport(files: string[], values: Values): Command {
     ...(values.salt !== undefined && { salt: values.salt }),
     ...(values['salt-file'] !== undefined && { saltFile: values['salt-file'] }),
     ...(values.out !== undefined && { out: values.out }),
+  };
+}
+
+function parseReplay(rest: string[], values: Values): Command {
+  const [log, extra] = rest;
+  if (log === undefined) return error('replay needs a log file');
+  if (extra !== undefined) return error(`Unexpected argument: ${extra}`);
+  if (
+    values.csms !== undefined &&
+    values.csms !== 'builtin' &&
+    !/^wss?:\/\/\S+$/.test(values.csms)
+  ) {
+    return error(`--csms must be builtin or a ws:// or wss:// URL, got ${values.csms}`);
+  }
+  const speed = values.speed === undefined ? undefined : Number(values.speed);
+  if (speed !== undefined && !(speed > 0))
+    return error(`--speed needs a number above 0, got ${values.speed}`);
+  const maxGapMs = values['max-gap'] === undefined ? undefined : parseDuration(values['max-gap']);
+  if (values['max-gap'] !== undefined && maxGapMs === undefined) {
+    return error(`--max-gap needs a duration such as 10s, got ${values['max-gap']}`);
+  }
+  const compare = values.compare;
+  if (compare !== undefined && compare !== 'status' && compare !== 'strict' && compare !== 'none') {
+    return error(`--compare must be status, strict or none, got ${compare}`);
+  }
+  return {
+    kind: 'replay',
+    log,
+    ...(values.station !== undefined && { station: values.station }),
+    ...(values.csms !== undefined && { csms: values.csms }),
+    ...(values.persona !== undefined && { persona: values.persona }),
+    ...(speed !== undefined && { speed }),
+    ...(maxGapMs !== undefined && { maxGapMs }),
+    ...(compare !== undefined && { compare }),
+    ...(values.write !== undefined && { write: values.write }),
+    personas: values.personas ?? [],
+    allowCsms: values['allow-csms'] ?? [],
   };
 }
 
