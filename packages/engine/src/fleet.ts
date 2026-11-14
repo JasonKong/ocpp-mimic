@@ -108,6 +108,8 @@ export function createFleet(options: FleetOptions): Fleet {
   const emit = options.onEvent ?? (() => {});
   const entries = new Map<string, Entry>();
   const pendingSaves = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Set by shutdown(): stopping connections still emits changes, which must not schedule saves. */
+  let shuttingDown = false;
 
   function save(id: string): void {
     const entry = entries.get(id);
@@ -117,7 +119,7 @@ export function createFleet(options: FleetOptions): Fleet {
 
   /** Coalesces the many 'changed' events of a burst into one write. */
   function scheduleSave(id: string): void {
-    if (options.store === undefined || pendingSaves.has(id)) return;
+    if (options.store === undefined || shuttingDown || pendingSaves.has(id)) return;
     pendingSaves.set(
       id,
       setTimeout(() => {
@@ -253,10 +255,12 @@ export function createFleet(options: FleetOptions): Fleet {
     },
 
     async shutdown() {
+      shuttingDown = true;
       if (saveTimer !== undefined) clearInterval(saveTimer);
       for (const timer of pendingSaves.values()) clearTimeout(timer);
       pendingSaves.clear();
       await Promise.all([...entries.keys()].map((id) => stopStation(id)));
+      // One final save per station; nothing is written after this.
       for (const id of entries.keys()) save(id);
     },
   };
