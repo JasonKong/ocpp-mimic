@@ -7,6 +7,7 @@ const engineUrl = process.env.OCPP_MIMIC_ENGINE_URL ?? 'http://127.0.0.1:7300';
 export default defineConfig({
   plugins: [vue()],
   server: {
-    proxy: { '/api': engineUrl },
+    // ws: true also proxies the /api/events WebSocket.
+    proxy: { '/api': { target: engineUrl, ws: true } },
   },
 });
