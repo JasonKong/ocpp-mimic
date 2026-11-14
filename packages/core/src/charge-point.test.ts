@@ -753,6 +753,25 @@ describe('EV model', () => {
     expect(connector()).toMatchObject({ status: 'Charging', powerW: 7360 });
   });
 
+  it('reports current per phase for a three-phase EV', async () => {
+    const h = setup({ config: { MeterValuesSampledData: 'Current.Import' } });
+    await h.boot();
+    const card = h.cp.presentIdTag(1, 'TAG');
+    await h.settle();
+    expect(await card).toBe('authorized');
+    h.cp.plugIn(1, { profile: { capacityKWh: 75, initialSoc: 30, maxPowerW: 11_000, phases: 3 } });
+    await h.advance(500);
+    await h.csmsCall('TriggerMessage', { requestedMessage: 'MeterValues', connectorId: 1 });
+    await h.advance(200);
+    const values = (
+      h.lastCall('MeterValues')?.payload.meterValue as Array<{
+        sampledValue: Array<{ phase?: string; value: string }>;
+      }>
+    )[0]?.sampledValue;
+    // 7360 W over three phases at 230 V.
+    expect(values?.map((v) => `${v.phase} ${v.value}`)).toEqual(['L1 10.7', 'L2 10.7', 'L3 10.7']);
+  });
+
   it('refuses an unusable EV profile and leaves the connector alone', async () => {
     const h = setup();
     await h.boot();

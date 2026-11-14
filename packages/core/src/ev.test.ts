@@ -9,7 +9,7 @@ import {
   TAPER_FLOOR,
   type EvProfile,
 } from './ev.js';
-import { createMeter, sampleMeter } from './meter.js';
+import { createMeter, sampleMeter, withPower } from './meter.js';
 
 const HOUR = 3_600_000;
 /** 10 kWh battery at 20 %, 7.4 kW single-phase charger, taper from 80 %. */
@@ -128,6 +128,31 @@ describe('EV model', () => {
       'taperSoc must be between 0 and targetSoc',
     ]);
     expect(() => createEv({ ...SMALL, capacityKWh: 0 })).toThrow(RangeError);
+  });
+
+  it('reports currents per phase for a three-phase EV', () => {
+    const meter = withPower(createMeter({ now: 0, offeredW: 11_040, voltageV: 230 }), 0, 11_040);
+    const three = sampleMeter(meter, 0, ['Current.Import', 'Current.Offered'], 'Sample.Periodic', {
+      phases: 3,
+    });
+    expect(three?.sampledValue.map((v) => `${v.measurand} ${v.phase} ${v.value}`)).toEqual([
+      'Current.Import L1 16',
+      'Current.Import L2 16',
+      'Current.Import L3 16',
+      'Current.Offered L1 16',
+      'Current.Offered L2 16',
+      'Current.Offered L3 16',
+    ]);
+    const one = sampleMeter(meter, 0, ['Current.Import'], 'Sample.Periodic', { phases: 1 });
+    expect(one?.sampledValue).toEqual([
+      {
+        context: 'Sample.Periodic',
+        measurand: 'Current.Import',
+        location: 'Outlet',
+        unit: 'A',
+        value: '48',
+      },
+    ]);
   });
 
   it('adds SoC to meter samples when the EV state of charge is known', () => {
