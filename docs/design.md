@@ -128,7 +128,7 @@ The transport layer makes sure connections work and fail realistically; the RPC 
 
 - Requests and responses are correlated by uniqueId; every CALL has a timeout.
 - The spec says (SHOULD) a party does not send the next CALL until the previous one is answered or times out, so the charge point needs an outbound queue.
-- Messages in both directions are validated against the official OCA JSON Schemas: what we send is guaranteed compliant, and non-compliant messages from the CSMS are flagged, which doubles as a CSMS compliance checker.
+- Messages in both directions are validated against core's 1.6 message definitions, written from the specification with a small dependency-free schema module that also yields the TypeScript types: what we send is guaranteed compliant, and non-compliant messages from the CSMS are flagged, which doubles as a CSMS compliance checker. Whether to also ship OCA's JSON Schema files is an open question (#18).
 - CallError strictly follows `[4, uniqueId, errorCode, errorDescription, errorDetails]`; unsupported actions get `NotImplemented`.
 
 ## Device model and EV / meter model
@@ -279,7 +279,7 @@ The protocol follows OCPP 1.6J throughout; personas, the EV model, the scenario 
 | Module | Implemented per the 1.6J spec | The project's own design |
 | --- | --- | --- |
 | Transport | OCPP-J: WebSocket, `ocpp1.6` subprotocol, chargeBoxId at the end of the URL, keepalive via `WebSocketPingInterval` | Reconnect backoff, fault injection |
-| RPC | Message types 2/3/4, uniqueId, CallError format and error codes, a single unanswered CALL at a time, the 1.6 JSON Schemas published by OCA | Timeout lengths, CSMS compliance report |
+| RPC | Message types 2/3/4, uniqueId, CallError format and error codes, a single unanswered CALL at a time, the field definitions of every 1.6 message | Timeout lengths, CSMS compliance report |
 | Protocol adapter | All 1.6J messages | — |
 | Device model | The 9 connector statuses and their transitions, connectorId 0 meaning the whole charge point, config key semantics, authorization (Authorize / cache / local list), transaction message retries, StopTransaction reasons | The Station → EVSE → Connector hierarchy, borrowed from 2.0.1 to prepare for the upgrade |
 | Meter | Measurands, ReadingContext, `MeterValuesSampledData`, clock-aligned sampling, transactionData | — |
@@ -353,5 +353,6 @@ Each phase ends with an exit criterion; the next phase starts once it is met. Th
 - [ ] Deployment: a local tool (CLI / desktop) or a hosted SaaS? A SaaS connects to other people's CSMSs over the internet, which brings multi-tenancy and abuse prevention.
 - [ ] When to start OCPP 2.0.1: do target users already need it?
 - [ ] Open source or commercial: decides how much load testing, UI and documentation to build, and which license to use.
+- [ ] Whether to ship OCA's OCPP 1.6 JSON Schema files, given their CC BY-ND licence (#18).
 - [ ] Whether the energy multiplier is on by default, and how reports mark it.
 - [ ] Which real charge point the first persona is modelled on, and where sample logs come from (they must be anonymised and must not use client project data).
