@@ -1,0 +1,23 @@
+# Template for testing your own CSMS and app backend; it needs a real system
+# under test, so the test suite does not run it. Example:
+#   ocpp-mimic run scenarios/examples/app-triggered-start.yaml \
+#     --csms wss://csms.example.com/ocpp --allow-csms wss://csms.example.com \
+#     --var APP_API=https://app.example.com/api
+# with APP_TOKEN set in the environment.
+name: Unplugging ends the session and the CSMS sends no RemoteStop
+csms: wss://csms.example.com/ocpp
+station: { id: SIM-APP-001, persona: generic-1.6 }
+steps:
+  - plugIn: { connector: 1 }
+  - http:
+      method: POST
+      url: '{{APP_API}}/charges/start'
+      headers: { Authorization: 'Bearer {{env.APP_TOKEN}}' }
+      json: { station: SIM-APP-001, connector: 1 }
+      expect: { status: 200 }
+  - expect: { received: RemoteStartTransaction, answer: { status: Accepted }, within: 10s }
+  - expect: { sent: StartTransaction, answer: { idTagInfo: { status: Accepted } } }
+  - charge: { connector: 1, duration: 1m }
+  - unplug: { connector: 1 }
+  - expect: { sent: StopTransaction, payload: { reason: EVDisconnected } }
+  - expectNo: { received: RemoteStopTransaction, within: 30s }

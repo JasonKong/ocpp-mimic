@@ -31,6 +31,7 @@ An OCPP charge point simulator: a headless engine runs many virtual charge point
 | `packages/cli`    | The `ocpp-mimic` command: starts the engine, and later runs scenarios                                                                                                                     |
 | `apps/web`        | Vue 3 Web UI; calls only the engine API and holds no simulation logic                                                                                                                     |
 | `docs`            | Design documents                                                                                                                                                                          |
+| `scenarios`       | Scenario files for `ocpp-mimic run`: reference examples, later the regression suite                                                                                                       |
 
 ## Third-party material
 

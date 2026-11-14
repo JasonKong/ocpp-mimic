@@ -188,19 +188,20 @@ These three turn ocpp-mimic from a simulator you click by hand into a test tool 
 
 **Scenario engine**
 
-Scenarios are actions plus assertions, written in YAML (or a TS DSL), run by the CLI, and reported as JUnit for CI. An `http` step can call the business system under test, so app-side actions join the same scenario.
+Scenarios are actions plus assertions, written in YAML, run by the CLI, and reported as JUnit for CI. An `http` step can call the business system under test, so app-side actions join the same scenario. The format is specified in "Scenario format v1" below.
 
 ```yaml
 name: Unplug while charging; the CSMS should end the session and send no RemoteStop
+csms: wss://csms.example.com/ocpp # the CSMS under test (example address)
 station: { id: SIM-001, persona: vendorX-fw2.5 }
 steps:
   - plugIn: { connector: 1 }
-  - http: { POST: "{{APP_API}}/charges/start" }
-  - expect: { receive: RemoteStartTransaction, within: 10s }
-  - charge: { duration: 20m }
+  - http: { method: POST, url: "{{APP_API}}/charges/start", json: { station: SIM-001 } }
+  - expect: { received: RemoteStartTransaction, within: 10s }
+  - charge: { connector: 1, duration: 20m }
   - unplug: { connector: 1 }
-  - expect: { sent: StopTransaction, reason: EVDisconnected }
-  - expectNo: { receive: RemoteStopTransaction, within: 30s }
+  - expect: { sent: StopTransaction, payload: { reason: EVDisconnected } }
+  - expectNo: { received: RemoteStopTransaction, within: 30s }
 ```
 
 **Fault injection**
@@ -217,6 +218,122 @@ steps:
 - Import real charge point logs (direction, action, payload, timestamp) and replay them as scenarios to reproduce production issues.
 - Derive the intervals between messages from logs to generate or calibrate personas.
 - Mask idTags, serial numbers and other identifiers on import.
+
+## Scenario format v1
+
+Decided for M2 (#38). A scenario file is YAML; each YAML document in it (documents are separated by `---`) is one scenario. The runner executes scenarios one at a time, each on a fresh embedded engine, and reports a test suite per file and a test case per scenario. The files in `scenarios/examples/` are the reference examples.
+
+```yaml
+name: Card session with periodic meter values
+station:
+  id: SIM-001
+  persona: generic-1.6
+  config: { MeterValueSampleInterval: 10 }
+vars:
+  TAG: TAG-001
+steps:
+  - presentCard: { connector: 1, idTag: "{{TAG}}", result: authorized }
+  - plugIn: { connector: 1 }
+  - expect: { sent: StartTransaction, payload: { connectorId: 1, idTag: "{{TAG}}" } }
+  - expectConnector: { connector: 1, status: Charging }
+  - expect: { sent: MeterValues, within: 15s }
+  - presentCard: { connector: 1, idTag: "{{TAG}}", result: stopping }
+  - expect: { sent: StopTransaction, payload: { reason: Local } }
+  - unplug: { connector: 1 }
+  - expectConnector: { connector: 1, status: Available }
+```
+
+**Scenario fields**
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Test case name |
+| `description` | no | Free text, shown in reports |
+| `csms` | no | `builtin` (the default) or the WebSocket URL of a CSMS; the station id is appended as for any station. `--csms` on the command line overrides it |
+| `station` or `stations` | yes | One station, or a list of them. Fields: `id`, `persona`, and optionally `password`, `config` (configuration key overrides), `behaviour` (test switches), `energyMultiplier`, `waitForBoot` |
+| `vars` | no | Default values for templates |
+| `timeout` | no | Limit for the whole scenario; default 5 minutes |
+| `checkSchemas` | no | Default `true`: the scenario fails if any frame broke the official OCA schema |
+
+Setup creates and starts every station; with `waitForBoot` (the default) it also waits until the station's BootNotification is Accepted. Set `waitForBoot: false` to test registration itself.
+
+**Steps**
+
+A step is a map with one step key whose value is the step's arguments. Steps that act on a station take `station` (its id; default the first station), and connector steps take `connector` (default 1). Any step may carry `name`, which reports show instead of the generated label.
+
+Charge point actions, the same operations the API offers:
+
+| Step | Arguments | Effect |
+| --- | --- | --- |
+| `plugIn` | `connector`, `ev` | Cable in; `ev` names an EV profile |
+| `unplug` | `connector` | Cable out |
+| `presentCard` | `connector`, `idTag`, `result` | A card at the connector; `result` optionally asserts `authorized`, `rejected`, `stopping` or `busy` |
+| `evSuspend`, `evResume` | `connector` | The EV pauses or resumes |
+| `fault` | `connector` (0 = the whole charge point), `errorCode`, `info`, `vendorErrorCode` | Raise a fault |
+| `clearFault` | `connector` | Clear it |
+| `offline` | `mode`: `clean` or `half-open` | Simulated outage |
+| `online` | — | End the outage |
+| `stopStation`, `startStation` | — | Disconnect or reconnect the station |
+| `setBehaviour` | `refuseRemoteStart`, `cableLock` | Test switches |
+| `wait` | a duration | Pause |
+| `charge` | `connector`, `duration` | Wait for `duration`; fails unless the connector has a running transaction at the start and at the end |
+
+An action the engine refuses (for example unplugging a locked cable) fails the step. With `expectError: <text>` the step instead requires a refusal whose message contains the text.
+
+Expectations:
+
+| Step | Arguments | Passes when |
+| --- | --- | --- |
+| `expect` | `sent` or `received` (an action), `payload`, `answer`, `within`, `from` | A matching CALL is recorded in time. `sent` means charge point → CSMS, `received` CSMS → charge point. `payload` must match the CALL and `answer` the CALLRESULT to it |
+| `expectNo` | `sent` or `received`, `payload`, `within` | No matching CALL is recorded during `within` |
+| `expectConnector` | `connector` plus connector snapshot fields (`status`, `errorCode`, `plugged`, `locked`, `transactionId`, ...), `within` | The connector snapshot matches in time |
+| `expectStation` | station snapshot fields (`registration`, `transport`, `queuedMessages`, `behaviour`, ...), `within` | The station snapshot matches in time |
+
+`within` defaults to 10 s. Message expectations are ordered: a search starts after the message the previous `expect` matched (`from: last`, the default), so consecutive `expect` steps also assert the order of the messages. `from: step` ignores messages recorded before the step began, and `from: start` searches from the start of the scenario.
+
+CSMS steps, available only with the built-in CSMS:
+
+| Step | Arguments | Effect |
+| --- | --- | --- |
+| `csmsCall` | `action`, `payload`, `answer`, `error` | The built-in CSMS sends a CALL to the station. `answer` must match the CALLRESULT; `error` instead names the expected CALLERROR code |
+| `csmsReply` | `action`, then `payload`, `error` or `ignore: true`, and `times` | How the built-in CSMS answers the station's next `times` calls of `action` (default: all of them) |
+
+HTTP, for the system under test:
+
+| Step | Arguments | Effect |
+| --- | --- | --- |
+| `http` | `method`, `url`, `headers`, `json`, `expect` (`status`, `json`), `save` | Sends a request and checks the response |
+
+`save: { NAME: <path> }` stores a value as a variable for later steps. It works on `expect` (path root `{ payload, answer }`), `expectConnector` and `expectStation` (the snapshot), `csmsCall` (`{ answer }`) and `http` (`{ status, json }`). Paths look like `$.answer.transactionId`.
+
+**Matching**
+
+`payload`, `answer`, the snapshot steps and `http` `expect.json` match partially: every field given must be present and equal, and fields not given are ignored. Arrays match element by element and must have the same length. Instead of a value, a field can hold one operator: `$exists`, `$regex`, `$ne`, `$gt`, `$gte`, `$lt` or `$lte`.
+
+**Templates and variables**
+
+`{{NAME}}` in a string is replaced before the step runs. Values come from, lowest priority first: `vars`, `--var NAME=value` on the command line, and variables saved by earlier steps. `{{env.NAME}}` reads an environment variable; those values are shown as `***` in output and reports. A string that is exactly one template keeps the value's type, so `"{{tx}}"` can stand for a number. Unknown names are errors found before the scenario starts; a saved variable counts only after the step that saves it.
+
+**Durations** use the persona syntax: milliseconds as a number, or a string ending in `ms`, `s`, `m` or `h`.
+
+**Where the code lives**
+
+| Package | Part |
+| --- | --- |
+| core | Scenario model and validation (with the schema module), templates, matching, step labels. Pure, like personas |
+| engine | The runner: a fresh embedded engine (and the built-in CSMS) per scenario, steps executed in-process against the fleet and the recorder, teardown even after failures; the result model; console and JUnit reporters |
+| cli | `ocpp-mimic run`: arguments, reading the YAML files, calling the runner, the exit code |
+
+A remote engine over the HTTP API is not needed in M2: the CLI embeds its own engine, so CI needs no separate deployment.
+
+**Running and reporting**
+
+`ocpp-mimic run <file|dir>...` runs every `.yaml` / `.yml` file given, searching directories recursively in sorted order, one scenario at a time. Options: `--csms <url>`, `--var NAME=value` (repeatable), `--timeout <duration>` (the default scenario timeout), `--bail` (stop after the first scenario that does not pass), `--junit <file>`, `--allow-csms` and `--personas` as for `serve`.
+
+- A scenario passes, fails (a step failed; the remaining steps are reported as skipped) or errors (invalid file, engine failure, timeout). Teardown always runs.
+- The console shows one line per scenario with its duration and, for a failure, the failing step with expected and actual values.
+- JUnit: one `testsuite` per file and one `testcase` per scenario (classname = the file), `failure` or `error` with the failing step, durations, and `properties` such as persona, CSMS and energy multiplier.
+- Exit code 0 when every scenario passed, 1 when any failed or errored, 2 for usage errors and files that do not validate.
 
 ## Observability and UI
 

@@ -1,0 +1,16 @@
+# A fault while charging ends the transaction; clearing it recovers the connector.
+name: A fault ends the transaction and clearing it recovers the connector
+station: { id: SIM-FAULT, persona: generic-1.6 }
+steps:
+  - presentCard: { connector: 1, idTag: TAG-FAULT, result: authorized }
+  - plugIn: { connector: 1 }
+  - expect: { sent: StartTransaction }
+  - fault: { connector: 1, errorCode: GroundFailure, info: GND_FAULT }
+  - expect:
+      sent: StatusNotification
+      payload: { connectorId: 1, status: Faulted, errorCode: GroundFailure, info: GND_FAULT }
+  - expect: { sent: StopTransaction, payload: { reason: Other } }
+  - clearFault: { connector: 1 }
+  - expectConnector: { connector: 1, status: Finishing, errorCode: NoError }
+  - unplug: { connector: 1 }
+  - expectConnector: { connector: 1, status: Available }
