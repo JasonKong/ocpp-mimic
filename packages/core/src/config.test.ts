@@ -53,6 +53,13 @@ describe('GetConfiguration', () => {
     });
   });
 
+  it('returns every key for an empty key list, as for a missing one', () => {
+    expect(getConfiguration(config, { key: [] })).toEqual(getConfiguration(config, {}));
+    expect(getConfiguration(config, { key: [] }).configurationKey?.length).toBe(
+      Object.keys(config.definitions).length,
+    );
+  });
+
   it('returns requested keys and lists the unknown ones', () => {
     expect(getConfiguration(config, { key: ['HeartbeatInterval', 'Nope'] })).toEqual({
       configurationKey: [{ key: 'HeartbeatInterval', readonly: false, value: '300' }],
