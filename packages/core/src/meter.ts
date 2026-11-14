@@ -64,7 +64,14 @@ export const SUPPORTED_MEASURANDS: readonly Measurand[] = [
   'Current.Import',
   'Current.Offered',
   'Voltage',
+  'SoC',
 ];
+
+/** Readings from outside the meter that a sample can include. */
+export interface SampleExtras {
+  /** State of charge of the plugged-in EV, in percent; SoC is skipped without it. */
+  socPercent?: number;
+}
 
 const round1 = (value: number) => (Math.round(value * 10) / 10).toString();
 
@@ -72,9 +79,18 @@ function sampledValue(
   meter: MeterState,
   measurand: Measurand,
   context: ReadingContext,
+  extras: SampleExtras,
 ): SampledValue | undefined {
   const base = { context, measurand, location: 'Outlet' as const };
   switch (measurand) {
+    case 'SoC':
+      if (extras.socPercent === undefined) return undefined;
+      return {
+        ...base,
+        location: 'EV',
+        value: String(Math.floor(extras.socPercent)),
+        unit: 'Percent',
+      };
     case 'Energy.Active.Import.Register':
       return { ...base, value: String(registerWh(meter)), unit: 'Wh' };
     case 'Power.Active.Import':
@@ -101,10 +117,11 @@ export function sampleMeter(
   now: number,
   measurands: readonly string[],
   context: ReadingContext,
+  extras: SampleExtras = {},
 ): MeterValue | undefined {
   const current = meterAt(meter, now);
   const values = measurands
-    .map((m) => sampledValue(current, m as Measurand, context))
+    .map((m) => sampledValue(current, m as Measurand, context, extras))
     .filter((v): v is SampledValue => v !== undefined);
   const [first, ...rest] = values;
   if (first === undefined) return undefined;
