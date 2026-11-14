@@ -309,7 +309,7 @@ The protocol follows OCPP 1.6J throughout; personas, the EV model, the scenario 
 | RemoteStopTransaction | Accepted when the transactionId matches; ends the transaction (reason=Remote) |
 | Reset | Soft / Hard: end the transaction, disconnect, reconnect after the persona's delay and send BootNotification again |
 | UnlockConnector | Answers Unlocked / UnlockFailed / NotSupported; ends a running transaction first (reason=UnlockCommand) |
-| ChangeAvailability | Operative / Inoperative; answers Scheduled during a transaction and applies the change when it ends |
+| ChangeAvailability | Operative / Inoperative; answers first and reports the new status after the persona's command delay; answers Scheduled during a transaction and applies the change when it ends. connectorId 0 changes only through a request for connectorId 0, not when every connector has been changed one by one |
 | GetConfiguration | Returns config keys with their read-only flag; unknown keys go into unknownKey |
 | ChangeConfiguration | Answers Accepted / Rejected / RebootRequired / NotSupported, and the change takes effect |
 | ClearCache | Clears the authorization cache |

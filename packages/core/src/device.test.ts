@@ -190,6 +190,53 @@ describe('device model', () => {
     expect(statuses(result.messages)).toEqual(['0:Unavailable', '1:Unavailable', '2:Unavailable']);
   });
 
+  it('keeps connectorId 0 Available when every connector is made Inoperative one by one', () => {
+    const { sent } = run(
+      [
+        { type: 'ReportAll' },
+        { type: 'ChangeAvailability', connectorId: 1, availability: 'Inoperative' },
+      ],
+      createStation(1),
+    );
+    expect(statuses(sent[1] ?? [])).toEqual(['1:Unavailable']);
+  });
+
+  it('schedules a connectorId 0 change until the last transaction ends', () => {
+    const charging = run([
+      { type: 'ReportAll' },
+      { type: 'Plug', connectorId: 1 },
+      { type: 'TransactionStarted', connectorId: 1, transactionId: 1 },
+    ]).state;
+    const change = reduce(
+      charging,
+      { type: 'ChangeAvailability', connectorId: 0, availability: 'Inoperative' },
+      T0,
+    );
+    expect(change.changeAvailability).toBe('Scheduled');
+    expect(statuses(change.messages)).toEqual(['2:Unavailable']);
+
+    // A connector request meanwhile is answered on its own merits.
+    const connector = reduce(
+      change.state,
+      { type: 'ChangeAvailability', connectorId: 2, availability: 'Operative' },
+      T0,
+    );
+    expect(connector.changeAvailability).toBe('Accepted');
+    expect(statuses(connector.messages)).toEqual(['2:Available']);
+
+    const ended = reduce(change.state, { type: 'TransactionEnded', connectorId: 1 }, T0);
+    expect(statuses(ended.messages)).toEqual(['0:Unavailable', '1:Unavailable']);
+    expect(ended.state.scheduledAvailability).toBeUndefined();
+
+    const back = reduce(
+      ended.state,
+      { type: 'ChangeAvailability', connectorId: 0, availability: 'Operative' },
+      T0,
+    );
+    expect(back.changeAvailability).toBe('Accepted');
+    expect(statuses(back.messages)).toEqual(['0:Available', '1:Finishing', '2:Available']);
+  });
+
   it('keeps connectors independent', () => {
     const { sent } = run([
       { type: 'ReportAll' },
