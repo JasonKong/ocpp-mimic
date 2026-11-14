@@ -429,9 +429,60 @@ export async function runScenario(
           return;
         }
         case 'http':
-          throw new StepFailure(`${step.kind} is not supported yet`);
+          return httpStep(step);
       }
     };
+
+    async function httpStep(step: Extract<ScenarioStep, { kind: 'http' }>): Promise<void> {
+      const headers: Record<string, string> = {
+        ...(step.json !== undefined && { 'content-type': 'application/json' }),
+        ...step.headers,
+      };
+      let response: Response;
+      try {
+        response = await fetch(step.url, {
+          method: step.method,
+          headers,
+          ...(step.json !== undefined && { body: JSON.stringify(step.json) }),
+          signal: AbortSignal.timeout(Math.max(1, Math.min(DEFAULT_WITHIN_MS, timeLeft()))),
+        });
+      } catch (error) {
+        const reason =
+          error instanceof Error
+            ? error.cause instanceof Error
+              ? error.cause.message
+              : error.message
+            : String(error);
+        throw new StepFailure(`${step.method} ${step.url} failed: ${reason}`);
+      }
+      const text = await response.text();
+      let json: unknown;
+      try {
+        json = text === '' ? undefined : JSON.parse(text);
+      } catch {
+        json = undefined;
+      }
+      const body = text.length > 500 ? `${text.slice(0, 500)}…` : text;
+      const expectedStatus = step.expect?.status;
+      const statusOk =
+        expectedStatus !== undefined ? response.status === expectedStatus : response.ok;
+      if (!statusOk) {
+        throw new StepFailure(
+          `${step.method} ${step.url} answered ${response.status}, expected ${expectedStatus ?? 'a 2xx status'}`,
+          body === '' ? [] : [`body: ${body}`],
+        );
+      }
+      if (step.expect?.json !== undefined) {
+        if (json === undefined) {
+          throw new StepFailure('the response is not JSON', body === '' ? [] : [`body: ${body}`]);
+        }
+        const mismatches = matchValue(step.expect.json, json, '$.json');
+        if (mismatches.length > 0) {
+          throw new StepFailure('the response did not match', describeMismatches(mismatches));
+        }
+      }
+      save(step.save, { status: response.status, json, text });
+    }
 
     async function sleepUnlessAborted(ms: number): Promise<void> {
       const until = Date.now() + ms;
