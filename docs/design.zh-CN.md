@@ -299,6 +299,111 @@ M2 不需要通过 HTTP API 连接远程 engine：CLI 自带内嵌 engine，CI �
 - JUnit：每个文件一个 `testsuite`，每个场景一个 `testcase`（classname 是文件名），`failure` 或 `error` 里写失败的步骤，带耗时，以及 persona、CSMS、能量倍率等 `properties`。
 - 退出码：全部通过为 0，有失败或出错为 1，用法错误或文件校验不通过为 2。
 
+## M3 功能覆盖
+
+M3 确定（#65）。M3 补齐 OCPP 1.6 其余的功能 profile、Security Whitepaper 和故障注入。出口标准是 1.6 的每个功能都有场景，并且在 SteVe 上通过。
+
+**功能 profile**
+
+- persona 的 `features` 决定桩在 `SupportedFeatureProfiles` 里声明哪些 profile。桩没声明的 profile，收到它的消息时回 CALLERROR NotSupported，所以 persona 去掉某个 profile 就能测试 CSMS 如何应对。各 profile 实现后，`generic-1.6` 会全部声明。
+- 每个功能任务把自己 profile 的消息加进 core 的消息定义，和 OCA 官方 schema 的对照测试会自动覆盖到。
+- 各 profile 的配置键沿用规范的名称（括号里是默认值，persona 可以覆盖）：
+
+| Profile | 配置键 |
+| --- | --- |
+| Local Auth List Management | `LocalAuthListEnabled`（true）、`LocalAuthListMaxLength`（100，只读）、`SendLocalListMaxLength`（100，只读） |
+| Reservation | `ReserveConnectorZeroSupported`（true，只读） |
+| Smart Charging | `ChargeProfileMaxStackLevel`（10）、`ChargingScheduleAllowedChargingRateUnit`（Current,Power）、`ChargingScheduleMaxPeriods`（24）、`MaxChargingProfilesInstalled`（20）、`ConnectorSwitch3to1PhaseSupported`（false），均只读 |
+| Firmware Management | `SupportedFileTransferProtocols`（HTTP,HTTPS,FTP，只读） |
+| Security（whitepaper） | `SecurityProfile`（0）、`AuthorizationKey`（只写）、`CpoName`、`CertificateStoreMaxLength`、`CertificateSignedMaxChainSize`、`AdditionalRootCertificateCheck` |
+
+**本地授权列表和预约**
+
+- 本地列表和授权缓存并列：开启 `LocalAuthListEnabled` 时，列表里的卡在本地决定（在线时看 `LocalPreAuthorize`，离线时看 `LocalAuthorizeOffline`），和规范一致。列表和版本号在 engine 重启后保留。
+- 预约属于设备模型：连接器报 Reserved，只有预约的 idTag 或它的 parentIdTag 能启动，预约在 `expiryDate` 到期或它的交易开始时结束，StartTransaction 带 `reservationId`。`ReserveConnectorZeroSupported` 为 true 时，connectorId 0 表示预约任意空闲连接器。
+
+**Smart Charging**
+
+- core 里的纯逻辑模型（`charging-profile.ts`）保存每个连接器上安装的配置文件（connectorId 0 表示整桩），回答两个问题：某一时刻生效的限值，以及一段时间内的合成调度（composite schedule）。
+- 叠加规则：同一用途内，当时有效、`stackLevel` 最高的配置文件生效；交易进行中，TxProfile 覆盖 TxDefaultProfile；connectorId 0 上的 ChargePointMaxProfile 限制整桩，由正在充电的连接器平分。
+- 支持 Absolute、Recurring（Daily / Weekly，从 `startSchedule` 起算）和 Relative（从交易开始起算）三种调度，以及 `validFrom` / `validTo`。限值可以是 A 或 W，按连接器电压和 `numberPhases`（默认 3）换算。
+- 实际功率 = min(桩额定功率, EV 可接受功率, 生效限值)。在下一个时段的开始时刻设定时器，所以功率、MeterValues 和 SoC 都会跟着调度变化。配置文件在 engine 重启后保留。
+
+**固件和诊断**
+
+- 默认不真的传输文件：桩按 persona 给的时长（`firmware: { downloadTime, installTime, uploadTime }`）依次上报各个状态，结果由 persona 或故障注入决定（DownloadFailed、InstallationFailed、UploadFailed）。
+- UpdateFirmware 等到 `retrieveDate`，依次发 Downloading → Downloaded → Installing → Installed，然后重启。BootNotification 里新的 `firmwareVersion` 取自下载地址文件名里的版本号（`fw-2.5.1.bin` → 2.5.1），取不到就用旧版本号加 `-updated`；新版本号在重启后保留。
+- GetDiagnostics 回一个 `fileName`，然后发 Uploading → Uploaded。persona 设 `firmware: { transfer: real }` 时，HTTP(S) 地址会真的用 PUT 收到诊断文件（桩最近的消息日志），UpdateFirmware 也会真的下载 HTTP(S) 地址。FTP 不做真实传输。
+- TriggerMessage 可以请求这两种状态通知。
+
+**故障注入**
+
+- engine 给每个桩一个 Fault Injector，挂在传输层和 RPC 层。API：`POST /api/stations/:id/injections`，参数 `{ type, ...参数, for? }`，`DELETE` 清除。场景步骤：`inject: { type, ..., for }` 和 `clearInjections: {}`。
+
+| 层 | 类型 |
+| --- | --- |
+| 网络 | `latency`（每个方向的延迟毫秒数）、`drop`（丢弃某个方向的帧，按数量或概率）、`flap`（断开、恢复的时长和次数）、`reconnectStorm`（所有桩同时重连，作用于整个 fleet） |
+| 协议 | `malformedJson`（接下来发送的 N 帧）、`duplicateId`、`unknownId`（用 CSMS 没发过的 uniqueId 应答）、`outOfOrder`（调换接下来两个 CALL 的顺序）、`noAnswer`（不应答 CSMS 某个 action 的 CALL）、`callError`（用 CALLERROR 应答这些 CALL）、`schemaViolation`（某个 action 的下一个 CALL 多一个字段） |
+| 设备 | `meterRollback`（回退的 Wh 数）、`meterReset`、`clockDrift`（每个时间戳加上的毫秒数）、`badTimestamp`（接下来 N 个时间戳格式错误） |
+| 断电 | `powerLoss`（`for`：断电一段时间，然后从保存的状态重启：交易以 PowerLoss 结束，排队的消息保留原时间戳），可以用 `times` 重复 |
+
+- 注入产生的帧会记录注入类型，在 Web UI 的消息日志里标出，并且不参加 OCA schema 检查，因为它们本来就是故意出错的。
+
+**安全（OCPP 1.6 Security Whitepaper）**
+
+- 桩增加 `security: { profile, ca?, cert?, key? }`（PEM 文件路径）。Profile 1：ws 或 wss 上的 Basic Auth，密码是 `AuthorizationKey`（即桩的 `password`）。Profile 2：wss，用 `ca` 校验服务器证书，同时用 Basic Auth。Profile 3：wss，用客户端证书 `cert` / `key`，不再用 Basic Auth。
+- 用 ChangeConfiguration 修改 `AuthorizationKey` 后，桩用新密码重连。`SecurityProfile` 只能调高：桩用新 profile 重连，失败时退回原来的 profile，这是 whitepaper 的要求。
+- 内置 CSMS 可以提供 TLS、要求客户端证书、检查 Basic Auth 密码（场景里用 `csmsOptions` 设置）。测试用一套固定的测试 PKI，提交在 `packages/engine/test-pki/` 下（CA、服务器证书和客户端证书，有效期 20 年，仅供测试），附带用 openssl 重新生成的脚本。
+- whitepaper 的消息全部放在 M3：证书管理（SignCertificate / CertificateSigned、InstallCertificate、GetInstalledCertificateIds、DeleteCertificate）、SecurityEventNotification、ExtendedTriggerMessage、GetLog / LogStatusNotification、SignedUpdateFirmware / SignedFirmwareStatusNotification。生成 CSR 需要 Node 没有的 X.509 支持，所以 engine 可能引入一个库（core 仍然零依赖）。会检查 OCA 的 whitepaper 下载包里有没有 JSON Schema，有的话按 #50 的做法原样附带。
+
+**SteVe**
+
+- 场景通过 SteVe 的 REST API（`POST /steve/api/v1/operations/<Action>`，HTTP Basic，用 admin 用户的 API 密码）让 SteVe 发命令，用的是普通的 `http` 步骤（#63）。这些 SteVe 版本的场景放在 `scenarios/steve/`，由 SteVe workflow 运行。
+- SteVe 发命令前需要的数据（按 id 引用的充电配置文件、本地列表和预约要用的 OCPP 标签）通过它的 API 或 `tools/steve/register.sh` 创建。
+
+**场景**
+
+每个功能任务都为内置 CSMS 增加回归场景（`scenarios/regression/`）；SteVe 能发的命令，再加一个 SteVe 版本（`scenarios/steve/`）。例如，用 TxProfile 限制正在进行的充电：
+
+```yaml
+name: A TxProfile caps the power of a running session
+station: { id: REG-SC-TX, persona: regression-1.6 }
+steps:
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: { ev: compact-40kwh }
+  - expect: { sent: StartTransaction, save: { tx: $.answer.transactionId } }
+  - expectConnector: { status: Charging, powerW: { $gt: 7000 } }
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        connectorId: 1
+        csChargingProfiles:
+          chargingProfileId: 1
+          transactionId: "{{tx}}"
+          stackLevel: 0
+          chargingProfilePurpose: TxProfile
+          chargingProfileKind: Relative
+          chargingSchedule:
+            chargingRateUnit: W
+            chargingSchedulePeriod: [{ startPeriod: 0, limit: 3680 }]
+      answer: { status: Accepted }
+  - expectConnector: { powerW: 3680 }
+```
+
+以及在场景里注入故障：
+
+```yaml
+name: The CSMS copes with a slow, lossy connection
+station: { id: REG-FI-NET, persona: regression-1.6 }
+steps:
+  - inject: { type: latency, ms: 2000, for: 30s }
+  - presentCard: { idTag: TAG-REG, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StartTransaction, within: 15s }
+  - inject: { type: drop, direction: received, count: 1 }
+  - expect: { sent: StatusNotification, payload: { status: Charging }, within: 15s }
+```
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。
