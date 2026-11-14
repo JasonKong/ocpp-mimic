@@ -21,6 +21,7 @@ export * from './config.js';
 export * from './auth.js';
 export * from './meter.js';
 export * from './ev.js';
+export * from './charging-profile.js';
 export * from './transaction.js';
 export * from './charge-point.js';
 export * from './persona.js';
