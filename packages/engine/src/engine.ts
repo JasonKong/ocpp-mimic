@@ -3,6 +3,7 @@
  * virtual charge points, the event recorder, and the HTTP / WebSocket API
  * (plus the Web UI's static files) on one port.
  */
+import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -11,6 +12,7 @@ import { WebSocketServer } from 'ws';
 import { handleApi, sendJson, type ApiEvent } from './api.js';
 import { createFleet, type Fleet } from './fleet.js';
 import { createMetrics, type Metrics } from './metrics.js';
+import { startOtlpExporter, type OtlpExporter, type OtlpOptions } from './otlp.js';
 import { createSystemClock } from './system-clock.js';
 import { loadOcaSchemas } from './oca-schemas.js';
 import { BUILT_IN_PERSONAS_DIR, loadPersonas, type PersonaRegistry } from './personas.js';
@@ -37,6 +39,12 @@ export interface EngineOptions {
   backoff?: Partial<BackoffPolicy>;
   /** Records the Event Recorder keeps per station (default 1000; 0 keeps none). */
   recordLimit?: number;
+  /** Push metrics to an OpenTelemetry collector. */
+  otlp?: OtlpOptions;
+  /** Names this run in OTLP resource attributes (`ocpp_mimic.run`); random by default. */
+  runId?: string;
+  /** Problems that do not stop the engine, such as a failing OTLP export. Default console.warn. */
+  onWarning?: (message: string) => void;
 }
 
 export interface Engine {
@@ -74,6 +82,7 @@ export function createEngine(options: EngineOptions = {}): Engine {
   let fleet: Fleet | undefined;
   let personas: PersonaRegistry | undefined;
   let store: StateStore | undefined;
+  let exporter: OtlpExporter | undefined;
   const metrics = createMetrics({
     version: VERSION,
     stations: function* () {
@@ -211,6 +220,14 @@ export function createEngine(options: EngineOptions = {}): Engine {
         },
       });
       await fleet.restore();
+      if (options.otlp !== undefined) {
+        exporter = startOtlpExporter(options.otlp, {
+          families: () => metrics.families(),
+          version: VERSION,
+          run: options.runId ?? randomUUID(),
+          onError: options.onWarning ?? ((message) => console.warn(message)),
+        });
+      }
       const running = fleet;
       liveTimer = setInterval(() => {
         if (!listening()) return;
@@ -239,6 +256,7 @@ export function createEngine(options: EngineOptions = {}): Engine {
       stationUpdates.clear();
       for (const client of events.clients) client.terminate();
       await fleet?.shutdown();
+      await exporter?.stop();
       metrics.stop();
       store?.close();
       await new Promise<void>((resolve) => events.close(() => resolve()));

@@ -2,7 +2,7 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { VERSION } from '@ocpp-mimic/core';
-import { createEngine, DEFAULT_ALLOWED_CSMS } from '@ocpp-mimic/engine';
+import { createEngine, DEFAULT_ALLOWED_CSMS, otlpFromEnvironment } from '@ocpp-mimic/engine';
 import { USAGE, parseCommand } from './command.js';
 import { startCsmsCommand } from './csms.js';
 import { runImportCommand } from './import.js';
@@ -12,6 +12,18 @@ import { runCommand } from './run.js';
 const WEB_ROOT = fileURLToPath(new URL('../../../apps/web/dist/', import.meta.url));
 
 const command = parseCommand(process.argv.slice(2));
+
+/** OTLP settings from the options, else from the standard environment variables. */
+function otlpOf(options: { otlpEndpoint?: string; otlpHeaders?: Record<string, string> }) {
+  const otlp =
+    options.otlpEndpoint !== undefined
+      ? {
+          endpoint: options.otlpEndpoint,
+          ...(options.otlpHeaders !== undefined && { headers: options.otlpHeaders }),
+        }
+      : otlpFromEnvironment(process.env);
+  return otlp === undefined ? {} : { otlp };
+}
 
 switch (command.kind) {
   case 'version':
@@ -57,6 +69,7 @@ switch (command.kind) {
       allowedCsms: [...DEFAULT_ALLOWED_CSMS, ...command.allowCsms],
       ...(command.store !== undefined && { storePath: command.store }),
       ...(command.recordLimit !== undefined && { recordLimit: command.recordLimit }),
+      ...otlpOf(command),
       ...(existsSync(WEB_ROOT) && { webRoot: WEB_ROOT }),
     });
     try {

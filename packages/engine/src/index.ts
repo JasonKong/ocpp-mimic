@@ -92,3 +92,18 @@ export {
   readMapping,
   type ImportMapping,
 } from './logs/import.js';
+export {
+  createMetrics,
+  Histogram,
+  prometheusText,
+  type MetricFamily,
+  type Metrics,
+  type MetricsSummary,
+} from './metrics.js';
+export {
+  otlpFromEnvironment,
+  otlpRequest,
+  parseKeyValues,
+  startOtlpExporter,
+  type OtlpOptions,
+} from './otlp.js';

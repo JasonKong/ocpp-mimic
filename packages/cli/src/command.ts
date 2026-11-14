@@ -10,6 +10,9 @@ export interface ServeCommand {
   store?: string;
   /** Records kept per station (default 1000). */
   recordLimit?: number;
+  /** Push metrics over OTLP/HTTP here. */
+  otlpEndpoint?: string;
+  otlpHeaders?: Record<string, string>;
   /** Extra persona directories. */
   personas: string[];
   /** CSMS URL prefixes stations may connect to, on top of loopback. */
@@ -96,6 +99,9 @@ Options for serve:
                          (default: nothing is kept)
   --record-limit <n>     Messages and log lines kept per station for the
                          Web UI and API (default 1000; 0 keeps none)
+  --otlp-endpoint <url>  Push metrics to an OpenTelemetry collector over
+                         OTLP/HTTP (default: OTEL_EXPORTER_OTLP_ENDPOINT)
+  --otlp-header <k=v>    Header for the OTLP export; repeat for more
 
 Options for run:
   --csms <url>           Run every scenario against this CSMS instead of its
@@ -162,6 +168,8 @@ const OPTIONS = {
   status: { type: 'string' },
   'log-dir': { type: 'string' },
   'record-limit': { type: 'string' },
+  'otlp-endpoint': { type: 'string' },
+  'otlp-header': { type: 'string', multiple: true },
   map: { type: 'string' },
   mask: { type: 'boolean' },
   'no-mask': { type: 'boolean' },
@@ -176,7 +184,16 @@ type OptionName = keyof typeof OPTIONS;
 type Values = ReturnType<typeof parseArgs<{ options: typeof OPTIONS }>>['values'];
 
 const COMMANDS = {
-  serve: ['port', 'host', 'store', 'record-limit', 'personas', 'allow-csms'],
+  serve: [
+    'port',
+    'host',
+    'store',
+    'record-limit',
+    'otlp-endpoint',
+    'otlp-header',
+    'personas',
+    'allow-csms',
+  ],
   run: ['csms', 'var', 'timeout', 'bail', 'junit', 'log-dir', 'personas', 'allow-csms'],
   csms: [
     'port',
@@ -244,12 +261,32 @@ export function parseCommand(argv: readonly string[]): Command {
       host: values.host ?? '127.0.0.1',
       ...(values.store !== undefined && { store: values.store }),
       ...(recordLimit !== undefined && { recordLimit }),
+      ...otlpOptions(values),
       personas: values.personas ?? [],
       allowCsms: values['allow-csms'] ?? [],
     };
   } catch (caught) {
     return error(caught instanceof Error ? caught.message : String(caught));
   }
+}
+
+/** `--otlp-endpoint` and `--otlp-header`, checked; throws a readable Error. */
+function otlpOptions(values: Values): { otlpEndpoint?: string; otlpHeaders?: Record<string, string> } {
+  const endpoint = values['otlp-endpoint'];
+  const headers: Record<string, string> = {};
+  for (const entry of values['otlp-header'] ?? []) {
+    const at = entry.indexOf('=');
+    if (at <= 0) throw new Error(`--otlp-header needs name=value, got ${entry}`);
+    headers[entry.slice(0, at)] = entry.slice(at + 1);
+  }
+  if (endpoint === undefined) {
+    if (Object.keys(headers).length > 0) throw new Error('--otlp-header needs --otlp-endpoint');
+    return {};
+  }
+  if (!/^https?:\/\/\S+$/.test(endpoint)) {
+    throw new Error(`--otlp-endpoint needs an http:// or https:// URL, got ${endpoint}`);
+  }
+  return { otlpEndpoint: endpoint, ...(Object.keys(headers).length > 0 && { otlpHeaders: headers }) };
 }
 
 function parsePort(value: string | undefined, fallback: number): number | undefined {
