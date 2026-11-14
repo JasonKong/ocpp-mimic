@@ -20,6 +20,12 @@ services:
     build:
       context: https://github.com/steve-community/steve.git#steve-3.14.1
     restart: unless-stopped
+    environment:
+      # Enables SteVe's REST API (/steve/api/v1) for the admin user created on
+      # the first start: HTTP Basic with user admin and this API password.
+      # A test-only value for a local test CSMS; scenarios read it from
+      # STEVE_API_SECRET.
+      WEBAPI_VALUE: ocpp-mimic-test-api-secret
     links:
       - 'db:mariadb'
     ports:

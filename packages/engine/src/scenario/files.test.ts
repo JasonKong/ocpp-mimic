@@ -46,6 +46,29 @@ describe('scenario files', () => {
     expect(scenarios).toBe(6);
   });
 
+  it('validates every scenario file in the repository', async () => {
+    const root = fileURLToPath(new URL('../../../../scenarios/', import.meta.url));
+    // scenarios/personas holds personas, not scenarios.
+    const files = (await findScenarioFiles([root])).filter((f) => !f.includes('/personas/'));
+    expect(files.length).toBeGreaterThan(6);
+    const problems: string[] = [];
+    for (const file of files) {
+      const read = await readScenarioFile(file, file.slice(root.length));
+      problems.push(...read.errors);
+      for (const document of read.documents) {
+        problems.push(...document.errors);
+        if (document.scenario !== undefined) {
+          problems.push(
+            ...variableProblems(document.scenario, ['APP_API']).map(
+              (p) => `${document.label}: ${p}`,
+            ),
+          );
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+
   it('reports YAML and validation errors with file, document and step', async () => {
     const dir = await tempDir();
     const file = join(dir, 'bad.yaml');

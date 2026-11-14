@@ -436,6 +436,9 @@ export async function runScenario(
     async function httpStep(step: Extract<ScenarioStep, { kind: 'http' }>): Promise<void> {
       const headers: Record<string, string> = {
         ...(step.json !== undefined && { 'content-type': 'application/json' }),
+        ...(step.basicAuth !== undefined && {
+          authorization: `Basic ${Buffer.from(`${step.basicAuth.user}:${step.basicAuth.password}`).toString('base64')}`,
+        }),
         ...step.headers,
       };
       let response: Response;

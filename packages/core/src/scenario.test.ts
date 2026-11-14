@@ -77,6 +77,7 @@ describe('scenario validation', () => {
           http: {
             method: 'POST',
             url: 'http://localhost/x',
+            basicAuth: { user: 'u', password: 'p' },
             json: { a: 1 },
             expect: { status: 200 },
           },
@@ -145,6 +146,7 @@ describe('scenario validation', () => {
         kind: 'http',
         method: 'POST',
         url: 'http://localhost/x',
+        basicAuth: { user: 'u', password: 'p' },
         json: { a: 1 },
         expect: { status: 200 },
       },

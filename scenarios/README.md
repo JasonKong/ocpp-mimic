@@ -8,6 +8,9 @@ Scenario files for `ocpp-mimic run`, in the format described under
   and app backend.
 - `regression/`: the regression suite, run against the built-in CSMS. It uses
   the personas in `personas/` (`--personas scenarios/personas`).
+- `steve/`: scenarios that need SteVe (see `tools/steve/README.md`): CSMS
+  commands sent through SteVe's REST API with `http` steps. The SteVe
+  workflow runs them.
 - `personas/`: personas for the regression suite, such as `regression-1.6`
   (generic-1.6 with short reset downtimes).
 

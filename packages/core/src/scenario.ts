@@ -128,6 +128,8 @@ export type ScenarioStep =
       method: HttpMethod;
       url: string;
       headers?: Record<string, string>;
+      /** HTTP Basic credentials, sent as an Authorization header. */
+      basicAuth?: { user: string; password: string };
       json?: JsonValue;
       expect?: { status?: number; json?: JsonValue };
       save?: SaveMap;
@@ -296,6 +298,7 @@ const ARGUMENTS = {
     {
       method: oneOf(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']),
       headers: record(string()),
+      basicAuth: object({ user: nonEmpty, password: string() }),
       json: anyJson,
       expect: object({}, { status: integer({ minimum: 100 }), json: anyJson }),
       save: saveSchema,
@@ -586,7 +589,7 @@ function parseStep(
         ...named,
         method: (args.method as HttpMethod | undefined) ?? 'GET',
         url: args.url as string,
-        ...pick(args, ['headers', 'json', 'expect', 'save'] as const),
+        ...pick(args, ['headers', 'basicAuth', 'json', 'expect', 'save'] as const),
       } as ScenarioStep;
     }
   }
