@@ -34,6 +34,24 @@ describe('parseDuration', () => {
 });
 
 describe('resolvePersonas', () => {
+  it('validates a usage model', () => {
+    const persona = {
+      persona: 'with-usage',
+      boot: { chargePointVendor: 'V', chargePointModel: 'M' },
+      connectors: 1,
+    };
+    expect(
+      resolveOne({ ...persona, usage: { sessionsPerHour: 2, stay: { min: '5m', max: '1h' } } })
+        .errors,
+    ).toEqual([]);
+    expect(resolveOne({ ...persona, usage: { sessionsPerHour: 0 } }).errors).toEqual([
+      'test.yaml: $.usage.sessionsPerHour: must be above 0',
+    ]);
+    expect(
+      resolveOne({ ...persona, usage: { stay: { min: '5m', max: '1h' } } }).errors,
+    ).toHaveLength(1);
+  });
+
   it('turns a persona into charge point options', () => {
     const { personas, errors } = resolveOne(BASE);
     expect(errors).toEqual([]);

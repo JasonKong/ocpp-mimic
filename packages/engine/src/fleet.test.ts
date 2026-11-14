@@ -147,6 +147,54 @@ describe('fleet', () => {
     expect(second?.running).toBe(false);
   });
 
+  it(
+    'runs the usage model while a station runs, and switches it',
+    { timeout: 20_000 },
+    async () => {
+      csms = await startBuiltinCsms();
+      const fleet = await fleetWith();
+      const usage = {
+        sessionsPerHour: 3600,
+        // Longer than generic-1.6's 500 ms start-transaction delay.
+        stay: { min: '1500ms', max: '2s' },
+        steps: { min: '50ms', max: '100ms' },
+        evs: { 'test-5kwh': 1 },
+        idTags: { unknownShare: 0 },
+        stopBy: { card: 1, unplug: 0 },
+      };
+      const station = fleet.add({
+        id: 'U-1',
+        persona: 'generic-1.6',
+        csmsUrl: csms.url,
+        usage,
+        seed: 4,
+      });
+      const connection = await csms.waitForConnection('U-1');
+      const start = await connection.waitForCall('StartTransaction', 10_000);
+      expect(start.payload.idTag).toMatch(/^LOAD-\d{4}$/);
+      const stop = await connection.waitForCall('StopTransaction', 10_000);
+      expect(stop.payload.reason).toBe('Local');
+      expect(station.snapshot().usage).toBe(true);
+      fleet.setUsage('U-1', false);
+      expect(station.snapshot().usage).toBe(false);
+
+      expect(() =>
+        fleet.add({ id: 'U-2', persona: 'generic-1.6', csmsUrl: csms!.url, usage: true }),
+      ).toThrow(/no usage model/);
+      expect(() =>
+        fleet.add({
+          id: 'U-3',
+          persona: 'generic-1.6',
+          csmsUrl: csms!.url,
+          usage: { sessionsPerHour: 1, evs: { nope: 1 } },
+        }),
+      ).toThrow(/no EV nope/);
+      fleet.add({ id: 'U-4', persona: 'generic-1.6', csmsUrl: csms.url });
+      expect(() => fleet.setUsage('U-4', true)).toThrow(/no usage model/);
+      expect(fleet.get('U-4')?.snapshot().usage).toBeUndefined();
+    },
+  );
+
   it('refuses CSMS addresses outside the allow-list, unknown personas and duplicate ids', async () => {
     const fleet = await fleetWith();
     expect(() =>

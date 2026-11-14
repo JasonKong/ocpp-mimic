@@ -1,0 +1,30 @@
+name: A station charges on its own with the usage model, ending with the card
+station:
+  id: REG-USE-1
+  persona: load-ac-1.6
+  seed: 3
+  usage:
+    sessionsPerHour: 360
+    stay: { min: 5s, max: 8s }
+    steps: { min: 500ms, max: 1s }
+    idTags: { unknownShare: 0 }
+    stopBy: { card: 1, unplug: 0 }
+steps:
+  - expect: { sent: StartTransaction, payload: { idTag: { $regex: '^LOAD-' } }, within: 60s }
+  - expect: { sent: StopTransaction, payload: { reason: Local }, within: 30s }
+  - expectConnector: { status: Available, within: 15s }
+---
+name: A driver who leaves by unplugging ends the transaction with EVDisconnected
+station:
+  id: REG-USE-2
+  persona: load-ac-1.6
+  seed: 5
+  usage:
+    sessionsPerHour: 360
+    stay: { min: 3s, max: 5s }
+    steps: { min: 500ms, max: 1s }
+    idTags: { unknownShare: 0 }
+    stopBy: { card: 0, unplug: 1 }
+steps:
+  - expect: { sent: StartTransaction, within: 60s }
+  - expect: { sent: StopTransaction, payload: { reason: EVDisconnected }, within: 30s }

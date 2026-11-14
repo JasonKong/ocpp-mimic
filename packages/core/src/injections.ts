@@ -4,7 +4,7 @@
  * scenario steps. The engine carries them out; core only defines them.
  */
 import { RPC_ERROR_CODES, type RpcErrorCode } from './ocpp16.js';
-import { durationSchema, parseDuration } from './persona.js';
+import { durationSchema, parseDuration } from './duration.js';
 import {
   integer,
   number,

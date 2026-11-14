@@ -3,7 +3,7 @@
  * (configuration, meters, authorization cache, running transactions, queued
  * messages) in SQLite, through Node's built-in node:sqlite.
  */
-import type { PersistedChargePoint } from '@ocpp-mimic/core';
+import type { PersistedChargePoint, UsageOverride } from '@ocpp-mimic/core';
 
 /**
  * node:sqlite, loaded on first use: it is still experimental and prints a
@@ -44,6 +44,13 @@ export interface StationDefinition {
   tags?: string[];
   /** The group the station belongs to, e.g. its template; labels metrics and reports. */
   group?: string;
+  /**
+   * The usage model: true runs the persona's, an object changes it, false or
+   * absent leaves it off (it can still be switched on when the persona has one).
+   */
+  usage?: boolean | UsageOverride;
+  /** The run's seed for the usage model's random numbers; with the id it seeds the station. */
+  seed?: number;
 }
 
 export interface StateStore {

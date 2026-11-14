@@ -472,9 +472,10 @@ usage:
   idTags: { prefix: LOAD-, count: 500, unknownShare: 0.05, unknownPrefix: UNKNOWN- }
   cardFirst: 0.3 # 先刷卡再插枪的司机比例
   stopBy: { card: 0.7, unplug: 0.3 } # 司机离开时如何结束充电
+  steps: { min: 5s, max: 30s } # 刷卡与插枪之间、拔枪之前的等待
 ```
 
-- 一次充电：到达时选好 EV、卡、先后顺序和停留时长；刷卡和插枪间隔 5 到 30 秒。卡被拒绝时，司机 30 到 60 秒后拔枪。停留结束时，司机再刷一次卡（StopTransaction 原因 Local），10 到 60 秒后拔枪；或者直接拔枪（EVDisconnected）。EV 提前充满就停在 SuspendedEV 等待。
+- 一次充电：到达时选好 EV、卡、先后顺序和停留时长；刷卡和插枪间隔一个 step（`steps`，默认 5 到 30 秒）。卡被拒绝时，司机一个 step 后拔枪。停留结束时，司机再刷一次卡（StopTransaction 原因 Local），一个 step 后拔枪；或者直接拔枪（EVDisconnected）。EV 提前充满就停在 SuspendedEV 等待。
 - 连接器不空闲（Unavailable、Faulted、Reserved 或仍被占用）时，到达的司机离开，并计数。远程启动不在模型里：它需要 CSMS 发起。
 - 每个桩的随机数生成器用运行的 `seed` 和桩 id 作种子，所以只要 CSMS 的回答相同，这个桩的充电过程就会重现，与其他桩无关。重启后，已插枪的连接器重新选一个停留时长。
 - 内置 CSMS 可以设置为：以未知前缀（默认 `UNKNOWN-`）开头的 idTag 回答 Invalid，这样未知卡的比例在 CSMS 端也能看到。
@@ -613,6 +614,15 @@ thresholds:
 - 交易按 StartTransaction 的回答计为 `started` 或 `refused`，按 StopTransaction 的回答计为 `stopped`；`ocpp_mimic_energy_wh_total` 累加已结束交易的 meterStop − meterStart。连接器 gauge 使用每个连接器（不含连接器 0）最近一次 StatusNotification。
 - `ocpp_mimic_info{version}` 给出版本。`ocpp_mimic_sessions_turned_away_total` 随使用模型（T48）提供。
 - CI 用 `promtool check metrics`（prom/prometheus v3.5.0）检查运行中 engine 的输出。
+
+**已实现：使用模型（T48）**
+
+- `core/src/usage.ts`：模型、校验、带种子的随机数生成器（mulberry32）和驱动。persona 的 `usage` 是完整的模型；桩的 `usage`（API、模板、场景）可以是 `true`（使用 persona 的）、一个改动对象（合并到 persona 的模型上，`evs` 整体替换），或 `false` / 不填（关闭）。桩上的 `seed` 是运行的种子，桩的生成器用它和桩 id（FNV-1a）作种子，不填时为 0；生成器在断电后保留，所以充电过程会继续而不是从头重复。
+- `steps: { min, max }`（默认 5 到 30 秒）是司机在刷卡和插枪之间、卡被拒绝后放弃之前、刷卡结束后拔枪之前等待的时间。较短的 steps 和停留时长可以让一次充电在回归场景里跑完。
+- 驱动通过充电桩的输入操作：连接器为 Available 且没有插枪时才算空闲；只有交易进行中（Charging、SuspendedEV 或 SuspendedEVSE）时才用卡结束，否则司机直接拔枪，因为刷卡会开始新的交易。EV 名称必须在 persona 中存在。
+- 驱动在桩运行时运行（桩停止或断电时停止）；`PATCH /api/stations/:id/usage { enabled }` 开关它（没有模型时返回 409），开关状态在断电后保留，但 engine 重启后不保留。有模型的桩在快照里带 `usage: true | false`。
+- 驱动事件写入桩的日志（`usage: a driver arrives at connector 1 with LOAD-0042 and EV compact-40kwh`），并计入 `ocpp_mimic_sessions_turned_away_total`。
+- `load-ac-1.6` 带一个使用模型；`scenarios/regression/usage.yaml` 运行以刷卡结束和以拔枪结束的充电。
 
 **文件放在哪里**
 

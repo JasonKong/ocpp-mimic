@@ -231,6 +231,8 @@ export async function runScenario(
         ...(definition.password !== undefined && { password: definition.password }),
         ...(definition.security !== undefined && { security: definition.security }),
         ...(definition.config !== undefined && { config: definition.config }),
+        ...(definition.usage !== undefined && { usage: definition.usage }),
+        ...(definition.seed !== undefined && { seed: definition.seed }),
         ...(definition.energyMultiplier !== undefined && {
           energyMultiplier: definition.energyMultiplier,
         }),

@@ -11,8 +11,11 @@ import {
   parseInjection,
   parseRampUp,
   tagsProblem,
+  UsageOverrideSchema,
+  validate,
   VERSION,
   type RampUp,
+  type UsageOverride,
   type ChargePointBehaviour,
   type Fault,
   type PluggedEv,
@@ -182,6 +185,18 @@ function definitionFrom(body: Record<string, unknown>, id: string): StationDefin
     const problem = nameProblem(body.group, 'the group');
     if (problem !== undefined) throw new HttpError(400, `"group": ${problem}`);
   }
+  if (body.usage !== undefined && typeof body.usage !== 'boolean') {
+    const checked = validate(UsageOverrideSchema, body.usage);
+    if (!checked.ok) {
+      throw new HttpError(
+        400,
+        checked.issues.map((i) => `"usage"${i.path.slice(1)}: ${i.message}`).join('; '),
+      );
+    }
+  }
+  if (body.seed !== undefined && !(Number.isInteger(body.seed) && Number(body.seed) >= 0)) {
+    throw new HttpError(400, '"seed" must be a whole number of 0 or more');
+  }
   return {
     id,
     persona: stringField(body, 'persona', true),
@@ -198,6 +213,8 @@ function definitionFrom(body: Record<string, unknown>, id: string): StationDefin
     ...(body.security !== undefined && { security: securityField(body.security) }),
     ...(body.tags !== undefined && { tags: body.tags as string[] }),
     ...(body.group !== undefined && { group: body.group as string }),
+    ...(body.usage !== undefined && { usage: body.usage as boolean | UsageOverride }),
+    ...(body.seed !== undefined && { seed: body.seed as number }),
   };
 }
 
@@ -474,6 +491,18 @@ const routes: Route[] = [
   route('PATCH', '/api/stations/:param/energy-multiplier', async (request, context) => {
     const station = stationOf(context, request.params[0]);
     station.chargePoint.setEnergyMultiplier(multiplierField(await request.body()));
+    return station.snapshot();
+  }),
+
+  route('PATCH', '/api/stations/:param/usage', async (request, context) => {
+    const station = stationOf(context, request.params[0]);
+    const { enabled } = await request.body();
+    if (typeof enabled !== 'boolean') throw new HttpError(400, '"enabled" must be true or false');
+    try {
+      context.fleet.setUsage(station.id, enabled);
+    } catch (error) {
+      throw new HttpError(409, error instanceof Error ? error.message : String(error));
+    }
     return station.snapshot();
   }),
 
