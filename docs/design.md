@@ -1080,6 +1080,7 @@ interface SessionRecord {
 - `GET /api/stations/:id/sessions` lists summaries, newest first. `GET /api/stations/:id/sessions/:n` returns the record with its estimates and reference price. `GET /api/stations/:id/sessions/:n/frames` returns its frames, as JSON or (`?format=jsonl`) as the recorder's JSONL for replay and scenarios (R-LOG-6).
 - `/api/events` pushes `{ type: 'session', stationId, session }` summaries for subscribed stations, at most once a second per session (R-UI-2).
 - The reference tariff is one per engine: `GET` and `PUT /api/tariff`, kept in a `settings` table. Prices are computed when a session is read, so a new tariff reprices old sessions.
+- Implemented (T83): `createSessionService` in `packages/engine/src/sessions.ts` feeds each station's tracker from the recorder's frames and the charge points' hints, adds a true sample whenever a running session gets a new reported sample or state, and keeps records in the State Store (tables `sessions`, `session_frames`, `settings`) or in memory without one. New and ended sessions are written at once, running ones every 30 seconds and when the engine stops. Pruning keeps the newest N and every open session. After a restart a running session goes on; one that was still starting ends as not-started (`StartFailed`, the engine restarted). Connector snapshots carry `offeredW` for the truth. `serve --sessions-per-station`; `load` tracks no sessions, `bench` only with `--store`.
 
 **Estimates and truth**
 

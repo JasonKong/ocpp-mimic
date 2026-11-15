@@ -323,6 +323,8 @@ export interface ConnectorSnapshot {
   chargingState?: string;
   energyWh: number;
   powerW: number;
+  /** The power the connector offers now (the station's maximum or the limit in force), in W. */
+  offeredW: number;
   /** The plugged-in EV, when the cable was plugged in with one. */
   ev?: { name?: string; soc: number; profile: EvProfile };
   /** The Smart Charging limit in force, in W, when a charging profile applies. */
@@ -2287,6 +2289,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
             ...(transaction !== undefined && { idTag: transaction.idTag }),
             energyWh: reading.energyWh,
             powerW: reading.powerW,
+            offeredW: reading.offeredW,
             ...(ev !== undefined && {
               ev: {
                 ...(ev.name !== undefined && { name: ev.name }),

@@ -1079,6 +1079,7 @@ interface SessionRecord {
 - `GET /api/stations/:id/sessions` 列出摘要，最新的在前。`GET /api/stations/:id/sessions/:n` 返回记录，以及它的推算值和参考价。`GET /api/stations/:id/sessions/:n/frames` 返回它的报文，格式为 JSON，或（`?format=jsonl`）录制器的 JSONL，可直接用于回放和生成场景（R-LOG-6）。
 - `/api/events` 为订阅的站推送 `{ type: 'session', stationId, session }` 摘要，每个会话每秒最多一次（R-UI-2）。
 - 参考费率每个引擎一份：`GET` 和 `PUT /api/tariff`，存在 `settings` 表里。价格在读取会话时计算，所以换了费率，旧会话也按新费率重算。
+- 已实现（T83）：`packages/engine/src/sessions.ts` 的 `createSessionService` 把录制器的报文和桩的提示喂给每个站的追踪器；运行中的会话每有新的上报采样或状态变化，就补一个真值采样；记录存在状态库里（`sessions`、`session_frames`、`settings` 三张表），没有状态库时存在内存里。新会话和结束的会话立即写入，运行中的每 30 秒写一次，引擎停止时也写一次。清理时保留最新的 N 个和所有未结束的会话。重启后运行中的会话继续；还在启动中的会话以未开始结束（`StartFailed`，引擎重启）。连接器快照新增 `offeredW`，供真值计算使用。`serve --sessions-per-station`；`load` 不跟踪会话，`bench` 只在加 `--store` 时跟踪。
 
 **推算值和真值**
 

@@ -2263,6 +2263,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
             ...(token !== undefined && { idTag: token.idToken }),
             energyWh: reading.energyWh,
             powerW: reading.powerW,
+            offeredW: reading.offeredW,
             ...((limit) => (limit === undefined ? {} : { limitW: Math.round(limit * 10) / 10 }))(
               profileLimitW(connector.connectorId),
             ),

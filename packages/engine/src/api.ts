@@ -29,6 +29,7 @@ import type { Fleet, StationSnapshot, VirtualStation } from './fleet.js';
 import type { Metrics } from './metrics.js';
 import type { PersonaRegistry } from './personas.js';
 import type { RecordEntry, Recorder } from './recorder.js';
+import type { SessionService, SessionSummary } from './sessions.js';
 import type { StationDefinition, StationSecurity } from './state-store.js';
 
 export class HttpError extends Error {
@@ -45,6 +46,7 @@ interface Context {
   personas: PersonaRegistry;
   recorder: Recorder;
   metrics?: Metrics;
+  sessions?: SessionService | undefined;
 }
 
 interface Request {
@@ -85,6 +87,19 @@ function stationOf(context: Context, id: string | undefined): VirtualStation {
   const station = id === undefined ? undefined : context.fleet.get(id);
   if (station === undefined) throw new HttpError(404, `no station ${String(id)}`);
   return station;
+}
+
+function sessionsOf(context: Context): SessionService {
+  if (context.sessions === undefined)
+    throw new HttpError(404, 'sessions are not tracked by this engine');
+  return context.sessions;
+}
+
+function sessionNumber(value: string | undefined): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1)
+    throw new HttpError(400, 'a session number is a whole number from 1');
+  return n;
 }
 
 function connectorIdOf(station: VirtualStation, value: string | undefined): number {
@@ -444,6 +459,7 @@ const routes: Route[] = [
     for (const id of ids) {
       context.recorder.forget(id);
       context.metrics?.forget(id);
+      context.sessions?.forget(id);
     }
     return { deleted: ids.length };
   }),
@@ -478,6 +494,7 @@ const routes: Route[] = [
     await context.fleet.remove(station.id);
     context.recorder.forget(station.id);
     context.metrics?.forget(station.id);
+    context.sessions?.forget(station.id);
     return NO_CONTENT;
   }),
 
@@ -652,6 +669,39 @@ const routes: Route[] = [
     );
   }),
 
+  route('GET', '/api/stations/:param/sessions', (request, context) => {
+    const station = stationOf(context, request.params[0]);
+    return { sessions: sessionsOf(context).list(station.id) };
+  }),
+
+  route('GET', '/api/stations/:param/sessions/:param', (request, context) => {
+    const station = stationOf(context, request.params[0]);
+    const detail = sessionsOf(context).get(station.id, sessionNumber(request.params[1]));
+    if (detail === undefined) throw new HttpError(404, `no session ${request.params[1]}`);
+    return detail;
+  }),
+
+  route('GET', '/api/stations/:param/sessions/:param/frames', (request, context) => {
+    const station = stationOf(context, request.params[0]);
+    const n = sessionNumber(request.params[1]);
+    const service = sessionsOf(context);
+    if (service.get(station.id, n) === undefined) {
+      throw new HttpError(404, `no session ${request.params[1]}`);
+    }
+    const frames = service.frames(station.id, n);
+    const format = request.query.get('format');
+    if (format === 'jsonl') {
+      return new FileResponse(
+        'application/x-ndjson; charset=utf-8',
+        exportLog(frames),
+        `${station.id}-session-${n}.jsonl`,
+      );
+    }
+    if (format !== null && format !== 'json')
+      throw new HttpError(400, '"format" must be json or jsonl');
+    return { frames };
+  }),
+
   route('GET', '/api/stations/:param/messages', (request, context) => {
     const station = stationOf(context, request.params[0]);
     const format = request.query.get('format');
@@ -760,5 +810,6 @@ export async function handleApi(
  */
 export type ApiEvent =
   | { type: 'record'; entry: RecordEntry }
+  | { type: 'session'; session: SessionSummary }
   | { type: 'station'; station: ReturnType<VirtualStation['snapshot']> }
   | { type: 'fleet'; stations: StationSummary[]; removed: string[]; full?: true };

@@ -18,6 +18,7 @@ import { loadOcaSchemas, OCA_SCHEMA_DIRS, type OcaSchemas } from './oca-schemas.
 import { BUILT_IN_PERSONAS_DIR, loadPersonas, type PersonaRegistry } from './personas.js';
 import { createRecorder, type Recorder } from './recorder.js';
 import { openStateStore, type StateStore } from './state-store.js';
+import { createSessionService, type SessionService, type SessionSummary } from './sessions.js';
 import { serveStatic } from './static.js';
 import type { BackoffPolicy } from './transport.js';
 
@@ -45,6 +46,10 @@ export interface EngineOptions {
   runId?: string;
   /** Problems that do not stop the engine, such as a failing OTLP export. Default console.warn. */
   onWarning?: (message: string) => void;
+  /** Track charging sessions (default true). */
+  sessions?: boolean;
+  /** Sessions kept per station (default 20). */
+  sessionsPerStation?: number;
 }
 
 export interface Engine {
@@ -55,6 +60,8 @@ export interface Engine {
   readonly personas: PersonaRegistry | undefined;
   readonly recorder: Recorder;
   readonly metrics: Metrics;
+  /** Available after start(), unless sessions are off. */
+  readonly sessions: SessionService | undefined;
 }
 
 /** A usage model event as a log line. */
@@ -93,6 +100,12 @@ export function createEngine(options: EngineOptions = {}): Engine {
   let fleet: Fleet | undefined;
   let personas: PersonaRegistry | undefined;
   let store: StateStore | undefined;
+  let sessions: SessionService | undefined;
+  /** The latest summary of each session waiting to be pushed, at most once a second. */
+  const sessionUpdates = new Map<
+    string,
+    { summary: SessionSummary; timer?: ReturnType<typeof setTimeout> }
+  >();
   let exporter: OtlpExporter | undefined;
   const metrics = createMetrics({
     version: VERSION,
@@ -166,6 +179,26 @@ export function createEngine(options: EngineOptions = {}): Engine {
     );
   }
 
+  /** A session changed: its subscribers get its summary, at most once a second per session. */
+  function scheduleSessionUpdate(summary: SessionSummary): void {
+    if (!listening() || subscribersOf(summary.stationId).length === 0) return;
+    const key = `${summary.stationId} ${summary.n}`;
+    const entry = sessionUpdates.get(key);
+    if (entry !== undefined) {
+      entry.summary = summary;
+      return;
+    }
+    sendTo(subscribersOf(summary.stationId), { type: 'session', session: summary });
+    const waiting: { summary: SessionSummary; timer?: ReturnType<typeof setTimeout> } = { summary };
+    sessionUpdates.set(key, waiting);
+    waiting.timer = setTimeout(() => {
+      sessionUpdates.delete(key);
+      if (waiting.summary !== summary) {
+        sendTo(subscribersOf(summary.stationId), { type: 'session', session: waiting.summary });
+      }
+    }, 1000);
+  }
+
   /** The station ids the last fleet batch knew, to find added and removed ones. */
   let known = new Set<string>();
 
@@ -197,7 +230,7 @@ export function createEngine(options: EngineOptions = {}): Engine {
       res.end(metrics.prometheus());
       return;
     }
-    if (await handleApi(req, res, { fleet, personas, recorder, metrics })) return;
+    if (await handleApi(req, res, { fleet, personas, recorder, metrics, sessions })) return;
     if (options.webRoot !== undefined && (await serveStatic(req, res, options.webRoot))) return;
     sendJson(res, 404, { error: 'Not found' });
   }
@@ -245,10 +278,28 @@ export function createEngine(options: EngineOptions = {}): Engine {
     },
     recorder,
     metrics,
+    get sessions() {
+      return sessions;
+    },
 
     async start() {
       personas = await loadPersonas([BUILT_IN_PERSONAS_DIR, ...(options.personaDirs ?? [])]);
       if (options.storePath !== undefined) store = openStateStore(options.storePath);
+      if (options.sessions !== false) {
+        sessions = createSessionService({
+          ...(store !== undefined && { store }),
+          ...(options.sessionsPerStation !== undefined && {
+            perStation: options.sessionsPerStation,
+          }),
+          station: (id) => {
+            const station = fleet?.get(id);
+            return station === undefined
+              ? undefined
+              : { ocpp: station.chargePoint.ocpp, snapshot: () => station.chargePoint.snapshot() };
+          },
+        });
+        sessions.subscribe(scheduleSessionUpdate);
+      }
       fleet = createFleet({
         personas,
         clock: createSystemClock({ onLate: (ms) => metrics.lateness(ms) }),
@@ -263,6 +314,7 @@ export function createEngine(options: EngineOptions = {}): Engine {
               ...(event.dropped === true && { dropped: true }),
             });
             metrics.frame(record);
+            sessions?.frame(record);
           } else if (event.type === 'charge-point') {
             const cpEvent = event.event;
             if (cpEvent.type === 'rpc') {
@@ -271,6 +323,8 @@ export function createEngine(options: EngineOptions = {}): Engine {
               recorder.log(event.stationId, cpEvent.message);
             } else if (cpEvent.type === 'changed') {
               scheduleStationUpdate(event.stationId);
+            } else if (cpEvent.type === 'session') {
+              sessions?.hint(event.stationId, cpEvent.hint);
             }
           } else if (event.type === 'injections') {
             scheduleStationUpdate(event.stationId);
@@ -329,10 +383,13 @@ export function createEngine(options: EngineOptions = {}): Engine {
       if (fleetTimer !== undefined) clearInterval(fleetTimer);
       for (const timer of stationUpdates.values()) clearTimeout(timer);
       stationUpdates.clear();
+      for (const entry of sessionUpdates.values()) clearTimeout(entry.timer);
+      sessionUpdates.clear();
       for (const client of events.clients) client.terminate();
       await fleet?.shutdown();
       await exporter?.stop();
       metrics.stop();
+      sessions?.stop();
       store?.close();
       await new Promise<void>((resolve) => events.close(() => resolve()));
       await new Promise<void>((resolve, reject) => {

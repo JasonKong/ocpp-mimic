@@ -101,6 +101,9 @@ switch (command.kind) {
       allowedCsms: [...DEFAULT_ALLOWED_CSMS, ...command.allowCsms],
       ...(command.store !== undefined && { storePath: command.store }),
       ...(command.recordLimit !== undefined && { recordLimit: command.recordLimit }),
+      ...(command.sessionsPerStation !== undefined && {
+        sessionsPerStation: command.sessionsPerStation,
+      }),
       ...otlpOf(command),
       ...(existsSync(WEB_ROOT) && { webRoot: WEB_ROOT }),
     });

@@ -3,7 +3,7 @@
  * (configuration, meters, authorization cache, running transactions, queued
  * messages) in SQLite, through Node's built-in node:sqlite.
  */
-import type { PersistedStation, UsageOverride } from '@ocpp-mimic/core';
+import type { PersistedStation, SessionRecord, UsageOverride } from '@ocpp-mimic/core';
 
 /**
  * node:sqlite, loaded on first use: it is still experimental and prints a
@@ -72,6 +72,20 @@ export interface StateStore {
   saveState(id: string, state: PersistedStation): void;
   /** Saves many stations' states in one transaction. */
   saveStates(states: Iterable<[id: string, state: PersistedStation]>): void;
+  /** A station's sessions, newest first. */
+  loadSessions(stationId: string): SessionRecord[];
+  loadSession(stationId: string, n: number): SessionRecord | undefined;
+  /** Saves sessions and frames to add to them, in one transaction. */
+  saveSessions(sessions: Iterable<{ record: SessionRecord; frames?: readonly unknown[] }>): void;
+  /** A session's frames, in the order they were added. */
+  sessionFrames(stationId: string, n: number): unknown[];
+  /** Moves a merged session's frames to the session that took it over, and deletes it. */
+  mergeSession(stationId: string, from: number, into: number): void;
+  /** Deletes all but the station's newest `keep` sessions and the `protect`ed ones, with their frames. */
+  pruneSessions(stationId: string, keep: number, protect?: readonly number[]): void;
+  /** A setting, such as the reference tariff. */
+  loadSetting(key: string): unknown;
+  saveSetting(key: string, value: unknown): void;
   close(): void;
 }
 
@@ -93,6 +107,25 @@ export function openStateStore(path: string): StateStore {
       state TEXT NOT NULL,
       saved_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS sessions (
+      station_id TEXT NOT NULL REFERENCES stations (id) ON DELETE CASCADE,
+      n INTEGER NOT NULL,
+      record TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (station_id, n)
+    );
+    CREATE TABLE IF NOT EXISTS session_frames (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      station_id TEXT NOT NULL,
+      n INTEGER NOT NULL,
+      record TEXT NOT NULL,
+      FOREIGN KEY (station_id, n) REFERENCES sessions (station_id, n) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS session_frames_by_session ON session_frames (station_id, n);
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
     PRAGMA foreign_keys = ON;
   `);
   const listStations = db.prepare('SELECT definition FROM stations ORDER BY id');
@@ -103,6 +136,26 @@ export function openStateStore(path: string): StateStore {
   const loadState = db.prepare('SELECT state FROM station_state WHERE id = ?');
   const upsertState = db.prepare(
     'INSERT INTO station_state (id, state, saved_at) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET state = excluded.state, saved_at = excluded.saved_at',
+  );
+
+  const loadSessions = db.prepare(
+    'SELECT record FROM sessions WHERE station_id = ? ORDER BY n DESC',
+  );
+  const loadSession = db.prepare('SELECT record FROM sessions WHERE station_id = ? AND n = ?');
+  const upsertSession = db.prepare(
+    'INSERT INTO sessions (station_id, n, record, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (station_id, n) DO UPDATE SET record = excluded.record, updated_at = excluded.updated_at',
+  );
+  const insertFrame = db.prepare(
+    'INSERT INTO session_frames (station_id, n, record) VALUES (?, ?, ?)',
+  );
+  const sessionFrames = db.prepare(
+    'SELECT record FROM session_frames WHERE station_id = ? AND n = ? ORDER BY id',
+  );
+  const moveFrames = db.prepare('UPDATE session_frames SET n = ? WHERE station_id = ? AND n = ?');
+  const deleteSession = db.prepare('DELETE FROM sessions WHERE station_id = ? AND n = ?');
+  const loadSetting = db.prepare('SELECT value FROM settings WHERE key = ?');
+  const upsertSetting = db.prepare(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value',
   );
 
   /** Runs `work` in one transaction: all of it is written, or none. */
@@ -149,6 +202,54 @@ export function openStateStore(path: string): StateStore {
       transaction(() => {
         for (const [id, state] of states) upsertState.run(id, JSON.stringify(state), state.savedAt);
       });
+    },
+    loadSessions: (stationId) =>
+      loadSessions.all(stationId).map((row) => JSON.parse(String(row.record)) as SessionRecord),
+    loadSession: (stationId, n) => {
+      const row = loadSession.get(stationId, n);
+      return row === undefined ? undefined : (JSON.parse(String(row.record)) as SessionRecord);
+    },
+    saveSessions: (sessions) => {
+      transaction(() => {
+        const now = Date.now();
+        for (const { record, frames } of sessions) {
+          upsertSession.run(record.stationId, record.n, JSON.stringify(record), now);
+          for (const frame of frames ?? []) {
+            insertFrame.run(record.stationId, record.n, JSON.stringify(frame));
+          }
+        }
+      });
+    },
+    sessionFrames: (stationId, n) =>
+      sessionFrames.all(stationId, n).map((row) => JSON.parse(String(row.record)) as unknown),
+    mergeSession: (stationId, from, into) => {
+      transaction(() => {
+        moveFrames.run(into, stationId, from);
+        deleteSession.run(stationId, from);
+      });
+    },
+    pruneSessions: (stationId, keep, protect = []) => {
+      const kept = db
+        .prepare('SELECT n FROM sessions WHERE station_id = ? ORDER BY n DESC LIMIT ?')
+        .all(stationId, keep)
+        .map((row) => Number(row.n));
+      const spare = new Set([...kept, ...protect]);
+      const all = db
+        .prepare('SELECT n FROM sessions WHERE station_id = ?')
+        .all(stationId)
+        .map((row) => Number(row.n));
+      const drop = all.filter((n) => !spare.has(n));
+      if (drop.length === 0) return;
+      transaction(() => {
+        for (const n of drop) deleteSession.run(stationId, n);
+      });
+    },
+    loadSetting: (key) => {
+      const row = loadSetting.get(key);
+      return row === undefined ? undefined : (JSON.parse(String(row.value)) as unknown);
+    },
+    saveSetting: (key, value) => {
+      upsertSetting.run(key, JSON.stringify(value));
     },
     close: () => db.close(),
   };
