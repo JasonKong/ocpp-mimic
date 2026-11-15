@@ -1091,6 +1091,7 @@ interface SessionRecord {
 - Without SoC: no estimate, with the reason (`no SoC reported`, `SoC has not risen enough`).
 - Truth: `msUntilFull` from `ev.ts`, which solves the EV model exactly under the current offered power.
 - The UI highlights an estimate that differs from the truth by more than 5 minutes or 10 %, whichever is larger (R-SRC-2).
+- Implemented (T79): `estimateSession`, `sessionTruth` and `estimateGap` in `packages/core/src/session-estimate.ts`. The capacity is a line through the readings where the integer SoC just went up (their rounding is about the same, so it cancels out in the slope); the SoC now adds the energy delivered since the last such reading to that integer; the power is the latest reported one (a falling taper makes an average lag), and the 5-minute average only when no power is reported. Estimate and truth are compared by their ETAs. For the reference profiles (11 kW and 50 kW into 60 kWh, 7.4 kW into 10 kWh) with the EV drawing its full power, every minute after SoC has risen 5 points stays within the gap. A session limited by the station is estimated conservatively in the taper, since the EV's own maximum is unknown.
 
 **Reference tariff**
 

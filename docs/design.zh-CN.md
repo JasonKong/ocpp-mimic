@@ -1090,6 +1090,7 @@ interface SessionRecord {
 - 没有 SoC：不推算，并给出原因（`no SoC reported`、`SoC has not risen enough`）。
 - 真值：`ev.ts` 的 `msUntilFull`，在当前提供功率下精确求解 EV 模型。
 - 推算值与真值差距超过 5 分钟或 10 %（取较大者）时，UI 高亮（R-SRC-2）。
+- 已实现（T79）：`packages/core/src/session-estimate.ts` 的 `estimateSession`、`sessionTruth` 和 `estimateGap`。容量是对整数 SoC 刚跳变的那些读数做直线拟合（它们的取整误差差不多，在斜率里相互抵消）；当前 SoC 是最近一次跳变的整数加上之后送出的电量；功率用最新上报的值（降功率时平均值会滞后），没有上报功率时才用 5 分钟平均。推算值和真值按 ETA 比较。参考 profile（11 kW 和 50 kW 充 60 kWh，7.4 kW 充 10 kWh），在 EV 按满功率充电时，SoC 上升 5 个点之后的每一分钟都在阈值内。桩限功率的会话在降功率段推算偏保守，因为不知道 EV 自己的最大功率。
 
 **参考费率**
 
