@@ -1135,6 +1135,7 @@ interface SessionRecord {
 - 不加路由依赖：选中一个站后，用标签页在"站点"和"会话"之间切换；hash（`#/stations/<id>/sessions/<n>`）可以链接到某个会话。
 - 组件：SessionList、SessionHeader（启动来源徽章、idToken、remoteStartId、时间线）、EnergyPanel 和 EnergyChart、VehicleCard、PriceCard 和 TariffEditor，以及 SessionLog（复用消息日志的行和摘要）。一个共享开关在"CSMS 视角"和"显示真值"之间切换（R-SRC-1）。
 - `apps/web/src/versions.ts` 存放版本能力表（R-VER-3）：术语、每个版本的车辆字段（session-ui.md 第 6 节），以及版本有没有 remoteStartId、totalCost 和费率。加 2.1 就是加一行。
+- 已实现（T87）：EnergyPanel 显示已充电量、功率和 SoC（标为上报值，打开显示真值时旁边附上真值）、充电和暂停时长、推算的充到目标时间（说明目标从哪来，推算不了时说明原因）、真值 ETA，推算偏差超限时给出提醒、离开时间判断、各相电流和电压，以及结束会话的总电量、峰值功率、SoC 区间和停止原因。EnergyChart 是 SVG，由 `apps/web/src/chart.ts`（坐标换算、整数刻度、时间刻度、路径、会话的数据序列）绘制：kW 轴上是上报功率和提供功率，% 轴上是 SoC；打开显示真值时，EV 模型的功率和 SoC 用虚线画出。未开始的会话不显示电量面板。
 - 已实现（T86）：站点视图上方新增“站点 / 会话”两个标签页；`#/stations/<id>/sessions/<n>` 可以直接打开某个会话，浏览器前进后退也能跟着走。SessionsView 包括会话列表（两行：编号、启动来源、电量或失败原因；EVSE、令牌、时间）、SessionHeader（来源徽章、令牌和类型、remoteStartId、交易号、开始时间和时长、用文字说明的失败原因、停止原因）和启动时间线，时间线上每一步都能打开对应的报文和应答。`/api/events` 推送的会话摘要会更新列表，打开的会话同时最多只有一个重新加载请求在进行。站点连着内置 CSMS 时提供远程启动表单；连着其他 CSMS 时说明远程启动要由那个 CSMS 发起。“CSMS 视角 / 显示真值”开关已就位，供 T87、T88 的面板使用。车队总览的表格改为在卡片内横向滚动，不再撑宽页面。
 - 已实现（T85）：`apps/web/src/versions.ts`（术语、令牌类型、remoteStartId、totalCost、费率、session-ui.md 里 12 项车辆信息的可得性，以及哪些状态或充电状态算充电中）和 `VersionBadge`：站点列表、站点视图和消息日志的每一帧都按版本显示不同颜色的徽章。站点列表和车队总览按能力表统计充电中，所以 2.0.1 的 EVSE 在 chargingState 为 Charging、SuspendedEV 或 SuspendedEVSE 时计入；车队摘要带上每个连接器的 chargingState。
 - EnergyChart 手写 SVG：左轴是功率（kW）和提供功率，右轴是 SoC，横轴是时间。不需要新依赖，坐标换算是纯函数，可以单独测试。

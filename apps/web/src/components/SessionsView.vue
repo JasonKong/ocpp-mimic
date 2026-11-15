@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import type { FrameRecord, SessionDetail, SessionSummary, StationSnapshot } from '../api.js';
 import { versionInfo } from '../versions.js';
+import EnergyPanel from './EnergyPanel.vue';
 import SessionHeader from './SessionHeader.vue';
 import SessionList from './SessionList.vue';
 import VersionBadge from './VersionBadge.vue';
@@ -97,13 +98,20 @@ function openFrame(seq: number) {
         @select="emit('select', $event)"
       />
       <div class="open">
-        <SessionHeader
-          v-if="detail"
-          :detail="detail"
-          :version="station.ocpp"
-          :now="now"
-          @open-frame="openFrame"
-        />
+        <template v-if="detail">
+          <SessionHeader
+            :detail="detail"
+            :version="station.ocpp"
+            :now="now"
+            @open-frame="openFrame"
+          />
+          <EnergyPanel
+            v-if="detail.session.state !== 'not-started'"
+            :detail="detail"
+            :show-truth="showTruth"
+            :now="now"
+          />
+        </template>
         <p v-else class="hint">{{ sessions.length > 0 ? 'Pick a session.' : '' }}</p>
       </div>
     </div>
@@ -185,6 +193,10 @@ h2 {
 }
 .layout > * {
   min-width: 0;
+}
+.open {
+  display: grid;
+  gap: 16px;
 }
 @media (max-width: 1100px) {
   .layout {

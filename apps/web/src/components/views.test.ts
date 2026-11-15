@@ -16,6 +16,7 @@ import type {
 import DeviceModelBrowser from './DeviceModelBrowser.vue';
 import FleetOverview from './FleetOverview.vue';
 import MessageLog from './MessageLog.vue';
+import EnergyPanel from './EnergyPanel.vue';
 import SessionsView from './SessionsView.vue';
 import StationDetail from './StationDetail.vue';
 import StationList from './StationList.vue';
@@ -393,5 +394,97 @@ describe('the Sessions view', () => {
     );
     expect(external).not.toContain('Remote start via the built-in CSMS');
     expect(external).toContain('Remote starts come from the station');
+  });
+});
+
+describe('the energy panel', () => {
+  const T0 = Date.parse('2026-11-15T10:00:00Z');
+  const at = (m: number) => new Date(T0 + m * 60_000).toISOString();
+  const detail: SessionDetail = {
+    session: {
+      stationId: 'SIM-201',
+      n: 1,
+      ocpp: '2.0.1',
+      state: 'running',
+      source: 'remote',
+      requestedAt: at(0),
+      startedAt: at(0),
+      timeline: [],
+      samples: [
+        { at: at(10), seq: 1, energyWh: 1200, powerW: 7200, offeredW: 11000, socPercent: 32 },
+        { at: at(20), seq: 2, energyWh: 2400, powerW: 7300, offeredW: 11000, socPercent: 34 },
+      ],
+      truth: [
+        { at: at(20), socPercent: 34.6, energyWh: 2400, powerW: 7300, msUntilFull: 30 * 60_000 },
+      ],
+      states: [{ at: at(0), state: 'charging' }],
+      costs: [],
+    },
+    summary: {
+      stationId: 'SIM-201',
+      n: 1,
+      ocpp: '2.0.1',
+      state: 'running',
+      source: 'remote',
+      requestedAt: at(0),
+      energyWh: 2400,
+      socPercent: 34,
+    },
+    estimate: {
+      targetSoc: 100,
+      targetFrom: 'default',
+      taperSoc: 80,
+      socPercent: 34,
+      at: at(20),
+      etaAt: at(70),
+      msToTarget: 50 * 60_000,
+    },
+    truth: { at: at(20), socPercent: 34.6, msToTarget: 30 * 60_000, etaAt: at(50) },
+    gap: { gapMs: 20 * 60_000, off: true },
+    durations: { charging: 20 * 60_000, suspendedEV: 0, suspendedEVSE: 0, idle: 0 },
+  };
+
+  it('shows the reported figures and the estimate, and the truth only when asked', async () => {
+    const csms = text(
+      await render(EnergyPanel, { detail, showTruth: false, now: T0 + 20 * 60_000 }),
+    );
+    expect(csms).toContain('Delivered reported 2.40 kWh');
+    expect(csms).toContain('Power reported 7.3 kW');
+    expect(csms).toContain('SoC reported 34 %');
+    expect(csms).toContain('To 100 % (assumed) estimate');
+    expect(csms).toContain('in 50 min');
+    expect(csms).not.toContain('truth');
+    const truth = text(
+      await render(EnergyPanel, { detail, showTruth: true, now: T0 + 20 * 60_000 }),
+    );
+    expect(truth).toContain('truth 34.6 %');
+    expect(truth).toContain('truth');
+    expect(truth).toContain('in 30 min');
+    expect(truth).toContain('the estimate is off by 20 min');
+    expect(await render(EnergyPanel, { detail, showTruth: true, now: T0 })).toContain(
+      'class="power truth"',
+    );
+  });
+
+  it('sums up a finished session and says when there is no estimate', async () => {
+    const finished: SessionDetail = {
+      ...detail,
+      session: {
+        ...detail.session,
+        state: 'finished',
+        endedAt: at(30),
+        stopReason: 'EVDisconnected',
+      },
+      estimate: { targetSoc: 100, targetFrom: 'default', taperSoc: 80, reason: 'no SoC reported' },
+    };
+    const shown = text(await render(EnergyPanel, { detail: finished, showTruth: false, now: T0 }));
+    expect(shown).toContain('Total 2.40 kWh');
+    expect(shown).toContain('Peak power 7.3 kW');
+    expect(shown).toContain('SoC 32 % → 34 %');
+    expect(shown).toContain('Stop reason EVDisconnected');
+    const running = { ...finished, session: { ...finished.session, state: 'running' as const } };
+    expect(
+      text(await render(EnergyPanel, { detail: running, showTruth: false, now: T0 })),
+    ).toContain('cannot estimate: no SoC reported');
   });
 });
