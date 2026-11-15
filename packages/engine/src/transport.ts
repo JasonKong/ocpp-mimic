@@ -52,6 +52,8 @@ export interface TlsSettings {
 
 /** How to authenticate one connection attempt; `error` refuses to connect at all. */
 export interface ConnectionSettings {
+  /** The CSMS address for this attempt instead of `url` (a 2.0.1 network profile's). */
+  url?: string;
   password?: string;
   tls?: TlsSettings;
   error?: string;
@@ -111,7 +113,8 @@ export function createTransport(options: TransportOptions): Transport {
   const subprotocol = options.subprotocol ?? OCPP16_SUBPROTOCOL;
   const random = options.random ?? Math.random;
   const emit = options.onEvent ?? (() => {});
-  const target = `${options.url.replace(/\/+$/, '')}/${encodeURIComponent(options.chargeBoxId)}`;
+  const targetOf = (url: string) =>
+    `${url.replace(/\/+$/, '')}/${encodeURIComponent(options.chargeBoxId)}`;
 
   let state: TransportState = 'idle';
   let socket: WebSocket | undefined;
@@ -174,11 +177,12 @@ export function createTransport(options: TransportOptions): Transport {
 
   function connect(): void {
     setState('connecting');
-    emit({ type: 'connecting', url: target });
     const settings: ConnectionSettings = options.connectionSettings?.() ?? {
       ...(options.password !== undefined && { password: options.password }),
       ...(options.tls !== undefined && { tls: options.tls }),
     };
+    const target = targetOf(settings.url ?? options.url);
+    emit({ type: 'connecting', url: target });
     if (settings.error !== undefined) {
       emit({ type: 'error', message: settings.error });
       // Report after scheduling the retry, so a reconnect from the callback replaces it.

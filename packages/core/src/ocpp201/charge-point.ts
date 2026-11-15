@@ -25,6 +25,7 @@ import {
   type PluggedEv,
   type Registration,
 } from '../charge-point.js';
+import type { ChargePointCertificate, CertificateTools } from '../certificates.js';
 import type { Clock, TimerHandle } from '../clock.js';
 import {
   connectors,
@@ -38,9 +39,11 @@ import {
   type StationState,
 } from '../device.js';
 import { createEnergy } from '../energy.js';
+import type { FileTransfer, FirmwareSettings } from '../firmware.js';
 import { nextAlignedSample, nextPeriodicSample } from '../meter.js';
 import type { IdGenerator } from '../ids.js';
 import { OCPP201_MESSAGE_SET, type Ocpp201RpcTypes } from '../message-set.js';
+import type { JsonObject } from '../ocppj.js';
 import { createOutbox, type OutboxEntry } from '../outbox.js';
 import {
   createRpc,
@@ -86,7 +89,12 @@ import {
   type AuthCache201,
   type LocalList201,
 } from './authorization.js';
-import { LOCAL_LIST_SIZE, standardVariables } from './standard-variables.js';
+import { createSecurity201, type PersistedSecurity201 } from './security.js';
+import {
+  CERTIFICATE_ENTRIES_MAX,
+  LOCAL_LIST_SIZE,
+  standardVariables,
+} from './standard-variables.js';
 import { chargingState, parseTxPoints, startPoint, stopPoint } from './transaction.js';
 import { connectorStatus201, stationStatus201, type ConnectorStatus201 } from './status.js';
 
@@ -125,6 +133,20 @@ export interface ChargePoint201Options {
   onEvent?: (event: ChargePointEvent) => void;
   behaviour?: Partial<ChargePointBehaviour>;
   energyMultiplier?: number;
+  /** Certificates a new station starts with; a restored state's take precedence. */
+  certificates?: {
+    centralSystemRoots?: readonly string[];
+    manufacturerRoots?: readonly string[];
+    chargePoint?: ChargePointCertificate;
+  };
+  /** X.509 support for certificates and signed firmware; without it those messages fail. */
+  certificateTools?: CertificateTools;
+  /** The CN of a CSR; default the boot serial number. */
+  serialNumber?: string;
+  /** Timings and outcomes of simulated firmware updates and log uploads. */
+  firmware?: Partial<FirmwareSettings>;
+  /** Real HTTP(S) transfers for UpdateFirmware and GetLog; simulated without it. */
+  transfer?: FileTransfer;
   /** State saved by persistentState() before a restart. */
   restore?: PersistedChargePoint201;
 }
@@ -148,6 +170,8 @@ export interface PersistedChargePoint201 {
   transactions: PersistedTransaction201[];
   authCache: AuthCache201;
   localList: LocalList201;
+  /** Certificates, network profiles, the security log, firmware; missing in older states. */
+  security?: PersistedSecurity201;
 }
 
 export interface PersistedTransaction201 {
@@ -291,8 +315,11 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   const deviceModel = createDeviceModel({
     definitions: applied.definitions,
     ...(options.restore !== undefined && { saved: options.restore.deviceModel }),
+    check: (key, value) => security.checkVariable(key, value),
     read(key) {
       if (key === 'ClockCtrlr/DateTime') return timestamp();
+      const known = security.read(key);
+      if (known !== undefined) return known;
       const [componentText = '', variableName] = key.split('/');
       const component = parseComponentKey(componentText);
       if (component === undefined) return undefined;
@@ -364,6 +391,41 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     nextKey: () => nextKey('msg'),
     log,
     changed,
+  });
+
+  // ---- Security, firmware and logs ----------------------------------------
+
+  const seeds = options.certificates;
+  const security = createSecurity201({
+    timers,
+    now,
+    log,
+    changed,
+    get: (component, variable) => deviceModel.get(component, variable),
+    set: (component, variable, value) => deviceModel.set(component, variable, value),
+    send: sendIfOnline,
+    enqueue: (payload) =>
+      void outbox.enqueue('SecurityEventNotification', payload as unknown as JsonObject),
+    tools: options.certificateTools,
+    transfer: options.transfer,
+    firmware: options.firmware,
+    firmwareVersion: options.boot.firmwareVersion,
+    seeds: {
+      ...(seeds?.centralSystemRoots !== undefined && { csmsRoots: seeds.centralSystemRoots }),
+      ...(seeds?.manufacturerRoots !== undefined && {
+        manufacturerRoots: seeds.manufacturerRoots,
+      }),
+      ...(seeds?.chargePoint !== undefined && { chargingStation: seeds.chargePoint }),
+    },
+    commonName: options.serialNumber ?? options.boot.serialNumber ?? options.boot.model,
+    maxCertificates: CERTIFICATE_ENTRIES_MAX,
+    restore: options.restore?.security,
+    reconnect: () => options.reconnect?.(),
+    reboot: () => rebootForFirmware(),
+    noTransactions: async () => {
+      while (transactions.size > 0) await timers.delay(1000);
+    },
+    diagnostics: () => diagnosticsText(),
   });
 
   // ---- Status -------------------------------------------------------------
@@ -899,9 +961,13 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     if (current === undefined) return;
     registration = 'Booting';
     changed();
+    const firmwareVersion = security.firmwareVersion();
     const outcome = await current.call('BootNotification', {
       reason: bootReason,
-      chargingStation: options.boot,
+      chargingStation: {
+        ...options.boot,
+        ...(firmwareVersion !== undefined && { firmwareVersion }),
+      },
     });
     if (rpc !== current) return; // the connection changed meanwhile
     if (!outcome.ok) {
@@ -921,6 +987,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     if (interval > 0) deviceModel.set('OCPPCommCtrlr', 'HeartbeatInterval', String(interval));
     startHeartbeat();
     reportStatuses(true);
+    security.bootAccepted();
     outbox.pump();
   }
 
@@ -984,9 +1051,31 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     }
     bootReason = 'RemoteReset';
     log(`${type} reset`);
+    security.rebooting();
     options.restart?.(
       type === 'Immediate' ? timing.resetDowntimeMs.Hard : timing.resetDowntimeMs.Soft,
     );
+  }
+
+  /** Reboots to activate installed firmware; installing waited for the transactions. */
+  function rebootForFirmware(): void {
+    bootReason = 'FirmwareUpdate';
+    security.rebooting();
+    options.restart?.(timing.resetDowntimeMs.Hard);
+  }
+
+  /** A diagnostics log (GetLog DiagnosticsLog): the station's state as text. */
+  function diagnosticsText(): string {
+    const lines = [
+      `${timestamp()} diagnostics of ${options.boot.vendorName} ${options.boot.model}`,
+      `registration ${registration}, station ${stationStatus201(station)}`,
+      ...connectors(station).map((c) => {
+        const tx = transactions.get(c.connectorId);
+        return `EVSE ${c.connectorId}: ${connectorStatus201(c, station)}${tx === undefined ? '' : `, transaction ${tx.id}`}`;
+      }),
+      `queued messages ${outbox.entries.length}`,
+    ];
+    return `${lines.join('\n')}\n`;
   }
 
   /** Resets one EVSE: its transaction ends and its status is reported again. */
@@ -1061,6 +1150,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
   /** A Device Model value changed by SetVariables: apply what depends on it. */
   function variableChanged(key: string): void {
+    security.variableChanged(key);
     if (key === 'OCPPCommCtrlr/HeartbeatInterval') startHeartbeat();
     if (key.startsWith('AlignedDataCtrlr/')) scheduleAligned();
     if (
@@ -1184,6 +1274,11 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
               void sendIfOnline('MeterValues', { evseId: id, meterValue: [value] });
           }
         },
+        FirmwareStatusNotification: security.triggers.FirmwareStatusNotification,
+        LogStatusNotification: security.triggers.LogStatusNotification,
+        ...(features.includes('AdvancedSecurity') && {
+          SignChargingStationCertificate: security.triggers.SignChargingStationCertificate,
+        }),
         TransactionEvent: () => {
           for (const id of targets) {
             const tx = transactions.get(id);
@@ -1224,6 +1319,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     DataTransfer() {
       return { status: 'UnknownVendorId' };
     },
+
+    ...security.handlers,
 
     CustomerInformation(request) {
       const references = [request.idToken, request.customerIdentifier, request.customerCertificate];
@@ -1389,11 +1486,14 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
   // Clock-aligned sampling runs from the start, offline too: its events queue.
   scheduleAligned();
+  // Powering up is a security event, sent once the CSMS has accepted the boot.
+  security.securityEvent('StartupOfTheDevice');
 
   return {
     ocpp: '2.0.1',
 
     connected() {
+      security.connected();
       rpc?.close();
       rpc = createRpc<Ocpp201RpcTypes>({
         clock,
@@ -1403,8 +1503,9 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         handlers,
         // Actions of a certification profile the persona does not support answer NotSupported.
         supports: (action) =>
-          (action !== 'SendLocalList' && action !== 'GetLocalListVersion') ||
-          features.includes('LocalAuthListManagement'),
+          ((action !== 'SendLocalList' && action !== 'GetLocalListVersion') ||
+            features.includes('LocalAuthListManagement')) &&
+          (action !== 'CertificateSigned' || features.includes('AdvancedSecurity')),
         onEvent: (event) => emit({ type: 'rpc', event }),
       });
       void boot();
@@ -1579,6 +1680,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     },
 
     snapshot(): ChargePointSnapshot {
+      const securitySnapshot = security.snapshot();
+      const firmwareVersion = security.firmwareVersion();
       return {
         ocpp: '2.0.1',
         registration,
@@ -1622,15 +1725,10 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
             }),
         ),
         queuedMessages: outbox.entries.length,
-        ...(options.boot.firmwareVersion !== undefined && {
-          firmwareVersion: options.boot.firmwareVersion,
-        }),
-        firmwareStatus: 'Idle',
+        ...(firmwareVersion !== undefined && { firmwareVersion }),
+        ...securitySnapshot,
         diagnosticsStatus: 'Idle',
-        logStatus: 'Idle',
-        signedFirmwareStatus: 'Idle',
-        certificates: { centralSystemRoots: 0, manufacturerRoots: 0, chargePoint: false },
-        securityEvents: [],
+        signedFirmwareStatus: securitySnapshot.firmwareStatus,
         behaviour: { ...behaviour },
         energyMultiplier: energy.multiplier,
         localList: { version: localList.version, size: Object.keys(localList.entries).length },
@@ -1671,17 +1769,14 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         })),
         authCache,
         localList,
+        security: security.persistent(),
       };
     },
 
-    connectionSecurity() {
-      return { profile: 0, centralSystemRoots: [] };
-    },
+    connectionSecurity: () => security.connectionSecurity(),
 
-    securityEvent(type, techInfo) {
-      log(`security event ${type}${techInfo === undefined ? '' : ` (${techInfo})`}`);
-    },
+    securityEvent: (type, techInfo) => security.securityEvent(type, techInfo),
 
-    connectionFailed() {},
+    connectionFailed: () => security.connectionFailed(),
   };
 }

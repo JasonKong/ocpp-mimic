@@ -62,6 +62,10 @@ function variable(
 const MEASURANDS = SUPPORTED_MEASURANDS.join(',');
 /** Entries the Local Authorization List holds at most (LocalAuthListCtrlr.Entries maxLimit). */
 export const LOCAL_LIST_SIZE = 100;
+/** The network connection profile slots (B09.FR.06 asks for at least two). */
+export const NETWORK_SLOTS = ['0', '1', '2'] as const;
+/** Certificates installed at most (CertificateEntries maxLimit). */
+export const CERTIFICATE_ENTRIES_MAX = 20;
 const TX_POINTS = 'EVConnected,Authorized,PowerPathClosed,EnergyTransfer';
 const AVAILABILITY = 'Available,Occupied,Reserved,Unavailable,Faulted';
 
@@ -106,6 +110,13 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
     variable(comm, 'FileTransferProtocols', 'MemberList', ro('HTTP,HTTPS'), {
       valuesList: 'FTP,FTPS,HTTP,HTTPS,SFTP',
     }),
+    // A new priority applies after a reboot (B10.FR.04).
+    variable(comm, 'NetworkConfigurationPriority', 'SequenceList', rw('0'), {
+      valuesList: NETWORK_SLOTS.join(','),
+      rebootRequired: true,
+    }),
+    variable(comm, 'NetworkProfileConnectionAttempts', 'integer', rw('3'), { minLimit: 1 }),
+    variable(comm, 'ActiveNetworkProfile', 'integer', ro(), dynamic),
 
     variable(tx, 'EVConnectionTimeOut', 'integer', rw('60'), { unit: 's', minLimit: 0 }),
     variable(tx, 'StopTxOnEVSideDisconnect', 'boolean', rw('true')),
@@ -171,8 +182,15 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
 
     variable(security, 'SecurityProfile', 'integer', ro('0'), { minLimit: 0, maxLimit: 3 }),
     variable(security, 'OrganizationName', 'string', rw('ocpp-mimic'), { maxLimit: 64 }),
-    variable(security, 'CertificateEntries', 'integer', ro('0')),
+    variable(security, 'CertificateEntries', 'integer', ro(), {
+      maxLimit: CERTIFICATE_ENTRIES_MAX,
+      ...dynamic,
+    }),
     variable(security, 'BasicAuthPassword', 'string', wo(), { maxLimit: 40 }),
+    variable(security, 'AdditionalRootCertificateCheck', 'boolean', ro('false')),
+    variable(security, 'MaxCertificateChainSize', 'integer', ro('10000'), { maxLimit: 10000 }),
+    variable(security, 'CertSigningWaitMinimum', 'integer', rw('60'), { unit: 's', minLimit: 0 }),
+    variable(security, 'CertSigningRepeatTimes', 'integer', rw('3'), { minLimit: 0 }),
   ];
 
   if (input.features.includes('LocalAuthListManagement')) {

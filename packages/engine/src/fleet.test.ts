@@ -82,7 +82,9 @@ describe('fleet', () => {
       handleProtocols: (protocols) => (protocols.has('ocpp2.0.1') ? 'ocpp2.0.1' : false),
     });
     const calls: { action: string; payload: unknown }[] = [];
-    server.on('connection', (ws) =>
+    const logins: (string | undefined)[] = [];
+    server.on('connection', (ws, request) => {
+      logins.push(request.headers.authorization);
       ws.on('message', (data) => {
         const frame = JSON.parse(String(data)) as [number, string, string, unknown];
         if (frame[0] !== 2) return;
@@ -92,8 +94,8 @@ describe('fleet', () => {
             ? { status: 'Accepted', currentTime: new Date().toISOString(), interval: 300 }
             : {};
         ws.send(JSON.stringify([3, frame[1], reply]));
-      }),
-    );
+      });
+    });
     await once(server, 'listening');
     try {
       const fleet = await fleetWith();
@@ -119,6 +121,20 @@ describe('fleet', () => {
         registration: 'Accepted',
         connectors: [{ connectorId: 1, evseId: 1, status: 'Available' }],
       });
+      // A password and Security Profile 1 are SecurityCtrlr variables; Basic Auth uses them.
+      const secured = fleet.add({
+        id: 'SIM-201-P',
+        persona: 'generic-2.0.1',
+        csmsUrl,
+        password: 'secret-0123456789',
+        security: { profile: 1 },
+      });
+      await until(() => secured.snapshot().registration === 'Accepted');
+      expect(logins.at(-1)).toBe(
+        `Basic ${Buffer.from('SIM-201-P:secret-0123456789').toString('base64')}`,
+      );
+      expect(secured.snapshot().config['SecurityCtrlr/SecurityProfile']).toBe('1');
+      expect(secured.snapshot().config['SecurityCtrlr/BasicAuthPassword']).toBeUndefined();
     } finally {
       server.close();
     }

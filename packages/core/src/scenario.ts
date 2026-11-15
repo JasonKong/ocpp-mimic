@@ -1054,13 +1054,16 @@ export function parseScenario(document: unknown, label?: string): ScenarioResult
   };
 }
 
+/** Variables every scenario has: `csmsUrl` is the address its stations connect to. */
+export const BUILTIN_VARIABLES: readonly string[] = ['csmsUrl'];
+
 /**
  * Template names a scenario uses before they are defined. `provided` are the
- * names given from outside (`--var`); `vars` and earlier `save` steps count
- * too. Environment variables are checked when the step runs.
+ * names given from outside (`--var`); built-in variables, `vars` and earlier
+ * `save` steps count too. Environment variables are checked when the step runs.
  */
 export function variableProblems(scenario: Scenario, provided: readonly string[] = []): string[] {
-  const known = new Set([...Object.keys(scenario.vars), ...provided]);
+  const known = new Set([...BUILTIN_VARIABLES, ...Object.keys(scenario.vars), ...provided]);
   const problems: string[] = [];
   scenario.steps.forEach((step, index) => {
     const { kind: _kind, name: _name, ...args } = step;

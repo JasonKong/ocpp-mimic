@@ -1,0 +1,136 @@
+# Certificates, logs, firmware and network profiles with CitrineOS as the CSMS.
+name: TC_M_01_CSMS, TC_M_12_CSMS and TC_M_20_CSMS Install, list and delete a CA certificate
+csms: ws://localhost:8081
+station: { id: MIMIC-M01, persona: regression-2.0.1 }
+vars:
+  CITRINE: http://localhost:8080
+  root: |
+    -----BEGIN CERTIFICATE-----
+    MIIDUzCCAjugAwIBAgIUWdpVZFRm6+CPBBXRJBuqgNy+jEswDQYJKoZIhvcNAQEL
+    BQAwMTETMBEGA1UECgwKb2NwcC1taW1pYzEaMBgGA1UEAwwRVW50cnVzdGVkIFRl
+    c3QgQ0EwHhcNMjYxMTE0MDgzODExWhcNNDYxMTA5MDgzODExWjAxMRMwEQYDVQQK
+    DApvY3BwLW1pbWljMRowGAYDVQQDDBFVbnRydXN0ZWQgVGVzdCBDQTCCASIwDQYJ
+    KoZIhvcNAQEBBQADggEPADCCAQoCggEBALbuTiSIrxZ/zF9A0JOPUb1VaX6PBQ1Z
+    B1c/MRbe8IdgZcUc/Fr0sWF4tXXltNuhmk1rL/91so7G1ybSt+fQybVLtaOOgmOU
+    dWm5N1MBRZPf0Wt2Q+PeYP/dBSD3dlBaZu4e34WyX9ZVTIUvPbL0wvP6O+TFWFPa
+    30Py9niaTSRl2YtTwGI6nQYyYqSt+94lZKUAXuhrBr37iuTQOTmnK7mMn3wrjBPH
+    5FE3FAjnJdqsWcGDJ7EICHuNx5o5GFjS2IYjPakeo7Nn1wpVDtCoS9diL7x2pD+t
+    OU1tAaoupGEIuNYSJTfbVRsS5NO7/9lC2c1htVn1TGvrBvwANuNzlMsCAwEAAaNj
+    MGEwHQYDVR0OBBYEFBfHB5cp2hfDz4Z07F3RBfDpjW7DMB8GA1UdIwQYMBaAFBfH
+    B5cp2hfDz4Z07F3RBfDpjW7DMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQD
+    AgEGMA0GCSqGSIb3DQEBCwUAA4IBAQC07LsAzMEafKMZLlT2wsVTXzHU8DCY23lf
+    z/t9FV8H93jlofZevJLP1xPMFcXLJzwqFvEcYsw7K5JE4L9AVBCn68+4keicFiJR
+    ZRmgMEHAKB69U/j8UXaCpASwiACu6pU449dsVf5JR4oL11V2behxhKuE9DR476nP
+    31SLpiqztlk2V71Y0Krc0xNr2Lq71Kz0SbMuRyrCk8wbnBenYbHIJ1vBN38ZvMdp
+    QdIYdLgVZdn8lAGgHB2qXOyw/ZAV45ds16391d6eX+w+bjlwshORJUrendtSKfoK
+    5H+qAntj0Il4/fs3eOTEQYkJzA06gTK8xsPpDEj7md7/6+cYn0ol
+    -----END CERTIFICATE-----
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/certificates/installCertificate?identifier=MIMIC-M01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { certificateType: ManufacturerRootCertificate, certificate: '{{root}}' }
+  - expect: { received: InstallCertificate, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/certificates/getInstalledCertificateIds?identifier=MIMIC-M01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { certificateType: [ManufacturerRootCertificate] }
+  - expect:
+      received: GetInstalledCertificateIds
+      answer: { status: Accepted, certificateHashDataChain: { $size: 1 } }
+      save: { hash: '$.answer.certificateHashDataChain[0].certificateHashData' }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/certificates/deleteCertificate?identifier=MIMIC-M01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { certificateHashData: '{{hash}}' }
+  - expect: { received: DeleteCertificate, answer: { status: Accepted } }
+---
+name: TC_N_25_CSMS GetLog for the security log
+csms: ws://localhost:8081
+station: { id: MIMIC-N25, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/reporting/getLog?identifier=MIMIC-N25&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        { logType: SecurityLog, requestId: 5, log: { remoteLocation: 'ftp://logs.example.com/' } }
+  - expect: { received: GetLog, answer: { status: Accepted } }
+  - expect: { sent: LogStatusNotification, payload: { status: Uploading, requestId: 5 } }
+  - expect: { sent: LogStatusNotification, payload: { status: Uploaded, requestId: 5 }, answer: {} }
+---
+name: TC_L_10_CSMS Firmware update, reboot and Installed
+csms: ws://localhost:8081
+station: { id: MIMIC-L10, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/updateFirmware?identifier=MIMIC-L10&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          requestId: 11,
+          firmware:
+            {
+              location: 'ftp://fw.example.com/fw-5.0.0.bin',
+              retrieveDateTime: '2020-01-01T00:00:00Z',
+            },
+        }
+  - expect: { received: UpdateFirmware, answer: { status: Accepted } }
+  - expect: { sent: FirmwareStatusNotification, payload: { status: Downloading, requestId: 11 } }
+  - expect:
+      { sent: FirmwareStatusNotification, payload: { status: InstallRebooting, requestId: 11 } }
+  - expect:
+      sent: BootNotification
+      payload: { reason: FirmwareUpdate, chargingStation: { firmwareVersion: 5.0.0 } }
+      within: 15s
+  - expect:
+      sent: FirmwareStatusNotification
+      payload: { status: Installed, requestId: 11 }
+      answer: {}
+  - expect: { sent: SecurityEventNotification, payload: { type: FirmwareUpdated }, answer: {} }
+---
+name: TC_B_42_CSMS Set a new network connection profile
+csms: ws://localhost:8081
+station: { id: MIMIC-B43, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/setNetworkProfile?identifier=MIMIC-B43&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        configurationSlot: 1
+        connectionData:
+          ocppVersion: OCPP20
+          ocppTransport: JSON
+          ocppCsmsUrl: 'ws://localhost:8081'
+          messageTimeout: 30
+          securityProfile: 0
+          ocppInterface: Wired0
+  - expect: { received: SetNetworkProfile, answer: { status: Accepted } }
