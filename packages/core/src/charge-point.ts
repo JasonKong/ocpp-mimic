@@ -309,8 +309,12 @@ export interface ConnectorSnapshot {
   errorCode: string;
   plugged: boolean;
   locked: boolean;
-  transactionId?: number;
+  /** The CSMS's id (1.6) or the station's own id (2.0.1) of the running transaction. */
+  transactionId?: number | string;
+  /** The idTag (1.6) or idToken (2.0.1) of the session. */
   idTag?: string;
+  /** The 2.0.1 charging state: Idle, EVConnected, Charging, SuspendedEV, SuspendedEVSE. */
+  chargingState?: string;
   energyWh: number;
   powerW: number;
   /** The plugged-in EV, when the cable was plugged in with one. */

@@ -896,6 +896,15 @@ faults:
 - 离线：TransactionEvent 按顺序进入发件箱，离线时产生的带 `offline: true`。每条最多发送 `MessageAttempts` 次，两次之间等待 `MessageAttemptInterval` 乘以第几次尝试，之后丢弃。OCPPCommCtrlr.QueueAllMessages 为 true 时，StatusNotification 和 NotifyEvent 也进队列。GetTransactionStatus 回答 `messagesInQueue` 和 `ongoingIndicator`。
 - 桩断电时正在进行的交易，在重启后以 stoppedReason PowerLoss 结束，仍在队列里的事件先发。
 
+已实现（T64）：
+
+- `core/src/ocpp201/transaction.ts` 判断开始点、结束点和充电状态；`meter-values.ts` 把共享电表的采样转成 2.0.1 的 MeterValues。连接器插着线、有已授权的 token，且没有暂停、故障、Inoperative 或超过能量上限时才能取电。
+- 触发原因和停止原因按 Part 2 的时序：刷卡停止是 StopAuthorized（Local），拔线是 EVCommunicationLost（EVDisconnected；如果之前已经刷卡停止充电，则是之前的 Local），无效 token 是 Deauthorized（DeAuthorized），插线超时是 EVConnectTimeout（Timeout），故障是 AbnormalCondition（Other）。StopTxOnEVSideDisconnect 为 true 时，拔线总会结束交易，不论结束点如何设置。
+- 每个事件都带 EVSE 和当前充电状态，适用时带 token，离线时产生的带 `offline`。事件经过发件箱，按 MessageAttempts 和 MessageAttemptInterval（实例 TransactionEvent）重试；QueueAllMessages 为 true 时 StatusNotification 也进队列。CSMS 对 token 的回答不是 Accepted 时结束交易；StopTxOnInvalidId 为 false 时则在 MaxEnergyOnInvalidId 处停止充电（EnergyLimitReached）。
+- T67 之前的基本授权：在线时发 Authorize，离线时只有 OfflineTxForUnknownIdEnabled 为 true 才接受；AuthCtrlr.Enabled 为 false 时接受任何 token。同一个 token 结束会话，其他 token 被拒绝（`busy`）。
+- 快照带每个连接器的 `chargingState`、字符串形式的 `transactionId`，以及作为 `idTag` 的 token。
+- `scenarios/regression/ocpp201-transactions.yaml` 覆盖 PowerPathClosed、EVConnected 和 Authorized 三种开始点，本地、CSMS、超时和 EV 侧的停止，GetTransactionStatus，离线期间的交易，事件重试，以及周期、时钟对齐和 TxEnded 采样。
+
 **授权**
 
 - 卡是一个 IdToken `{ idToken, type }`，类型有 Central、eMAID、ISO14443、ISO15693、KeyCode、Local、MacAddress 和 NoAuthorization；回答里的 idTokenInfo 带 status、groupIdToken 和 cacheExpiryDateTime。

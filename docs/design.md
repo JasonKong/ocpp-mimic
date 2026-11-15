@@ -898,6 +898,15 @@ Implemented (T62):
 - Offline: TransactionEvents queue in the outbox in order and carry `offline: true` when they were made while offline. Each is sent up to `MessageAttempts` times, waiting `MessageAttemptInterval` times the attempt number between tries, and then dropped. With OCPPCommCtrlr.QueueAllMessages, StatusNotification and NotifyEvent queue too. GetTransactionStatus answers `messagesInQueue` and `ongoingIndicator`.
 - Transactions running when the station loses power end after the restart with stoppedReason PowerLoss, with the events still queued sent first.
 
+Implemented (T64):
+
+- `core/src/ocpp201/transaction.ts` decides the start and stop points and the charging state; `meter-values.ts` turns the shared meter's samples into 2.0.1 MeterValues. A connector may draw power once it has a cable and an authorized token and is not suspended, faulted, Inoperative or past an energy limit.
+- Triggers and reasons as in Part 2's sequences: a card stop is StopAuthorized (Local), unplugging EVCommunicationLost (EVDisconnected, or the earlier Local when a card had already stopped charging), an invalid token Deauthorized (DeAuthorized), the cable timeout EVConnectTimeout (Timeout), a fault AbnormalCondition (Other). StopTxOnEVSideDisconnect ends the transaction on unplugging whatever the stop points say.
+- Every event carries the EVSE and the current charging state, the token where it applies, and `offline` when it was made offline. Events go through the outbox with MessageAttempts and MessageAttemptInterval (instance TransactionEvent); StatusNotification queues too with QueueAllMessages. A token the CSMS answers with anything but Accepted ends the transaction, or with StopTxOnInvalidId false stops charging at MaxEnergyOnInvalidId (EnergyLimitReached).
+- Basic authorization until T67: Authorize online, accepted offline only with OfflineTxForUnknownIdEnabled; AuthCtrlr.Enabled false accepts every token. The same token stops the session, another one is refused (`busy`).
+- Snapshots carry each connector's `chargingState`, the string `transactionId` and the token as `idTag`.
+- `scenarios/regression/ocpp201-transactions.yaml` covers the start points PowerPathClosed, EVConnected and Authorized, the local, CSMS, timeout and EV-side stops, GetTransactionStatus, a transaction while offline, a retried event and the periodic, clock-aligned and TxEnded samples.
+
 **Authorization**
 
 - A card is an IdToken `{ idToken, type }` with the types Central, eMAID, ISO14443, ISO15693, KeyCode, Local, MacAddress and NoAuthorization; an answer's idTokenInfo carries status, groupIdToken and cacheExpiryDateTime.
