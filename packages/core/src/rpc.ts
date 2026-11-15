@@ -189,7 +189,10 @@ export function createRpc(options: RpcOptions): Rpc {
     const csmsAction = action as CsmsAction;
     const request = validateRequest(csmsAction, payload);
     if (!request.ok) {
-      sendError(id, request.errorCode, describeIssues(request.issues), { issues: request.issues });
+      // 1.6 validators report only 1.6 spellings.
+      sendError(id, request.errorCode as RpcErrorCode, describeIssues(request.issues), {
+        issues: request.issues,
+      });
       return;
     }
 

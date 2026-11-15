@@ -1,7 +1,15 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { OCPP16_MESSAGES, validate, type Ocpp16Action } from '@ocpp-mimic/core';
+import {
+  OCPP16_MESSAGES,
+  OCPP201_MESSAGES,
+  validate,
+  validateOcpp201Request,
+  validateOcpp201Response,
+  type Ocpp16Action,
+  type Ocpp201Action,
+} from '@ocpp-mimic/core';
 import { describe, expect, it } from 'vitest';
 import {
   loadOcaSchemas,
@@ -124,6 +132,9 @@ interface SchemaNode {
   maxLength?: number;
   format?: string;
   items?: SchemaNode;
+  maxItems?: number;
+  minimum?: number;
+  maximum?: number;
 }
 
 interface Case {
@@ -131,11 +142,18 @@ interface Case {
   payload: Json;
 }
 
-function readSchema(action: string, kind: PayloadKind): SchemaNode {
-  const file = `${action}${kind === 'response' ? 'Response' : ''}.json`;
-  const dir = readdirSync(OCA_SCHEMAS_DIR).includes(file)
-    ? OCA_SCHEMAS_DIR
-    : OCA_SECURITY_SCHEMAS_DIR;
+function readSchema(
+  action: string,
+  kind: PayloadKind,
+  version: '1.6' | '2.0.1' = '1.6',
+): SchemaNode {
+  const v201 = version === '2.0.1';
+  const file = `${action}${kind === 'response' ? 'Response' : v201 ? 'Request' : ''}.json`;
+  const dir = v201
+    ? OCA_OCPP201_SCHEMAS_DIR
+    : readdirSync(OCA_SCHEMAS_DIR).includes(file)
+      ? OCA_SCHEMAS_DIR
+      : OCA_SECURITY_SCHEMAS_DIR;
   const root = JSON.parse(readFileSync(join(dir, file), 'utf8')) as SchemaNode;
   return inline(root, root);
 }
@@ -199,6 +217,13 @@ function replaced(root: Json, path: Path, value: Json | undefined): Json {
   return copy;
 }
 
+/** The value at `path` in `root`. */
+function getAt(root: Json, path: Path): Json {
+  let node = root;
+  for (const key of path) node = (node as Record<string | number, Json>)[key] ?? null;
+  return node;
+}
+
 const show = (path: Path) =>
   path.reduce<string>((s, key) => (typeof key === 'number' ? `${s}[${key}]` : `${s}.${key}`), '$');
 
@@ -232,11 +257,28 @@ function cases(node: SchemaNode, root: Json, path: Path = []): Case[] {
     case 'array':
       wrongType('x');
       out.push({ name: `${at} empty`, payload: replaced(root, path, []) });
+      if (node.maxItems !== undefined) {
+        const items = getAt(root, path) as Json[];
+        out.push({
+          name: `${at} too many`,
+          payload: replaced(
+            root,
+            path,
+            Array.from({ length: node.maxItems + 1 }, () => items[0] ?? null),
+          ),
+        });
+      }
       out.push(...cases(node.items ?? {}, root, [...path, 0]));
       break;
     case 'integer':
       wrongType('1');
       out.push({ name: `${at} fraction`, payload: replaced(root, path, 1.5) });
+      if (node.minimum !== undefined) {
+        out.push({ name: `${at} below minimum`, payload: replaced(root, path, node.minimum - 1) });
+      }
+      if (node.maximum !== undefined) {
+        out.push({ name: `${at} above maximum`, payload: replaced(root, path, node.maximum + 1) });
+      }
       break;
     case 'number':
       wrongType('1');
@@ -309,5 +351,57 @@ describe("core's message definitions against the official schemas", () => {
     }
     expect(checked).toBeGreaterThan(500);
     expect(disagreements).toEqual(KNOWN_DIFFERENCES);
+  });
+});
+
+/** Where core's 2.0.1 definitions deliberately differ from the official schemas; none so far. */
+const KNOWN_DIFFERENCES_201: string[] = [];
+
+describe("core's 2.0.1 message definitions against the official schemas", () => {
+  it('cover the same 64 actions', () => {
+    expect(Object.keys(OCPP201_MESSAGES).sort()).toEqual(oca201.actions);
+  });
+
+  it('agree on every generated payload, apart from the documented differences', () => {
+    const disagreements: string[] = [];
+    let checked = 0;
+    for (const action of Object.keys(OCPP201_MESSAGES) as Ocpp201Action[]) {
+      for (const kind of ['request', 'response'] as const) {
+        const node = readSchema(action, kind, '2.0.1');
+        const full = sample(node, true);
+        const all: Case[] = [
+          { name: 'minimal', payload: sample(node, false) },
+          { name: 'full', payload: full },
+          ...cases(node, full),
+        ];
+        for (const { name, payload } of all) {
+          const ocaOk = oca201.check(action, kind, payload)?.length === 0;
+          const coreOk = (
+            kind === 'request'
+              ? validateOcpp201Request(action, payload)
+              : validateOcpp201Response(action, payload)
+          ).ok;
+          checked++;
+          if (ocaOk !== coreOk) {
+            disagreements.push(
+              `${action} ${kind}: ${name} — OCA ${ocaOk ? 'accepts' : 'rejects'}, core ${coreOk ? 'accepts' : 'rejects'}`,
+            );
+          }
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(3000);
+    expect(disagreements).toEqual(KNOWN_DIFFERENCES_201);
+  });
+
+  it('answer with the 2.0.1 spellings of the error codes', () => {
+    const extra = validateOcpp201Request('Heartbeat', { unexpected: 1 });
+    expect(extra.ok || extra.errorCode).toBe('FormatViolation');
+    const missing = validateOcpp201Request('BootNotification', { reason: 'PowerUp' });
+    expect(missing.ok || missing.errorCode).toBe('OccurrenceConstraintViolation');
+    // customData is allowed on every class, with any vendor properties.
+    expect(
+      validateOcpp201Request('Heartbeat', { customData: { vendorId: 'acme', anything: [1] } }).ok,
+    ).toBe(true);
   });
 });
