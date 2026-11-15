@@ -1,0 +1,30 @@
+# The idTokens the CitrineOS scenarios use, for tools/citrineos/register.sh:
+# TOKEN, TOKEN:Status or TOKEN:Status:Group. A scenario that starts a
+# transaction uses a token of its own (CitrineOS answers ConcurrentTx for a
+# token whose transaction another scenario left open).
+AA000001:Accepted:MIMIC-GROUP
+AA000002:Accepted:MIMIC-GROUP
+AA000010
+AA000011
+AA000020
+AA000021
+AA000030
+AA000031
+AA000050
+AA000051
+AA000052
+AA000053
+AA000054
+AA000055
+AA000056
+AA000057
+AA000058
+AA000059
+AA000060
+AA000061
+AA000062
+AA000063:Blocked
+AA000064:Expired
+AA000065
+AA000066
+AA000067

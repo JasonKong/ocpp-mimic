@@ -463,8 +463,41 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     }),
     nextKey: () => nextKey('msg'),
     log,
-    changed,
+    changed: () => {
+      changed();
+      if (outbox.entries.length === 0) releaseDelivered();
+    },
   });
+
+  /** Waiting for the queued messages to be delivered (before a reset reboots). */
+  let deliveredWaiters: (() => void)[] = [];
+  function releaseDelivered(): void {
+    const waiting = deliveredWaiters;
+    deliveredWaiters = [];
+    for (const release of waiting) release();
+  }
+
+  /**
+   * Resolves once the queued messages are delivered, as a station sends its
+   * transaction messages before rebooting (1.6 waits for StopTransaction the
+   * same way). Offline, or after MessageTimeout, it resolves at once; what is
+   * left goes after the boot.
+   */
+  function whenDelivered(): Promise<void> {
+    if (!online() || outbox.entries.length === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = later(
+        Math.max(1, dmInt('OCPPCommCtrlr', 'MessageTimeout:Default')) * 1000,
+        done,
+      );
+      deliveredWaiters.push(done);
+      function done() {
+        stopTimer(timer);
+        deliveredWaiters = deliveredWaiters.filter((release) => release !== done);
+        resolve();
+      }
+    });
+  }
 
   // ---- Security, firmware and logs ----------------------------------------
 
@@ -1366,8 +1399,11 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     bootReason = 'RemoteReset';
     log(`${type} reset`);
     security.rebooting();
-    options.restart?.(
-      type === 'Immediate' ? timing.resetDowntimeMs.Hard : timing.resetDowntimeMs.Soft,
+    // The Ended events (and the ResetOrReboot event) go out before the reboot.
+    void whenDelivered().then(() =>
+      options.restart?.(
+        type === 'Immediate' ? timing.resetDowntimeMs.Hard : timing.resetDowntimeMs.Soft,
+      ),
     );
   }
 
@@ -1973,6 +2009,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       for (const timer of [heartbeatTimer, bootTimer]) stopTimer(timer);
       heartbeatTimer = bootTimer = undefined;
       outbox.pause();
+      releaseDelivered();
       changed();
     },
 

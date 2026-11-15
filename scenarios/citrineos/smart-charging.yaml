@@ -131,3 +131,276 @@ steps:
       payload: { eventType: Started, transactionInfo: { remoteStartId: 137 } }
       answer: {}
   - expectConnector: { powerW: 2500, limitW: 2500 }
+---
+name: TC_K_03_CSMS, TC_K_10_CSMS, TC_K_19_CSMS and TC_K_44_CSMS The station maximum, an all-EVSE default, a recurring profile and the station schedule
+csms: ws://localhost:8081
+station: { id: MIMIC-K03, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=MIMIC-K03&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          evseId: 0,
+          chargingProfile:
+            {
+              id: 301,
+              stackLevel: 0,
+              chargingProfilePurpose: ChargingStationMaxProfile,
+              chargingProfileKind: Absolute,
+              chargingSchedule:
+                [
+                  {
+                    id: 301,
+                    startSchedule: '2026-01-01T00:00:00Z',
+                    chargingRateUnit: W,
+                    chargingSchedulePeriod: [{ startPeriod: 0, limit: 20000 }],
+                  },
+                ],
+            },
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: SetChargingProfile, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=MIMIC-K03&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          evseId: 0,
+          chargingProfile:
+            {
+              id: 302,
+              stackLevel: 0,
+              chargingProfilePurpose: TxDefaultProfile,
+              chargingProfileKind: Absolute,
+              chargingSchedule:
+                [
+                  {
+                    id: 302,
+                    startSchedule: '2026-01-01T00:00:00Z',
+                    chargingRateUnit: W,
+                    chargingSchedulePeriod: [{ startPeriod: 0, limit: 6000 }],
+                  },
+                ],
+            },
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: SetChargingProfile, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=MIMIC-K03&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          evseId: 1,
+          chargingProfile:
+            {
+              id: 303,
+              stackLevel: 1,
+              chargingProfilePurpose: TxDefaultProfile,
+              chargingProfileKind: Recurring,
+              recurrencyKind: Daily,
+              chargingSchedule:
+                [
+                  {
+                    id: 303,
+                    startSchedule: '2026-01-01T00:00:00Z',
+                    chargingRateUnit: W,
+                    chargingSchedulePeriod: [{ startPeriod: 0, limit: 5000 }],
+                  },
+                ],
+            },
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: SetChargingProfile, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/getCompositeSchedule?identifier=MIMIC-K03&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { evseId: 0, duration: 600, chargingRateUnit: W }
+      expect: { json: [{ success: true }] }
+  - expect:
+      { received: GetCompositeSchedule, answer: { status: Accepted, schedule: { evseId: 0 } } }
+---
+# Every GetChargingProfiles names a criterion: CitrineOS enforces K09.FR.03, so
+# "all profiles" is asked as chargingLimitSource CSO.
+name: TC_K_04_CSMS, TC_K_70_CSMS, TC_K_30_CSMS to TC_K_36_CSMS, TC_K_06_CSMS and TC_K_08_CSMS Replace, stack, report and clear profiles
+csms: ws://localhost:8081
+station: { id: MIMIC-K30, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=MIMIC-K30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          evseId: 1,
+          chargingProfile:
+            {
+              id: 311,
+              stackLevel: 0,
+              chargingProfilePurpose: TxDefaultProfile,
+              chargingProfileKind: Absolute,
+              chargingSchedule:
+                [
+                  {
+                    id: 311,
+                    startSchedule: '2026-01-01T00:00:00Z',
+                    chargingRateUnit: W,
+                    chargingSchedulePeriod: [{ startPeriod: 0, limit: 4000 }],
+                  },
+                ],
+            },
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: SetChargingProfile, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=MIMIC-K30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          evseId: 1,
+          chargingProfile:
+            {
+              id: 311,
+              stackLevel: 0,
+              chargingProfilePurpose: TxDefaultProfile,
+              chargingProfileKind: Absolute,
+              chargingSchedule:
+                [
+                  {
+                    id: 311,
+                    startSchedule: '2026-01-01T00:00:00Z',
+                    chargingRateUnit: W,
+                    chargingSchedulePeriod: [{ startPeriod: 0, limit: 3000 }],
+                  },
+                ],
+            },
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: SetChargingProfile, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=MIMIC-K30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          evseId: 1,
+          chargingProfile:
+            {
+              id: 312,
+              stackLevel: 1,
+              chargingProfilePurpose: TxDefaultProfile,
+              chargingProfileKind: Absolute,
+              chargingSchedule:
+                [
+                  {
+                    id: 312,
+                    startSchedule: '2026-01-01T00:00:00Z',
+                    chargingRateUnit: W,
+                    chargingSchedulePeriod: [{ startPeriod: 0, limit: 2000 }],
+                  },
+                ],
+            },
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: SetChargingProfile, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/getChargingProfiles?identifier=MIMIC-K30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 30, evseId: 1, chargingProfile: { chargingLimitSource: [CSO] } }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetChargingProfiles, answer: { status: Accepted } }
+  - expect: { sent: ReportChargingProfiles, payload: { requestId: 30 }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/getChargingProfiles?identifier=MIMIC-K30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 31, chargingProfile: { chargingLimitSource: [CSO] } }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetChargingProfiles, answer: { status: Accepted } }
+  - expect: { sent: ReportChargingProfiles, payload: { requestId: 31 }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/getChargingProfiles?identifier=MIMIC-K30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 32, chargingProfile: { chargingProfileId: [312] } }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetChargingProfiles, answer: { status: Accepted } }
+  - expect: { sent: ReportChargingProfiles, payload: { requestId: 32 }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/getChargingProfiles?identifier=MIMIC-K30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 33, evseId: 1, chargingProfile: { stackLevel: 1 } }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetChargingProfiles, answer: { status: Accepted } }
+  - expect: { sent: ReportChargingProfiles, payload: { requestId: 33 }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/getChargingProfiles?identifier=MIMIC-K30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 34, evseId: 1, chargingProfile: { chargingLimitSource: [CSO] } }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetChargingProfiles, answer: { status: Accepted } }
+  - expect: { sent: ReportChargingProfiles, payload: { requestId: 34 }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/getChargingProfiles?identifier=MIMIC-K30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        { requestId: 35, evseId: 1, chargingProfile: { chargingProfilePurpose: TxDefaultProfile } }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetChargingProfiles, answer: { status: Accepted } }
+  - expect: { sent: ReportChargingProfiles, payload: { requestId: 35 }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/getChargingProfiles?identifier=MIMIC-K30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          requestId: 36,
+          evseId: 1,
+          chargingProfile: { chargingProfilePurpose: TxDefaultProfile, stackLevel: 0 },
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetChargingProfiles, answer: { status: Accepted } }
+  - expect: { sent: ReportChargingProfiles, payload: { requestId: 36 }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/clearChargingProfile?identifier=MIMIC-K30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          chargingProfileCriteria:
+            { evseId: 1, chargingProfilePurpose: TxDefaultProfile, stackLevel: 1 },
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: ClearChargingProfile, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/clearChargingProfile?identifier=MIMIC-K30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          chargingProfileCriteria:
+            { evseId: 1, chargingProfilePurpose: TxDefaultProfile, stackLevel: 1 },
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: ClearChargingProfile, answer: { status: Unknown } }

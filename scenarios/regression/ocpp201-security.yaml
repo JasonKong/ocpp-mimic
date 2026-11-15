@@ -359,5 +359,6 @@ station: { id: REG201-EVENTS, persona: regression-2.0.1 }
 steps:
   - expect: { sent: SecurityEventNotification, payload: { type: StartupOfTheDevice } }
   - csmsCall: { action: Reset, payload: { type: Immediate }, answer: { status: Accepted } }
-  - expect: { sent: BootNotification, payload: { reason: RemoteReset }, within: 15s }
+  # Queued messages go out before the reboot.
   - expect: { sent: SecurityEventNotification, payload: { type: ResetOrReboot } }
+  - expect: { sent: BootNotification, payload: { reason: RemoteReset }, within: 15s }

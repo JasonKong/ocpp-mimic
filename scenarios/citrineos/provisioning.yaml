@@ -141,3 +141,123 @@ steps:
   - expect: { received: ChangeAvailability, answer: { status: Accepted } }
   - expect:
       { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Available }, answer: {} }
+---
+name: TC_B_06_CSMS, TC_B_09_CSMS and TC_B_12_CSMS A single variable, and the configuration report
+csms: ws://localhost:8081
+station: { id: MIMIC-B06, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/monitoring/getVariables?identifier=MIMIC-B06&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          getVariableData:
+            [{ component: { name: OCPPCommCtrlr }, variable: { name: OfflineThreshold } }],
+        }
+      expect: { json: [{ success: true }] }
+  - expect:
+      {
+        received: GetVariables,
+        answer: { getVariableResult: [{ attributeStatus: Accepted, attributeValue: '60' }] },
+      }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/monitoring/setVariables?identifier=MIMIC-B06&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          setVariableData:
+            [
+              {
+                component: { name: OCPPCommCtrlr },
+                variable: { name: OfflineThreshold },
+                attributeValue: '90',
+              },
+            ],
+        }
+      expect: { json: [{ success: true }] }
+  - expect:
+      { received: SetVariables, answer: { setVariableResult: [{ attributeStatus: Accepted }] } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/reporting/getBaseReport?identifier=MIMIC-B06&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 12, reportBase: ConfigurationInventory }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetBaseReport, answer: { status: Accepted } }
+  - expect: { sent: NotifyReport, payload: { requestId: 12, seqNo: 0 }, answer: {} }
+---
+name: TC_G_07_CSMS and TC_G_08_CSMS A connector inoperative and operative again
+csms: ws://localhost:8081
+station: { id: MIMIC-G07, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/changeAvailability?identifier=MIMIC-G07&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { operationalStatus: Inoperative, evse: { id: 1, connectorId: 1 } }
+      expect: { json: [{ success: true }] }
+  - expect: { received: ChangeAvailability, answer: { status: Accepted } }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Unavailable }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/changeAvailability?identifier=MIMIC-G07&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { operationalStatus: Operative, evse: { id: 1, connectorId: 1 } }
+      expect: { json: [{ success: true }] }
+  - expect: { received: ChangeAvailability, answer: { status: Accepted } }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Available }, answer: {} }
+---
+name: TC_G_11_CSMS, TC_G_14_CSMS and TC_G_17_CSMS Availability with a transaction
+csms: ws://localhost:8081
+station: { id: MIMIC-G11, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - presentCard: { idToken: AA000062, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/changeAvailability?identifier=MIMIC-G11&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { operationalStatus: Inoperative, evse: { id: 1 } }
+      expect: { json: [{ success: true }] }
+  - expect: { received: ChangeAvailability, answer: { status: Scheduled } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/changeAvailability?identifier=MIMIC-G11&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { operationalStatus: Inoperative, evse: { id: 1, connectorId: 1 } }
+      expect: { json: [{ success: true }] }
+  - expect: { received: ChangeAvailability, answer: { status: Scheduled } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/changeAvailability?identifier=MIMIC-G11&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { operationalStatus: Inoperative }
+      expect: { json: [{ success: true }] }
+  - expect: { received: ChangeAvailability, answer: { status: Scheduled } }
+  - presentCard: { idToken: AA000062, result: stopping }
+  - expect: { sent: TransactionEvent, payload: { eventType: Ended }, answer: {} }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Unavailable }, answer: {} }

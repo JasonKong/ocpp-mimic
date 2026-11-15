@@ -113,3 +113,156 @@ steps:
       payload: { reservationId: 207, reservationUpdateStatus: Expired }
       answer: {}
       within: 8s
+---
+name: TC_H_08_CSMS, TC_H_14_CSMS and TC_H_15_CSMS Reserve any EVSE and a connector type
+csms: ws://localhost:8081
+station: { id: MIMIC-H08, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/reporting/getBaseReport?identifier=MIMIC-H08&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 208, reportBase: FullInventory }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetBaseReport, answer: { status: Accepted } }
+  - expect: { sent: NotifyReport, payload: { requestId: 208, tbc: { $exists: false } }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/reserveNow?identifier=MIMIC-H08&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        { id: 208, expiryDateTime: '{{now+30m}}', idToken: { idToken: AA000065, type: ISO14443 } }
+      expect: { json: [{ success: true }] }
+  - expect: { received: ReserveNow, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/reserveNow?identifier=MIMIC-H08&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          id: 215,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: AA000066, type: ISO14443 },
+          connectorType: cType2,
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: ReserveNow, answer: { status: Accepted } }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Reserved }, answer: {} }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Reserved }, answer: {} }
+---
+name: TC_H_19_CSMS Use a reserved EVSE with the group
+csms: ws://localhost:8081
+station: { id: MIMIC-H19, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/reporting/getBaseReport?identifier=MIMIC-H19&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 219, reportBase: FullInventory }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetBaseReport, answer: { status: Accepted } }
+  - expect: { sent: NotifyReport, payload: { requestId: 219, tbc: { $exists: false } }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/reserveNow?identifier=MIMIC-H19&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          id: 219,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: AA000001, type: ISO14443 },
+          groupIdToken: { idToken: MIMIC-GROUP, type: Central },
+          evseId: 1,
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: ReserveNow, answer: { status: Accepted } }
+  - presentCard: { idToken: AA000002, result: authorized }
+  - expectStation: { reservations: [] }
+---
+name: TC_H_20_CSMS The station cancels a reservation when its EVSE is Faulted
+csms: ws://localhost:8081
+station: { id: MIMIC-H20, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/reporting/getBaseReport?identifier=MIMIC-H20&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 220, reportBase: FullInventory }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetBaseReport, answer: { status: Accepted } }
+  - expect: { sent: NotifyReport, payload: { requestId: 220, tbc: { $exists: false } }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/reserveNow?identifier=MIMIC-H20&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          id: 220,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: AA000067, type: ISO14443 },
+          evseId: 2,
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: ReserveNow, answer: { status: Accepted } }
+  - fault: { evse: 2, errorCode: GroundFailure }
+  - expect:
+      {
+        sent: ReservationStatusUpdate,
+        payload: { reservationId: 220, reservationUpdateStatus: Removed },
+        answer: {},
+      }
+---
+name: TC_H_22_CSMS A station configured to reject reservations
+csms: ws://localhost:8081
+station:
+  id: MIMIC-H22
+  persona: regression-2.0.1
+  deviceModel: { ReservationCtrlr: { Enabled: false } }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/reporting/getBaseReport?identifier=MIMIC-H22&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 222, reportBase: FullInventory }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetBaseReport, answer: { status: Accepted } }
+  - expect: { sent: NotifyReport, payload: { requestId: 222, tbc: { $exists: false } }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/reserveNow?identifier=MIMIC-H22&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          id: 222,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: AA000067, type: ISO14443 },
+          evseId: 1,
+        }
+      expect: { json: [{ success: true }] }
+  - expect: { received: ReserveNow, answer: { status: Rejected } }

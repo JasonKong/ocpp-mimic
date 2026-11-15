@@ -976,6 +976,7 @@ faults:
 - `.github/workflows/citrineos.yml` 启动整套服务，等服务端健康后运行 `scenarios/citrineos/`，保留 JUnit 报告和各服务的日志。触及 2.0.1 代码或这些场景的 PR、main 分支和手动触发时运行。
 - 已知的 CitrineOS 偏差记在 `scenarios/citrineos/README.md`，写明场景如何处理。未经询问不向上游报告。
 - 已实现（T65）：`tools/citrineos/docker-compose.yml` 按 digest 固定三个镜像，`CITRINE_HTTP_PORT` 和 `CITRINE_WS_PORT` 可以在端口被占用的机器上换端口。第一批场景覆盖冷启动（TC_B_01_CSMS）、完整报告和摘要报告（TC_B_13、14）、读取和设置变量（TC_B_07、10）、EVSE 和整桩的可用性（TC_G_03 至 06），以及一笔不带 token 的交易（TC_E_09、14）。场景写了 `csms: ws://localhost:8081` 和 `vars: { CITRINE: http://localhost:8080 }`，用 `--csms` 和 `--var` 可以指向别处。目前没有发现偏差。
+- 已实现（T75）：`scenarios/citrineos/` 有 53 个场景，覆盖五个 profile 中 CitrineOS 的 REST API 能发起的 Part 6 CSMS 测试用例；`scenarios/citrineos/README.md` 按文件列出它们、未覆盖的用例及原因（测试环境只提供安全 profile 0、ocpp-mimic 不模拟的失败、CitrineOS 没有 API 的回答），以及场景所适应的 CitrineOS 行为（token 在其数据库中、每笔交易一个 token、预约前先要基础报告、充电计划 id 唯一、GetChargingProfiles 须给出条件）；没有发现偏离 OCPP 2.0.1 的地方。token 列在 `scenarios/citrineos/tokens.txt`。场景运行时每一帧都按 OCA 的 2.0.1 schema 检查。由此修了桩的两处：复位要等队列中的消息（Ended 事件、ResetOrReboot 事件）送达后再重启，最多等 MessageTimeout，与 1.6 桩等待 StopTransaction 一样；固件签名无效时先报告 InvalidSignature，再发安全事件。新增 persona：`firmware-fails-2.0.1`、`firmware-bad-signature-2.0.1` 和 `core-only-2.0.1`。
 
 **车队、压测、日志和 Web UI**
 
