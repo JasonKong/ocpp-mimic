@@ -7,14 +7,14 @@ import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Duplex } from 'node:stream';
-import { VERSION, type UsageEvent } from '@ocpp-mimic/core';
+import { VERSION, type OcppVersion, type UsageEvent } from '@ocpp-mimic/core';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { handleApi, sendJson, stationSummary, type ApiEvent, type StationSummary } from './api.js';
 import { createFleet, type Fleet } from './fleet.js';
 import { createMetrics, type Metrics } from './metrics.js';
 import { startOtlpExporter, type OtlpExporter, type OtlpOptions } from './otlp.js';
 import { createSystemClock } from './system-clock.js';
-import { loadOcaSchemas } from './oca-schemas.js';
+import { loadOcaSchemas, OCA_SCHEMA_DIRS, type OcaSchemas } from './oca-schemas.js';
 import { BUILT_IN_PERSONAS_DIR, loadPersonas, type PersonaRegistry } from './personas.js';
 import { createRecorder, type Recorder } from './recorder.js';
 import { openStateStore, type StateStore } from './state-store.js';
@@ -73,10 +73,20 @@ function usageLine(event: UsageEvent): string {
 
 export function createEngine(options: EngineOptions = {}): Engine {
   const { port = DEFAULT_PORT, host = '127.0.0.1' } = options;
-  // Every frame is also checked against OCA's official schemas; problems show up on the record.
-  const oca = loadOcaSchemas();
+  // Every frame is also checked against OCA's official schemas of its station's
+  // version; problems show up on the record. A version's set loads when first needed.
+  const oca = new Map<OcppVersion, OcaSchemas>();
+  const ocaFor = (version: OcppVersion) => {
+    let schemas = oca.get(version);
+    if (schemas === undefined) {
+      schemas = loadOcaSchemas(OCA_SCHEMA_DIRS[version]);
+      oca.set(version, schemas);
+    }
+    return schemas;
+  };
   const recorder = createRecorder({
-    check: (action, kind, payload) => oca.check(action, kind, payload),
+    check: (action, kind, payload, stationId) =>
+      ocaFor(fleet?.get(stationId)?.chargePoint.ocpp ?? '1.6').check(action, kind, payload),
     ...(options.recordLimit !== undefined && { limit: options.recordLimit }),
   });
   let fleet: Fleet | undefined;

@@ -42,15 +42,8 @@ import {
   type ReduceResult,
   type StationState,
 } from './device.js';
-import {
-  acceptedPowerW,
-  advanceEv,
-  createEv,
-  evPowerW as evDrawW,
-  msUntilFull,
-  type EvProfile,
-  type EvState,
-} from './ev.js';
+import { createEnergy, type PluggedEv } from './energy.js';
+import type { EvProfile } from './ev.js';
 import {
   clearProfiles,
   compositeSchedule,
@@ -80,6 +73,9 @@ import {
   type ChargePointCertificate,
 } from './certificates.js';
 import type { IdGenerator } from './ids.js';
+import type { OcppVersion } from './message-set.js';
+import { createOutbox, type OutboxEntry } from './outbox.js';
+import { createStationTimers } from './station-timers.js';
 import {
   isCriticalSecurityEvent,
   SECURITY_LOG_LENGTH,
@@ -93,14 +89,7 @@ import {
   localListVersion,
   type LocalAuthList,
 } from './local-list.js';
-import {
-  createMeter,
-  meterAt,
-  nextAlignedSample,
-  nextPeriodicSample,
-  withPower,
-  type MeterState,
-} from './meter.js';
+import { nextAlignedSample, nextPeriodicSample } from './meter.js';
 import type { IdTagInfo, RequestOf, ResponseOf, StopReason } from './ocpp16-messages.js';
 import type { JsonObject } from './ocppj.js';
 import {
@@ -176,16 +165,7 @@ type TransactionAction = 'StartTransaction' | 'StopTransaction' | 'MeterValues';
 /** Messages with guaranteed delivery: transaction messages and critical security events. */
 type QueuedAction = TransactionAction | 'SecurityEventNotification';
 
-/** A message with guaranteed delivery waiting to be sent; kept across restarts. */
-export interface OutboxEntry {
-  key: string;
-  action: QueuedAction;
-  payload: JsonObject;
-  /** Local reference of the transaction whose CSMS id is put into payload.transactionId on sending. */
-  txRef?: string;
-  /** Failed attempts so far (TransactionMessageAttempts). */
-  attempts: number;
-}
+export type { OutboxEntry };
 
 export interface PersistedTransaction {
   connectorId: number;
@@ -313,11 +293,7 @@ export interface ConnectionSecurity {
   chargePointCertificate?: ChargePointCertificate;
 }
 
-/** An EV plugged into a connector: a profile, with the persona's name for it when it has one. */
-export interface PluggedEv {
-  name?: string;
-  profile: EvProfile;
-}
+export type { PluggedEv };
 
 export interface ConnectorSnapshot {
   connectorId: number;
@@ -373,6 +349,8 @@ export type IdTagResult = 'stopping' | 'authorized' | 'rejected' | 'busy' | 'unk
 export type UnplugResult = 'unplugged' | 'locked' | 'unknown-connector';
 
 export interface ChargePoint {
+  /** The OCPP version the station speaks. */
+  readonly ocpp: OcppVersion;
   connected(): void;
   disconnected(): void;
   receive(text: string): void;
@@ -448,9 +426,6 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     ...options.behaviour,
     ...options.restore?.behaviour,
   };
-  let energyMultiplier = checkedMultiplier(
-    options.restore?.energyMultiplier ?? options.energyMultiplier ?? 1,
-  );
   let authCache: AuthorizationCache = EMPTY_AUTHORIZATION_CACHE;
   let localList: LocalAuthList = options.restore?.localList ?? EMPTY_LOCAL_LIST;
   /** Whether the station advertises a feature profile in SupportedFeatureProfiles. */
@@ -461,22 +436,12 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     if (localList.entries[idTag] !== undefined) return;
     authCache = rememberAuthorization(authCache, config, idTag, info);
   };
-  const meters = new Map<number, MeterState>(
-    connectors(station).map((c) => [c.connectorId, createMeter({ now: clock.now(), offeredW })]),
-  );
   const transactions = new Map<number, Transaction>();
-  /** Plugged-in EVs; `drawing` says whether the meter's power currently flows into the battery. */
-  const evs = new Map<number, { name?: string; state: EvState; drawing: boolean }>();
-  const fullTimers = new Map<number, TimerHandle>();
   /** connectorId → local reference of its running transaction. */
   const refs = new Map<number, string>();
-  const outbox: OutboxEntry[] = [];
   const csmsIds = new Map<string, number>();
-  const waiters = new Map<string, (outcome: CallOutcome<ChargePointAction>) => void>();
   let sequence = options.restore?.sequence ?? 0;
   const nextKey = (prefix: string) => `${prefix}-${++sequence}`;
-  let pumping = false;
-  let retryTimer: TimerHandle | undefined;
   /** Cards authorized at a connector whose transaction has not started yet. */
   const authorized = new Map<number, string>();
   const prepareTimers = new Map<number, TimerHandle>();
@@ -490,24 +455,31 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
 
   const online = () => rpc !== undefined && registration === 'Accepted';
   const now = () => clock.now();
-  /** Every timer set and not yet fired or stopped, so halt() can stop them all. */
-  const timers = new Set<TimerHandle>();
-  let halted = false;
-  const later = (delayMs: number, fn: () => unknown): TimerHandle => {
-    const handle: TimerHandle = clock.setTimer(delayMs, () => {
-      timers.delete(handle);
-      if (!halted) void fn();
-    });
-    timers.add(handle);
-    return handle;
-  };
+  const timers = createStationTimers(clock);
+  const { later, delay } = timers;
+  const stopTimer = timers.stop;
+  const energy = createEnergy({
+    clock,
+    timers,
+    connectorIds: connectors(station).map((c) => c.connectorId),
+    offeredW,
+    evPowerW,
+    multiplier: checkedMultiplier(
+      options.restore?.energyMultiplier ?? options.energyMultiplier ?? 1,
+    ),
+    ...(options.restore !== undefined && { registers: options.restore.meters }),
+    onFull(connectorId) {
+      if (applyDevice({ type: 'EvSuspend', connectorId }).error === undefined) {
+        updatePower(connectorId);
+      }
+    },
+    log,
+  });
+  const syncMeter = energy.sync;
+  const extras = energy.extras;
+  const setPower = energy.setPower;
   const delayFor = (command: DelayedCommand) =>
     timing.actionDelaysMs?.[command] ?? timing.actionDelayMs;
-  const stopTimer = (timer: TimerHandle | undefined) => {
-    if (timer === undefined) return;
-    clock.clearTimer(timer);
-    timers.delete(timer);
-  };
 
   // ---- Sending ------------------------------------------------------------
 
@@ -516,43 +488,56 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     action: A,
     payload: RequestOf<A>,
   ): Promise<CallOutcome<A>> | undefined {
-    return online() ? rpc?.call(action, payload) : undefined;
+    // RequestOf<A> is the set's request type for A; TypeScript cannot see it for a generic A.
+    return online() ? (rpc?.call(action, payload as never) as Promise<CallOutcome<A>>) : undefined;
   }
 
   /**
-   * Transaction messages go through the outbox: sent one at a time once
-   * registered, kept while offline, retried TransactionMessageAttempts times
-   * on failure (waiting TransactionMessageRetryInterval × attempts), and
-   * persisted across restarts. When online and idle, the message is handed
-   * to the RPC layer at once, so it goes out before later status reports.
+   * Transaction messages and critical security events go through the outbox:
+   * retried TransactionMessageAttempts times, TransactionMessageRetryInterval
+   * × attempts apart. StartTransaction obtains the CSMS's transactionId, and
+   * the messages queued behind it carry it.
    */
+  const outbox = createOutbox({
+    timers,
+    online,
+    call: (action, payload) => rpc?.call(action as ChargePointAction, payload as never),
+    retryPolicy: () => ({
+      attempts: configInt(config, 'TransactionMessageAttempts'),
+      intervalS: configInt(config, 'TransactionMessageRetryInterval'),
+    }),
+    nextKey: () => nextKey('msg'),
+    prepare(entry) {
+      if (entry.txRef === undefined || entry.action === 'StartTransaction') {
+        return { payload: entry.payload };
+      }
+      const id = csmsIds.get(entry.txRef);
+      if (id === undefined) return { drop: 'its transaction never got an id from the CSMS' };
+      return { payload: { ...entry.payload, transactionId: id } };
+    },
+    // A CSMS without the Security Whitepaper (NotImplemented and the like):
+    // retrying cannot help, and would hold up the transaction messages behind it.
+    final: (entry, failure) =>
+      entry.action === 'SecurityEventNotification' && failure.kind === 'CallError'
+        ? `the CSMS answered ${failure.errorCode}`
+        : undefined,
+    answered(entry, payload) {
+      if (entry.action === 'StartTransaction' && entry.txRef !== undefined) {
+        csmsIds.set(entry.txRef, (payload as ResponseOf<'StartTransaction'>).transactionId);
+      }
+    },
+    settled: () => pruneTransactionIds(),
+    log,
+    changed,
+  });
+  const pump = outbox.pump;
+
   function enqueue<A extends QueuedAction>(
     action: A,
     payload: RequestOf<A>,
     txRef?: string,
   ): Promise<CallOutcome<A>> {
-    const key = nextKey('msg');
-    outbox.push({
-      key,
-      action,
-      payload: payload as JsonObject,
-      ...(txRef !== undefined && { txRef }),
-      attempts: 0,
-    });
-    const promise = new Promise<CallOutcome<A>>((resolve) =>
-      waiters.set(key, resolve as (outcome: CallOutcome<ChargePointAction>) => void),
-    );
-    changed();
-    pump();
-    return promise;
-  }
-
-  function settleEntry(entry: OutboxEntry, outcome: CallOutcome<ChargePointAction>): void {
-    if (outbox[0] === entry) outbox.shift();
-    waiters.get(entry.key)?.(outcome);
-    waiters.delete(entry.key);
-    pruneTransactionIds();
-    changed();
+    return outbox.enqueue(action, payload as JsonObject, txRef) as Promise<CallOutcome<A>>;
   }
 
   /**
@@ -562,63 +547,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
   function pruneTransactionIds(): void {
     if (csmsIds.size === 0) return;
     const needed = new Set<string>(refs.values());
-    for (const queued of outbox) if (queued.txRef !== undefined) needed.add(queued.txRef);
+    for (const queued of outbox.entries) if (queued.txRef !== undefined) needed.add(queued.txRef);
     for (const ref of csmsIds.keys()) if (!needed.has(ref)) csmsIds.delete(ref);
-  }
-
-  function pump(): void {
-    if (pumping || retryTimer !== undefined || !online()) return;
-    const entry = outbox[0];
-    const current = rpc;
-    if (entry === undefined || current === undefined) return;
-    let payload = entry.payload;
-    // StartTransaction obtains the id; the messages behind it carry it.
-    if (entry.txRef !== undefined && entry.action !== 'StartTransaction') {
-      const id = csmsIds.get(entry.txRef);
-      if (id === undefined) {
-        log(`${entry.action} dropped: its transaction never got an id from the CSMS`);
-        settleEntry(entry, { ok: false, failure: { kind: 'Closed' } });
-        pump();
-        return;
-      }
-      payload = { ...payload, transactionId: id };
-    }
-    pumping = true;
-    void current
-      .call(entry.action, payload as never)
-      .then((outcome: CallOutcome<ChargePointAction>) => {
-        pumping = false;
-        if (!outcome.ok) {
-          if (outcome.failure.kind === 'Closed') return; // resumes after the next accepted boot
-          const { failure } = outcome;
-          if (entry.action === 'SecurityEventNotification' && failure.kind === 'CallError') {
-            // A CSMS without the Security Whitepaper (NotImplemented and the like):
-            // retrying cannot help, and would hold up the transaction messages behind it.
-            log(`SecurityEventNotification dropped: the CSMS answered ${failure.errorCode}`);
-          } else if (outcome.failure.kind !== 'InvalidRequest') {
-            entry.attempts += 1;
-            if (entry.attempts < configInt(config, 'TransactionMessageAttempts')) {
-              const delayMs =
-                configInt(config, 'TransactionMessageRetryInterval') * 1000 * entry.attempts;
-              log(`${entry.action} failed (${outcome.failure.kind}); retrying in ${delayMs} ms`);
-              changed();
-              retryTimer = later(delayMs, () => {
-                retryTimer = undefined;
-                pump();
-              });
-              return;
-            }
-            log(`${entry.action} dropped after ${entry.attempts} failed attempts`);
-          }
-        } else if (entry.action === 'StartTransaction' && entry.txRef !== undefined) {
-          csmsIds.set(
-            entry.txRef,
-            (outcome.payload as ResponseOf<'StartTransaction'>).transactionId,
-          );
-        }
-        settleEntry(entry, outcome);
-        pump();
-      });
   }
 
   function applyDevice(event: DeviceEvent): ReduceResult {
@@ -649,7 +579,6 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     ...options.boot,
     ...(firmwareVersion !== undefined && { firmwareVersion }),
   });
-  const delay = (ms: number) => new Promise<void>((resolve) => later(ms, resolve));
   /** Resolves when no transaction is running. */
   const noTransactions = () =>
     transactions.size === 0
@@ -1187,10 +1116,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       startedAt: transaction.startedAt,
     };
   };
-  const conversionFor = (connectorId: number) => ({
-    voltageV: meters.get(connectorId)?.voltageV ?? 230,
-    phases: evs.get(connectorId)?.state.profile.phases ?? 3,
-  });
+  const conversionFor = energy.conversion;
 
   function profileContext(): InstallContext {
     const units = configList(config, 'ChargingScheduleAllowedChargingRateUnit')
@@ -1420,51 +1346,6 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
 
   // ---- Metering ----------------------------------------------------------
 
-  function meter(connectorId: number): MeterState {
-    const value = meters.get(connectorId);
-    if (value === undefined) throw new Error(`no meter for connector ${connectorId}`);
-    return value;
-  }
-
-  /**
-   * Brings the meter (and the EV's SoC) up to now and returns it. Without an
-   * EV the power is constant between changes; with one the energy comes from
-   * the EV model, so the power follows the charging curve.
-   */
-  function syncMeter(connectorId: number): MeterState {
-    const current = meter(connectorId);
-    const ev = evs.get(connectorId);
-    let next: MeterState;
-    if (ev === undefined || !ev.drawing) {
-      next = meterAt(current, now(), energyMultiplier);
-    } else {
-      const elapsed = Math.max(0, now() - current.updatedAt);
-      const step = advanceEv(ev.state, current.offeredW, elapsed * energyMultiplier);
-      ev.state = step.ev;
-      next = {
-        ...current,
-        energyWh: current.energyWh + step.energyWh,
-        powerW: step.powerW,
-        updatedAt: Math.max(now(), current.updatedAt),
-      };
-    }
-    meters.set(connectorId, next);
-    return next;
-  }
-
-  /** Readings outside the meter for samples: the EV's SoC. */
-  function extras(connectorId: number): { socPercent?: number; phases?: number } {
-    const ev = evs.get(connectorId);
-    return ev === undefined ? {} : { socPercent: ev.state.soc, phases: ev.state.profile.phases };
-  }
-
-  function setPower(connectorId: number, powerW: number): void {
-    meters.set(connectorId, withPower(syncMeter(connectorId), now(), powerW));
-    const ev = evs.get(connectorId);
-    if (ev !== undefined) ev.drawing = powerW > 0;
-    scheduleFull(connectorId);
-  }
-
   /** Power the EV draws on a connector, given its transaction and suspension state. */
   function updatePower(connectorId: number): void {
     const connector = findConnector(station, connectorId);
@@ -1473,44 +1354,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       connector.plugged &&
       !connector.evSuspended &&
       !connector.evseSuspended;
-    const ev = evs.get(connectorId);
     // The Smart Charging limit becomes the power offered (and Power.Offered).
-    const current = syncMeter(connectorId);
-    const offered = Math.max(0, Math.min(offeredW, profileLimitW(connectorId) ?? Infinity));
-    if (current.offeredW !== offered) meters.set(connectorId, { ...current, offeredW: offered });
-    if (ev === undefined) {
-      setPower(connectorId, running ? Math.min(evPowerW, offered) : 0);
-      return;
-    }
-    setPower(connectorId, running ? evDrawW(ev.state, offered) : 0);
-  }
-
-  /** While an EV draws power, a timer moves the connector to SuspendedEV when the battery is full. */
-  function scheduleFull(connectorId: number): void {
-    stopTimer(fullTimers.get(connectorId));
-    fullTimers.delete(connectorId);
-    const ev = evs.get(connectorId);
-    if (ev === undefined || !ev.drawing) return;
-    const energyMs = msUntilFull(ev.state, meter(connectorId).offeredW);
-    if (energyMs === undefined) return;
-    const ms = Math.ceil(energyMs / energyMultiplier);
-    fullTimers.set(
-      connectorId,
-      later(ms, () => {
-        fullTimers.delete(connectorId);
-        syncMeter(connectorId);
-        // Real timers can fire a moment early; wait for the rest.
-        const rest = msUntilFull(ev.state, meter(connectorId).offeredW) ?? 0;
-        if (rest > 0) {
-          scheduleFull(connectorId);
-          return;
-        }
-        log(`connector ${connectorId}: the EV is full`);
-        if (applyDevice({ type: 'EvSuspend', connectorId }).error === undefined) {
-          updatePower(connectorId);
-        }
-      }),
-    );
+    energy.update(connectorId, running, profileLimitW(connectorId));
   }
 
   function sendMeterValues(
@@ -2133,31 +1978,27 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         `restored configuration ignored: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    for (const [id, energyWh] of Object.entries(restored.meters)) {
-      const connectorId = Number(id);
-      if (meters.has(connectorId)) {
-        meters.set(connectorId, createMeter({ now: now(), offeredW, energyWh }));
-      }
-    }
     authCache = restored.authCache;
-    outbox.push(...restored.outbox.map((entry) => ({ ...entry })));
+    outbox.restore(restored.outbox);
     for (const [ref, id] of Object.entries(restored.csmsIds)) csmsIds.set(ref, id);
     for (const transaction of restored.transactions) {
       if (transaction.transactionId !== undefined)
         csmsIds.set(transaction.ref, transaction.transactionId);
       const energy = restored.meters[String(transaction.connectorId)] ?? transaction.meterStartWh;
-      outbox.push({
-        key: nextKey('msg'),
-        action: 'StopTransaction',
-        payload: {
-          transactionId: transaction.transactionId ?? 0,
-          meterStop: Math.max(transaction.meterStartWh, Math.round(energy)),
-          timestamp: new Date(restored.savedAt).toISOString(),
-          reason: 'PowerLoss',
+      outbox.restore([
+        {
+          key: nextKey('msg'),
+          action: 'StopTransaction',
+          payload: {
+            transactionId: transaction.transactionId ?? 0,
+            meterStop: Math.max(transaction.meterStartWh, Math.round(energy)),
+            timestamp: new Date(restored.savedAt).toISOString(),
+            reason: 'PowerLoss',
+          },
+          txRef: transaction.ref,
+          attempts: 0,
         },
-        txRef: transaction.ref,
-        attempts: 0,
-      });
+      ]);
     }
   }
 
@@ -2167,6 +2008,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
   // ---- Public interface -------------------------------------------------
 
   return {
+    ocpp: '1.6',
+
     connected() {
       // The new Security Profile worked: no way back (A05.FR.09).
       securityFallback = undefined;
@@ -2190,19 +2033,18 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     },
 
     halt() {
-      halted = true;
+      timers.halt();
       rpc?.close();
       rpc = undefined;
-      for (const timer of timers) clock.clearTimer(timer);
-      timers.clear();
     },
 
     disconnected() {
       rpc?.close();
       rpc = undefined;
       registration = 'Offline';
-      for (const timer of [heartbeatTimer, bootTimer, alignedTimer, retryTimer]) stopTimer(timer);
-      heartbeatTimer = bootTimer = alignedTimer = retryTimer = undefined;
+      for (const timer of [heartbeatTimer, bootTimer, alignedTimer]) stopTimer(timer);
+      heartbeatTimer = bootTimer = alignedTimer = undefined;
+      outbox.pause();
       changed();
     },
 
@@ -2215,16 +2057,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         log(`Plug: unknown connector ${connectorId}`);
         return;
       }
-      if (ev !== undefined) {
-        // Throws a RangeError for an unusable profile, before anything changes.
-        const state = createEv(ev.profile);
-        syncMeter(connectorId);
-        evs.set(connectorId, {
-          ...(ev.name !== undefined && { name: ev.name }),
-          state,
-          drawing: false,
-        });
-      }
+      // Throws a RangeError for an unusable profile, before anything changes.
+      if (ev !== undefined) energy.plugEv(connectorId, ev);
       if (applyDevice({ type: 'Plug', connectorId }).error !== undefined) return;
       if (authorized.has(connectorId)) {
         clearPrepare(connectorId);
@@ -2253,12 +2087,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         }
       }
       // The EV leaves with the cable.
-      if (evs.has(connectorId)) {
-        setPower(connectorId, 0);
-        evs.delete(connectorId);
-        scheduleFull(connectorId);
-        changed();
-      }
+      if (energy.removeEv(connectorId)) changed();
       return 'unplugged';
     },
 
@@ -2307,13 +2136,9 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     },
 
     evResume(connectorId) {
-      const ev = evs.get(connectorId);
-      if (ev !== undefined) {
-        syncMeter(connectorId);
-        if (acceptedPowerW(ev.state.profile, ev.state.soc) === 0) {
-          log(`connector ${connectorId}: the EV is full and does not resume`);
-          return;
-        }
+      if (!energy.canResume(connectorId)) {
+        log(`connector ${connectorId}: the EV is full and does not resume`);
+        return;
       }
       if (applyDevice({ type: 'EvResume', connectorId }).error === undefined)
         updatePower(connectorId);
@@ -2324,8 +2149,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         log(`meter: unknown connector ${connectorId}`);
         return;
       }
-      const before = syncMeter(connectorId).energyWh;
-      meters.set(connectorId, { ...syncMeter(connectorId), energyWh: Math.max(0, energyWh) });
+      const before = energy.setRegister(connectorId, energyWh);
       log(
         `meter of connector ${connectorId} set from ${Math.round(before)} to ${Math.round(Math.max(0, energyWh))} Wh`,
       );
@@ -2362,11 +2186,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     },
 
     setEnergyMultiplier(multiplier) {
-      const next = checkedMultiplier(multiplier);
-      // Energy so far counts at the old rate.
-      for (const id of meters.keys()) syncMeter(id);
-      energyMultiplier = next;
-      for (const id of meters.keys()) scheduleFull(id);
+      energy.setMultiplier(checkedMultiplier(multiplier));
       changed();
     },
 
@@ -2379,7 +2199,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         connectors: connectors(station).map((connector) => {
           const status = connectorStatus(connector, station);
           const reading = syncMeter(connector.connectorId);
-          const ev = evs.get(connector.connectorId);
+          const ev = energy.ev(connector.connectorId);
           const transaction = transactions.get(connector.connectorId);
           return {
             connectorId: connector.connectorId,
@@ -2406,7 +2226,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
           };
         }),
         config: readableConfigValues(config),
-        queuedMessages: outbox.length,
+        queuedMessages: outbox.entries.length,
         ...(firmwareVersion !== undefined && { firmwareVersion }),
         firmwareStatus,
         diagnosticsStatus,
@@ -2419,7 +2239,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         },
         securityEvents: securityLog.slice(-20).map((entry) => ({ ...entry })),
         behaviour: { ...behaviour },
-        energyMultiplier,
+        energyMultiplier: energy.multiplier,
         localList: {
           version: localListVersion(localList),
           size: Object.keys(localList.entries).length,
@@ -2481,9 +2301,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
         version: 1,
         savedAt,
         config: { ...config.values },
-        meters: Object.fromEntries(
-          [...meters.keys()].map((id) => [String(id), syncMeter(id).energyWh]),
-        ),
+        meters: energy.registers(),
         authCache,
         transactions: [...transactions].map(([connectorId, transaction]) => ({
           connectorId,
@@ -2495,11 +2313,11 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
             transactionId: transaction.transactionId,
           }),
         })),
-        outbox: outbox.map((entry) => ({ ...entry })),
+        outbox: outbox.entries.map((entry) => ({ ...entry })),
         csmsIds: Object.fromEntries(csmsIds),
         sequence,
         behaviour: { ...behaviour },
-        energyMultiplier,
+        energyMultiplier: energy.multiplier,
         localList,
         reservations: [...reservations.values()].map((r) => ({ ...r })),
         chargingProfiles: chargingProfiles.map((p) => ({ ...p })),

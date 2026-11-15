@@ -67,8 +67,16 @@ export interface RecorderOptions {
   /** Entries kept per station. Default 1000; 0 keeps none (listeners still get every entry). */
   limit?: number;
   now?: () => number;
-  /** Checks a CALL or CALLRESULT payload; non-empty problems are kept as `schemaErrors`. */
-  check?: (action: string, kind: 'request' | 'response', payload: unknown) => string[] | undefined;
+  /**
+   * Checks a CALL or CALLRESULT payload of a station (against the schemas of
+   * its OCPP version); non-empty problems are kept as `schemaErrors`.
+   */
+  check?: (
+    action: string,
+    kind: 'request' | 'response',
+    payload: unknown,
+    stationId: string,
+  ) => string[] | undefined;
 }
 
 export function createRecorder(options: RecorderOptions = {}): Recorder {
@@ -81,13 +89,14 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
   let seq = 0;
 
   function schemaErrors(
+    stationId: string,
     action: string | undefined,
     kind: 'request' | 'response',
     payload: unknown,
     check = true,
   ) {
     if (!check || action === undefined || options.check === undefined) return {};
-    const problems = options.check(action, kind, payload);
+    const problems = options.check(action, kind, payload, stationId);
     return problems !== undefined && problems.length > 0 ? { schemaErrors: problems } : {};
   }
 
@@ -127,7 +136,7 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
             uniqueId: frame.id,
             action: frame.action,
             payload: frame.payload,
-            ...schemaErrors(frame.action, 'request', frame.payload, check),
+            ...schemaErrors(stationId, frame.action, 'request', frame.payload, check),
           };
         } else {
           const action = actions.get(key);
@@ -146,7 +155,7 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
                     errorDetails: frame.errorDetails,
                   },
             ...(frame.type === MessageTypeId.CallResult &&
-              schemaErrors(action, 'response', frame.payload, check)),
+              schemaErrors(stationId, action, 'response', frame.payload, check)),
           };
         }
       }

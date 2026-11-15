@@ -808,6 +808,12 @@ Every 2.0.1 scenario for the covered profiles passes against CitrineOS in CI, ev
 - The device reducer stays the one source of connector facts (cable, lock, authorization, transaction, EV or EVSE suspension, fault, availability, reservation). The 1.6 status and the 2.0.1 connector status and charging state are pure views of the same facts.
 - Layout: 2.0.1 modules in `packages/core/src/ocpp201/`, shared parts at the top of `src/`, the 1.6 files where they are.
 
+Implemented (T59):
+
+- `message-set.ts` in core: `OCPP16_MESSAGE_SET` and `OCPP201_MESSAGE_SET` with the subprotocol, the actions by sender, the validators and the error-code spelling. `createRpc` takes `messages` and is typed by `RpcTypes` (`Ocpp16RpcTypes`, `Ocpp201RpcTypes`). A 2.0.1 station answers an unknown message type with MessageTypeNotSupported when the uniqueId is readable; a 1.6 station ignores it as before.
+- Moved out of the 1.6 closure so far: `station-timers.ts` (timers and `halt()`), `outbox.ts` (guaranteed delivery; `prepare`, `final` and `answered` hooks carry what differs by version, for 1.6 the CSMS's transactionId and the SecurityEventNotification rule) and `energy.ts` (meters, EVs, multiplier, limit, full-battery timer). The certificate store, file transfers and reservation expiry move with the 2.0.1 tasks that reuse them (T69, T71).
+- `ChargePoint.ocpp` names the version. The transport offers and requires the station's subprotocol, and the recorder checks each frame against the OCA schemas of its station's version, loading a version's set when first needed.
+
 **Device Model**
 
 - A store of components (name, instance, EVSE id, connector id) and their variables (name, instance). A variable has an Actual attribute and optionally Target, MinSet and MaxSet, each with a mutability (ReadOnly, WriteOnly, ReadWrite) and persistent and constant flags, plus characteristics (dataType, unit, valuesList, maxLimit; supportsMonitoring is false, since monitoring is out of scope).

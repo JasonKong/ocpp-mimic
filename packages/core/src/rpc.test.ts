@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { ManualClock } from './clock.js';
 import { sequentialIds } from './ids.js';
-import { createRpc, type CsmsHandlers, type RpcEvent } from './rpc.js';
+import { OCPP201_MESSAGE_SET, type Ocpp201RpcTypes } from './message-set.js';
+import { createRpc, type CsmsHandlers, type RpcEvent, type RpcHandlers } from './rpc.js';
 
 const BOOT = { chargePointVendor: 'VendorX', chargePointModel: 'AC-7' };
 const BOOT_OK = { status: 'Accepted', currentTime: '2026-11-14T10:00:00Z', interval: 60 };
@@ -215,5 +216,69 @@ describe('incoming calls', () => {
       { type: 'received', text: '[2,"c1","ClearCache",{}]' },
       { type: 'sent', text: '[3,"c1",{"status":"Accepted"}]' },
     ]);
+  });
+});
+
+describe('an OCPP 2.0.1 message set', () => {
+  function setup201(handlers: RpcHandlers<Ocpp201RpcTypes> = {}) {
+    const clock = new ManualClock();
+    const sent: unknown[] = [];
+    const rpc = createRpc<Ocpp201RpcTypes>({
+      clock,
+      ids: sequentialIds('m'),
+      send: (text) => sent.push(JSON.parse(text)),
+      messages: OCPP201_MESSAGE_SET,
+      handlers,
+    });
+    return { rpc, sent };
+  }
+
+  it('validates calls and answers with the 2.0.1 definitions', async () => {
+    const { rpc, sent } = setup201();
+    const boot = {
+      reason: 'PowerUp' as const,
+      chargingStation: { model: 'AC-7', vendorName: 'VendorX' },
+    };
+    const outcome = rpc.call('BootNotification', boot);
+    expect(sent).toEqual([[2, 'm1', 'BootNotification', boot]]);
+    rpc.receive(
+      JSON.stringify([
+        3,
+        'm1',
+        { currentTime: '2026-11-15T10:00:00Z', interval: 300, status: 'Accepted' },
+      ]),
+    );
+    expect(await outcome).toMatchObject({ ok: true, payload: { status: 'Accepted' } });
+    // The 1.6 shape is not a 2.0.1 BootNotification.
+    const old = await rpc.call('BootNotification', BOOT as never);
+    expect(old).toMatchObject({ ok: false, failure: { kind: 'InvalidRequest' } });
+  });
+
+  it('answers unknown, unsupported and invalid CALLs with the 2.0.1 error codes', async () => {
+    const { rpc, sent } = setup201({
+      GetVariables: () => ({ getVariableResult: [] as never }),
+    });
+    rpc.receive('[2,"c1","RemoteStartTransaction",{}]');
+    rpc.receive('[2,"c2","SetDisplayMessage",{}]');
+    rpc.receive('[2,"c3","GetVariables",{"getVariableData":[],"extra":1}]');
+    rpc.receive('[2,"c4","GetVariables",{"getVariableData":[]}]');
+    rpc.receive('[7,"c5","Heartbeat",{}]');
+    rpc.receive('[2,"c6","GetVariables"]');
+    await flush();
+    expect(heads(sent, 3)).toEqual([
+      [4, 'c1', 'NotImplemented'],
+      [4, 'c2', 'NotSupported'],
+      [4, 'c3', 'OccurrenceConstraintViolation'],
+      [4, 'c4', 'OccurrenceConstraintViolation'],
+      [4, 'c5', 'MessageTypeNotSupported'],
+      [4, 'c6', 'FormatViolation'],
+    ]);
+  });
+
+  it('leaves unknown message types unanswered in 1.6', async () => {
+    const { rpc, sent } = setup();
+    rpc.receive('[7,"c1","Heartbeat",{}]');
+    await flush();
+    expect(sent).toEqual([]);
   });
 });

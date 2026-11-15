@@ -80,6 +80,7 @@ export function parseFrame(text: string): ParseFrameResult {
     return fail({
       reason: 'unknown-message-type',
       message: `unknown message type id ${JSON.stringify(type)}`,
+      ...(isUsableId(id) && { id }),
     });
   }
 

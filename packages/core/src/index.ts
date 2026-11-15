@@ -35,6 +35,7 @@ export * as s from './schema.js';
 export { VERSION } from './version.js';
 export * from './device.js';
 export * from './rpc.js';
+export * from './message-set.js';
 export * from './config.js';
 export * from './auth.js';
 export * from './local-list.js';

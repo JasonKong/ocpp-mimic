@@ -8,6 +8,7 @@ import {
   configInt,
   createChargePoint,
   createConfig,
+  OCPP16_MESSAGE_SET,
   DEFAULT_RAMP_UP,
   createUsageDriver,
   rampUpDelays,
@@ -308,6 +309,8 @@ export function createFleet(options: FleetOptions): Fleet {
     const reported = new Set<string>();
     const transport = createTransport({
       url: definition.csmsUrl,
+      // Every station speaks 1.6 until 2.0.1 personas exist.
+      subprotocol: OCPP16_MESSAGE_SET.subprotocol,
       chargeBoxId: definition.id,
       connectionSettings: () =>
         holder.chargePoint === undefined
