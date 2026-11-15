@@ -86,7 +86,10 @@ function statusClass(station: StationSummary): string {
 
 function meta(station: StationSummary): string {
   if (station.state === 'stopped') return 'Stopped';
-  const charging = station.connectors.filter((c) => c.status === 'Charging').length;
+  // 2.0.1 reports Occupied; the charging itself shows in the station's view.
+  const charging = station.connectors.filter(
+    (c) => c.status === 'Charging' || c.status === 'Occupied',
+  ).length;
   if (charging > 0) return `Charging ${charging}`;
   return station.state === 'connected' ? station.registration : station.state;
 }
@@ -120,7 +123,7 @@ function meta(station: StationSummary): string {
         Persona
         <select v-model="form.persona">
           <option v-for="persona in personas" :key="persona.id" :value="persona.id">
-            {{ persona.id }}
+            {{ persona.id }} · OCPP {{ persona.ocpp }}
           </option>
         </select>
       </label>
@@ -171,6 +174,7 @@ function meta(station: StationSummary): string {
         >
           <span class="dot" :class="statusClass(station)" />
           <span class="name">{{ station.id }}</span>
+          <span v-if="station.ocpp === '2.0.1'" class="version" title="OCPP 2.0.1">2.0.1</span>
           <span class="meta">{{ meta(station) }}</span>
         </li>
       </ul>
@@ -198,6 +202,13 @@ h2 {
   font-weight: 400;
   color: var(--muted);
   font-size: 13px;
+}
+.version {
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
 }
 .create {
   display: grid;

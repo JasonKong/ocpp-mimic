@@ -17,3 +17,15 @@ export const OCPP201_RPC_ERROR_CODES = [
   'TypeConstraintViolation',
 ] as const;
 export type Ocpp201RpcErrorCode = (typeof OCPP201_RPC_ERROR_CODES)[number];
+
+/** The IdToken types of IdTokenEnumType, for presenting a token. */
+export const ID_TOKEN_TYPES: readonly string[] = [
+  'Central',
+  'eMAID',
+  'ISO14443',
+  'ISO15693',
+  'KeyCode',
+  'Local',
+  'MacAddress',
+  'NoAuthorization',
+];

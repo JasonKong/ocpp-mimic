@@ -6,8 +6,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   DEFAULT_BEHAVIOUR,
   expandIdPattern,
+  ID_TOKEN_TYPES,
   nameProblem,
   OCPP16_SUBPROTOCOL,
+  OCPP201_SUBPROTOCOL,
   parseInjection,
   parseRampUp,
   tagsProblem,
@@ -19,6 +21,7 @@ import {
   type ChargePointBehaviour,
   type Fault,
   type PluggedEv,
+  type ChargePoint201,
 } from '@ocpp-mimic/core';
 import { resolveEv } from './evs.js';
 import { exportLog } from './logs/export.js';
@@ -274,6 +277,8 @@ export function connectionState(snapshot: StationSnapshot): ConnectionState {
 export interface StationSummary {
   id: string;
   persona: string;
+  /** The OCPP version the station speaks. */
+  ocpp: string;
   group?: string;
   tags: string[];
   state: ConnectionState;
@@ -286,6 +291,7 @@ export function stationSummary(snapshot: StationSnapshot): StationSummary {
   return {
     id: snapshot.id,
     persona: snapshot.persona,
+    ocpp: snapshot.ocpp,
     ...(snapshot.group !== undefined && { group: snapshot.group }),
     tags: snapshot.tags,
     state: connectionState(snapshot),
@@ -341,7 +347,7 @@ const routes: Route[] = [
   route('GET', '/api/health', () => ({
     status: 'ok',
     version: VERSION,
-    ocpp: [OCPP16_SUBPROTOCOL],
+    ocpp: [OCPP16_SUBPROTOCOL, OCPP201_SUBPROTOCOL],
   })),
 
   route('GET', '/api/metrics', (_request, { metrics }) => {
@@ -352,8 +358,10 @@ const routes: Route[] = [
   route('GET', '/api/personas', (_request, { personas }) => ({
     personas: personas.list().map((persona) => ({
       id: persona.id,
+      ocpp: persona.ocpp,
       description: persona.definition.description,
       connectors: persona.definition.connectors,
+      ...(persona.ocpp === '2.0.1' && { features: persona.options.features }),
       boot: persona.definition.boot,
       faults: persona.definition.faults ?? [],
       evs: persona.definition.evs ?? {},
@@ -589,10 +597,17 @@ const routes: Route[] = [
   route(
     'POST',
     '/api/stations/:param/connectors/:param/id-tag',
-    connectorAction(async (s, c, body) => ({
-      result: await s.chargePoint.presentIdTag(c, stringField(body, 'idTag', true)),
-      station: s.snapshot(),
-    })),
+    connectorAction(async (s, c, body) => {
+      // A 2.0.1 station takes an IdToken type (default ISO14443); 1.6 has none.
+      const type = stringField(body, 'type', false);
+      if (type !== undefined && !ID_TOKEN_TYPES.includes(type)) {
+        throw new HttpError(400, `"type" must be one of ${ID_TOKEN_TYPES.join(', ')}`);
+      }
+      return {
+        result: await s.chargePoint.presentIdTag(c, stringField(body, 'idTag', true), type),
+        station: s.snapshot(),
+      };
+    }),
   ),
   route(
     'POST',
@@ -614,6 +629,28 @@ const routes: Route[] = [
     '/api/stations/:param/connectors/:param/fault',
     connectorAction((s, c) => s.chargePoint.clearFault(c)),
   ),
+
+  route('GET', '/api/stations/:param/device-model', (request, context) => {
+    const station = stationOf(context, request.params[0]);
+    if (station.chargePoint.ocpp !== '2.0.1') {
+      throw new HttpError(404, `station ${station.id} speaks OCPP 1.6, which has no Device Model`);
+    }
+    return { variables: (station.chargePoint as ChargePoint201).deviceModelView() };
+  }),
+
+  route('PATCH', '/api/stations/:param/device-model', async (request, context) => {
+    const station = stationOf(context, request.params[0]);
+    if (station.chargePoint.ocpp !== '2.0.1') {
+      throw new HttpError(404, `station ${station.id} speaks OCPP 1.6, which has no Device Model`);
+    }
+    const body = await request.body();
+    // As a local operator: the SetVariables checks apply; the answer is its attributeStatus.
+    return (station.chargePoint as ChargePoint201).setVariable(
+      stringField(body, 'component', true),
+      stringField(body, 'variable', true),
+      typeof body.value === 'string' ? body.value : stringField(body, 'value', true),
+    );
+  }),
 
   route('GET', '/api/stations/:param/messages', (request, context) => {
     const station = stationOf(context, request.params[0]);

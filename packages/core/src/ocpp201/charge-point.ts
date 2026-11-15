@@ -56,6 +56,7 @@ import {
 } from '../rpc.js';
 import { createStationTimers } from '../station-timers.js';
 import type {
+  AttributeEnumType,
   BootReasonEnumType,
   ChargingStateEnumType,
   ChargingStationType,
@@ -75,6 +76,7 @@ import {
   componentKey,
   createDeviceModel,
   parseComponentKey,
+  parseVariableKey,
   variableKey,
   type DeviceModelOverrides,
 } from './device-model.js';
@@ -288,8 +290,34 @@ function checkedMultiplier(value: number): number {
 }
 
 /** A 2.0.1 charging station: its saved state is a 2.0.1 state. */
+/** One Device Model variable as the API and the Web UI show it. */
+export interface DeviceModelEntry {
+  /** `Name`, `Name:instance`, `Name@evse` or `Name@evse.connector`. */
+  component: string;
+  /** `Name` or `Name:instance`. */
+  variable: string;
+  dataType: string;
+  unit?: string;
+  valuesList?: string;
+  minLimit?: number;
+  maxLimit?: number;
+  /** Each attribute; the value of a WriteOnly one is never shown. */
+  attributes: { type: string; mutability: string; value?: string }[];
+}
+
 export interface ChargePoint201 extends ChargePoint {
   persistentState(): PersistedChargePoint201;
+  /** The Device Model: every variable with its characteristics and attribute values. */
+  deviceModelView(): DeviceModelEntry[];
+  /**
+   * Sets an Actual value as a local operator would: the SetVariables checks
+   * apply (mutability, data type, limits), and so do its effects.
+   */
+  setVariable(
+    component: string,
+    variable: string,
+    value: string,
+  ): { status: string; reason?: string };
 }
 
 export function createChargePoint201(options: ChargePoint201Options): ChargePoint201 {
@@ -2218,6 +2246,54 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         security: security.persistent(),
         chargingProfiles: chargingProfiles.map((p) => ({ ...p })),
         reservations: reservations.map((r) => ({ ...r })),
+      };
+    },
+
+    deviceModelView(): DeviceModelEntry[] {
+      return deviceModel.definitions().map((d) => {
+        const component = componentKey(d.component);
+        const variable = variableKey(d.variable);
+        return {
+          component,
+          variable,
+          dataType: d.dataType,
+          ...(d.unit !== undefined && { unit: d.unit }),
+          ...(d.valuesList !== undefined && { valuesList: d.valuesList }),
+          ...(d.minLimit !== undefined && { minLimit: d.minLimit }),
+          ...(d.maxLimit !== undefined && { maxLimit: d.maxLimit }),
+          attributes: Object.entries(d.attributes).map(([type, attribute]) => {
+            const value =
+              attribute.mutability === 'WriteOnly'
+                ? undefined
+                : deviceModel.get(component, variable, type as AttributeEnumType);
+            return {
+              type,
+              mutability: attribute.mutability,
+              ...(value !== undefined && { value }),
+            };
+          }),
+        };
+      });
+    },
+
+    setVariable(componentText, variableText, value) {
+      const component = parseComponentKey(componentText);
+      const variable = parseVariableKey(variableText);
+      if (component === undefined || variable === undefined) return { status: 'UnknownVariable' };
+      const { results, changed: keys } = deviceModel.setVariables([
+        { component, variable, attributeValue: value },
+      ]);
+      for (const key of keys) variableChanged(key);
+      if (keys.length > 0) {
+        log(`${componentText}.${variableText} set locally`);
+        changed();
+      }
+      const [result] = results;
+      return {
+        status: result?.attributeStatus ?? 'Rejected',
+        ...(result?.attributeStatusInfo?.additionalInfo !== undefined && {
+          reason: result.attributeStatusInfo.additionalInfo,
+        }),
       };
     },
 
