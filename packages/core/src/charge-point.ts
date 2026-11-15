@@ -131,7 +131,8 @@ export type DelayedCommand =
   | 'RequestStopTransaction'
   | 'Reset'
   | 'UnlockConnector'
-  | 'TriggerMessage';
+  | 'TriggerMessage'
+  | 'CustomerInformation';
 
 export const DEFAULT_TIMING: ChargePointTiming = {
   startTransactionDelayMs: 500,

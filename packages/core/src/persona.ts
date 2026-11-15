@@ -195,6 +195,7 @@ export const Persona201Schema = object(
             Reset: durationSchema,
             UnlockConnector: durationSchema,
             TriggerMessage: durationSchema,
+            CustomerInformation: durationSchema,
           },
         ),
       },

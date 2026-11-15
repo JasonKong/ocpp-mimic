@@ -1010,7 +1010,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       | 'RequestStopTransaction'
       | 'Reset'
       | 'UnlockConnector'
-      | 'TriggerMessage',
+      | 'TriggerMessage'
+      | 'CustomerInformation',
   ) => timing.actionDelaysMs?.[command] ?? timing.actionDelayMs;
 
   /**
@@ -1135,7 +1136,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     const pages: string[] = [];
     for (let i = 0; i < text.length; i += 512) pages.push(text.slice(i, i + 512));
     const generatedAt = timestamp();
-    later(0, () => {
+    // Gathering the data takes a moment; a CSMS also needs one to record its request.
+    later(commandDelay('CustomerInformation'), () => {
       pages.forEach((data, seqNo) => {
         void sendIfOnline('NotifyCustomerInformation', {
           data,
