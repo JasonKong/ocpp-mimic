@@ -51,7 +51,7 @@ export const FEATURE_PROFILES = [
 ] as const;
 
 /** 2.0.1 certification profiles implemented so far. */
-export const IMPLEMENTED_201_PROFILES: readonly string[] = ['Core'];
+export const IMPLEMENTED_201_PROFILES: readonly string[] = ['Core', 'LocalAuthListManagement'];
 
 /** Feature profiles this version of the charge point implements. */
 export const IMPLEMENTED_FEATURE_PROFILES: readonly string[] = [

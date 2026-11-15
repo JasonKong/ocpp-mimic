@@ -1,0 +1,92 @@
+# OCPP 2.0.1 authorization (C, D) against the built-in CSMS.
+name: TC_D_01_CS and TC_C_14_CS Send a local list and authorize from it
+station: { id: REG201-LIST, persona: regression-2.0.1 }
+steps:
+  - csmsCall: { action: GetLocalListVersion, payload: {}, answer: { versionNumber: 0 } }
+  - csmsCall:
+      action: SendLocalList
+      payload:
+        versionNumber: 1
+        updateType: Full
+        localAuthorizationList:
+          - { idToken: { idToken: LISTED, type: ISO14443 }, idTokenInfo: { status: Accepted } }
+          - { idToken: { idToken: BLOCKED, type: ISO14443 }, idTokenInfo: { status: Blocked } }
+      answer: { status: Accepted }
+  - csmsCall: { action: GetLocalListVersion, payload: {}, answer: { versionNumber: 1 } }
+  # Listed and Accepted: no Authorize (C14.FR.02).
+  - presentCard: { idToken: LISTED, result: authorized }
+  - expectNo: { sent: Authorize, within: 500ms }
+  - csmsCall:
+      action: SendLocalList
+      payload: { versionNumber: 1, updateType: Differential }
+      answer: { status: VersionMismatch }
+  - csmsCall:
+      action: SendLocalList
+      payload:
+        versionNumber: 2
+        updateType: Differential
+        localAuthorizationList: [{ idToken: { idToken: BLOCKED, type: ISO14443 } }]
+      answer: { status: Accepted }
+  - expectStation: { localList: { version: 2, size: 1 } }
+---
+name: TC_C_13_CS Authorize offline from the local list
+station: { id: REG201-LIST-OFFLINE, persona: regression-2.0.1 }
+steps:
+  - csmsCall:
+      action: SendLocalList
+      payload:
+        versionNumber: 1
+        updateType: Full
+        localAuthorizationList:
+          [{ idToken: { idToken: LISTED, type: ISO14443 }, idTokenInfo: { status: Accepted } }]
+      answer: { status: Accepted }
+  - offline: { mode: clean }
+  - presentCard: { idToken: LISTED, result: authorized }
+  - presentCard: { idToken: UNKNOWN, evse: 2, result: rejected }
+  - plugIn: {}
+  - online: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started, offline: true }, within: 15s }
+---
+name: TC_C_08_CS and TC_C_32_CS Cache, local pre-authorization and ClearCache
+station:
+  id: REG201-CACHE
+  persona: regression-2.0.1
+  deviceModel: { AuthCtrlr: { LocalPreAuthorize: true } }
+steps:
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - expect: { sent: Authorize }
+  - presentCard: { idToken: TAG-1, result: stopping }
+  # Cached as Accepted: no Authorize this time (C12).
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - expectNo: { sent: Authorize, within: 500ms }
+  - csmsCall: { action: ClearCache, payload: {}, answer: { status: Accepted } }
+  - presentCard: { idToken: TAG-1, result: stopping }
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - expect: { sent: Authorize }
+---
+name: TC_C_39_CS Stop by a token of the same group, and a Master Pass
+station:
+  id: REG201-GROUP
+  persona: regression-2.0.1
+  deviceModel: { AuthCtrlr: { MasterPassGroupId: MP } }
+steps:
+  - csmsReply:
+      action: Authorize
+      payload: { idTokenInfo: { status: Accepted, groupIdToken: { idToken: G1, type: Central } } }
+      times: 2
+  - presentCard: { idToken: OWNER, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started } }
+  - presentCard: { idToken: FRIEND, result: stopping }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        {
+          eventType: Ended,
+          triggerReason: StopAuthorized,
+          transactionInfo: { stoppedReason: Local },
+        }
+  - csmsReply:
+      action: Authorize
+      payload: { idTokenInfo: { status: Accepted, groupIdToken: { idToken: MP, type: Central } } }
+  - presentCard: { idToken: MASTER, evse: 2, result: rejected }

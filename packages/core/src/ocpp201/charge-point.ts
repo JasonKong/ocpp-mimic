@@ -56,6 +56,7 @@ import type {
   ChargingStateEnumType,
   ChargingStationType,
   IdTokenEnumType,
+  IdTokenInfoType,
   IdTokenType,
   MeterValueType,
   ReadingContextEnumType,
@@ -74,7 +75,16 @@ import {
   type DeviceModelOverrides,
 } from './device-model.js';
 import { sampleMeter201 } from './meter-values.js';
-import { standardVariables } from './standard-variables.js';
+import {
+  applyLocalList,
+  decideToken,
+  EMPTY_LOCAL_LIST_201,
+  rememberToken,
+  sameGroup,
+  type AuthCache201,
+  type LocalList201,
+} from './authorization.js';
+import { LOCAL_LIST_SIZE, standardVariables } from './standard-variables.js';
 import { chargingState, parseTxPoints, startPoint, stopPoint } from './transaction.js';
 import { connectorStatus201, stationStatus201, type ConnectorStatus201 } from './status.js';
 
@@ -134,6 +144,8 @@ export interface PersistedChargePoint201 {
   deviceModel: Record<string, string>;
   /** Transactions running at the save; they end with PowerLoss after the restart. */
   transactions: PersistedTransaction201[];
+  authCache: AuthCache201;
+  localList: LocalList201;
 }
 
 export interface PersistedTransaction201 {
@@ -149,9 +161,10 @@ export interface PersistedTransaction201 {
   stoppedReason?: ReasonEnumType;
 }
 
-/** A token authorized at a connector. */
+/** A token authorized at a connector, with what the CSMS, list or cache said about it. */
 interface Authorization {
   idToken: IdTokenType;
+  info?: Omit<IdTokenInfoType, 'customData'>;
   remoteStartId?: number;
 }
 
@@ -284,6 +297,9 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       }
       if (component.name === 'ChargingStation' && variableName === 'Problem') {
         return String(station.fault !== undefined);
+      }
+      if (component.name === 'LocalAuthListCtrlr' && variableName === 'Entries') {
+        return String(Object.keys(localList.entries).length);
       }
       const connector =
         component.evse === undefined ? undefined : findConnector(station, component.evse.id);
@@ -433,6 +449,9 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
   /** The token authorized at each connector, until its session ends. */
   const authorizations = new Map<number, Authorization>();
+  let authCache: AuthCache201 = { ...options.restore?.authCache };
+  let localList: LocalList201 = options.restore?.localList ?? EMPTY_LOCAL_LIST_201;
+  const features = options.features ?? ['Core'];
   /** EVConnectionTimeOut: an authorization waiting for the cable. */
   const connectTimers = new Map<number, TimerHandle>();
   const transactions = new Map<number, Transaction201>();
@@ -526,6 +545,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     void outbox.enqueue('TransactionEvent', payload, tx.id).then((outcome) => {
       if (!outcome.ok || eventType === 'Ended') return;
       const info = (outcome.payload as Ocpp201ResponseOf<'TransactionEvent'>).idTokenInfo;
+      if (info !== undefined && extra.idToken !== undefined) rememberAnswer(extra.idToken, info);
       if (info === undefined || info.status === 'Accepted') return;
       if (transactions.get(connectorId) !== tx) return;
       log(`connector ${connectorId}: the CSMS answered ${info.status} for the transaction's token`);
@@ -776,12 +796,72 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     evaluate(connectorId, trigger, idToken);
   }
 
-  /** Asks whether a token may charge: Authorize online; offline only with OfflineTxForUnknownIdEnabled. */
-  async function authorize(idToken: IdTokenType): Promise<boolean> {
-    if (dmValue('AuthCtrlr', 'Enabled') === 'false') return true;
-    if (!online()) return dmValue('AuthCtrlr', 'OfflineTxForUnknownIdEnabled') === 'true';
+  type TokenInfo = Omit<IdTokenInfoType, 'customData'>;
+
+  /** Keeps the CSMS's answer for a token in the cache, when the cache is on (C10). */
+  function rememberAnswer(idToken: IdTokenType, info: IdTokenInfoType): void {
+    if (dmValue('AuthCacheCtrlr', 'Enabled') === 'false') return;
+    const { customData: _dropped, ...plain } = info;
+    authCache = rememberToken(authCache, idToken, plain, now());
+    changed();
+  }
+
+  /**
+   * Whether a token may charge, and what is known about it: the Local
+   * Authorization List, then the cache, then Authorize to the CSMS when
+   * online; offline, the C13 rules. AuthCtrlr.Enabled false accepts all.
+   */
+  async function authorize(idToken: IdTokenType): Promise<{ ok: boolean; info?: TokenInfo }> {
+    if (dmValue('AuthCtrlr', 'Enabled') === 'false') return { ok: true };
+    const settings = (online: boolean) => ({
+      online,
+      listEnabled:
+        features.includes('LocalAuthListManagement') &&
+        dmValue('LocalAuthListCtrlr', 'Enabled') !== 'false',
+      cacheEnabled: dmValue('AuthCacheCtrlr', 'Enabled') !== 'false',
+      cacheLifeTimeS: dmInt('AuthCacheCtrlr', 'LifeTime'),
+      localPreAuthorize: dmValue('AuthCtrlr', 'LocalPreAuthorize') === 'true',
+      localAuthorizeOffline: dmValue('AuthCtrlr', 'LocalAuthorizeOffline') !== 'false',
+      offlineTxForUnknownIdEnabled: dmValue('AuthCtrlr', 'OfflineTxForUnknownIdEnabled') === 'true',
+      disableRemoteAuthorization: dmValue('AuthCtrlr', 'DisableRemoteAuthorization') === 'true',
+      disablePostAuthorize: dmValue('AuthCacheCtrlr', 'DisablePostAuthorize') === 'true',
+    });
+    const local = decideToken(idToken, authCache, localList, settings(online()), now());
+    if (local.decision !== 'ask') {
+      return {
+        ok: local.decision === 'start',
+        ...(local.info !== undefined && { info: local.info }),
+      };
+    }
     const outcome = await sendIfOnline('Authorize', { idToken });
-    return outcome?.ok === true && outcome.payload.idTokenInfo.status === 'Accepted';
+    if (outcome === undefined || !outcome.ok) {
+      // No answer: decide as offline.
+      const fallback = decideToken(idToken, authCache, localList, settings(false), now());
+      return {
+        ok: fallback.decision === 'start',
+        ...(fallback.decision !== 'ask' && fallback.info !== undefined && { info: fallback.info }),
+      };
+    }
+    const info = outcome.payload.idTokenInfo;
+    rememberAnswer(idToken, info);
+    const { customData: _dropped, ...plain } = info;
+    return { ok: info.status === 'Accepted', info: plain };
+  }
+
+  /** Whether a token belongs to the Master Pass group (C16): it stops, never starts. */
+  const isMasterPass = (info: TokenInfo | undefined) => {
+    const group = dmValue('AuthCtrlr', 'MasterPassGroupId');
+    return group !== '' && info?.groupIdToken?.idToken === group;
+  };
+
+  /** A Master Pass ends every transaction (stoppedReason MasterPass). */
+  function stopAll(idToken: IdTokenType): void {
+    for (const connectorId of [...transactions.keys()]) {
+      const tx = transactions.get(connectorId);
+      if (tx !== undefined) tx.stoppedReason = 'MasterPass';
+      authorizations.delete(connectorId);
+      endTransaction(connectorId, 'StopAuthorized', 'MasterPass', idToken);
+    }
   }
 
   /** An authorization waits EVConnectionTimeOut for the cable (E03.FR.05). */
@@ -889,6 +969,29 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   // ---- Commands from the CSMS ---------------------------------------------
 
   const handlers: RpcHandlers<Ocpp201RpcTypes> = {
+    ClearCache() {
+      if (dmValue('AuthCacheCtrlr', 'Enabled') === 'false') return { status: 'Rejected' };
+      authCache = {};
+      changed();
+      return { status: 'Accepted' };
+    },
+
+    SendLocalList(request) {
+      const items = request.localAuthorizationList?.length ?? 0;
+      const maxItems = dmInt('LocalAuthListCtrlr', 'ItemsPerMessage');
+      if (maxItems > 0 && items > maxItems) return { status: 'Failed' };
+      const result = applyLocalList(localList, request, LOCAL_LIST_SIZE);
+      if (result.status === 'Accepted') {
+        localList = result.list;
+        changed();
+      }
+      return { status: result.status };
+    },
+
+    GetLocalListVersion() {
+      return { versionNumber: localList.version };
+    },
+
     GetTransactionStatus(request) {
       const queued = outbox.entries.some(
         (e) =>
@@ -1031,6 +1134,10 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         send: options.send,
         messages: OCPP201_MESSAGE_SET,
         handlers,
+        // Actions of a certification profile the persona does not support answer NotSupported.
+        supports: (action) =>
+          (action !== 'SendLocalList' && action !== 'GetLocalListVersion') ||
+          features.includes('LocalAuthListManagement'),
         onEvent: (event) => emit({ type: 'rpc', event }),
       });
       void boot();
@@ -1098,19 +1205,40 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       const connector = findConnector(station, connectorId);
       if (connector === undefined) return 'unknown-connector';
       const idToken: IdTokenType = { idToken: token, type: type as IdTokenEnumType };
-      const current =
-        authorizations.get(connectorId)?.idToken ?? transactions.get(connectorId)?.idToken;
+      const session = authorizations.get(connectorId);
+      const current = session?.idToken ?? transactions.get(connectorId)?.idToken;
       if (current !== undefined) {
-        // The same token ends the session (E07); another one is refused here.
-        if (current.idToken !== token || current.type !== idToken.type) return 'busy';
-        deauthorize(connectorId, 'StopAuthorized', 'Local', idToken);
+        // The same token ends the session (E07), so does one of its group (C09).
+        if (current.idToken === token && current.type === idToken.type) {
+          deauthorize(connectorId, 'StopAuthorized', 'Local', idToken);
+          return 'stopping';
+        }
+        const presented = await authorize(idToken);
+        if (isMasterPass(presented.info)) {
+          stopAll(idToken);
+          return 'stopping';
+        }
+        if (presented.ok && sameGroup(presented.info, session?.info)) {
+          deauthorize(connectorId, 'StopAuthorized', 'Local', idToken);
+          return 'stopping';
+        }
+        return 'busy';
+      }
+      const result = await authorize(idToken);
+      if (isMasterPass(result.info)) {
+        // A Master Pass cannot start a transaction (C12.FR.09), but stops every one.
+        if (transactions.size === 0) return 'rejected';
+        stopAll(idToken);
         return 'stopping';
       }
-      if (!(await authorize(idToken))) {
+      if (!result.ok) {
         log(`connector ${connectorId}: ${token} rejected`);
         return 'rejected';
       }
-      authorizations.set(connectorId, { idToken });
+      authorizations.set(connectorId, {
+        idToken,
+        ...(result.info !== undefined && { info: result.info }),
+      });
       if (!connector.plugged) awaitCable(connectorId);
       evaluate(connectorId, 'Authorized', idToken);
       return 'authorized';
@@ -1238,7 +1366,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         securityEvents: [],
         behaviour: { ...behaviour },
         energyMultiplier: energy.multiplier,
-        localList: { version: 0, size: 0 },
+        localList: { version: localList.version, size: Object.keys(localList.entries).length },
         reservations: [],
         chargingProfiles: [],
       };
@@ -1274,6 +1402,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
           ...(tx.remoteStartId !== undefined && { remoteStartId: tx.remoteStartId }),
           ...(tx.stoppedReason !== undefined && { stoppedReason: tx.stoppedReason }),
         })),
+        authCache,
+        localList,
       };
     },
 

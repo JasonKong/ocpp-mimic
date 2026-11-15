@@ -10,7 +10,7 @@ boot:
 connectors: 1
 power:
   offeredW: 7360
-features: [Core]
+features: [Core, LocalAuthListManagement]
 timing:
   startTransactionDelay: 500ms
   actionDelay: 100ms
