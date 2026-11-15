@@ -20,6 +20,7 @@ function setup(
     csms?: Record<string, Responder>;
     restore?: PersistedChargePoint201;
     deviceModel?: ChargePoint201Options['deviceModel'];
+    features?: string[];
   } = {},
 ) {
   const clock = new ManualClock(T0);
@@ -48,6 +49,7 @@ function setup(
     },
     ...(options.restore !== undefined && { restore: options.restore }),
     ...(options.deviceModel !== undefined && { deviceModel: options.deviceModel }),
+    features: options.features ?? ['Core', 'LocalAuthListManagement'],
   });
   let answered = 0;
   let csmsIds = 0;
@@ -744,5 +746,101 @@ describe('a 2.0.1 station: faults', () => {
     cp.raiseFault(1, { errorCode: 'OverCurrentFailure' });
     await settle();
     expect(events()).toEqual(['Started CablePluggedIn', 'Ended AbnormalCondition Other']);
+  });
+});
+
+describe('a 2.0.1 station: authorization', () => {
+  const tag = (idToken: string) => ({ idToken, type: 'ISO14443' });
+
+  it('authorizes from the Local Authorization List without the CSMS, also offline', async () => {
+    const { cp, calls, csmsCall, present, boot } = setup();
+    await boot();
+    expect(await csmsCall('GetLocalListVersion', {})).toEqual({ versionNumber: 0 });
+    expect(
+      await csmsCall('SendLocalList', {
+        versionNumber: 2,
+        updateType: 'Full',
+        localAuthorizationList: [{ idToken: tag('LISTED'), idTokenInfo: { status: 'Accepted' } }],
+      }),
+    ).toEqual({ status: 'Accepted' });
+    expect(await csmsCall('GetLocalListVersion', {})).toEqual({ versionNumber: 2 });
+    expect(await present(1, 'LISTED')).toBe('authorized');
+    expect(calls('Authorize')).toHaveLength(0);
+    cp.disconnected();
+    expect(await present(2, 'LISTED')).toBe('authorized');
+    expect(await present(2, 'UNKNOWN')).toBe('busy');
+    expect(cp.snapshot().localList).toEqual({ version: 2, size: 1 });
+    const restarted = setup({ restore: cp.persistentState() });
+    await restarted.boot();
+    expect(await restarted.csmsCall('GetLocalListVersion', {})).toEqual({ versionNumber: 2 });
+  });
+
+  it('pre-authorizes from the cache with LocalPreAuthorize, and clears it on ClearCache', async () => {
+    const { calls, csmsCall, present, boot, cp, settle } = setup({
+      deviceModel: { AuthCtrlr: { LocalPreAuthorize: true } },
+    });
+    await boot();
+    expect(await present(1, 'TAG-1')).toBe('authorized');
+    expect(calls('Authorize')).toHaveLength(1);
+    expect(await present(1, 'TAG-1')).toBe('stopping');
+    await settle();
+    expect(await present(1, 'TAG-1')).toBe('authorized');
+    expect(calls('Authorize')).toHaveLength(1);
+    expect(await csmsCall('ClearCache', {})).toEqual({ status: 'Accepted' });
+    cp.unplug(1);
+    await present(1, 'TAG-1');
+    await present(2, 'TAG-1');
+    expect(calls('Authorize')).toHaveLength(2);
+    const disabled = setup({ deviceModel: { AuthCacheCtrlr: { Enabled: false } } });
+    await disabled.boot();
+    expect(await disabled.csmsCall('ClearCache', {})).toEqual({ status: 'Rejected' });
+  });
+
+  it('lets a token of the same group stop the session, and a Master Pass stop every one', async () => {
+    const groups: Record<string, string> = { A: 'G1', B: 'G1', C: 'G2', MASTER: 'MP' };
+    const { cp, present, boot, settle, events } = setup({
+      csms: {
+        Authorize: (payload) => {
+          const id = (payload.idToken as { idToken: string }).idToken;
+          return {
+            idTokenInfo: {
+              status: 'Accepted',
+              ...(groups[id] !== undefined && { groupIdToken: tag(groups[id]!) }),
+            },
+          };
+        },
+      },
+      deviceModel: { AuthCtrlr: { MasterPassGroupId: 'MP' } },
+    });
+    await boot();
+    expect(await present(1, 'MASTER')).toBe('rejected');
+    await present(1, 'A');
+    cp.plugIn(1);
+    await settle();
+    expect(await present(1, 'C')).toBe('busy');
+    expect(await present(1, 'B')).toBe('stopping');
+    await settle();
+    await present(1, 'A');
+    await present(2, 'C');
+    cp.plugIn(2);
+    await settle();
+    expect(await present(2, 'MASTER')).toBe('stopping');
+    await settle();
+    expect(events()).toEqual([
+      'Started CablePluggedIn',
+      'Ended StopAuthorized Local',
+      'Started Authorized',
+      'Started CablePluggedIn',
+      'Ended StopAuthorized MasterPass',
+      'Ended StopAuthorized MasterPass',
+    ]);
+  });
+
+  it('answers the local list NotSupported without the profile', async () => {
+    const { csmsCall, boot, frames } = setup({ features: ['Core'] });
+    await boot();
+    await csmsCall('GetLocalListVersion', {});
+    const error = frames.find((f) => f.type === 4);
+    expect(error?.type === 4 && error.errorCode).toBe('NotSupported');
   });
 });

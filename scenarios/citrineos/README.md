@@ -13,9 +13,17 @@ Run them locally:
 
 ```bash
 docker compose -f tools/citrineos/docker-compose.yml up -d
+tools/citrineos/register.sh AA000010 AA000011 AA000001:Accepted:MIMIC-GROUP AA000002:Accepted:MIMIC-GROUP
 pnpm build
 node packages/cli/dist/main.js run scenarios/citrineos --personas scenarios/personas
 ```
+
+`register.sh` adds the scenarios' idTokens to CitrineOS's database: CitrineOS
+answers Authorize from its Authorizations and only sends tokens it knows in a
+local list, and it has no REST endpoint to create them. CitrineOS keeps state
+between runs (local list versions per station, for example), so start a rerun
+from a fresh stack: `docker compose -f tools/citrineos/docker-compose.yml down`
+first.
 
 With other ports, pass `--csms ws://localhost:<ws port>` and
 `--var CITRINE=http://localhost:<http port>`. CI runs them in

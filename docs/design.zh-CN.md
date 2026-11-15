@@ -911,6 +911,8 @@ faults:
 - 卡是一个 IdToken `{ idToken, type }`，类型有 Central、eMAID、ISO14443、ISO15693、KeyCode、Local、MacAddress 和 NoAuthorization；回答里的 idTokenInfo 带 status、groupIdToken 和 cacheExpiryDateTime。
 - AuthCtrlr 选项（LocalAuthorizeOffline、LocalPreAuthorize、OfflineTxForUnknownIdEnabled、AuthorizeRemoteStart、DisableRemoteAuthorization、MasterPassGroupId）、授权缓存（AuthCacheCtrlr.Enabled、LifeTime、Policy、DisablePostAuthorize；ClearCache）和本地列表（LocalAuthListCtrlr、SendLocalList 全量和差量、GetLocalListVersion）按用例 C01 至 C16 实现。规则一致的地方复用 1.6 的缓存和本地列表模块；缓存保留 100 条的上限。
 - 一个 token 开始的交易，可以由 groupIdToken 相同的另一个 token 停止。MasterPassGroupId 组的 token 停止所有交易，但不开始交易。
+- 已实现（T67）：`core/src/ocpp201/authorization.ts` 包含授权缓存（按类型和值作为键，到 cacheExpiryDateTime 或上次使用后 LifeTime 过期，最多 100 条，满时先删非 Accepted 的）、本地授权列表和判断逻辑。在线时：列表里 Accepted 的 token 不发 Authorize 直接开始（C14.FR.02），列表里其他状态或未知的 token 询问 CSMS，缓存里 Accepted 的在 LocalPreAuthorize 为 true 时直接开始，缓存里其他状态的除非 DisablePostAuthorize 为 true 否则询问，DisableRemoteAuthorization 为 true 时从不询问。离线时：列表里 Accepted 的、LocalAuthorizeOffline 为 true 时缓存里 Accepted 的、OfflineTxForUnknownIdEnabled 为 true 时未知的，可以开始。Authorize 和 TransactionEvent 的回答更新缓存；没有收到回答的 Authorize 按离线判断。列表和缓存在重启后保留。LocalAuthListCtrlr（Enabled、maxLimit 为 100 的 Entries、ItemsPerMessage 50、BytesPerMessage 8192）只在支持该 profile 时存在；不支持时 SendLocalList 和 GetLocalListVersion 回 NotSupported。`generic-2.0.1` 现在支持 LocalAuthListManagement。
+- 对 CitrineOS 运行前，`tools/citrineos/register.sh` 先把场景用到的 token 加进它的数据库：CitrineOS 根据自己的 Authorizations 回答 Authorize、生成本地列表，又没有创建它们的 REST 接口。CitrineOS 只接受 8 位或 14 位十六进制的 ISO14443 token，这正是规范描述的 UID 格式，所以场景使用这样的 token。
 
 **远程控制和运维操作**
 

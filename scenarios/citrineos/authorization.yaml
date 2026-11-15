@@ -1,0 +1,98 @@
+# Authorization with CitrineOS as the CSMS: the cache, the Local
+# Authorization List, tokens and groups. CitrineOS knows only tokens in its
+# database (tools/citrineos/register.sh, run by the workflow) and takes
+# ISO14443 tokens of 8 or 14 hexadecimal characters, the UID format of
+# IdTokenEnumType.
+name: TC_C_37_CSMS Clear the authorization cache
+csms: ws://localhost:8081
+station: { id: MIMIC-C37, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/clearCache?identifier=MIMIC-C37&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: {}
+  - expect: { received: ClearCache, answer: { status: Accepted } }
+---
+name: TC_D_09_CSMS, TC_D_01_CSMS to TC_D_03_CSMS and TC_D_08_CSMS The local list
+csms: ws://localhost:8081
+station: { id: MIMIC-D01, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/getLocalListVersion?identifier=MIMIC-D01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: {}
+  - expect: { received: GetLocalListVersion, answer: { versionNumber: 0 } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/sendLocalList?identifier=MIMIC-D01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        versionNumber: 1
+        updateType: Full
+        localAuthorizationList:
+          - { idToken: { idToken: AA000010, type: ISO14443 }, idTokenInfo: { status: Accepted } }
+          - { idToken: { idToken: AA000011, type: ISO14443 }, idTokenInfo: { status: Accepted } }
+  - expect: { received: SendLocalList, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/sendLocalList?identifier=MIMIC-D01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        versionNumber: 2
+        updateType: Differential
+        localAuthorizationList: [{ idToken: { idToken: AA000011, type: ISO14443 } }]
+  - expect: { received: SendLocalList, answer: { status: Accepted } }
+  - expectStation: { localList: { version: 2, size: 1 } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/getLocalListVersion?identifier=MIMIC-D01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: {}
+  - expect: { received: GetLocalListVersion, answer: { versionNumber: 2 } }
+  # A listed token starts without Authorize, and CitrineOS takes the transaction.
+  - presentCard: { idToken: AA000010, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, idToken: { idToken: AA000010 } }
+      answer: { idTokenInfo: { status: { $exists: true } } }
+---
+name: TC_C_02_CSMS, TC_E_04_CSMS and TC_C_39_CSMS Unknown token, authorization first, and stopping by group
+csms: ws://localhost:8081
+station: { id: MIMIC-C39, persona: regression-2.0.1 }
+steps:
+  - presentCard: { idToken: AA0000FF, result: rejected }
+  - expect: { sent: Authorize, answer: { idTokenInfo: { status: { $ne: Accepted } } } }
+  - presentCard: { idToken: AA000001, result: authorized }
+  - expect:
+      sent: Authorize
+      payload: { idToken: { idToken: AA000001 } }
+      answer: { idTokenInfo: { status: Accepted, groupIdToken: { idToken: MIMIC-GROUP } } }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, triggerReason: CablePluggedIn, idToken: { idToken: AA000001 } }
+      answer: {}
+  - presentCard: { idToken: AA000002, result: stopping }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Ended
+        triggerReason: StopAuthorized
+        idToken: { idToken: AA000002 }
+        transactionInfo: { stoppedReason: Local }
+      answer: {}

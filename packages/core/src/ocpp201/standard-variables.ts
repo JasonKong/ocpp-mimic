@@ -60,6 +60,8 @@ function variable(
 }
 
 const MEASURANDS = SUPPORTED_MEASURANDS.join(',');
+/** Entries the Local Authorization List holds at most (LocalAuthListCtrlr.Entries maxLimit). */
+export const LOCAL_LIST_SIZE = 100;
 const TX_POINTS = 'EVConnected,Authorized,PowerPathClosed,EnergyTransfer';
 const AVAILABILITY = 'Available,Occupied,Reserved,Unavailable,Faulted';
 
@@ -118,6 +120,7 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
     variable(auth, 'LocalPreAuthorize', 'boolean', rw('false')),
     variable(auth, 'OfflineTxForUnknownIdEnabled', 'boolean', rw('false')),
     variable(auth, 'DisableRemoteAuthorization', 'boolean', rw('false')),
+    variable(auth, 'MasterPassGroupId', 'string', rw(), { maxLimit: 36 }),
 
     variable(cache, 'Available', 'boolean', ro('true')),
     variable(cache, 'Enabled', 'boolean', rw('true')),
@@ -171,6 +174,17 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
     variable(security, 'CertificateEntries', 'integer', ro('0')),
     variable(security, 'BasicAuthPassword', 'string', wo(), { maxLimit: 40 }),
   ];
+
+  if (input.features.includes('LocalAuthListManagement')) {
+    const list: ComponentType = { name: 'LocalAuthListCtrlr' };
+    out.push(
+      variable(list, 'Available', 'boolean', ro('true')),
+      variable(list, 'Enabled', 'boolean', rw('true')),
+      variable(list, 'Entries', 'integer', ro(), { maxLimit: LOCAL_LIST_SIZE, ...dynamic }),
+      variable(list, 'ItemsPerMessage', 'integer', ro('50', true)),
+      variable(list, 'BytesPerMessage', 'integer', ro('8192', true)),
+    );
+  }
 
   for (let id = 1; id <= input.connectors; id++) {
     const evse: ComponentType = { name: 'EVSE', evse: { id } };
