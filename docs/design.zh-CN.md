@@ -1018,6 +1018,122 @@ M5 的出口标准已满足：CitrineOS 工作流在 main 上通过了完整的 
 - #179：为部分 CSMS 测试所需的失败加行为开关。
 - #180：参考机器上 2.0.1 的事件循环尖峰。
 
+## M6 充电会话
+
+M6 的决定（#183）。M6 新增一个"会话"视图，从头到尾跟踪一次充电会话。需求和编号（R-START-1 等）见 [session-ui.md](session-ui.md)（英文）；本节决定怎么实现。M6 覆盖 OCPP 1.6 和 2.0.1；OCPP 2.1 以后再做，这次只在数据模型里留位置。
+
+**出口标准（G6）**
+
+- 本地启动、远程启动和被拒绝的远程启动，在会话 API 和会话视图里显示正确的启动来源、idTag / idToken、remoteStartId 和启动时间线，1.6 和 2.0.1 都要。回归场景在 CI 里对内置 CSMS 检查；SteVe（1.6）和 CitrineOS（2.0.1）工作流检查从 CSMS 自己的 API 发出的远程启动。
+- 参考 EV profile 在恒定功率上限下，上报的 SoC 上升 5 个点之后，推算的充到目标时间不会被标成偏差：与真值的差距不超过 5 分钟或 10 %，取较大者。
+- 一次录下的会话，参考价与用它导出的报文另行计算的结果一致，精确到分。
+- 参考 bench（1,000 个站，10 分钟，`--store`，两个版本）开启会话跟踪后仍在 M4 阈值内。
+- 1.6 回归、SteVe 和 CitrineOS 套件保持全绿。
+
+**会话模型**
+
+core 里的纯函数追踪器（`packages/core/src/session.ts`）用两种输入生成会话记录：站点的报文（录制器看到的，在故障注入器之后）和站点适配器发出的会话提示。报文给出时间线、采样和费用，也就是 CSMS 能看到的东西；提示给出只有站点知道的东西，这样就不用从报文反推（R-START-1）。
+
+```ts
+interface SessionRecord {
+  stationId: string;
+  n: number; // 每站从小到大编号
+  ocpp: '1.6' | '2.0.1';
+  evseId: number; // 1.6 里是 connectorId
+  connectorId: number;
+  state: 'running' | 'finished' | 'not-started';
+  source: 'local' | 'remote' | 'noAuth'; // 预留：'payment' | 'vehicle' | 'plugAndCharge'
+  idToken?: { idToken: string; type?: string }; // 1.6：idTag，没有 type
+  remoteStartId?: number; // 2.0.1
+  transactionId?: number | string;
+  requestedAt: string; // 会话的第一帧或第一个提示
+  startedAt?: string; // 交易开始
+  endedAt?: string;
+  failure?: { reason: 'Rejected' | 'NotAuthorized' | 'ConnectionTimeout' | 'StartFailed'; detail?: string };
+  timeline: TimelineStep[]; // 按顺序的启动报文：seq、时间、action、方向、状态、距上一步的毫秒数
+  samples: ReportedSample[]; // 时间、seq、电表读数 Wh、功率 W、提供功率 W、SoC %、各相电流和电压
+  truth: TrueSample[]; // 时间、SoC %（小数）、电量 Wh、功率 W、到 EV 目标的毫秒数
+  states: { at: string; state: 'charging' | 'suspendedEV' | 'suspendedEVSE' | 'idle' }[];
+  meterStartWh?: number;
+  meterStopWh?: number;
+  chargingNeeds?: object; // NotifyEVChargingNeeds 的 payload，2.0.1
+  costs: { at: string; seq: number; totalCost: number; from: 'TransactionEventResponse' | 'CostUpdated' }[];
+  stopReason?: string;
+  framesTruncated?: true;
+}
+```
+
+- **提示。** `ChargePointEvent` 新增 `{ type: 'session'; hint }`。适配器在决定谁能充电、为什么能充时发 `authorized`（evseId、idToken、来源、remoteStartId）；一次已接受的启动最终没有变成交易时发 `start-failed`（evseId、来源、idToken、原因）：未通过授权（AuthorizeRemoteTxRequests 或 AuthorizeRemoteStart）、ConnectionTimeOut / EVConnectionTimeOut 内没插枪、StartTransaction 被拒。被拒绝的 RemoteStartTransaction / RequestStartTransaction 不需要提示：它的 CALLRESULT 就是 Rejected，追踪器记一个未开始的会话。
+- **启动来源。** 1.6：授权来自 RemoteStartTransaction 时为 remote，否则为 local。2.0.1：RequestStartTransaction 为 remote，idToken 类型为 NoAuthorization 时为 noAuth，否则为 local。模拟器没有免授权（free vend）模式，所以 1.6 的会话只有 local 和 remote。2.1 的支付和车辆启动先预留。
+- **开始和结束。** 1.6：会话从 Authorize、RemoteStartTransaction 或本地白名单 / 缓存接受的刷卡开始，到 StopTransaction 得到应答结束。2.0.1：从 RequestStartTransaction、Authorize 或 TransactionEvent Started 中最早的一个开始（在 EVConnected 就开始的交易，等 Authorized 到来时才确定来源），到 TransactionEvent Ended 得到应答结束。启动失败时会话以未开始结束。
+- **时间线。** 从开始到交易以已接受的 idToken 运行为止的报文：1.6 到 StartTransaction 的应答，2.0.1 到第一个带已接受 idToken 的 TransactionEvent 的应答。每一步保留录制器的 seq，UI 可以打开对应的报文。
+- **采样和状态。** 上报采样来自 MeterValues 和 TransactionEvent 里的电表值（Energy.Active.Import.Register、Power.Active.Import、Power.Offered、SoC、各相的 Current.Import 和 Voltage）。状态来自 1.6 的 StatusNotification（Charging、SuspendedEV、SuspendedEVSE，Finishing 算空闲）和 2.0.1 的 chargingState（Charging、SuspendedEV、SuspendedEVSE，EVConnected 或 Idle 算空闲）。真值采样由引擎在每个上报采样和状态变化时从 EV 模型取：小数 SoC、电量、功率，以及当前提供功率下的 `msUntilFull`。
+- **费用。** 2.0.1 TransactionEventResponse 的 totalCost 和 CostUpdated，连同它们的 seq。
+- **上限。** 每个会话最多 2,000 个采样（满了就把旧的隔一个删一个）和 2,000 帧；超过后不再保留周期性的电表报文，记录里标出 `framesTruncated`。
+
+**存储和 API**
+
+- 引擎在 `serve` 和 `run` 里为每个站运行追踪器。`load` 和 `bench` 不保存状态，只有加 `--store` 时才跟踪，这样 bench 能测出它的开销。
+- 现有状态库里加两张 SQLite 表：`sessions (station_id, n, record, updated_at)` 和 `session_frames (station_id, n, seq, record)`，站点删除时一起删除。运行中的会话最多每 30 秒保存一次，开始和结束时也各保存一次。每个站保留最近 20 次会话（`--sessions-per-station`），更早的连同报文一起清理。
+- `GET /api/stations/:id/sessions` 列出摘要，最新的在前。`GET /api/stations/:id/sessions/:n` 返回记录，以及它的推算值和参考价。`GET /api/stations/:id/sessions/:n/frames` 返回它的报文，格式为 JSON，或（`?format=jsonl`）录制器的 JSONL，可直接用于回放和生成场景（R-LOG-6）。
+- `/api/events` 为订阅的站推送 `{ type: 'session', stationId, session }` 摘要，每个会话每秒最多一次（R-UI-2）。
+- 参考费率每个引擎一份：`GET` 和 `PUT /api/tariff`，存在 `settings` 表里。价格在读取会话时计算，所以换了费率，旧会话也按新费率重算。
+
+**推算值和真值**
+
+`packages/core/src/session-estimate.ts`，纯函数：
+
+- 容量：有 chargingNeeds 时用 evEnergyCapacity；否则在 SoC 至少上升 5 个点后，用第一个和最新一个带 SoC 的采样算 Δ电量 ÷ ΔSoC。
+- 目标：有 chargingNeeds 时用 fullSoC，否则 100 %。降功率从 bulkSoC 开始（没有就从 80 % 开始），线性降到目标处功率的 10 %。
+- 充到目标的时间：降功率开始之前，按最近 5 分钟的平均功率算剩余电量需要多久，之后按降功率曲线算。有 departureTime 时，另外判断离开前能不能充到目标。
+- 没有 SoC：不推算，并给出原因（`no SoC reported`、`SoC has not risen enough`）。
+- 真值：`ev.ts` 的 `msUntilFull`，在当前提供功率下精确求解 EV 模型。
+- 推算值与真值差距超过 5 分钟或 10 %（取较大者）时，UI 高亮（R-SRC-2）。
+
+**参考费率**
+
+参考费率就是一个不带 conditions 的 2.1 TariffType，以后同一份 JSON 可以直接发给 2.1 的桩：
+
+```json
+{
+  "tariffId": "reference",
+  "currency": "NZD",
+  "fixedFee": { "prices": [{ "priceFixed": 1.0 }] },
+  "energy": { "prices": [{ "priceKwh": 0.35 }], "taxRates": [{ "type": "GST", "tax": 15 }] },
+  "chargingTime": { "prices": [{ "priceMinute": 0.02 }] },
+  "idleTime": { "prices": [{ "priceMinute": 0.5 }] },
+  "minCost": { "exclTax": 2.0 },
+  "maxCost": { "exclTax": 80.0 }
+}
+```
+
+- `packages/core/src/tariff.ts` 检查费率（M6 每项一个价格，不带 conditions），并只用上报值给会话定价：交易开始后收一次服务费；电量为 meterStop（或最后一个电表读数）减 meterStart；充电和空闲分钟数来自状态；minCost 和 maxCost 作用于总价；税按每项计算。每一项列出用到的报文 seq（R-PRICE-3）。
+- 分时条件（R-PRICE-4）和 2.1 的桩端计费（R-PRICE-5）以后再做。
+- 内置 CSMS 可以加载同样的费率（`ocpp-mimic csms --tariff <file>`）：这时它在 2.0.1 TransactionEvent 的应答里带 totalCost，并每分钟发一次 CostUpdated。这样不接外部 CSMS 也能演示计价卡。
+
+**车桩通信能力**
+
+- EV profile 新增可选的 `communication: basic | dc | iso15118`。`basic` 不报 SoC，`dc` 和 `iso15118` 报。不设置时保持现有行为：配置了 SoC measurand 就报 SoC，现有 persona 和场景不变（R-EV-2）。
+- `departureMinutes`（可选）给 `iso15118` 车一个离开时间，从插枪起算。
+- 2.0.1 的桩接 `iso15118` 车时，每次会话在插着枪、交易得到授权后，立即发一次 NotifyEVChargingNeeds（R-EV-3）。EVSE 的连接器类型是直流（cCCS1、cCCS2、cG105、cChaoJi）时用 DC 参数，否则用 AC 参数：capacityKWh → evEnergyCapacity，targetSoc → fullSoC，taperSoc → bulkSoC，maxPowerW → evMaxPower，energyAmount 由 SoC 和容量算出，evMaxCurrent 和 evMaxVoltage 由功率和相数算出，requestedEnergyTransfer 由相数决定（AC_single_phase、AC_three_phase 或 DC）。
+
+**从 UI 发起远程启动**
+
+- 内置 CSMS 是一个独立进程（`ocpp-mimic csms`），在一个端口上接受 WebSocket 连接。它在同一端口上增加控制 API：`GET /api/health` 返回 `{ service: "ocpp-mimic-csms" }`；`POST /api/stations/:id/remote-start` 接收 `{ evseId?, idToken: { idToken, type? } }`，向该站发 RemoteStartTransaction（1.6）或 RequestStartTransaction（2.0.1，remoteStartId 递增，type 默认 Central），并返回站点的应答。和 CSMS 本身一样，这是测试工具，没有认证。
+- 引擎在每次连接时检查一次站点的 CSMS（对 CSMS URL 的 origin 发 `GET`，ws → http，wss → https），在快照里给出 `csms: builtin | external`。`POST /api/stations/:id/remote-start` 转发给内置 CSMS；对外部 CSMS 返回 409：对外部 CSMS，远程启动必须由它自己发起（R-START-5、R-START-6）。
+
+**Web UI**
+
+- 不加路由依赖：选中一个站后，用标签页在"站点"和"会话"之间切换；hash（`#/stations/<id>/sessions/<n>`）可以链接到某个会话。
+- 组件：SessionList、SessionHeader（启动来源徽章、idToken、remoteStartId、时间线）、EnergyPanel 和 EnergyChart、VehicleCard、PriceCard 和 TariffEditor，以及 SessionLog（复用消息日志的行和摘要）。一个共享开关在"CSMS 视角"和"显示真值"之间切换（R-SRC-1）。
+- `apps/web/src/versions.ts` 存放版本能力表（R-VER-3）：术语、每个版本的车辆字段（session-ui.md 第 6 节），以及版本有没有 remoteStartId、totalCost 和费率。加 2.1 就是加一行。
+- EnergyChart 手写 SVG：左轴是功率（kW）和提供功率，右轴是 SoC，横轴是时间。不需要新依赖，坐标换算是纯函数，可以单独测试。
+- 测试：纯函数（格式化、坐标换算、能力表）用单元测试；组件和 M5 一样用 Vue 的服务端渲染测试；每个视图对着运行中的引擎手动检查。
+
+**任务**
+
+T78 追踪器、T79 推算、T80 费率、T81 车桩通信能力（第 2 波）；T82 NotifyEVChargingNeeds、T83 存储和 API、T84 经内置 CSMS 远程启动、T85 版本能力表（第 3 波）；T86 会话视图（第 4 波）；T87 电量、T88 车辆、T89 计价、T90 日志、T91 场景（第 5 波）；T92 验收。关键路径是 T77 → T78 → T83 → T86 → T87 → T92。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。
@@ -1239,7 +1355,9 @@ flowchart TB
   G4{{"出口：1,000 个虚拟桩在一台 2 vCPU 机器上稳定运行一小时"}}
   M5["<b>M5 · OCPP 2.0.1</b><br/>OCPP 2.0.1 适配层：Device Model、TransactionEvent<br/>Core、Advanced Security、Local Auth List、Smart Charging、Reservation；以 CitrineOS 为测试对象"]
   G5{{"出口：覆盖的 profile 的每个 2.0.1 场景在 CI 里对 CitrineOS 通过"}}
-  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5
+  M6["<b>M6 · 充电会话</b><br/>会话视图：启动来源和时间线、版本、会话日志<br/>电量和充满时间（推算 vs 真值）、各版本车辆信息、参考价"]
+  G6{{"出口：1.6 和 2.0.1 的会话对内置 CSMS、SteVe 和 CitrineOS 显示正确的来源和时间线；推算值和价格经得起核对"}}
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6
 ```
 
 每个阶段以一条出口标准收尾，达标后再进入下一阶段。M4 的具体阈值见「M4 规模」，可以按实际需求调整。

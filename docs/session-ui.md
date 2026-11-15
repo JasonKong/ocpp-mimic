@@ -1,6 +1,6 @@
 # Charging session UI: requirements
 
-Status: agreed on 2026-11-15, not started. Requirements carry an id and a priority: P0 must, P1 should, P2 later.
+Status: agreed on 2026-11-15; built in milestone M6, designed in "M6 charging sessions" in [design.md](design.md). Requirements carry an id and a priority: P0 must, P1 should, P2 later.
 
 This page describes a new view of the Web UI that follows one charging session from start to end: how it started, which OCPP version the station speaks, the messages and logs, the energy delivered, what is known about the EV, and what a third party would charge for it. It also records what each OCPP version can tell a CSMS about the vehicle.
 

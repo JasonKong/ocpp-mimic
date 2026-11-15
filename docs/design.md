@@ -1019,6 +1019,122 @@ Follow-ups, outside any milestone:
 - #179: behaviour switches for the failures some CSMS tests need.
 - #180: the 2.0.1 event-loop spike on the reference machine.
 
+## M6 charging sessions
+
+Decided for M6 (#183). M6 adds a Sessions view that follows one charging session from start to end. The requirements, with their ids (R-START-1 and so on), are in [session-ui.md](session-ui.md); this section decides how to build them. M6 covers OCPP 1.6 and 2.0.1; OCPP 2.1 comes later and only gets room in the data model.
+
+**Exit criterion (G6)**
+
+- Local, remote and rejected remote starts show the right start source, idTag / idToken, remoteStartId and start timeline in the session API and the Sessions view, for 1.6 and 2.0.1. Regression scenarios check this against the built-in CSMS in CI; the SteVe (1.6) and CitrineOS (2.0.1) workflows check a remote start sent from the CSMS's own API.
+- For the reference EV profiles under a constant limit, once the reported SoC has risen 5 points, the estimated time to the target is never highlighted as off: it stays within 5 minutes or 10 % of the truth, whichever is larger.
+- The reference price of a recorded session matches, to the cent, a calculation made separately from the session's exported frames.
+- The reference bench (1,000 stations, 10 minutes, `--store`, both versions) with session tracking on stays within the M4 thresholds.
+- The 1.6 regression, SteVe and CitrineOS suites stay green.
+
+**Session model**
+
+A pure tracker in core (`packages/core/src/session.ts`) builds session records from two inputs: the station's frames (as the recorder sees them, after the Fault Injector) and session hints from the station adapters. Frames give the timeline, samples and costs, which is what a CSMS sees; hints give what only the station knows, so nothing has to be inferred from frames (R-START-1).
+
+```ts
+interface SessionRecord {
+  stationId: string;
+  n: number; // per station, counting up
+  ocpp: '1.6' | '2.0.1';
+  evseId: number; // the connectorId in 1.6
+  connectorId: number;
+  state: 'running' | 'finished' | 'not-started';
+  source: 'local' | 'remote' | 'noAuth'; // reserved: 'payment' | 'vehicle' | 'plugAndCharge'
+  idToken?: { idToken: string; type?: string }; // 1.6: the idTag, no type
+  remoteStartId?: number; // 2.0.1
+  transactionId?: number | string;
+  requestedAt: string; // the first frame or hint of the session
+  startedAt?: string; // the transaction started
+  endedAt?: string;
+  failure?: { reason: 'Rejected' | 'NotAuthorized' | 'ConnectionTimeout' | 'StartFailed'; detail?: string };
+  timeline: TimelineStep[]; // start frames in order: seq, at, action, direction, status, ms since the previous step
+  samples: ReportedSample[]; // at, seq, energy register Wh, power W, offered W, SoC %, per-phase A and V
+  truth: TrueSample[]; // at, SoC % (fraction), energy Wh, power W, ms until the EV's target
+  states: { at: string; state: 'charging' | 'suspendedEV' | 'suspendedEVSE' | 'idle' }[];
+  meterStartWh?: number;
+  meterStopWh?: number;
+  chargingNeeds?: object; // the NotifyEVChargingNeeds payload, 2.0.1
+  costs: { at: string; seq: number; totalCost: number; from: 'TransactionEventResponse' | 'CostUpdated' }[];
+  stopReason?: string;
+  framesTruncated?: true;
+}
+```
+
+- **Hints.** `ChargePointEvent` gets `{ type: 'session'; hint }`. The adapters emit `authorized` (evseId, idToken, source, remoteStartId) when they decide who may charge and why, and `start-failed` (evseId, source, idToken, reason) when an accepted start never becomes a transaction: not authorized (AuthorizeRemoteTxRequests or AuthorizeRemoteStart), no cable within ConnectionTimeOut / EVConnectionTimeOut, StartTransaction refused. A rejected RemoteStartTransaction / RequestStartTransaction needs no hint: its CALLRESULT says Rejected and the tracker records a not-started session.
+- **Start source.** 1.6: remote when the authorization came from RemoteStartTransaction, otherwise local. 2.0.1: remote for RequestStartTransaction, noAuth for an idToken of type NoAuthorization, otherwise local. The simulator has no free-vend mode, so 1.6 sessions are local or remote. 2.1's payment and vehicle starts are reserved.
+- **Begin and end.** 1.6: a session begins with Authorize, a RemoteStartTransaction or a card accepted from the local list or cache, and ends when StopTransaction is answered. 2.0.1: it begins with the first of RequestStartTransaction, Authorize or TransactionEvent Started (a transaction that starts at EVConnected gets its source once Authorized follows), and ends when TransactionEvent Ended is answered. A failed start ends the session as not-started.
+- **Timeline.** The frames from the beginning until the transaction runs with an accepted idToken: in 1.6 the StartTransaction answer, in 2.0.1 the answer to the first TransactionEvent carrying the accepted idToken. Each step keeps its recorder seq, so the UI can open the frame.
+- **Samples and states.** Reported samples come from MeterValues and TransactionEvent meter values (Energy.Active.Import.Register, Power.Active.Import, Power.Offered, SoC, Current.Import and Voltage per phase). States come from 1.6 StatusNotification (Charging, SuspendedEV, SuspendedEVSE, Finishing as idle) and 2.0.1 chargingState (Charging, SuspendedEV, SuspendedEVSE, EVConnected or Idle as idle). True samples are added by the engine at every reported sample and status change, from the EV model: the fractional SoC, the energy, the power and `msUntilFull` under the current offered power.
+- **Costs.** 2.0.1 totalCost from TransactionEventResponse and CostUpdated, with their seq.
+- **Limits.** At most 2,000 samples per session (older ones are thinned to every other one when full) and 2,000 frames; past that, periodic meter frames are no longer kept and the record says `framesTruncated`.
+
+**Storage and API**
+
+- The engine runs the tracker for every station in `serve` and `run`. `load` and `bench` keep no store; they track only when `--store` is given, so the bench measures the cost.
+- SQLite tables in the existing state store: `sessions (station_id, n, record, updated_at)` and `session_frames (station_id, n, seq, record)`, both deleted with the station. A running session is saved at most every 30 seconds, and at its start and end. Each station keeps its latest 20 sessions (`--sessions-per-station`); older ones are pruned with their frames.
+- `GET /api/stations/:id/sessions` lists summaries, newest first. `GET /api/stations/:id/sessions/:n` returns the record with its estimates and reference price. `GET /api/stations/:id/sessions/:n/frames` returns its frames, as JSON or (`?format=jsonl`) as the recorder's JSONL for replay and scenarios (R-LOG-6).
+- `/api/events` pushes `{ type: 'session', stationId, session }` summaries for subscribed stations, at most once a second per session (R-UI-2).
+- The reference tariff is one per engine: `GET` and `PUT /api/tariff`, kept in a `settings` table. Prices are computed when a session is read, so a new tariff reprices old sessions.
+
+**Estimates and truth**
+
+`packages/core/src/session-estimate.ts`, pure:
+
+- Capacity: chargingNeeds evEnergyCapacity when present; otherwise Δenergy ÷ ΔSoC between the first and the latest sample with SoC, once SoC has risen at least 5 points.
+- Target: chargingNeeds fullSoC when present, otherwise 100 %. The taper starts at bulkSoC when present, otherwise 80 %, and falls linearly to 10 % of the power at the target.
+- Time to target: the energy left at the average power of the last 5 minutes up to the taper start, then the taper. With departureTime, whether the target is reached before it.
+- Without SoC: no estimate, with the reason (`no SoC reported`, `SoC has not risen enough`).
+- Truth: `msUntilFull` from `ev.ts`, which solves the EV model exactly under the current offered power.
+- The UI highlights an estimate that differs from the truth by more than 5 minutes or 10 %, whichever is larger (R-SRC-2).
+
+**Reference tariff**
+
+The reference tariff is a 2.1 TariffType without conditions, so the same JSON can later be sent to a 2.1 station:
+
+```json
+{
+  "tariffId": "reference",
+  "currency": "NZD",
+  "fixedFee": { "prices": [{ "priceFixed": 1.0 }] },
+  "energy": { "prices": [{ "priceKwh": 0.35 }], "taxRates": [{ "type": "GST", "tax": 15 }] },
+  "chargingTime": { "prices": [{ "priceMinute": 0.02 }] },
+  "idleTime": { "prices": [{ "priceMinute": 0.5 }] },
+  "minCost": { "exclTax": 2.0 },
+  "maxCost": { "exclTax": 80.0 }
+}
+```
+
+- `packages/core/src/tariff.ts` checks a tariff (one price per part, no conditions in M6) and prices a session from its reported values only: the fixed fee once the transaction started; energy from meterStop (or the last register) minus meterStart; charging and idle minutes from the states; minCost and maxCost on the total; tax per part. Each item lists the seqs of the frames it used (R-PRICE-3).
+- Time-of-use conditions (R-PRICE-4) and pricing on the station itself for 2.1 (R-PRICE-5) come later.
+- The built-in CSMS can take the same tariff (`ocpp-mimic csms --tariff <file>`); it then answers 2.0.1 TransactionEvents with totalCost and sends CostUpdated every minute, so the price card can be shown without an external CSMS.
+
+**EV communication**
+
+- EV profiles get `communication: basic | dc | iso15118`, optional. `basic` reports no SoC, `dc` and `iso15118` do. Without it the behaviour stays as it is: an EV reports SoC when the SoC measurand is configured, so existing personas and scenarios do not change (R-EV-2).
+- `departureMinutes` (optional) gives an `iso15118` EV a departure time, counted from plugging in.
+- A 2.0.1 station with an `iso15118` EV sends NotifyEVChargingNeeds once per session, right after the transaction is authorized with the cable in (R-EV-3). DC parameters when the EVSE's connector type is a DC one (cCCS1, cCCS2, cG105, cChaoJi), AC otherwise: capacityKWh → evEnergyCapacity, targetSoc → fullSoC, taperSoc → bulkSoC, maxPowerW → evMaxPower, energyAmount from the SoC and capacity, evMaxCurrent and evMaxVoltage from the power and phases, and requestedEnergyTransfer from the phases (AC_single_phase, AC_three_phase or DC).
+
+**Remote start from the UI**
+
+- The built-in CSMS runs as its own process (`ocpp-mimic csms`) and serves WebSocket connections on one port. It gets a control API on the same port: `GET /api/health` answers `{ service: "ocpp-mimic-csms" }`, and `POST /api/stations/:id/remote-start` with `{ evseId?, idToken: { idToken, type? } }` sends RemoteStartTransaction (1.6) or RequestStartTransaction (2.0.1, a counting remoteStartId, type Central by default) to that station and returns its answer. Like the CSMS itself, it is a test tool without authentication.
+- The engine checks a station's CSMS once per connection (`GET` on the CSMS URL's origin, ws → http, wss → https) and shows `csms: builtin | external` in the snapshot. `POST /api/stations/:id/remote-start` forwards to the built-in CSMS and answers 409 for an external one: against an external CSMS a remote start must come from that CSMS (R-START-5, R-START-6).
+
+**Web UI**
+
+- No router dependency: when a station is selected, tabs switch between Station and Sessions, and the hash (`#/stations/<id>/sessions/<n>`) links to a session.
+- Components: SessionList, SessionHeader (start source badge, idToken, remoteStartId, timeline), EnergyPanel with EnergyChart, VehicleCard, PriceCard with TariffEditor, and SessionLog, which reuses the message log's rows and summaries. A shared toggle switches between the CSMS's view and "show truth" (R-SRC-1).
+- `apps/web/src/versions.ts` holds the version capability table (R-VER-3): terms, the vehicle fields of each version (section 6 of session-ui.md), and whether a version has remoteStartId, totalCost and tariffs. Adding 2.1 adds a row.
+- EnergyChart is hand-written SVG: power (kW) and the offered power on the left axis, SoC on the right, time below. It needs no new dependency, and its scales are pure functions that tests can check.
+- Tests: the pure helpers (formatting, scales, the capability table) with unit tests, the components with Vue's server renderer as in M5, and each view checked by hand against a running engine.
+
+**Tasks**
+
+T78 tracker, T79 estimates, T80 tariff, T81 EV communication (wave 2); T82 NotifyEVChargingNeeds, T83 store and API, T84 remote start through the built-in CSMS, T85 version table (wave 3); T86 Sessions view (wave 4); T87 energy, T88 vehicle, T89 price, T90 log, T91 scenarios (wave 5); T92 acceptance. The critical path is T77 → T78 → T83 → T86 → T87 → T92.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
@@ -1240,7 +1356,9 @@ flowchart TB
   G4{{"Exit: 1,000 virtual charge points run stably for an hour on one 2-vCPU machine"}}
   M5["<b>M5 · OCPP 2.0.1</b><br/>OCPP 2.0.1 adapter: Device Model, TransactionEvent<br/>Core, Advanced Security, Local Auth List, Smart Charging, Reservation; CitrineOS as the test target"]
   G5{{"Exit: every 2.0.1 scenario for the covered profiles passes against CitrineOS in CI"}}
-  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5
+  M6["<b>M6 · Charging sessions</b><br/>Sessions view: start source and timeline, version, per-session log<br/>Energy and time to full (estimate vs truth), vehicle information by version, reference price"]
+  G6{{"Exit: sessions show the right source and timeline on 1.6 and 2.0.1 against the built-in CSMS, SteVe and CitrineOS; estimates and prices check out"}}
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6
 ```
 
 Each phase ends with an exit criterion; the next phase starts once it is met. The M4 thresholds are set in "M4 scale" and can be adjusted to real needs.
