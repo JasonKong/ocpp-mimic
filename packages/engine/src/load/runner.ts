@@ -196,6 +196,7 @@ export async function runLoadPlan(options: LoadRunOptions): Promise<LoadReport> 
         usage: group.usage,
         seed: plan.seed,
         ...(group.config !== undefined && { config: group.config }),
+        ...(group.deviceModel !== undefined && { deviceModel: group.deviceModel }),
         ...(group.password !== undefined && { password: group.password }),
         ...(group.energyMultiplier !== undefined && { energyMultiplier: group.energyMultiplier }),
       })),
@@ -262,7 +263,11 @@ export async function runLoadPlan(options: LoadRunOptions): Promise<LoadReport> 
           if (m === undefined) return;
           const elapsed = Math.round((Date.now() - started) / 1000);
           const sessions = [...perGroup.values()].reduce((sum, g) => sum + g.sessions, 0);
-          const charging = (m.connectors.Charging ?? 0) + (m.connectors.SuspendedEV ?? 0);
+          // 1.6 Charging and SuspendedEV; a 2.0.1 connector in use reports Occupied.
+          const charging =
+            (m.connectors.Charging ?? 0) +
+            (m.connectors.SuspendedEV ?? 0) +
+            (m.connectors.Occupied ?? 0);
           progress(
             `[${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}] ` +
               `${m.stations.connected ?? 0}/${definitions.length} online, ${charging} charging, ` +

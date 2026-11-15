@@ -488,10 +488,14 @@ export function createFleet(options: FleetOptions): Fleet {
                 return result === 'authorized' || result === 'stopping' ? result : 'other';
               },
               isPluggedIn: (connectorId) => connectorOf(connectorId)?.plugged ?? false,
-              hasTransaction: (connectorId) =>
-                ['Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(
-                  connectorOf(connectorId)?.status ?? '',
-                ),
+              // 2.0.1 statuses do not tell: a transactionId does (1.6 has it once answered).
+              hasTransaction: (connectorId) => {
+                const connector = connectorOf(connectorId);
+                return (
+                  connector?.transactionId !== undefined ||
+                  ['Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(connector?.status ?? '')
+                );
+              },
             },
             onEvent: (event) => emit({ stationId: definition.id, type: 'usage', event }),
           });

@@ -569,16 +569,16 @@ thresholds:
 | 指标 | 类型 | 标签 |
 | --- | --- | --- |
 | `ocpp_mimic_stations` | gauge | `state`（connected、connecting、offline、stopped）、persona、group |
-| `ocpp_mimic_connectors` | gauge | `status`（1.6 的各状态）、persona、group |
+| `ocpp_mimic_connectors` | gauge | `status`（1.6 的各状态，或 2.0.1 EVSE 的连接器状态）、persona、group |
 | `ocpp_mimic_csms_response_seconds` | histogram | action、persona、group：桩的 CALL 从 socket 发出到回答从 socket 收到 |
 | `ocpp_mimic_csms_answers_total` | counter | action、`outcome`（result、error、timeout） |
 | `ocpp_mimic_calls_received_total` | counter | action：CSMS 发来的 CALL |
 | `ocpp_mimic_callerrors_total` | counter | `direction`、action、`code` |
 | `ocpp_mimic_schema_violations_total` | counter | `direction`、action |
-| `ocpp_mimic_frames_total`、`ocpp_mimic_frame_bytes_total` | counter | `direction` |
-| `ocpp_mimic_connections_total` | counter | `outcome`（opened、failed） |
+| `ocpp_mimic_frames_total`、`ocpp_mimic_frame_bytes_total` | counter | `direction`、`ocpp`（1.6、2.0.1） |
+| `ocpp_mimic_connections_total` | counter | `outcome`（opened、failed）、`ocpp` |
 | `ocpp_mimic_disconnects_total` | counter | `cause`（local、remote、error） |
-| `ocpp_mimic_transactions_total` | counter | `outcome`（started、stopped、refused） |
+| `ocpp_mimic_transactions_total` | counter | `outcome`（started、stopped、refused）：1.6 的 Start/StopTransaction，2.0.1 的 TransactionEvent Started 和 Ended |
 | `ocpp_mimic_sessions_turned_away_total` | counter | persona、group |
 | `ocpp_mimic_energy_wh_total` | counter | persona、group |
 | `ocpp_mimic_offline_queue_messages` | gauge | — |
@@ -701,6 +701,23 @@ thresholds:
 | ramp-up 之后的堆底线，前四分之一 → 最后（MB） | 21 → 54 | 46.8 → 47.1 |
 
 所有数字都在出口阈值以内；堆不再增长。出口运行本身（T54）使用不带 store 的 `load`。
+
+**实测：1,000 个 OCPP 2.0.1 桩（T73）**
+
+`pnpm bench`，1,000 个桩，带 `--store`，每秒启动 20 个，30 % 充电，5 分钟，在同一台笔记本上，两个 persona 各跑一次、先后进行：
+
+| | `load-ac-1.6` | `load-ac-2.0.1` |
+| --- | --- | --- |
+| 爬坡后引擎 CPU，平均 / 最高（单核的 %） | 3.1 / 5.1 | 3.8 / 8.0 |
+| 事件循环延迟，最差 5 秒 p99 / 最大（ms） | 8.4 / 43 | 11.6 / 42 |
+| 心跳延迟，p99 / 最大（ms） | 5.5 / 44 | 6.8 / 31 |
+| 计量值延迟，p99 / 最大（ms） | 4.9 / 23 | 17.6 / 24 |
+| WebSocket 连接，p99 / 最大（ms） | 32 / 236 | 20 / 73 |
+| BootNotification 被接受，p99 / 最大（ms） | 118 / 318 | 110 / 240 |
+| RSS 峰值（MB） | 156 | 265 |
+| 爬坡后堆的底线，第一个四分之一 → 最后（MB） | 57.8 → 55.5 | 126.4 → 124.4 |
+
+2.0.1 桩保存自己的 Device Model（两个 EVSE 时有 102 个变量及其属性），这是每个桩多出约 70 KB 堆的主要原因；堆不增长。所有数字都远在出口阈值以内。参考机器的数字由 `bench` 工作流以 `persona: load-ac-2.0.1` 运行得到。
 
 **已实现：OpenTelemetry 导出（T47）**
 
@@ -963,6 +980,7 @@ faults:
 **车队、压测、日志和 Web UI**
 
 - 模板和压测计划接受两种版本的 persona，车队可以混合。使用模型驱动 2.0.1 会话，把卡当作 ISO14443 token 出示。连接和帧相关指标带 `ocpp` 标签（两个取值）。
+- 已实现（T73）：批量模板、分组和标签接受两种版本的 persona，车队可以混合；压测计划的分组像为 1.6 接受 `config` 一样，为 2.0.1 桩接受 `deviceModel`。使用模型驱动 2.0.1 会话：卡是 ISO14443 token；因为 2.0.1 报告 Occupied 而不是 Charging，它按 transactionId 判断是否有交易在进行。指标从 TransactionEvent Started（idTokenInfo 不是 Accepted 时算 refused）和 Ended 统计 2.0.1 交易，从它们的 Energy.Active.Import.Register 读数统计电量，从 2.0.1 的 StatusNotification 统计 EVSE 状态；帧和连接指标带 `ocpp` 标签。`scenarios/personas/load-ac-2.0.1.yaml` 是 `load-ac-1.6` 的 2.0.1 对应版本，CI 的冒烟计划（`scenarios/load/smoke-100.yaml`）现在两种各 50 个桩。`bench` 工作流接受 `persona` 输入。
 - 日志行带桩的版本；日志没写时，导入根据子协议或 action 名判断。回放 2.0.1 日志时，交易用新的 transactionId 发送，保留 seqNo，平移时间戳，并比较 CSMS 的回答（`status`、`idTokenInfo.status`）。校准读 2.0.1 日志的方式与 1.6 相同，日志里有 NotifyReport 帧时从中取 Device Model 的值。
 - Web UI 显示版本、带 2.0.1 状态和充电状态的 EVSE / 连接器树、出示卡时的 token 类型，以及一个 Device Model 浏览器，可以像本地运维人员那样修改可写变量。
 - 已实现（T72）：桩列表标出 2.0.1 桩，新建表单在每个 persona 后注明版本。2.0.1 桩的视图显示 `OCPP 2.0.1`、每个 EVSE 的连接器状态、充电状态和 transactionId，以及出示卡时的 token 类型选择（`POST …/id-tag` 接受 `type`，取值为 IdTokenEnumType）。其下方是交易事件表（时间、EVSE、transactionId、seqNo、eventType、triggerReason、chargingState、stoppedReason），取自桩的记录；Device Model 浏览器按组件分组变量（每个 EVSE 后跟它的连接器），可以过滤，显示 Actual 值及其可变性、其他属性和特征，从不显示 WriteOnly 的值，并能像本地运维人员那样设置 ReadWrite 的值（`PATCH /api/stations/:id/device-model`，带 `component`、`variable` 和 `value`，与 SetVariables 做同样的检查；`GET` 列出变量）。消息日志能概括 2.0.1 消息，并像 1.6 一样显示其 schema 问题。`/api/health` 列出两种子协议，`/api/personas` 给出每个 persona 的 `ocpp`（2.0.1 persona 还有 `features`），车队摘要带 `ocpp`。这些视图的测试用 Vue 的服务端渲染器渲染（一个带 Vue 插件的 `web` vitest 项目）。

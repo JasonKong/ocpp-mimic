@@ -571,16 +571,16 @@ Collected in the engine from the wire and the transport, so they work with the E
 | Metric | Type | Labels |
 | --- | --- | --- |
 | `ocpp_mimic_stations` | gauge | `state` (connected, connecting, offline, stopped), persona, group |
-| `ocpp_mimic_connectors` | gauge | `status` (the 1.6 statuses), persona, group |
+| `ocpp_mimic_connectors` | gauge | `status` (the 1.6 statuses, or the 2.0.1 connector statuses of an EVSE), persona, group |
 | `ocpp_mimic_csms_response_seconds` | histogram | action, persona, group: socket send of the station's CALL to socket receive of the answer |
 | `ocpp_mimic_csms_answers_total` | counter | action, `outcome` (result, error, timeout) |
 | `ocpp_mimic_calls_received_total` | counter | action: CALLs from the CSMS |
 | `ocpp_mimic_callerrors_total` | counter | `direction`, action, `code` |
 | `ocpp_mimic_schema_violations_total` | counter | `direction`, action |
-| `ocpp_mimic_frames_total`, `ocpp_mimic_frame_bytes_total` | counter | `direction` |
-| `ocpp_mimic_connections_total` | counter | `outcome` (opened, failed) |
+| `ocpp_mimic_frames_total`, `ocpp_mimic_frame_bytes_total` | counter | `direction`, `ocpp` (1.6, 2.0.1) |
+| `ocpp_mimic_connections_total` | counter | `outcome` (opened, failed), `ocpp` |
 | `ocpp_mimic_disconnects_total` | counter | `cause` (local, remote, error) |
-| `ocpp_mimic_transactions_total` | counter | `outcome` (started, stopped, refused) |
+| `ocpp_mimic_transactions_total` | counter | `outcome` (started, stopped, refused): 1.6 Start/StopTransaction, 2.0.1 TransactionEvent Started and Ended |
 | `ocpp_mimic_sessions_turned_away_total` | counter | persona, group |
 | `ocpp_mimic_energy_wh_total` | counter | persona, group |
 | `ocpp_mimic_offline_queue_messages` | gauge | — |
@@ -703,6 +703,23 @@ On the reference machine (the `bench` workflow: a GitHub-hosted runner, 2 vCPUs,
 | Heap floor after the ramp-up, first quarter → last (MB) | 21 → 54 | 46.8 → 47.1 |
 
 Every number is within the exit thresholds; the heap no longer grows. The exit run itself (T54) uses `load`, which keeps no store.
+
+**Measured: 1,000 OCPP 2.0.1 stations (T73)**
+
+`pnpm bench`, 1,000 stations with `--store`, 20 started a second, 30 % charging, 5 minutes, on the same laptop, one run of each persona one after the other:
+
+| | `load-ac-1.6` | `load-ac-2.0.1` |
+| --- | --- | --- |
+| Engine CPU after the ramp-up, mean / max (% of a core) | 3.1 / 5.1 | 3.8 / 8.0 |
+| Event-loop delay, worst 5-second p99 / max (ms) | 8.4 / 43 | 11.6 / 42 |
+| Heartbeats late, p99 / max (ms) | 5.5 / 44 | 6.8 / 31 |
+| Meter values late, p99 / max (ms) | 4.9 / 23 | 17.6 / 24 |
+| WebSocket connect, p99 / max (ms) | 32 / 236 | 20 / 73 |
+| BootNotification accepted, p99 / max (ms) | 118 / 318 | 110 / 240 |
+| RSS peak (MB) | 156 | 265 |
+| Heap floor after the ramp-up, first quarter → last (MB) | 57.8 → 55.5 | 126.4 → 124.4 |
+
+A 2.0.1 station holds its Device Model (102 variables with their attributes for two EVSEs), which is most of the extra 70 KB of heap per station; the heap does not grow. Everything is well within the exit thresholds. The reference machine's numbers come from the `bench` workflow with `persona: load-ac-2.0.1`.
 
 **Implemented: OpenTelemetry export (T47)**
 
@@ -965,6 +982,7 @@ Implemented (T64):
 **Fleet, load, logs and the Web UI**
 
 - Templates and load plans take personas of either version, so a fleet can mix them. The usage model drives 2.0.1 sessions, presenting its cards as ISO14443 tokens. Connection and frame metrics carry an `ocpp` label (two values).
+- Implemented (T73): bulk templates, groups and tags take personas of either version, so a fleet mixes them; load-plan groups take `deviceModel` for 2.0.1 stations as they take `config` for 1.6. The usage model runs 2.0.1 sessions: its cards are ISO14443 tokens, and it knows a running transaction by its transactionId, since 2.0.1 reports Occupied instead of Charging. Metrics count 2.0.1 transactions from TransactionEvent Started (refused when idTokenInfo is not Accepted) and Ended, energy from their Energy.Active.Import.Register readings, and EVSE statuses from 2.0.1 StatusNotifications; frames and connections carry the `ocpp` label. `scenarios/personas/load-ac-2.0.1.yaml` is the 2.0.1 counterpart of `load-ac-1.6`, and the CI smoke plan (`scenarios/load/smoke-100.yaml`) now runs 50 stations of each. The `bench` workflow takes a `persona` input.
 - Log lines carry the station's version; import detects it from the subprotocol or the action names when a log lacks it. Replay sends a 2.0.1 log's transactions under fresh transactionIds, keeps their seqNo, moves timestamps, and compares the CSMS's answers (`status`, `idTokenInfo.status`). Calibration reads 2.0.1 logs like 1.6 ones and takes Device Model values from NotifyReport frames when the log has them.
 - The Web UI shows the version, an EVSE and connector tree with the 2.0.1 statuses and charging state, the token type when presenting a card, and a Device Model browser where writable variables can be changed as a local operator would.
 - Implemented (T72): the station list marks 2.0.1 stations and the add form names each persona's version. A 2.0.1 station's view shows `OCPP 2.0.1`, each EVSE with its connector status, charging state and transactionId, and a token type picker for presenting a card (`POST …/id-tag` takes `type`, one of IdTokenEnumType). Below it, the transaction events (time, EVSE, transactionId, seqNo, eventType, triggerReason, chargingState, stoppedReason) come from the station's records, and the Device Model browser groups variables by component (each EVSE followed by its connectors), filters them, shows the Actual value with its mutability, the other attributes and the characteristics, never a WriteOnly value, and sets a ReadWrite value as a local operator (`PATCH /api/stations/:id/device-model` with `component`, `variable` and `value`, checked like SetVariables; `GET` lists the variables). The message log summarizes 2.0.1 messages and shows their schema problems as for 1.6. `/api/health` lists both subprotocols, `/api/personas` gives each persona's `ocpp` (and a 2.0.1 persona's `features`), and fleet summaries carry `ocpp`. The views are tested by rendering them with Vue's server renderer (a `web` vitest project with the Vue plugin).

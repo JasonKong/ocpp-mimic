@@ -46,7 +46,12 @@ describe('metrics', () => {
       now: () => clock,
       version: '1.2.3',
       stations: () => stations,
-      labelsOf: (id) => (id.startsWith('A') ? { persona: 'p', group: 'a' } : undefined),
+      labelsOf: (id) =>
+        id.startsWith('A')
+          ? { persona: 'p', group: 'a', ocpp: '1.6' }
+          : id.startsWith('B')
+            ? { persona: 'p201', group: 'b', ocpp: '2.0.1' }
+            : undefined,
     });
     return metrics;
   }
@@ -235,5 +240,64 @@ describe('metrics', () => {
       expect(types.some((t) => name === t || name.startsWith(`${t}_`))).toBe(true);
     }
     expect(m.summary().lateWork.count).toBe(1);
+  });
+  it('counts 2.0.1 transactions, energy and EVSE statuses, and labels frames and connections by version', () => {
+    const m = setup();
+    stations.push({
+      id: 'B-1',
+      persona: 'p201',
+      group: 'b',
+      running: true,
+      transport: 'open',
+      queuedMessages: () => 0,
+    });
+    m.transport('B-1', { type: 'connecting', url: 'ws://csms/B-1' });
+    m.transport('B-1', { type: 'open', protocol: 'ocpp2.0.1' });
+    m.frame(
+      frame('B-1', 'cp-to-csms', 2, 's1', 'StatusNotification', {
+        timestamp: '',
+        connectorStatus: 'Occupied',
+        evseId: 2,
+        connectorId: 1,
+      }),
+    );
+    const sample = (value: number, context: string) => [
+      {
+        timestamp: '',
+        sampledValue: [{ value, context, measurand: 'Energy.Active.Import.Register' }],
+      },
+    ];
+    m.frame(
+      frame('B-1', 'cp-to-csms', 2, 't1', 'TransactionEvent', {
+        eventType: 'Started',
+        transactionInfo: { transactionId: 'tx-1' },
+        meterValue: sample(1000, 'Transaction.Begin'),
+      }),
+    );
+    m.frame(
+      frame('B-1', 'csms-to-cp', 3, 't1', undefined, { idTokenInfo: { status: 'Accepted' } }),
+    );
+    m.frame(
+      frame('B-1', 'cp-to-csms', 2, 't2', 'TransactionEvent', {
+        eventType: 'Ended',
+        transactionInfo: { transactionId: 'tx-1' },
+        meterValue: sample(4500, 'Transaction.End'),
+      }),
+    );
+    m.frame(frame('B-1', 'csms-to-cp', 3, 't2', undefined, {}));
+    m.frame(
+      frame('B-1', 'cp-to-csms', 2, 't3', 'TransactionEvent', {
+        eventType: 'Started',
+        transactionInfo: { transactionId: 'tx-2' },
+      }),
+    );
+    m.frame(frame('B-1', 'csms-to-cp', 3, 't3', undefined, { idTokenInfo: { status: 'Invalid' } }));
+    const summary = m.summary();
+    expect(summary.transactions).toEqual({ started: 1, stopped: 1, refused: 1 });
+    expect(summary.energyWh).toBe(3500);
+    expect(summary.connectors).toEqual({ Occupied: 1 });
+    const text = m.prometheus();
+    expect(text).toContain('ocpp_mimic_frames_total{direction="sent",ocpp="2.0.1"} 4');
+    expect(text).toContain('ocpp_mimic_connections_total{outcome="opened",ocpp="2.0.1"} 1');
   });
 });

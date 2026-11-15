@@ -94,6 +94,26 @@ describe('load plans', () => {
     });
   });
 
+  it('takes the Device Model values of 2.0.1 groups', () => {
+    const parsed = parseLoadPlan({
+      ...PLAN,
+      groups: [
+        {
+          name: 'ac201',
+          count: 2,
+          id: 'AC201-{1}',
+          persona: 'load-ac-2.0.1',
+          deviceModel: { OCPPCommCtrlr: { HeartbeatInterval: 30, QueueAllMessages: true } },
+        },
+      ],
+      events: [],
+    });
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.issues));
+    expect(parsed.plan.groups[0]?.deviceModel).toEqual({
+      OCPPCommCtrlr: { HeartbeatInterval: '30', QueueAllMessages: 'true' },
+    });
+  });
+
   it('reports problems with paths', () => {
     const bad = (changes: Record<string, unknown>) => {
       const parsed = parseLoadPlan({ ...PLAN, ...changes });

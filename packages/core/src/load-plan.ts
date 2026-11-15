@@ -36,6 +36,8 @@ export interface LoadGroup {
   /** The usage model; groups charge on their own unless `usage: false`. */
   usage: boolean | UsageOverride;
   config?: Record<string, string>;
+  /** Device Model values of 2.0.1 stations: component → variable → value. */
+  deviceModel?: Record<string, Record<string, string>>;
   password?: string;
   energyMultiplier?: number;
 }
@@ -118,6 +120,7 @@ const groupSchema = object(
     tags: array(string()),
     usage: union(boolean(), UsageOverrideSchema),
     config: record(union(string(), number(), boolean())),
+    deviceModel: record(record(union(string(), number(), boolean()))),
     password: string(),
     energyMultiplier: number(),
   },
@@ -212,6 +215,16 @@ export function parseLoadPlan(
       ...(group.config !== undefined && {
         config: Object.fromEntries(
           Object.entries(group.config as Raw).map(([key, value]) => [key, String(value)]),
+        ),
+      }),
+      ...(group.deviceModel !== undefined && {
+        deviceModel: Object.fromEntries(
+          Object.entries(group.deviceModel as Record<string, Raw>).map(([component, variables]) => [
+            component,
+            Object.fromEntries(
+              Object.entries(variables).map(([variable, value]) => [variable, String(value)]),
+            ),
+          ]),
         ),
       }),
       ...(group.password !== undefined && { password: String(group.password) }),
