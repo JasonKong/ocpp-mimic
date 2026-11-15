@@ -1027,6 +1027,7 @@ The UI is one client of the engine API; everything it does can also be done thro
 - Sequence view: messages between charge point and CSMS over time, with timeouts and errors marked.
 - State machine view: the current state of each connector, highlighted live.
 - Fleet overview: online / offline / faulted counts, grouped by persona or tag.
+- Charging session view: one session from start to end, with how it started, the OCPP version, its log, the energy delivered, what is known about the EV and a reference price. Requirements in [session-ui.md](session-ui.md).
 - Metrics: CSMS response latency (p50 / p95), timeout rate, error rate and schema violations, exported via Prometheus or OpenTelemetry (catalogue in "M4 scale").
 
 ## Time acceleration
