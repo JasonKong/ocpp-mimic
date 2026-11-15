@@ -5,17 +5,21 @@ import { OCPP16_MESSAGES, validate, type Ocpp16Action } from '@ocpp-mimic/core';
 import { describe, expect, it } from 'vitest';
 import {
   loadOcaSchemas,
+  OCA_OCPP201_SCHEMAS_DIR,
+  OCA_SCHEMA_DIRS,
   OCA_SCHEMAS_DIR,
   OCA_SECURITY_SCHEMAS_DIR,
   type PayloadKind,
 } from './oca-schemas.js';
 
 const oca = loadOcaSchemas();
+const oca201 = loadOcaSchemas(OCA_SCHEMA_DIRS['2.0.1']);
 
 describe('OCA schema files', () => {
   it.each([
     [OCA_SCHEMAS_DIR, 'SHA256SUMS', 56],
     [OCA_SECURITY_SCHEMAS_DIR, 'SHA256SUMS-security', 22],
+    [OCA_OCPP201_SCHEMAS_DIR, 'SHA256SUMS-ocpp201', 128],
   ])('in %s are the unchanged published files listed in %s', (dir, sums, count) => {
     const listed = readFileSync(join(dir, '..', sums), 'utf8')
       .trim()
@@ -38,6 +42,54 @@ describe('OCA schema files', () => {
   it('cover every OCPP 1.6 and Security Whitepaper action, request and response', () => {
     expect(oca.actions).toHaveLength(39);
     expect(Object.keys(OCPP16_MESSAGES).sort()).toEqual(oca.actions);
+  });
+
+  it('give 2.0.1 its own set: all 64 actions, each with a request and a response schema', () => {
+    expect(oca201.actions).toHaveLength(64);
+    for (const action of oca201.actions) {
+      const files = [`${action}Request.json`, `${action}Response.json`];
+      for (const file of files) {
+        expect(readdirSync(OCA_OCPP201_SCHEMAS_DIR)).toContain(file);
+      }
+    }
+    expect(oca201.actions).toContain('TransactionEvent');
+    expect(oca201.actions).not.toContain('StartTransaction');
+    // The default set stays 1.6 only.
+    expect(oca.actions).not.toContain('TransactionEvent');
+  });
+
+  it('check 2.0.1 payloads against the 2.0.1 schemas (draft-06)', () => {
+    expect(
+      oca201.check('BootNotification', 'request', {
+        reason: 'PowerUp',
+        chargingStation: { model: 'M', vendorName: 'V' },
+      }),
+    ).toEqual([]);
+    // The 1.6 shape of the same action fails the 2.0.1 schema.
+    expect(
+      oca201.check('BootNotification', 'request', {
+        chargePointVendor: 'V',
+        chargePointModel: 'M',
+      }),
+    ).toEqual([
+      "$: must have required property 'reason'",
+      "$: must have required property 'chargingStation'",
+      '$: must NOT have additional properties (chargePointVendor)',
+      '$: must NOT have additional properties (chargePointModel)',
+    ]);
+    expect(
+      oca201.check('StatusNotification', 'request', {
+        timestamp: '2026-11-15T10:00:00Z',
+        connectorStatus: 'Preparing',
+        evseId: 1,
+        connectorId: 1,
+      }),
+    ).toEqual([
+      '$.connectorStatus: must be equal to one of the allowed values (Available, Occupied, Reserved, Unavailable, Faulted)',
+    ]);
+    expect(oca201.check('Heartbeat', 'response', { currentTime: 'yesterday' })).toEqual([
+      '$.currentTime: must match format "date-time"',
+    ]);
   });
 
   it('report problems as JSON paths, and nothing for unknown actions', () => {

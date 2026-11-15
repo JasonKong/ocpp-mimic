@@ -2,8 +2,9 @@
  * The Open Charge Alliance's official JSON Schemas, shipped unchanged (see
  * `oca-schemas/README.md` for sources and licence) and used as a second check
  * next to core's own message definitions: OCPP 1.6 in `oca-schemas/ocpp16/`
- * (draft-04) and the Security Whitepaper's in `oca-schemas/ocpp16-security/`
- * (draft-06).
+ * (draft-04), the Security Whitepaper's in `oca-schemas/ocpp16-security/`
+ * (draft-06), and OCPP 2.0.1 in `oca-schemas/ocpp201/` (draft-06). Action
+ * names overlap between the versions, so each version gets its own set.
  *
  * The files are read as data and handed to a generic validator for their
  * draft. Nothing is generated from them, and they must never be edited.
@@ -20,6 +21,15 @@ export const OCA_SCHEMAS_DIR = fileURLToPath(new URL('../oca-schemas/ocpp16/', i
 export const OCA_SECURITY_SCHEMAS_DIR = fileURLToPath(
   new URL('../oca-schemas/ocpp16-security/', import.meta.url),
 );
+export const OCA_OCPP201_SCHEMAS_DIR = fileURLToPath(
+  new URL('../oca-schemas/ocpp201/', import.meta.url),
+);
+
+/** The schema directories of each OCPP version. */
+export const OCA_SCHEMA_DIRS = {
+  '1.6': [OCA_SCHEMAS_DIR, OCA_SECURITY_SCHEMAS_DIR],
+  '2.0.1': [OCA_OCPP201_SCHEMAS_DIR],
+} as const satisfies Record<string, readonly string[]>;
 
 export type PayloadKind = 'request' | 'response';
 
@@ -77,8 +87,10 @@ function describe(error: AjvError): string {
 }
 
 /**
- * Loads every `<Action>.json` (request) and `<Action>Response.json`
- * (response) in `dirs`, each with a validator for the draft its `$schema` names.
+ * Loads every request schema (`<Action>.json` in 1.6, `<Action>Request.json`
+ * in 2.0.1) and response schema (`<Action>Response.json`) in `dirs`, each
+ * with a validator for the draft its `$schema` names. The dirs must belong to
+ * one OCPP version; the default is 1.6 (OCA_SCHEMA_DIRS has both).
  */
 export function loadOcaSchemas(
   dirs: readonly string[] = [OCA_SCHEMAS_DIR, OCA_SECURITY_SCHEMAS_DIR],
@@ -97,7 +109,7 @@ export function loadOcaSchemas(
       const name = file.slice(0, -'.json'.length);
       const key = name.endsWith('Response')
         ? `${name.slice(0, -'Response'.length)} response`
-        : `${name} request`;
+        : `${name.endsWith('Request') ? name.slice(0, -'Request'.length) : name} request`;
       validators.set(key, (schema.$schema === DRAFT_06 ? draft06 : draft04).compile(schema));
     }
   }

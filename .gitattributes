@@ -3,3 +3,5 @@
 packages/engine/oca-schemas/ocpp16/*.json -text
 # The Security Whitepaper's schemas likewise.
 packages/engine/oca-schemas/ocpp16-security/*.json -text
+# OCPP 2.0.1's JSON schemas likewise.
+packages/engine/oca-schemas/ocpp201/*.json -text
