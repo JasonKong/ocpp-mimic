@@ -5,6 +5,7 @@
  * summary when it stops.
  */
 import { readFile } from 'node:fs/promises';
+import { tariffProblems, type ReferenceTariff } from '@ocpp-mimic/core';
 import { startBuiltinCsms, type BuiltinCsmsStats } from '@ocpp-mimic/engine';
 import type { CsmsCommand } from './command.js';
 
@@ -55,6 +56,13 @@ export async function startCsmsCommand(
           ...(command.tls.ca !== undefined && { ca: await readFile(command.tls.ca) }),
           clientCertificates: command.tls.clientCertificates,
         };
+  let tariff: ReferenceTariff | undefined;
+  if (command.tariff !== undefined) {
+    const value: unknown = JSON.parse(await readFile(command.tariff, 'utf8'));
+    const problems = tariffProblems(value);
+    if (problems.length > 0) throw new Error(`${command.tariff}: ${problems.join('; ')}`);
+    tariff = value as ReferenceTariff;
+  }
   const csms = await startBuiltinCsms({
     port: command.port,
     host: command.host,
@@ -64,6 +72,7 @@ export async function startCsmsCommand(
     ...(command.delay !== undefined && { responseDelay: command.delay }),
     ...(command.password !== undefined && { password: command.password }),
     ...(tls !== undefined && { tls }),
+    ...(tariff !== undefined && { tariff }),
   });
   const started = Date.now();
   const timer =

@@ -50,6 +50,7 @@ function detail(
     estimate: { targetSoc: 100, targetFrom: 'default', taperSoc: 80, ...estimate },
     truth: { at: at(10), socPercent: 33.4, msToTarget: 3_600_000, etaAt: at(70) },
     durations: { charging: 600_000, suspendedEV: 0, suspendedEVSE: 0, idle: 0 },
+    price: { tariffId: 'reference', currency: 'NZD', items: [], exclTax: 0, tax: 0, inclTax: 0 },
   };
 }
 const EV = {

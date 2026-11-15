@@ -17,6 +17,7 @@ import DeviceModelBrowser from './DeviceModelBrowser.vue';
 import FleetOverview from './FleetOverview.vue';
 import MessageLog from './MessageLog.vue';
 import EnergyPanel from './EnergyPanel.vue';
+import PriceCard from './PriceCard.vue';
 import SessionsView from './SessionsView.vue';
 import VehicleCard from './VehicleCard.vue';
 import StationDetail from './StationDetail.vue';
@@ -334,6 +335,7 @@ describe('the Sessions view', () => {
     summary: summary(2, { state: 'running', source: 'remote' }),
     estimate: { targetSoc: 100, targetFrom: 'default', taperSoc: 80, reason: 'no SoC reported' },
     durations: { charging: 0, suspendedEV: 0, suspendedEVSE: 0, idle: 0 },
+    price: { tariffId: 'reference', currency: 'NZD', items: [], exclTax: 0, tax: 0, inclTax: 0 },
   };
   const props = (extra: Record<string, unknown> = {}) => ({
     station: station201,
@@ -443,6 +445,7 @@ describe('the energy panel', () => {
     truth: { at: at(20), socPercent: 34.6, msToTarget: 30 * 60_000, etaAt: at(50) },
     gap: { gapMs: 20 * 60_000, off: true },
     durations: { charging: 20 * 60_000, suspendedEV: 0, suspendedEVSE: 0, idle: 0 },
+    price: { tariffId: 'reference', currency: 'NZD', items: [], exclTax: 0, tax: 0, inclTax: 0 },
   };
 
   it('shows the reported figures and the estimate, and the truth only when asked', async () => {
@@ -525,6 +528,7 @@ describe('the vehicle card', () => {
         reason: 'SoC has not risen enough',
       },
       durations: { charging: 0, suspendedEV: 0, suspendedEVSE: 0, idle: 0 },
+      price: { tariffId: 'reference', currency: 'NZD', items: [], exclTax: 0, tax: 0, inclTax: 0 },
     };
     const ev = {
       soc: 31.2,
@@ -542,5 +546,106 @@ describe('the vehicle card', () => {
     );
     expect(withTruth).toContain('truth 40 kWh');
     expect(withTruth).toContain('truth 31.2 %');
+  });
+});
+
+describe('the price card', () => {
+  const T0 = Date.parse('2026-11-15T10:00:00Z');
+  const at = (m: number) => new Date(T0 + m * 60_000).toISOString();
+  const base: SessionDetail = {
+    session: {
+      stationId: 'SIM-201',
+      n: 1,
+      ocpp: '2.0.1',
+      state: 'finished',
+      source: 'remote',
+      requestedAt: at(0),
+      startedAt: at(0),
+      endedAt: at(60),
+      timeline: [],
+      samples: [],
+      truth: [],
+      states: [],
+      costs: [
+        { at: at(30), seq: 20, totalCost: 2.1, from: 'CostUpdated' },
+        { at: at(60), seq: 40, totalCost: 5.82, from: 'TransactionEventResponse' },
+      ],
+    },
+    summary: {
+      stationId: 'SIM-201',
+      n: 1,
+      ocpp: '2.0.1',
+      state: 'finished',
+      source: 'remote',
+      requestedAt: at(0),
+      energyWh: 12_000,
+    },
+    estimate: { targetSoc: 100, targetFrom: 'default', taperSoc: 80 },
+    durations: { charging: 3_600_000, suspendedEV: 0, suspendedEVSE: 0, idle: 0 },
+    price: {
+      tariffId: 'reference',
+      currency: 'NZD',
+      items: [
+        {
+          part: 'fixedFee',
+          quantity: 1,
+          unit: 'session',
+          unitPrice: 1,
+          exclTax: 1,
+          tax: 0,
+          inclTax: 1,
+          frames: [3],
+        },
+        {
+          part: 'energy',
+          quantity: 12,
+          unit: 'kWh',
+          unitPrice: 0.35,
+          exclTax: 4.2,
+          tax: 0.63,
+          inclTax: 4.83,
+          frames: [3, 39],
+        },
+      ],
+      exclTax: 5.2,
+      tax: 0.63,
+      inclTax: 5.83,
+    },
+  };
+
+  it('puts the CSMS cost next to the reference price, item by item', async () => {
+    const shown = text(await render(PriceCard, { detail: base, version: '2.0.1' }));
+    expect(shown).toContain('CSMS cost reported 5.82 NZD TransactionEventResponse');
+    expect(shown).toContain('Reference price estimate 5.83 NZD 5.20 NZD + tax 0.63 NZD');
+    expect(shown).toContain('The CSMS cost is 0.01 NZD below the reference price.');
+    expect(shown).toContain('Energy 12 kWh 0.35 4.20 0.63 #3 #39');
+    expect(shown).toContain('2 cost updates from the CSMS');
+    const same = {
+      ...base,
+      session: {
+        ...base.session,
+        costs: [{ at: at(60), seq: 40, totalCost: 5.83, from: 'TransactionEventResponse' }],
+      },
+    };
+    expect(text(await render(PriceCard, { detail: same, version: '2.0.1' }))).toContain(
+      'The CSMS cost matches the reference price.',
+    );
+  });
+
+  it('compares only once the session is over', async () => {
+    const running = { ...base, session: { ...base.session, state: 'running' as const } };
+    const shown = text(await render(PriceCard, { detail: running, version: '2.0.1' }));
+    expect(shown).not.toContain('below the reference price');
+    expect(shown).toContain('compared when the session ends');
+  });
+
+  it('says when the version has no cost messages or the CSMS sent none', async () => {
+    const none = { ...base, session: { ...base.session, costs: [] } };
+    expect(text(await render(PriceCard, { detail: none, version: '1.6' }))).toContain(
+      'OCPP 1.6 has no cost messages',
+    );
+    expect(text(await render(PriceCard, { detail: none, version: '2.0.1' }))).toContain(
+      'the CSMS sent no cost',
+    );
   });
 });

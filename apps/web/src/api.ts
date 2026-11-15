@@ -309,6 +309,45 @@ export interface SessionEstimate {
   reason?: string;
 }
 
+/** A reference tariff: an OCPP 2.1 TariffType without conditions (one price per part). */
+export interface ReferenceTariff {
+  tariffId: string;
+  currency: string;
+  fixedFee?: { prices: { priceFixed: number }[]; taxRates?: TaxRate[] };
+  energy?: { prices: { priceKwh: number }[]; taxRates?: TaxRate[] };
+  chargingTime?: { prices: { priceMinute: number }[]; taxRates?: TaxRate[] };
+  idleTime?: { prices: { priceMinute: number }[]; taxRates?: TaxRate[] };
+  minCost?: { exclTax?: number; inclTax?: number };
+  maxCost?: { exclTax?: number; inclTax?: number };
+}
+
+export interface TaxRate {
+  type: string;
+  tax: number;
+  stack?: number;
+}
+
+export interface PriceItem {
+  part: 'fixedFee' | 'energy' | 'chargingTime' | 'idleTime';
+  quantity: number;
+  unit: 'session' | 'kWh' | 'min';
+  unitPrice: number;
+  exclTax: number;
+  tax: number;
+  inclTax: number;
+  frames: number[];
+}
+
+export interface SessionPrice {
+  tariffId: string;
+  currency: string;
+  items: PriceItem[];
+  exclTax: number;
+  tax: number;
+  inclTax: number;
+  adjusted?: 'minCost' | 'maxCost';
+}
+
 export interface SessionDetail {
   session: SessionRecord;
   summary: SessionSummary;
@@ -316,6 +355,7 @@ export interface SessionDetail {
   truth?: { at: string; socPercent: number; msToTarget?: number; etaAt?: string };
   gap?: { gapMs: number; off: boolean };
   durations: Record<'charging' | 'suspendedEV' | 'suspendedEVSE' | 'idle', number>;
+  price: SessionPrice;
 }
 
 const station = (id: string) => `/api/stations/${encodeURIComponent(id)}`;
@@ -375,6 +415,9 @@ export const api = {
   session: (id: string, n: number) => request<SessionDetail>('GET', `${station(id)}/sessions/${n}`),
   sessionFrames: (id: string, n: number) =>
     request<{ frames: FrameRecord[] }>('GET', `${station(id)}/sessions/${n}/frames`),
+  tariff: () => request<{ tariff: ReferenceTariff }>('GET', '/api/tariff'),
+  setTariff: (tariff: ReferenceTariff) =>
+    request<{ tariff: ReferenceTariff }>('PUT', '/api/tariff', { tariff }),
   /** Has the built-in CSMS start a session on the station (only when it is the station's CSMS). */
   remoteStart: (id: string, idToken: SessionIdToken, evseId?: number) =>
     request<{ action: string; status: string; remoteStartId?: number }>(

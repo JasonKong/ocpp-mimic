@@ -7,6 +7,7 @@ import {
   type EventsConnection,
   type FrameRecord,
   type NewStation,
+  type ReferenceTariff,
   type PersonaInfo,
   type RecordEntry,
   type SessionDetail,
@@ -43,6 +44,8 @@ const sessionN = ref<number | undefined>();
 const sessionDetail = ref<SessionDetail | undefined>();
 const sessionFrames = ref<FrameRecord[] | undefined>();
 const showTruth = ref(false);
+/** The engine's reference tariff, loaded with the Sessions tab. */
+const tariff = ref<ReferenceTariff | undefined>();
 const now = ref(Date.now());
 let clock: ReturnType<typeof setInterval> | undefined;
 /** A newer change of the open session came while its detail was loading. */
@@ -61,6 +64,11 @@ function syncRoute() {
 }
 
 async function loadSessions(id: string) {
+  if (tariff.value === undefined) {
+    void guard(async () => {
+      tariff.value = (await api.tariff()).tariff;
+    });
+  }
   await guard(async () => {
     const list = (await api.sessions(id)).sessions;
     if (selectedId.value !== id) return;
@@ -128,6 +136,13 @@ function sessionChanged(summary: SessionSummary) {
   } else if (sessionN.value === undefined && tab.value === 'sessions') {
     void openSession(summary.n);
   }
+}
+
+async function saveTariff(next: ReferenceTariff) {
+  await guard(async () => {
+    tariff.value = (await api.setTariff(next)).tariff;
+  });
+  await loadDetail();
 }
 
 async function remoteStart(request: { idToken: string; type?: string; evseId?: number }) {
@@ -391,6 +406,8 @@ onUnmounted(() => {
             :selected-n="sessionN"
             :frames="sessionFrames"
             :now="now"
+            :tariff="tariff"
+            @save-tariff="saveTariff"
             @select="openSession"
             @load-frames="loadSessionFrames"
             @remote-start="remoteStart"

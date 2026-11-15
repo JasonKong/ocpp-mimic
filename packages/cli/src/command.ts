@@ -98,6 +98,8 @@ export interface CsmsCommand {
   tls?: { cert: string; key: string; ca?: string; clientCertificates: ClientCertificateMode };
   /** How often to print a status line, in milliseconds; 0 = never. */
   statusMs: number;
+  /** A reference tariff (JSON file) to price 2.0.1 sessions with. */
+  tariff?: string;
 }
 
 export interface LoadCommand {
@@ -229,6 +231,9 @@ Options for csms (stations connect to ws://<host>:<port>/ocpp/<id>):
   --client-certificates <none|optional|required>
                          Ask stations for a client certificate (default none)
   --status <duration>    Print a status line this often (default 60s; 0: never)
+  --tariff <file>        Price 2.0.1 sessions with this reference tariff (a
+                         2.1 TariffType without conditions, JSON): totalCost
+                         in TransactionEvent answers and CostUpdated each minute
 
   -v, --version          Print the version
   -h, --help             Print this help`;
@@ -252,6 +257,7 @@ const OPTIONS = {
   'tls-key': { type: 'string' },
   'tls-ca': { type: 'string' },
   'client-certificates': { type: 'string' },
+  tariff: { type: 'string' },
   status: { type: 'string' },
   'log-dir': { type: 'string' },
   station: { type: 'string', multiple: true },
@@ -307,6 +313,7 @@ const COMMANDS = {
     'tls-ca',
     'client-certificates',
     'status',
+    'tariff',
   ],
   import: ['map', 'mask', 'no-mask', 'salt', 'salt-file', 'out'],
   calibrate: ['station', 'name', 'extends', 'out', 'report'],
@@ -660,5 +667,6 @@ function parseCsms(values: Values): Command {
         },
       }),
     statusMs,
+    ...(values.tariff !== undefined && { tariff: values.tariff }),
   };
 }

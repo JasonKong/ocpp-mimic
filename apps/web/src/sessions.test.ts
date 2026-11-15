@@ -115,6 +115,7 @@ describe('energy figures', () => {
     truth: { at: at(2), socPercent: 31.6, msToTarget: 3_300_000, etaAt: at(57) },
     gap: { gapMs: 300_000, off: false },
     durations: { charging: 100_000, suspendedEV: 20_000, suspendedEVSE: 10_000, idle: 5_000 },
+    price: { tariffId: 'reference', currency: 'NZD', items: [], exclTax: 0, tax: 0, inclTax: 0 },
   });
 
   it('takes the latest reported values, the truth, the ETAs and the phases', () => {
