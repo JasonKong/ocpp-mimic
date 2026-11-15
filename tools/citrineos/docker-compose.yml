@@ -1,0 +1,47 @@
+# CitrineOS v2.1.0 (Apache-2.0, https://github.com/citrineos/citrineos-core),
+# an open-source OCPP 2.0.1 CSMS, as the test target of ocpp-mimic's 2.0.1
+# scenarios (scenarios/citrineos). Images are pinned by digest; nothing of
+# CitrineOS is copied into this repository.
+#
+#   docker compose -f tools/citrineos/docker-compose.yml up -d
+#
+# Ports (override for a busy machine): CITRINE_HTTP_PORT (REST API and
+# Swagger, default 8080) and CITRINE_WS_PORT (OCPP-J, security profile 0,
+# unknown stations accepted, default 8081).
+name: ocpp-mimic-citrineos
+services:
+  citrine:
+    image: ghcr.io/citrineos/citrineos-server@sha256:45aedf1e5908ea9aeea29028790bfaeb51a6baf5d7c5fefb94d00e549a7aeece # v2.1.0
+    environment:
+      APP_NAME: 'all'
+      DB_STRATEGY: 'migrate'
+      CITRINEOS_HOST: '0.0.0.0'
+      CITRINEOS_DATABASE_HOST: 'ocpp-db'
+      CITRINEOS_MESSAGEBROKER_AMQP_URL: 'amqp://guest:guest@amqp-broker:5672'
+      CITRINEOS_TIMEOUTS_MAXCALLLENGTHSECONDS: '20'
+      CITRINEOS_FILEACCESS_LOCAL_DEFAULTFILEPATH: '/usr/local/apps/citrineos/apps/ocpp-server/dist/assets'
+      CITRINEOS_SWAGGER_LOGOPATH: '/usr/local/apps/citrineos/apps/ocpp-server/dist/assets/logo.png'
+    depends_on:
+      ocpp-db: { condition: service_healthy }
+      amqp-broker: { condition: service_healthy }
+    ports:
+      - '${CITRINE_HTTP_PORT:-8080}:8080'
+      - '${CITRINE_WS_PORT:-8081}:8081'
+  amqp-broker:
+    image: rabbitmq@sha256:e582c0bc7766f3342496d8485efb5a1df782b5ce3886ad017e2eaae442311f69 # 3-management
+    environment: { RABBITMQ_DEFAULT_USER: guest, RABBITMQ_DEFAULT_PASS: guest }
+    healthcheck:
+      test: rabbitmq-diagnostics -q check_port_connectivity
+      interval: 5s
+      timeout: 10s
+      retries: 30
+  ocpp-db:
+    image: postgis/postgis@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07 # 16-3.5
+    # Published for amd64 only; runs emulated on arm machines.
+    platform: linux/amd64
+    environment: { POSTGRES_DB: citrine, POSTGRES_USER: citrine, POSTGRES_PASSWORD: citrine }
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -p 5432 -U citrine -d citrine']
+      interval: 5s
+      timeout: 5s
+      retries: 30

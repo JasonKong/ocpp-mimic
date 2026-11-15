@@ -1,0 +1,143 @@
+# Provisioning and availability with CitrineOS as the CSMS. Each scenario
+# follows the Part 6 test case for a CSMS named first; ocpp-mimic is the station.
+name: TC_B_01_CSMS Cold boot, Accepted
+csms: ws://localhost:8081
+station: { id: MIMIC-B01, persona: regression-2.0.1 }
+steps:
+  - expect:
+      sent: BootNotification
+      from: start
+      payload: { reason: PowerUp }
+      answer: { status: Accepted, interval: { $gt: 0 } }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Available }, answer: {} }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Available }, answer: {} }
+---
+name: TC_B_13_CSMS and TC_B_14_CSMS Base reports
+csms: ws://localhost:8081
+station: { id: MIMIC-B13, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/reporting/getBaseReport?identifier=MIMIC-B13&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 13, reportBase: FullInventory }
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetBaseReport, payload: { requestId: 13 }, answer: { status: Accepted } }
+  - expect: { sent: NotifyReport, payload: { requestId: 13, seqNo: 0, tbc: true }, answer: {} }
+  - expect: { sent: NotifyReport, payload: { requestId: 13, tbc: { $exists: false } }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/reporting/getBaseReport?identifier=MIMIC-B13&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 14, reportBase: SummaryInventory }
+  - expect: { received: GetBaseReport, payload: { requestId: 14 }, answer: { status: Accepted } }
+  - expect:
+      sent: NotifyReport
+      payload: { requestId: 14, reportData: { $size: 5 } }
+      answer: {}
+---
+name: TC_B_07_CSMS and TC_B_10_CSMS Get and set variables
+csms: ws://localhost:8081
+station: { id: MIMIC-B07, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/monitoring/setVariables?identifier=MIMIC-B07&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        setVariableData:
+          - component: { name: OCPPCommCtrlr }
+            variable: { name: HeartbeatInterval }
+            attributeValue: '120'
+          - component: { name: SampledDataCtrlr }
+            variable: { name: TxUpdatedInterval }
+            attributeValue: '30'
+  - expect:
+      received: SetVariables
+      answer: { setVariableResult: [{ attributeStatus: Accepted }, { attributeStatus: Accepted }] }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/monitoring/getVariables?identifier=MIMIC-B07&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        getVariableData:
+          - { component: { name: OCPPCommCtrlr }, variable: { name: HeartbeatInterval } }
+          - { component: { name: EVSE, evse: { id: 1 } }, variable: { name: AvailabilityState } }
+  - expect:
+      received: GetVariables
+      answer:
+        getVariableResult:
+          - { attributeStatus: Accepted, attributeValue: '120' }
+          - { attributeStatus: Accepted, attributeValue: Available }
+---
+name: TC_G_03_CSMS and TC_G_04_CSMS Change availability of an EVSE
+csms: ws://localhost:8081
+station: { id: MIMIC-G03, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/changeAvailability?identifier=MIMIC-G03&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { operationalStatus: Inoperative, evse: { id: 2 } }
+  - expect: { received: ChangeAvailability, answer: { status: Accepted } }
+  - expect:
+      sent: StatusNotification
+      payload: { evseId: 2, connectorStatus: Unavailable }
+      answer: {}
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/changeAvailability?identifier=MIMIC-G03&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { operationalStatus: Operative, evse: { id: 2 } }
+  - expect: { received: ChangeAvailability, answer: { status: Accepted } }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Available }, answer: {} }
+---
+name: TC_G_05_CSMS and TC_G_06_CSMS Change availability of the charging station
+csms: ws://localhost:8081
+station: { id: MIMIC-G05, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/changeAvailability?identifier=MIMIC-G05&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { operationalStatus: Inoperative }
+  - expect: { received: ChangeAvailability, answer: { status: Accepted } }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Unavailable }, answer: {} }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Unavailable }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/changeAvailability?identifier=MIMIC-G05&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { operationalStatus: Operative }
+  - expect: { received: ChangeAvailability, answer: { status: Accepted } }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Available }, answer: {} }

@@ -1,0 +1,37 @@
+# Transactions with CitrineOS as the CSMS, without tokens (EVConnected start
+# and stop points); token flows follow with authorization.
+name: TC_E_09_CSMS and TC_E_14_CSMS Start at EVConnected, end on unplugging
+csms: ws://localhost:8081
+station:
+  id: MIMIC-E09
+  persona: regression-2.0.1
+  deviceModel:
+    TxCtrlr: { TxStartPoint: EVConnected, TxStopPoint: EVConnected }
+    SampledDataCtrlr: { TxUpdatedInterval: 1 }
+steps:
+  - plugIn: { ev: compact-40kwh }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Occupied }, answer: {} }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, triggerReason: CablePluggedIn, seqNo: 0 }
+      answer: {}
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        {
+          eventType: Updated,
+          triggerReason: MeterValuePeriodic,
+          transactionInfo: { transactionId: '{{tx}}' },
+        }
+      answer: {}
+      within: 5s
+  - unplug: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Ended
+        triggerReason: EVCommunicationLost
+        transactionInfo: { transactionId: '{{tx}}', stoppedReason: EVDisconnected }
+      answer: {}
