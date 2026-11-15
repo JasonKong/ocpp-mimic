@@ -18,6 +18,7 @@ import FleetOverview from './FleetOverview.vue';
 import MessageLog from './MessageLog.vue';
 import EnergyPanel from './EnergyPanel.vue';
 import SessionsView from './SessionsView.vue';
+import VehicleCard from './VehicleCard.vue';
 import StationDetail from './StationDetail.vue';
 import StationList from './StationList.vue';
 import TransactionEvents from './TransactionEvents.vue';
@@ -486,5 +487,60 @@ describe('the energy panel', () => {
     expect(
       text(await render(EnergyPanel, { detail: running, showTruth: false, now: T0 })),
     ).toContain('cannot estimate: no SoC reported');
+  });
+});
+
+describe('the vehicle card', () => {
+  it('lists every vehicle item with its source, availability and, on demand, the truth', async () => {
+    const T0 = Date.parse('2026-11-15T10:00:00Z');
+    const at = (m: number) => new Date(T0 + m * 60_000).toISOString();
+    const detail: SessionDetail = {
+      session: {
+        stationId: 'SIM-16',
+        n: 1,
+        ocpp: '1.6',
+        state: 'running',
+        source: 'local',
+        requestedAt: at(0),
+        startedAt: at(0),
+        timeline: [],
+        samples: [{ at: at(5), seq: 9, energyWh: 600, socPercent: 31 }],
+        truth: [{ at: at(5), socPercent: 31.2, energyWh: 600, powerW: 7200 }],
+        states: [],
+        costs: [],
+      },
+      summary: {
+        stationId: 'SIM-16',
+        n: 1,
+        ocpp: '1.6',
+        state: 'running',
+        source: 'local',
+        requestedAt: at(0),
+        energyWh: 600,
+      },
+      estimate: {
+        targetSoc: 100,
+        targetFrom: 'default',
+        taperSoc: 80,
+        reason: 'SoC has not risen enough',
+      },
+      durations: { charging: 0, suspendedEV: 0, suspendedEVSE: 0, idle: 0 },
+    };
+    const ev = {
+      soc: 31.2,
+      profile: { capacityKWh: 40, initialSoc: 30, maxPowerW: 7400, phases: 1 },
+    };
+    const csms = await render(VehicleCard, { detail, version: '1.6', ev, showTruth: false });
+    const shown = text(csms);
+    expect(shown).toContain('State of charge 31 % reported');
+    expect(shown).toContain('Battery capacity not in this version');
+    expect(shown).toContain('Target / full SoC 100 % assumed estimate');
+    expect(shown).not.toContain('truth');
+    expect(csms).toContain('title="Open the frame it came from"');
+    const withTruth = text(
+      await render(VehicleCard, { detail, version: '1.6', ev, showTruth: true }),
+    );
+    expect(withTruth).toContain('truth 40 kWh');
+    expect(withTruth).toContain('truth 31.2 %');
   });
 });

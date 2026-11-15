@@ -5,6 +5,7 @@ import { versionInfo } from '../versions.js';
 import EnergyPanel from './EnergyPanel.vue';
 import SessionHeader from './SessionHeader.vue';
 import SessionList from './SessionList.vue';
+import VehicleCard from './VehicleCard.vue';
 import VersionBadge from './VersionBadge.vue';
 
 /**
@@ -29,6 +30,9 @@ const emit = defineEmits<{
 }>();
 
 const info = computed(() => versionInfo(props.station.ocpp));
+/** The EV plugged in at the session's EVSE, for the truth. */
+const evOf = (evseId: number | undefined) =>
+  props.station.connectors.find((c) => (c.evseId ?? c.connectorId) === evseId)?.ev;
 const evses = computed(() => props.station.connectors.map((c) => c.evseId ?? c.connectorId));
 
 const remote = ref({ idToken: 'APP-USER-1', type: 'Central', evseId: 0 });
@@ -105,12 +109,16 @@ function openFrame(seq: number) {
             :now="now"
             @open-frame="openFrame"
           />
-          <EnergyPanel
-            v-if="detail.session.state !== 'not-started'"
-            :detail="detail"
-            :show-truth="showTruth"
-            :now="now"
-          />
+          <template v-if="detail.session.state !== 'not-started'">
+            <EnergyPanel :detail="detail" :show-truth="showTruth" :now="now" />
+            <VehicleCard
+              :detail="detail"
+              :version="station.ocpp"
+              :ev="evOf(detail.session.evseId)"
+              :show-truth="showTruth"
+              @open-frame="openFrame"
+            />
+          </template>
         </template>
         <p v-else class="hint">{{ sessions.length > 0 ? 'Pick a session.' : '' }}</p>
       </div>
