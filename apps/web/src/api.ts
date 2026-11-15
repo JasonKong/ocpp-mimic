@@ -115,6 +115,8 @@ export interface FrameRecord {
   injected?: string;
   /** The frame never reached the other side. */
   dropped?: true;
+  /** The station's OCPP version. */
+  ocpp?: OcppVersion;
   text: string;
 }
 
@@ -159,7 +161,7 @@ export interface StationSummary {
   tags: string[];
   state: 'connected' | 'connecting' | 'offline' | 'stopped';
   registration: string;
-  connectors: { connectorId: number; status: string }[];
+  connectors: { connectorId: number; status: string; chargingState?: string }[];
 }
 
 export interface LatencySummary {

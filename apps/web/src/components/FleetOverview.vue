@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { api, type MetricsSummary, type StationSummary } from '../api.js';
+import { isCharging } from '../versions.js';
 
 const props = defineProps<{ stations: StationSummary[] }>();
 
@@ -32,14 +33,12 @@ interface Row {
   faulted: number;
 }
 
-const CHARGING = new Set(['Charging', 'SuspendedEV', 'SuspendedEVSE']);
-
 function row(name: string, stations: StationSummary[]): Row {
   let charging = 0;
   let faulted = 0;
   for (const station of stations) {
     for (const connector of station.connectors) {
-      if (CHARGING.has(connector.status)) charging++;
+      if (isCharging(station.ocpp, connector)) charging++;
       if (connector.status === 'Faulted') faulted++;
     }
   }

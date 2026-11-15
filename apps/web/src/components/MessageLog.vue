@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import type { FrameRecord, RecordEntry } from '../api.js';
 import { formatTime, messageTypeLabel, summarize } from '../format.js';
+import VersionBadge from './VersionBadge.vue';
 
 const props = defineProps<{ entries: RecordEntry[]; stationId?: string | undefined }>();
 
@@ -86,6 +87,7 @@ function pretty(record: FrameRecord): string {
           <span class="type" :class="`t${entry.messageType ?? 0}`">{{
             messageTypeLabel(entry)
           }}</span>
+          <VersionBadge v-if="entry.ocpp" :version="entry.ocpp" compact />
           <span class="action">{{ entry.action ?? '?' }}</span>
           <span
             v-if="entry.injected"

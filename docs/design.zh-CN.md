@@ -1132,6 +1132,7 @@ interface SessionRecord {
 - 不加路由依赖：选中一个站后，用标签页在"站点"和"会话"之间切换；hash（`#/stations/<id>/sessions/<n>`）可以链接到某个会话。
 - 组件：SessionList、SessionHeader（启动来源徽章、idToken、remoteStartId、时间线）、EnergyPanel 和 EnergyChart、VehicleCard、PriceCard 和 TariffEditor，以及 SessionLog（复用消息日志的行和摘要）。一个共享开关在"CSMS 视角"和"显示真值"之间切换（R-SRC-1）。
 - `apps/web/src/versions.ts` 存放版本能力表（R-VER-3）：术语、每个版本的车辆字段（session-ui.md 第 6 节），以及版本有没有 remoteStartId、totalCost 和费率。加 2.1 就是加一行。
+- 已实现（T85）：`apps/web/src/versions.ts`（术语、令牌类型、remoteStartId、totalCost、费率、session-ui.md 里 12 项车辆信息的可得性，以及哪些状态或充电状态算充电中）和 `VersionBadge`：站点列表、站点视图和消息日志的每一帧都按版本显示不同颜色的徽章。站点列表和车队总览按能力表统计充电中，所以 2.0.1 的 EVSE 在 chargingState 为 Charging、SuspendedEV 或 SuspendedEVSE 时计入；车队摘要带上每个连接器的 chargingState。
 - EnergyChart 手写 SVG：左轴是功率（kW）和提供功率，右轴是 SoC，横轴是时间。不需要新依赖，坐标换算是纯函数，可以单独测试。
 - 测试：纯函数（格式化、坐标换算、能力表）用单元测试；组件和 M5 一样用 Vue 的服务端渲染测试；每个视图对着运行中的引擎手动检查。
 
