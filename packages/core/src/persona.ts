@@ -101,6 +101,7 @@ const commonFields = {
         taperSoc: number(),
         targetSoc: number(),
         communication: oneOf(['basic', 'dc', 'iso15118']),
+        departureMinutes: number(),
       },
     ),
   ),

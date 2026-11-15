@@ -1,0 +1,21 @@
+# regression-2.0.1 with ISO 15118 EVs, whose charging needs the station
+# reports with NotifyEVChargingNeeds. Load it with --personas scenarios/personas.
+persona: regression-iso15118-2.0.1
+extends: regression-2.0.1
+description: regression-2.0.1 with ISO 15118 EVs (AC and DC) for the charging needs scenarios
+evs:
+  iso-ac-60kwh:
+    capacityKWh: 60
+    initialSoc: 30
+    maxPowerW: 11000
+    phases: 3
+    communication: iso15118
+    departureMinutes: 90
+  iso-dc-77kwh:
+    capacityKWh: 77
+    initialSoc: 10
+    maxPowerW: 150000
+    phases: 3
+    targetSoc: 90
+    taperSoc: 75
+    communication: iso15118

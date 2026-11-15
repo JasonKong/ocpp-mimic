@@ -738,6 +738,63 @@ describe('a 2.0.1 station: transactions', () => {
   });
 });
 
+describe('a 2.0.1 station: ISO 15118 charging needs', () => {
+  const ISO_AC = {
+    capacityKWh: 60,
+    initialSoc: 30,
+    maxPowerW: 11_000,
+    phases: 3 as const,
+    communication: 'iso15118' as const,
+  };
+
+  it('sends NotifyEVChargingNeeds once per session for an ISO 15118 EV, plugged in and authorized', async () => {
+    const h = setup({ csms: { NotifyEVChargingNeeds: () => ({ status: 'Accepted' }) } });
+    await h.boot();
+    h.cp.plugIn(1, { profile: { ...ISO_AC, departureMinutes: 60 } });
+    await h.settle();
+    // Not authorized yet: nothing to tell.
+    expect(h.calls('NotifyEVChargingNeeds')).toEqual([]);
+    expect(await h.present(1, 'TAG-1')).toBe('authorized');
+    await h.advance(2000);
+    const sent = h.calls('NotifyEVChargingNeeds');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.payload).toMatchObject({
+      evseId: 1,
+      chargingNeeds: {
+        requestedEnergyTransfer: 'AC_three_phase',
+        departureTime: new Date(Date.parse('2026-11-15T10:00:00Z') + 3_600_000).toISOString(),
+        acChargingParameters: { evMaxCurrent: 16 },
+      },
+    });
+    await h.advance(60_000);
+    expect(h.calls('NotifyEVChargingNeeds')).toHaveLength(1);
+    expect(h.allValid()).toBe(true);
+  });
+
+  it('sends DC parameters for a DC connector, and nothing for other EVs', async () => {
+    const dc = setup({
+      csms: { NotifyEVChargingNeeds: () => ({ status: 'Accepted' }) },
+      deviceModel: { 'Connector@1.1': { ConnectorType: 'cCCS2' } },
+    });
+    await dc.boot();
+    await dc.present(1, 'TAG-1');
+    dc.cp.plugIn(1, { profile: { ...ISO_AC, maxPowerW: 50_000 } });
+    await dc.advance(2000);
+    expect(dc.calls('NotifyEVChargingNeeds')[0]?.payload).toMatchObject({
+      chargingNeeds: {
+        requestedEnergyTransfer: 'DC',
+        dcChargingParameters: { evEnergyCapacity: 60_000, stateOfCharge: 30 },
+      },
+    });
+    const plain = setup();
+    await plain.boot();
+    await plain.present(1, 'TAG-1');
+    plain.cp.plugIn(1, { profile: { ...ISO_AC, communication: 'dc' } });
+    await plain.advance(2000);
+    expect(plain.calls('NotifyEVChargingNeeds')).toEqual([]);
+  });
+});
+
 describe('a 2.0.1 station: faults', () => {
   it('reports a fault and its end with NotifyEvent for the Problem variable', async () => {
     const { cp, calls, boot, settle, csmsCall, allValid } = setup();

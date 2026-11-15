@@ -1,0 +1,46 @@
+# NotifyEVChargingNeeds from 2.0.1 stations with ISO 15118 EVs (T82), against
+# the built-in CSMS. The EVs come from regression-iso15118-2.0.1; the charging
+# needs follow their profiles: capacity, SoC, target, taper, maximum power,
+# phases and departure.
+name: An ISO 15118 EV on an AC connector tells its needs once, with its departure time
+station: { id: REG-NEEDS-AC, persona: regression-iso15118-2.0.1 }
+steps:
+  - presentCard: { idToken: TAG-NEEDS-1, result: authorized }
+  - plugIn: { ev: iso-ac-60kwh }
+  - expect:
+      sent: NotifyEVChargingNeeds
+      payload:
+        evseId: 1
+        chargingNeeds:
+          requestedEnergyTransfer: AC_three_phase
+          departureTime: { $regex: '^20\d\d-' }
+          acChargingParameters:
+            { energyAmount: 42000, evMinCurrent: 6, evMaxCurrent: 16, evMaxVoltage: 400 }
+  - presentCard: { idToken: TAG-NEEDS-1, result: stopping }
+  - expect: { sent: TransactionEvent, payload: { eventType: Ended } }
+  - expectNo: { sent: NotifyEVChargingNeeds, within: 1s }
+---
+name: An ISO 15118 EV on a DC connector tells its capacity, SoC, full and bulk SoC
+station:
+  id: REG-NEEDS-DC
+  persona: regression-iso15118-2.0.1
+  deviceModel:
+    Connector@1.1: { ConnectorType: cCCS2 }
+steps:
+  - presentCard: { idToken: TAG-NEEDS-2, result: authorized }
+  - plugIn: { ev: iso-dc-77kwh }
+  - expect:
+      sent: NotifyEVChargingNeeds
+      payload:
+        chargingNeeds:
+          requestedEnergyTransfer: DC
+          dcChargingParameters:
+            {
+              evMaxCurrent: 375,
+              evMaxVoltage: 400,
+              evMaxPower: 150000,
+              stateOfCharge: 10,
+              evEnergyCapacity: 77000,
+              fullSoC: 90,
+              bulkSoC: 75,
+            }

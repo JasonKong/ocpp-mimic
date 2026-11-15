@@ -234,6 +234,7 @@ function defaultHandlers201(options: BuiltinCsmsOptions): Record<string, CsmsHan
     NotifyReport: empty,
     NotifyEvent: empty,
     NotifyCustomerInformation: empty,
+    NotifyEVChargingNeeds: () => ({ status: 'Accepted' }),
     SecurityEventNotification: empty,
     FirmwareStatusNotification: empty,
     LogStatusNotification: empty,
