@@ -204,6 +204,40 @@ describe('scenario validation', () => {
     ]);
   });
 
+  it('reads 2.0.1 station and step fields: deviceModel, idToken, type and evse', () => {
+    const result = parseScenario({
+      name: 'v201',
+      station: {
+        id: 'S',
+        persona: 'generic-2.0.1',
+        deviceModel: { OCPPCommCtrlr: { HeartbeatInterval: 10 } },
+      },
+      steps: [
+        { presentCard: { idToken: 'TAG', type: 'KeyCode', evse: 2 } },
+        { plugIn: { evse: 2 } },
+        { expect: { sent: 'TransactionEvent' } },
+        { csmsCall: { action: 'GetVariables', payload: {}, error: 'FormatViolation' } },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.scenario.stations[0]?.deviceModel).toEqual({
+      OCPPCommCtrlr: { HeartbeatInterval: '10' },
+    });
+    expect(result.scenario.steps.slice(0, 2)).toMatchObject([
+      { kind: 'presentCard', idTag: 'TAG', type: 'KeyCode', connector: 2 },
+      { kind: 'plugIn', connector: 2 },
+    ]);
+    const both = parseScenario({
+      name: 'both',
+      station: { id: 'S', persona: 'p' },
+      steps: [{ presentCard: { idTag: 'A', idToken: 'B' } }],
+    });
+    expect(both.ok ? [] : both.errors).toEqual([
+      '$.steps[0].presentCard: needs idTag or idToken (one of them)',
+    ]);
+  });
+
   it('names the file, the step and the field in errors', () => {
     expect(
       errors({
@@ -228,8 +262,8 @@ describe('scenario validation', () => {
     ).toEqual([
       'file.yaml#1: $.steps[0].plugin: unknown step (known: plugIn, unplug, evSuspend, evResume, clearFault, presentCard, fault, offline, online, stopStation, startStation, setBehaviour, charge, expect, expectNo, csmsCall, csmsReply, http, clearInjections, wait, inject, replay, expectConnector, expectStation)',
       'file.yaml#1: $.steps[1].plugIn.connector: expected integer, got string',
-      'file.yaml#1: $.steps[2].presentCard.idTag: missing required property',
-      'file.yaml#1: $.steps[3].expect.sent: "RemoteStartTransaction" is not one of Authorize, BootNotification, DataTransfer, DiagnosticsStatusNotification, FirmwareStatusNotification, Heartbeat, LogStatusNotification, MeterValues, SecurityEventNotification, SignCertificate, SignedFirmwareStatusNotification, StartTransaction, StatusNotification, StopTransaction',
+      'file.yaml#1: $.steps[2].presentCard: needs idTag or idToken (one of them)',
+      'file.yaml#1: $.steps[3].expect.sent: "RemoteStartTransaction" is not one of Authorize, BootNotification, DataTransfer, DiagnosticsStatusNotification, FirmwareStatusNotification, Heartbeat, LogStatusNotification, MeterValues, SecurityEventNotification, SignCertificate, SignedFirmwareStatusNotification, StartTransaction, StatusNotification, StopTransaction, ClearedChargingLimit, Get15118EVCertificate, GetCertificateStatus, NotifyChargingLimit, NotifyCustomerInformation, NotifyDisplayMessages, NotifyEVChargingNeeds, NotifyEVChargingSchedule, NotifyEvent, NotifyMonitoringReport, NotifyReport, PublishFirmwareStatusNotification, ReportChargingProfiles, ReservationStatusUpdate, TransactionEvent',
       expect.stringMatching(
         /^file\.yaml#1: \$\.steps\[4\]\.expect\.received: "Heartbeat" is not one of/,
       ),

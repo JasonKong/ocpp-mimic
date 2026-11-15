@@ -1,0 +1,133 @@
+# OCPP 2.0.1 provisioning (functional block B) against the built-in CSMS.
+# Names start with the Part 6 test case for a charging station that each
+# scenario follows; ocpp-mimic plays the station under test.
+name: TC_B_01_CS Cold boot, Accepted
+station: { id: REG201-BOOT, persona: regression-2.0.1 }
+steps:
+  - expect:
+      sent: BootNotification
+      from: start
+      payload: { reason: PowerUp, chargingStation: { vendorName: ocpp-mimic } }
+      answer: { status: Accepted }
+  - expect:
+      {
+        sent: StatusNotification,
+        payload: { evseId: 1, connectorId: 1, connectorStatus: Available },
+      }
+  - expect:
+      {
+        sent: StatusNotification,
+        payload: { evseId: 2, connectorId: 1, connectorStatus: Available },
+      }
+  - expectStation: { ocpp: '2.0.1', registration: Accepted }
+---
+name: TC_B_02_CS Cold boot, Pending
+station: { id: REG201-PENDING, persona: regression-2.0.1 }
+steps:
+  - stopStation: {}
+  - csmsReply:
+      action: BootNotification
+      payload: { status: Pending, currentTime: '2026-01-01T00:00:00Z', interval: 1 }
+      times: 1
+  - startStation: {}
+  - expect: { sent: BootNotification, answer: { status: Pending } }
+  # While Pending the station reports nothing, but answers the CSMS.
+  - csmsCall:
+      action: GetVariables
+      payload:
+        getVariableData:
+          [{ component: { name: OCPPCommCtrlr }, variable: { name: HeartbeatInterval } }]
+      answer: { getVariableResult: [{ attributeStatus: Accepted }] }
+  - expect: { sent: BootNotification, answer: { status: Accepted }, within: 15s }
+  - expectStation: { registration: Accepted }
+---
+name: TC_B_06_CS and TC_B_07_CS Get variables, single and multiple values
+station:
+  id: REG201-GETVAR
+  persona: regression-2.0.1
+  deviceModel: { OCPPCommCtrlr: { WebSocketPingInterval: 45 } }
+steps:
+  - csmsCall:
+      action: GetVariables
+      payload:
+        getVariableData:
+          - { component: { name: OCPPCommCtrlr }, variable: { name: WebSocketPingInterval } }
+          - { component: { name: EVSE, evse: { id: 2 } }, variable: { name: AvailabilityState } }
+          - { component: { name: NoSuchCtrlr }, variable: { name: Anything } }
+          - { component: { name: SecurityCtrlr }, variable: { name: BasicAuthPassword } }
+      answer:
+        getVariableResult:
+          - { attributeStatus: Accepted, attributeValue: '45', attributeType: Actual }
+          - { attributeStatus: Accepted, attributeValue: Available }
+          - { attributeStatus: UnknownComponent }
+          - { attributeStatus: Rejected }
+---
+name: TC_B_09_CS and TC_B_10_CS Set variables, single and multiple values
+station: { id: REG201-SETVAR, persona: regression-2.0.1 }
+steps:
+  - csmsCall:
+      action: SetVariables
+      payload:
+        setVariableData:
+          - component: { name: OCPPCommCtrlr }
+            variable: { name: HeartbeatInterval }
+            attributeValue: '2'
+          - component: { name: OCPPCommCtrlr }
+            variable: { name: FileTransferProtocols }
+            attributeValue: FTP
+          - component: { name: TxCtrlr }
+            variable: { name: TxStartPoint }
+            attributeValue: Sometime
+      answer:
+        setVariableResult:
+          - { attributeStatus: Accepted }
+          - { attributeStatus: Rejected, attributeStatusInfo: { reasonCode: ReadOnly } }
+          - { attributeStatus: Rejected, attributeStatusInfo: { reasonCode: InvalidValue } }
+  # The new interval takes effect at once.
+  - expect: { sent: Heartbeat, within: 5s }
+  - expect: { sent: Heartbeat, within: 5s }
+  - expectStation: { config: { OCPPCommCtrlr/HeartbeatInterval: '2' } }
+---
+name: TC_B_12_CS to TC_B_14_CS Get base reports
+station: { id: REG201-REPORT, persona: regression-2.0.1 }
+steps:
+  - csmsCall:
+      action: GetBaseReport
+      payload: { requestId: 1, reportBase: FullInventory }
+      answer: { status: Accepted }
+  - expect: { sent: NotifyReport, payload: { requestId: 1, seqNo: 0, tbc: true } }
+  - expect: { sent: NotifyReport, payload: { requestId: 1, seqNo: 1 } }
+  - csmsCall:
+      action: GetBaseReport
+      payload: { requestId: 2, reportBase: SummaryInventory }
+      answer: { status: Accepted }
+  - expect:
+      sent: NotifyReport
+      payload:
+        requestId: 2
+        seqNo: 0
+        reportData: { $size: 5, $contains: { variable: { name: AvailabilityState } } }
+  - csmsCall:
+      action: GetBaseReport
+      payload: { requestId: 3, reportBase: ConfigurationInventory }
+      answer: { status: Accepted }
+  - expect: { sent: NotifyReport, payload: { requestId: 3, seqNo: 0 } }
+---
+name: TC_B_16_CS and TC_B_18_CS Get custom reports
+station: { id: REG201-CUSTOM, persona: regression-2.0.1 }
+steps:
+  - csmsCall:
+      action: GetReport
+      payload:
+        requestId: 4
+        componentVariable:
+          [{ component: { name: EVSE, evse: { id: 1 } }, variable: { name: Power } }]
+      answer: { status: Accepted }
+  - expect:
+      sent: NotifyReport
+      payload:
+        { requestId: 4, reportData: [{ component: { name: EVSE }, variable: { name: Power } }] }
+  - csmsCall:
+      action: GetReport
+      payload: { requestId: 5, componentCriteria: [Problem] }
+      answer: { status: EmptyResultSet }

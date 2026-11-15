@@ -106,6 +106,26 @@ steps:
     },
   );
 
+  it("refuses actions that do not exist in the station's OCPP version, before running", async () => {
+    const result = await runScenario(
+      scenario(`name: wrong version
+station: { id: SIM-201, persona: generic-2.0.1 }
+steps:
+  - expect: { sent: StartTransaction }
+  - csmsCall: { action: RemoteStartTransaction, payload: { idTag: A } }
+  - csmsReply: { action: TransactionEvent, error: FormationViolation }
+  - expect: { sent: TransactionEvent, within: 1s }`),
+      'wrong-version.yaml',
+      FAST,
+    );
+    expect(result.status).toBe('error');
+    expect(result.error?.split('\n')).toEqual([
+      'steps[0].expect: StartTransaction is not a charging station message in OCPP 2.0.1 (station SIM-201)',
+      'steps[1].csmsCall: RemoteStartTransaction is not a CSMS message in OCPP 2.0.1 (station SIM-201)',
+      'steps[2].csmsReply: FormationViolation is not an error code in OCPP 2.0.1 (station SIM-201)',
+    ]);
+  });
+
   it('treats refusals as failures unless the step expects them', { timeout: 20_000 }, async () => {
     const yaml = (expectError: string) => `
 name: locked cable

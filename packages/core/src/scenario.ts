@@ -7,6 +7,13 @@
 import { isJsonPath, operatorProblems } from './match.js';
 import { ChargePointErrorCodeSchema, type ChargePointErrorCode } from './ocpp16-messages.js';
 import { OCPP16_CHARGE_POINT_INITIATED, OCPP16_CSMS_INITIATED, RPC_ERROR_CODES } from './ocpp16.js';
+import type { OcppVersion } from './message-set.js';
+import { OCPP201_RPC_ERROR_CODES } from './ocpp201/constants.js';
+import {
+  IdTokenEnumSchema,
+  OCPP201_CHARGING_STATION_ACTIONS,
+  OCPP201_CSMS_ACTIONS,
+} from './ocpp201/messages.js';
 import { durationSchema, parseDuration } from './duration.js';
 import {
   array,
@@ -35,7 +42,10 @@ export interface ScenarioStation {
   id: string;
   persona: string;
   password?: string;
+  /** 1.6 configuration keys on top of the persona's. */
   config?: Record<string, string>;
+  /** 2.0.1 Device Model values on top of the persona's: component → variable → value. */
+  deviceModel?: Record<string, Record<string, string>>;
   behaviour?: { refuseRemoteStart?: boolean; cableLock?: boolean };
   energyMultiplier?: number;
   /** Security Profile and certificate files (paths relative to the scenario file). */
@@ -99,7 +109,15 @@ export type ScenarioStep =
       kind: 'unplug' | 'evSuspend' | 'evResume' | 'clearFault';
       connector: number;
     })
-  | (ActionBase & { kind: 'presentCard'; connector: number; idTag: string; result?: CardResult })
+  | (ActionBase & {
+      kind: 'presentCard';
+      connector: number;
+      /** The idTag (1.6) or idToken (2.0.1). */
+      idTag: string;
+      /** The IdToken type for a 2.0.1 station; default ISO14443. */
+      type?: string;
+      result?: CardResult;
+    })
   | (ActionBase & {
       kind: 'fault';
       connector: number;
@@ -215,6 +233,8 @@ export type ScenarioResult = { ok: true; scenario: Scenario } | { ok: false; err
 
 const anyJson: Schema<JsonValue> = { check() {} };
 const connector = integer({ minimum: 0 });
+/** A 2.0.1 station's EVSE; with one connector per EVSE it names connector `evse`. */
+const evse = integer({ minimum: 1 });
 const nonEmpty: Schema<string> = {
   check(value, path, issues) {
     string().check(value, path, issues);
@@ -259,16 +279,86 @@ const saveSchema: Schema<SaveMap> = {
 const behaviourSchema = object({}, { refuseRemoteStart: boolean(), cableLock: boolean() });
 const action = { expectError: string(), station: nonEmpty };
 const fromSchema = oneOf(['last', 'step', 'start']);
+/** Action names of either version; the runner checks them against each station's version. */
+const unique = <T extends string>(...lists: (readonly T[])[]) => [...new Set(lists.flat())];
+const SENT_ACTIONS = unique<string>(
+  OCPP16_CHARGE_POINT_INITIATED,
+  OCPP201_CHARGING_STATION_ACTIONS,
+);
+const RECEIVED_ACTIONS = unique<string>(OCPP16_CSMS_INITIATED, OCPP201_CSMS_ACTIONS);
+const ERROR_CODES = unique<string>(RPC_ERROR_CODES, OCPP201_RPC_ERROR_CODES);
 const directions = {
-  sent: oneOf(OCPP16_CHARGE_POINT_INITIATED),
-  received: oneOf(OCPP16_CSMS_INITIATED),
+  sent: oneOf(SENT_ACTIONS),
+  received: oneOf(RECEIVED_ACTIONS),
 };
+
+const ACTIONS_BY_VERSION: Record<
+  OcppVersion,
+  { sent: Set<string>; received: Set<string>; errors: Set<string> }
+> = {
+  '1.6': {
+    sent: new Set(OCPP16_CHARGE_POINT_INITIATED),
+    received: new Set(OCPP16_CSMS_INITIATED),
+    errors: new Set(RPC_ERROR_CODES),
+  },
+  '2.0.1': {
+    sent: new Set(OCPP201_CHARGING_STATION_ACTIONS),
+    received: new Set(OCPP201_CSMS_ACTIONS),
+    errors: new Set(OCPP201_RPC_ERROR_CODES),
+  },
+};
+
+/**
+ * Steps whose action or error code does not exist in the OCPP version of
+ * their station: a 1.6 action in a 2.0.1 scenario, for example. Found before
+ * the run, once the personas (and so the versions) are known.
+ */
+export function scenarioVersionProblems(
+  scenario: Scenario,
+  versionOf: (stationId: string) => OcppVersion,
+): string[] {
+  const problems: string[] = [];
+  const first = scenario.stations[0]?.id ?? '';
+  scenario.steps.forEach((step, index) => {
+    const stationId = step.station ?? first;
+    const version = versionOf(stationId);
+    const known = ACTIONS_BY_VERSION[version];
+    const at = `steps[${index}].${step.kind}`;
+    const check = (action: string, list: Set<string>, what: string) => {
+      if (!list.has(action)) {
+        problems.push(`${at}: ${action} is not ${what} in OCPP ${version} (station ${stationId})`);
+      }
+    };
+    switch (step.kind) {
+      case 'expect':
+      case 'expectNo':
+        check(
+          step.action,
+          step.direction === 'sent' ? known.sent : known.received,
+          step.direction === 'sent' ? 'a charging station message' : 'a CSMS message',
+        );
+        break;
+      case 'csmsCall':
+        check(step.action, known.received, 'a CSMS message');
+        if (step.error !== undefined) check(step.error, known.errors, 'an error code');
+        break;
+      case 'csmsReply':
+        check(step.action, known.sent, 'a charging station message');
+        if ('error' in step.reply) check(step.reply.error, known.errors, 'an error code');
+        break;
+      default:
+        break;
+    }
+  });
+  return problems;
+}
 
 const stationSchema = object(
   { id: nonEmpty, persona: nonEmpty },
   {
     password: string(),
     config: record(union(string(), number(), boolean())),
+    deviceModel: record(record(union(string(), number(), boolean()))),
     behaviour: behaviourSchema,
     energyMultiplier: positive,
     waitForBoot: boolean(),
@@ -315,18 +405,26 @@ const topSchema = object(
 
 /** Argument schemas for steps whose arguments are a plain object. */
 const ARGUMENTS = {
-  plugIn: object({}, { connector, ev: nonEmpty, ...action }),
-  unplug: object({}, { connector, ...action }),
-  evSuspend: object({}, { connector, ...action }),
-  evResume: object({}, { connector, ...action }),
-  clearFault: object({}, { connector, ...action }),
+  plugIn: object({}, { connector, evse, ev: nonEmpty, ...action }),
+  unplug: object({}, { connector, evse, ...action }),
+  evSuspend: object({}, { connector, evse, ...action }),
+  evResume: object({}, { connector, evse, ...action }),
+  clearFault: object({}, { connector, evse, ...action }),
   presentCard: object(
-    { idTag: nonEmpty },
-    { connector, result: oneOf(['authorized', 'rejected', 'stopping', 'busy']), ...action },
+    {},
+    {
+      idTag: nonEmpty,
+      idToken: nonEmpty,
+      type: IdTokenEnumSchema,
+      connector,
+      evse,
+      result: oneOf(['authorized', 'rejected', 'stopping', 'busy']),
+      ...action,
+    },
   ),
   fault: object(
     { errorCode: ChargePointErrorCodeSchema },
-    { connector, info: string(), vendorErrorCode: string(), ...action },
+    { connector, evse, info: string(), vendorErrorCode: string(), ...action },
   ),
   offline: object({ mode: oneOf(['clean', 'half-open']) }, action),
   online: object({}, action),
@@ -358,21 +456,21 @@ const ARGUMENTS = {
     },
   ),
   csmsCall: object(
-    { action: oneOf(OCPP16_CSMS_INITIATED) },
+    { action: oneOf(RECEIVED_ACTIONS) },
     {
       payload: record(anyJson),
       answer: anyJson,
-      error: oneOf(RPC_ERROR_CODES),
+      error: oneOf(ERROR_CODES),
       noAnswer: durationSchema,
       save: saveSchema,
       station: nonEmpty,
     },
   ),
   csmsReply: object(
-    { action: oneOf(OCPP16_CHARGE_POINT_INITIATED) },
+    { action: oneOf(SENT_ACTIONS) },
     {
       payload: record(anyJson),
-      error: oneOf(RPC_ERROR_CODES),
+      error: oneOf(ERROR_CODES),
       ignore: boolean(),
       times: integer({ minimum: 1 }),
       station: nonEmpty,
@@ -598,7 +696,8 @@ function parseStep(
   ARGUMENTS[argsKind].check(args, at, issues);
   if (issues.length > before || !isObject(args)) return undefined;
   const base = { ...named, ...pick(args, ['station', 'expectError'] as const) } as ActionBase;
-  const connectorId = (args.connector as number | undefined) ?? 1;
+  const connectorId =
+    (args.connector as number | undefined) ?? (args.evse as number | undefined) ?? 1;
 
   switch (argsKind) {
     case 'plugIn':
@@ -613,14 +712,25 @@ function parseStep(
     case 'evResume':
     case 'clearFault':
       return { kind: argsKind, ...base, connector: connectorId };
-    case 'presentCard':
+    case 'presentCard': {
+      // idToken is the 2.0.1 name of idTag; exactly one of them.
+      const card = args.idTag ?? args.idToken;
+      if (card === undefined || (args.idTag !== undefined && args.idToken !== undefined)) {
+        issues.push({
+          path: at,
+          errorCode: 'OccurenceConstraintViolation',
+          message: 'needs idTag or idToken (one of them)',
+        });
+        return undefined;
+      }
       return {
         kind: argsKind,
         ...base,
         connector: connectorId,
-        idTag: args.idTag as string,
-        ...pick(args, ['result'] as const),
+        idTag: card as string,
+        ...pick(args, ['type', 'result'] as const),
       } as ScenarioStep;
+    }
     case 'fault':
       if (args.errorCode === 'NoError') {
         issues.push({
@@ -835,6 +945,16 @@ export function parseScenario(document: unknown, label?: string): ScenarioResult
       ] as const) as Partial<ScenarioStation>),
       ...(isObject(raw.config) && {
         config: Object.fromEntries(Object.entries(raw.config).map(([k, v]) => [k, String(v)])),
+      }),
+      ...(isObject(raw.deviceModel) && {
+        deviceModel: Object.fromEntries(
+          Object.entries(raw.deviceModel).map(([component, variables]) => [
+            component,
+            Object.fromEntries(
+              Object.entries(variables as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
+            ),
+          ]),
+        ),
       }),
       // A replay station's charge point never boots on its own.
       waitForBoot: raw.replay === true ? false : raw.waitForBoot !== false,

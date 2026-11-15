@@ -368,8 +368,12 @@ export interface ChargePoint {
   plugIn(connectorId: number, ev?: PluggedEv): void;
   /** Takes the cable out, unless the cable lock holds it. */
   unplug(connectorId: number): UnplugResult;
-  /** A card presented at `connectorId`: starts, or stops the transaction the card started. */
-  presentIdTag(connectorId: number, idTag: string): Promise<IdTagResult>;
+  /**
+   * A card presented at `connectorId`: starts, or stops the transaction the
+   * card started. `type` is the IdToken type of a 2.0.1 station (default
+   * ISO14443); 1.6 stations have none.
+   */
+  presentIdTag(connectorId: number, idTag: string, type?: string): Promise<IdTagResult>;
   evSuspend(connectorId: number): void;
   evResume(connectorId: number): void;
   raiseFault(connectorId: number, fault: Fault): void;

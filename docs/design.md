@@ -255,7 +255,7 @@ steps:
 | `name` | yes | Test case name |
 | `description` | no | Free text, shown in reports |
 | `csms` | no | `builtin` (the default) or the WebSocket URL of a CSMS; the station id is appended as for any station. `--csms` on the command line overrides it |
-| `station` or `stations` | yes | One station, or a list of them. Fields: `id`, `persona`, and optionally `password` (the initial `AuthorizationKey`), `config` (configuration key overrides), `behaviour` (test switches), `energyMultiplier`, `security` (`profile` and the PEM files `ca`, `cert`, `key`, `manufacturerRoot`, relative to the scenario file; `test-pki:<file>` names a file of the committed test PKI), `waitForBoot` |
+| `station` or `stations` | yes | One station, or a list of them. Fields: `id`, `persona`, and optionally `password` (the initial `AuthorizationKey`), `config` (configuration key overrides; 1.6), `deviceModel` (Device Model values, component → variable → value; 2.0.1), `behaviour` (test switches), `energyMultiplier`, `security` (`profile` and the PEM files `ca`, `cert`, `key`, `manufacturerRoot`, relative to the scenario file; `test-pki:<file>` names a file of the committed test PKI), `waitForBoot` |
 | `vars` | no | Default values for templates |
 | `csmsOptions` | no | Settings of the built-in CSMS: `tls` (`true`, or `{ clientCertificates: none \| optional \| required }`) serves wss:// with the test PKI's server certificate; `passwords` (station id → password) makes it check Basic Auth. It takes an AuthorizationKey it changed and saw Accepted as the station's new password |
 | `timeout` | no | Limit for the whole scenario; default 5 minutes |
@@ -265,7 +265,7 @@ Setup creates and starts every station; with `waitForBoot` (the default) it also
 
 **Steps**
 
-A step is a map with one step key whose value is the step's arguments. Steps that act on a station take `station` (its id; default the first station), and connector steps take `connector` (default 1). Any step may carry `name` next to the step key (`- name: Card in` above `presentCard: ...`), which reports show instead of the generated label. Steps without arguments can be written `online:` or `online: {}`.
+A step is a map with one step key whose value is the step's arguments. Steps that act on a station take `station` (its id; default the first station), and connector steps take `connector` (default 1), or `evse` on a 2.0.1 station, whose EVSE `n` has connector `n` as its only connector. Any step may carry `name` next to the step key (`- name: Card in` above `presentCard: ...`), which reports show instead of the generated label. Steps without arguments can be written `online:` or `online: {}`.
 
 Charge point actions, the same operations the API offers:
 
@@ -273,7 +273,7 @@ Charge point actions, the same operations the API offers:
 | --- | --- | --- |
 | `plugIn` | `connector`, `ev` | Cable in; `ev` names an EV profile |
 | `unplug` | `connector` | Cable out |
-| `presentCard` | `connector`, `idTag`, `result` | A card at the connector; `result` optionally asserts `authorized`, `rejected`, `stopping` or `busy` |
+| `presentCard` | `connector`, `idTag` (or `idToken`), `type`, `result` | A card at the connector; `result` optionally asserts `authorized`, `rejected`, `stopping` or `busy`. On a 2.0.1 station the card is an IdToken of `type` (default ISO14443) |
 | `evSuspend`, `evResume` | `connector` | The EV pauses or resumes |
 | `fault` | `connector` (0 = the whole charge point), `errorCode`, `info`, `vendorErrorCode` | Raise a fault |
 | `clearFault` | `connector` | Clear it |
@@ -924,6 +924,7 @@ Implemented (T62):
 
 - It accepts both subprotocols and runs a 2.0.1 session on `ocpp2.0.1` connections: it answers BootNotification (Accepted with its interval), Heartbeat, StatusNotification, Authorize and TransactionEvent (idTokenInfo Accepted, Invalid for the unknown prefix), MeterValues, NotifyReport, NotifyEvent, SecurityEventNotification, the status notifications, SignCertificate (signed with the test CA), ReportChargingProfiles, ReservationStatusUpdate and NotifyCustomerInformation.
 - `csmsCall` and `csmsReply` work with 2.0.1 actions, validated against the station's message set, and the compliance report checks 2.0.1 answers.
+- Implemented (T63): scenario files take the action names and error codes of both versions, and the runner checks each `expect`, `expectNo`, `csmsCall` and `csmsReply` against the version of its station's persona before anything starts; a mismatch is a scenario error naming the step. A scenario station takes `deviceModel` (component → variable → value) like `config` for 1.6, `presentCard` takes `idToken` (an alias of `idTag`) and `type`, and connector steps take `evse`. `regression-2.0.1` (two EVSEs, short downtimes) is in `scenarios/personas/`, and `scenarios/regression/ocpp201-provisioning.yaml` and `ocpp201-availability.yaml` cover boot (Accepted, Pending), GetVariables, SetVariables, base and custom reports, connector status and ChangeAvailability for an EVSE, the station and a connector; CI runs them with the other regression scenarios.
 - Implemented (T61): the CSMS takes the first subprotocol the station offers that it speaks, so `connection.ocpp` is `1.6` or `2.0.1`, and answers with that version's defaults; custom `handlers` apply to both versions. A 2.0.1 station's CALL of an action the CSMS knows but has no handler for gets NotSupported, an unknown one NotImplemented (1.6 keeps NotImplemented for both). SignCertificate's CertificateSigned carries the `certificateType` the request named. As for 1.6, `csmsCall` and `csmsReply` payloads are not validated by the CSMS: the station's RPC layer validates what it receives, and the recorder checks every frame against the schemas of the station's version.
 
 **Scenarios**
