@@ -750,6 +750,18 @@ Every number is within the exit thresholds; the heap no longer grows. The exit r
 
   With the fixes the same 25-minute run grows 1.3 % (52.3 → 53.0 MB over 12,000 sessions).
 
+**Accepted (T55)**
+
+M4's exit criterion is met. The second run of the soak workflow on main ([43655940937](https://github.com/JasonKong/ocpp-mimic/actions/runs/43655940937)) passed every threshold:
+
+- every station accepted 0.1 s after the ramp-up, and back online 0.9 s after the reconnect storm and 0.3 s after the power loss
+- no unexpected disconnects, timeouts, CALLERRORs or schema violations
+- late work p99 7 ms, event-loop delay p99 1.4 ms
+- RSS at most 243 MB, heap growth 9.0 %
+- 1,501 sessions against 1,383 expected
+
+The heap growth follows the number of active sessions while the fleet fills up; #133 makes that check start once occupancy is steady.
+
 **Where the files go**
 
 Load plans go in `scenarios/load/`, import mappings in `scenarios/import/`, sample logs in `scenarios/logs/`, and load personas in `scenarios/personas/`. The tests validate every other file under `scenarios/` as a scenario, so `scenarios/examples/` stays scenario-only.

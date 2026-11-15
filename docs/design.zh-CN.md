@@ -711,6 +711,18 @@ thresholds:
 
   修复后同样的 25 分钟运行只增长 1.3%（1.2 万次会话，52.3 → 53.0 MB）。
 
+**验收（T55）**
+
+M4 的出口标准已满足。soak 工作流在 main 上的第二次运行（[43655940937](https://github.com/JasonKong/ocpp-mimic/actions/runs/43655940937)）所有阈值都通过：
+
+- ramp-up 结束后 0.1 秒内所有桩被接受；重连风暴后 0.9 秒、断电后 0.3 秒全部重新上线
+- 没有意外断线、超时、CALLERROR 或 schema 违规
+- 定时任务延迟 p99 7 毫秒，事件循环延迟 p99 1.4 毫秒
+- RSS 最高 243 MB，堆增长 9.0%
+- 1,501 次充电（预期 1,383 次）
+
+堆增长随车队填满时活跃会话的增加而增加；#133 让这项检查在占用率稳定后才开始比较。
+
 **文件放在哪里**
 
 压测计划放 `scenarios/load/`，导入映射放 `scenarios/import/`，样本日志放 `scenarios/logs/`，压测用的 persona 放 `scenarios/personas/`。测试会把 `scenarios/` 下其余所有文件当作场景校验，所以 `scenarios/examples/` 只放场景。
