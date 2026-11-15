@@ -36,6 +36,7 @@ import {
   type DeviceEvent,
   type Fault,
   type ReduceResult,
+  type ConnectorState,
   type StationState,
 } from '../device.js';
 import { createEnergy } from '../energy.js';
@@ -103,6 +104,15 @@ import {
   type InstalledProfile201,
 } from './smart-charging.js';
 import { toWatts, type ChargingRateUnit } from '../charging-profile.js';
+import {
+  lostReservations,
+  reserveAnswer,
+  reservedEvses,
+  useAt,
+  type BaseStatus,
+  type EvseView,
+  type Reservation201,
+} from './reservation.js';
 import {
   CERTIFICATE_ENTRIES_MAX,
   CHARGING_PROFILES_MAX,
@@ -196,6 +206,8 @@ export interface PersistedChargePoint201 {
   security?: PersistedSecurity201;
   /** Installed charging profiles (K01.FR.27); missing in older states. */
   chargingProfiles?: InstalledProfile201[];
+  /** Reservations not yet used, cancelled or expired; missing in older states. */
+  reservations?: Reservation201[];
 }
 
 export interface PersistedTransaction201 {
@@ -218,6 +230,8 @@ interface Authorization {
   remoteStartId?: number;
   /** The TxProfile a RequestStartTransaction brought, for the transaction it starts (K05). */
   txProfile?: ChargingProfile201;
+  /** The reservation the token used, reported with the transaction (H01.FR.15). */
+  reservationId?: number;
 }
 
 /** A running transaction. */
@@ -236,6 +250,8 @@ interface Transaction201 {
   endedValues: MeterValueType[];
   /** MaxEnergyOnInvalidId: the energy (register, Wh) at which charging stops. */
   energyLimitWh?: number;
+  /** The reservation it used went to the CSMS. */
+  reservationSent?: boolean;
   limitReached?: boolean;
   periodicTimer?: TimerHandle | undefined;
   endedTimer?: TimerHandle | undefined;
@@ -494,8 +510,104 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     station = result.state;
     // The reducer's messages are 1.6 StatusNotifications; 2.0.1 reports its own view.
     reportStatuses();
+    if (event.type !== 'Reserve' && event.type !== 'Unreserve') checkReservations();
     changed();
     return result;
+  }
+
+  // ---- Reservations (H) -----------------------------------------------------
+
+  let reservations: Reservation201[] = [...(options.restore?.reservations ?? [])];
+  const reservationTimers = new Map<number, TimerHandle>();
+  let syncingReservations = false;
+  const reservationsOn = () => features.includes('Reservation');
+
+  /** The EVSEs as the reservation rules see them: status without reservations, connector type. */
+  function evseViews(): EvseView[] {
+    return connectors(station).map((c) => {
+      const { reservationId: _held, ...rest } = c;
+      return {
+        id: c.connectorId,
+        connectorType: deviceModel.get(`Connector@${c.connectorId}.1`, 'ConnectorType') ?? '',
+        status: connectorStatus201(rest as ConnectorState, station) as BaseStatus,
+      };
+    });
+  }
+
+  /** The device reducer's Reserved state follows the reservations (H01.FR.20, .23, .24; H03.FR.10). */
+  function syncReserved(): void {
+    if (syncingReservations) return;
+    syncingReservations = true;
+    try {
+      const shown = reservedEvses(reservations, evseViews());
+      for (const connector of connectors(station)) {
+        const wanted = shown.get(connector.connectorId);
+        if (wanted !== undefined && connector.reservationId !== wanted) {
+          applyDevice({
+            type: 'Reserve',
+            connectorId: connector.connectorId,
+            reservationId: wanted,
+          });
+        } else if (wanted === undefined && connector.reservationId !== undefined) {
+          applyDevice({ type: 'Unreserve', connectorId: connector.connectorId });
+        }
+      }
+    } finally {
+      syncingReservations = false;
+    }
+  }
+
+  function scheduleExpiry(reservation: Reservation201): void {
+    stopTimer(reservationTimers.get(reservation.id));
+    reservationTimers.set(
+      reservation.id,
+      later(Math.max(0, reservation.expiresAt - now()), () =>
+        endReservation(reservation.id, 'expired', 'Expired'),
+      ),
+    );
+  }
+
+  /** A reservation ends; Expired and Removed are reported (H04.FR.01, H01.FR.16, .17). */
+  function endReservation(id: number, why: string, update?: 'Expired' | 'Removed'): void {
+    if (!reservations.some((r) => r.id === id)) return;
+    reservations = reservations.filter((r) => r.id !== id);
+    stopTimer(reservationTimers.get(id));
+    reservationTimers.delete(id);
+    log(`reservation ${id} ${why}`);
+    if (update !== undefined) {
+      void sendIfOnline('ReservationStatusUpdate', {
+        reservationId: id,
+        reservationUpdateStatus: update,
+      });
+    }
+    syncReserved();
+    changed();
+  }
+
+  /** After a device change: reservations whose EVSEs are all Faulted or Unavailable go. */
+  function checkReservations(): void {
+    if (syncingReservations || reservations.length === 0) return;
+    for (const lost of lostReservations(reservations, evseViews())) {
+      endReservation(lost.id, 'removed: its EVSE is Faulted or Unavailable', 'Removed');
+    }
+    syncReserved();
+  }
+
+  /**
+   * Whether a token may start at an EVSE given the reservations, using the
+   * reservation it matches (H03.FR.09): that one ends without a report.
+   */
+  function claimReservation(
+    connectorId: number,
+    idToken: IdTokenType,
+    groupIdToken: IdTokenType | undefined,
+  ): { ok: boolean; reservationId?: number } {
+    if (!reservationsOn() || reservations.length === 0) return { ok: true };
+    const use = useAt(connectorId, idToken, groupIdToken, reservations, evseViews());
+    if (!use.ok) return { ok: false };
+    if (use.reservation === undefined) return { ok: true };
+    endReservation(use.reservation.id, `used at EVSE ${connectorId}`);
+    return { ok: true, reservationId: use.reservation.id };
   }
 
   // ---- Faults ---------------------------------------------------------------
@@ -739,6 +851,12 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     } = {},
   ): void {
     tx.chargingState = eventType === 'Ended' ? tx.chargingState : currentChargingState(connectorId);
+    // The first event with the token tells the CSMS which reservation it used (H01.FR.15).
+    const reservationId =
+      extra.idToken !== undefined && !tx.reservationSent
+        ? authorizations.get(connectorId)?.reservationId
+        : undefined;
+    if (reservationId !== undefined) tx.reservationSent = true;
     const meterValue = extra.meterValue?.filter((m) => m !== undefined) ?? [];
     const [firstValue, ...otherValues] = meterValue;
     const payload: Ocpp201RequestOf<'TransactionEvent'> = {
@@ -757,6 +875,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       evse: { id: connectorId, connectorId: 1 },
       ...(extra.idToken !== undefined && { idToken: extra.idToken }),
       ...(firstValue !== undefined && { meterValue: [firstValue, ...otherValues] }),
+      ...(reservationId !== undefined && { reservationId }),
     };
     void outbox.enqueue('TransactionEvent', payload, tx.id).then((outcome) => {
       if (!outcome.ok || eventType === 'Ended') return;
@@ -1180,6 +1299,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     idToken: IdTokenType,
     remoteStartId: number,
     txProfile?: ChargingProfile201,
+    groupIdToken?: IdTokenType,
   ): Promise<void> {
     let info: TokenInfo | undefined;
     if (dmValue('AuthCtrlr', 'AuthorizeRemoteStart') !== 'false') {
@@ -1190,11 +1310,17 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       }
       info = result.info;
     }
+    const claim = claimReservation(connectorId, idToken, info?.groupIdToken ?? groupIdToken);
+    if (!claim.ok) {
+      log(`connector ${connectorId}: remote start refused, the EVSE is reserved`);
+      return;
+    }
     authorizations.set(connectorId, {
       idToken,
       remoteStartId,
       ...(info !== undefined && { info }),
       ...(txProfile !== undefined && { txProfile }),
+      ...(claim.reservationId !== undefined && { reservationId: claim.reservationId }),
     });
     const tx = transactions.get(connectorId);
     if (tx !== undefined && tx.remoteStartId === undefined) tx.remoteStartId = remoteStartId;
@@ -1358,7 +1484,10 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
           connector !== undefined &&
           !busy(id) &&
           connectorStatus201(connector, station) !== 'Unavailable' &&
-          connectorStatus201(connector, station) !== 'Faulted'
+          connectorStatus201(connector, station) !== 'Faulted' &&
+          // Reserved for someone else (H03).
+          (!reservationsOn() ||
+            useAt(id, request.idToken, request.groupIdToken, reservations, evseViews()).ok)
         );
       };
       // Without an EVSE the station picks a free one (F01.FR.06).
@@ -1389,7 +1518,13 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       }
       const running = transactions.get(evseId);
       later(commandDelay('RequestStartTransaction'), () =>
-        remoteStart(evseId, request.idToken, request.remoteStartId, txProfile),
+        remoteStart(
+          evseId,
+          request.idToken,
+          request.remoteStartId,
+          txProfile,
+          request.groupIdToken,
+        ),
       );
       // A transaction without a token gets this one; its id goes back (F01.FR.13).
       return {
@@ -1497,6 +1632,53 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
     DataTransfer() {
       return { status: 'UnknownVendorId' };
+    },
+
+    ReserveNow(request) {
+      if (dmValue('ReservationCtrlr', 'Enabled') === 'false') return { status: 'Rejected' };
+      const bare = ({ customData: _ignored, ...token }: IdTokenType) => token;
+      const reservation: Reservation201 = {
+        id: request.id,
+        ...(request.evseId !== undefined && { evseId: request.evseId }),
+        ...(request.connectorType !== undefined && { connectorType: request.connectorType }),
+        idToken: bare(request.idToken),
+        ...(request.groupIdToken !== undefined && { groupIdToken: bare(request.groupIdToken) }),
+        expiresAt: Date.parse(request.expiryDateTime),
+      };
+      if (reservation.expiresAt <= now()) return { status: 'Rejected' };
+      // The same id replaces that reservation (H01.FR.02).
+      const others = reservations.filter((r) => r.id !== request.id);
+      const answer = reserveAnswer(
+        reservation,
+        others,
+        evseViews(),
+        dmValue('ReservationCtrlr', 'NonEvseSpecific') === 'true',
+      );
+      if (answer.status !== 'Accepted') {
+        log(
+          `reservation ${request.id}: ${answer.status}${answer.reason === undefined ? '' : `, ${answer.reason}`}`,
+        );
+        return { status: answer.status };
+      }
+      reservations = [...others, reservation];
+      scheduleExpiry(reservation);
+      log(`reservation ${request.id} accepted`);
+      // The answer goes first, then StatusNotification Reserved (H01.FR.23).
+      later(0, syncReserved);
+      changed();
+      return { status: 'Accepted' };
+    },
+
+    CancelReservation(request) {
+      if (!reservations.some((r) => r.id === request.reservationId)) return { status: 'Rejected' };
+      // Gone at once; the EVSE's status follows the answer.
+      reservations = reservations.filter((r) => r.id !== request.reservationId);
+      stopTimer(reservationTimers.get(request.reservationId));
+      reservationTimers.delete(request.reservationId);
+      log(`reservation ${request.reservationId} cancelled`);
+      later(0, syncReserved);
+      changed();
+      return { status: 'Accepted' };
     },
 
     SetChargingProfile(request) {
@@ -1720,6 +1902,9 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         now(),
       ).state;
     }
+    // Reservations hold their EVSEs again; one that expired meanwhile ends at once.
+    for (const reservation of reservations) scheduleExpiry(reservation);
+    syncReserved();
   }
 
   // ---- Public interface ---------------------------------------------------
@@ -1746,6 +1931,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
           ((action !== 'SendLocalList' && action !== 'GetLocalListVersion') ||
             features.includes('LocalAuthListManagement')) &&
           (!SMART_CHARGING_ACTIONS.has(action) || smartCharging()) &&
+          ((action !== 'ReserveNow' && action !== 'CancelReservation') || reservationsOn()) &&
           (action !== 'CertificateSigned' || features.includes('AdvancedSecurity')),
         onEvent: (event) => emit({ type: 'rpc', event }),
       });
@@ -1844,9 +2030,15 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         log(`connector ${connectorId}: ${token} rejected`);
         return 'rejected';
       }
+      const claim = claimReservation(connectorId, idToken, result.info?.groupIdToken);
+      if (!claim.ok) {
+        log(`connector ${connectorId}: reserved for another token`);
+        return 'rejected';
+      }
       authorizations.set(connectorId, {
         idToken,
         ...(result.info !== undefined && { info: result.info }),
+        ...(claim.reservationId !== undefined && { reservationId: claim.reservationId }),
       });
       if (!connector.plugged) awaitCable(connectorId);
       evaluate(connectorId, 'Authorized', idToken);
@@ -1976,7 +2168,12 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         behaviour: { ...behaviour },
         energyMultiplier: energy.multiplier,
         localList: { version: localList.version, size: Object.keys(localList.entries).length },
-        reservations: [],
+        reservations: reservations.map((r) => ({
+          reservationId: r.id,
+          connectorId: r.evseId ?? 0,
+          idTag: r.idToken.idToken,
+          expiryDate: new Date(r.expiresAt).toISOString(),
+        })),
         chargingProfiles: chargingProfiles.map((p) => ({
           chargingProfileId: p.profile.id,
           connectorId: p.evseId,
@@ -2020,6 +2217,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         localList,
         security: security.persistent(),
         chargingProfiles: chargingProfiles.map((p) => ({ ...p })),
+        reservations: reservations.map((r) => ({ ...r })),
       };
     },
 

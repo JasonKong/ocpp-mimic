@@ -13,7 +13,7 @@ Run them locally:
 
 ```bash
 docker compose -f tools/citrineos/docker-compose.yml up -d
-tools/citrineos/register.sh AA000010 AA000011 AA000020 AA000021 AA000001:Accepted:MIMIC-GROUP AA000002:Accepted:MIMIC-GROUP
+tools/citrineos/register.sh AA000010 AA000011 AA000020 AA000021 AA000030 AA000031 AA000001:Accepted:MIMIC-GROUP AA000002:Accepted:MIMIC-GROUP
 pnpm build
 node packages/cli/dist/main.js run scenarios/citrineos --personas scenarios/personas
 ```

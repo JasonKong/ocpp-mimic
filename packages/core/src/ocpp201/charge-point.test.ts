@@ -88,6 +88,7 @@ function setup(
     LogStatusNotification: () => ({}),
     SignCertificate: () => ({ status: 'Accepted' }),
     ReportChargingProfiles: () => ({}),
+    ReservationStatusUpdate: () => ({}),
     ...options.csms,
   };
   const restarts: number[] = [];
@@ -382,9 +383,8 @@ describe('2.0.1 personas', () => {
       features: ['Core', 'Reservation'],
       timing: { actionDelaysMs: { RequestStartTransaction: 1000 } },
     });
-    expect(persona?.warnings).toEqual([
-      'p.yaml: certification profile Reservation is supported in the persona but not implemented yet',
-    ]);
+    // Every certification profile is implemented now: no warnings.
+    expect(persona?.warnings ?? []).toEqual([]);
     expect(errors.some((e) => e.startsWith('bad.yaml: $.boot.vendorName'))).toBe(true);
   });
 });
@@ -1951,5 +1951,237 @@ describe('a 2.0.1 station: Smart Charging', () => {
     expect(await csmsCall('GetCompositeSchedule', { duration: 60, evseId: 1 })).toMatchObject({
       errorCode: 'NotSupported',
     });
+  });
+});
+
+describe('a 2.0.1 station: Reservation', () => {
+  const features = ['Core', 'Reservation'];
+  const token = (idToken: string) => ({ idToken, type: 'ISO14443' });
+  const inMinutes = (clock: ManualClock, minutes: number) =>
+    new Date(clock.now() + minutes * 60_000).toISOString();
+
+  it('reserves an EVSE for one token, which then uses the reservation (H01, H03)', async () => {
+    const { cp, clock, csmsCall, boot, present, statuses, calls, advance, frames } = setup({
+      features,
+    });
+    await boot();
+    const from = frames.length;
+    expect(
+      await csmsCall('ReserveNow', {
+        id: 1,
+        expiryDateTime: inMinutes(clock, 30),
+        idToken: token('TAG-R'),
+        evseId: 1,
+      }),
+    ).toEqual({ status: 'Accepted' });
+    expect(statuses(from)).toEqual(['1/1:Reserved']);
+    expect(cp.snapshot().reservations).toMatchObject([
+      { reservationId: 1, connectorId: 1, idTag: 'TAG-R' },
+    ]);
+    // Another token is refused there, but EVSE 2 is free.
+    expect(await present(1, 'TAG-X')).toBe('rejected');
+    expect(await present(2, 'TAG-X')).toBe('authorized');
+    expect(await present(1, 'TAG-R')).toBe('authorized');
+    expect(cp.snapshot().reservations).toEqual([]);
+    expect(statuses(from).at(-1)).toBe('1/1:Available');
+    cp.plugIn(1);
+    await advance(0);
+    const started = calls('TransactionEvent').find((c) => (c.payload.evse as JsonObject).id === 1);
+    expect(started?.payload).toMatchObject({ eventType: 'Started', reservationId: 1 });
+  });
+
+  it('reports an expired reservation and frees the EVSE (H04)', async () => {
+    const { clock, csmsCall, boot, statuses, calls, advance, frames } = setup({ features });
+    await boot();
+    const from = frames.length;
+    await csmsCall('ReserveNow', {
+      id: 2,
+      expiryDateTime: inMinutes(clock, 1),
+      idToken: token('TAG-R'),
+      evseId: 2,
+    });
+    await advance(60_000);
+    expect(calls('ReservationStatusUpdate').map((c) => c.payload)).toEqual([
+      { reservationId: 2, reservationUpdateStatus: 'Expired' },
+    ]);
+    expect(statuses(from)).toEqual(['2/1:Reserved', '2/1:Available']);
+  });
+
+  it('removes a reservation when its EVSE becomes Faulted, and cancels on request (H01.FR.16, H02)', async () => {
+    const { cp, clock, csmsCall, boot, calls, advance } = setup({ features });
+    await boot();
+    await csmsCall('ReserveNow', {
+      id: 3,
+      expiryDateTime: inMinutes(clock, 30),
+      idToken: token('TAG-R'),
+      evseId: 1,
+    });
+    cp.raiseFault(1, { errorCode: 'GroundFailure' });
+    await advance(0);
+    expect(calls('ReservationStatusUpdate').at(-1)?.payload).toEqual({
+      reservationId: 3,
+      reservationUpdateStatus: 'Removed',
+    });
+    // A Faulted EVSE cannot be reserved (H01.FR.12).
+    expect(
+      await csmsCall('ReserveNow', {
+        id: 4,
+        expiryDateTime: inMinutes(clock, 30),
+        idToken: token('T'),
+        evseId: 1,
+      }),
+    ).toEqual({ status: 'Faulted' });
+    await csmsCall('ReserveNow', {
+      id: 5,
+      expiryDateTime: inMinutes(clock, 30),
+      idToken: token('T'),
+      evseId: 2,
+    });
+    expect(await csmsCall('CancelReservation', { reservationId: 5 })).toEqual({
+      status: 'Accepted',
+    });
+    await advance(0);
+    expect(cp.snapshot().reservations).toEqual([]);
+    expect(cp.snapshot().connectors[1]?.status).toBe('Available');
+    expect(await csmsCall('CancelReservation', { reservationId: 5 })).toEqual({
+      status: 'Rejected',
+    });
+  });
+
+  it('keeps an EVSE free for each reservation without evseId (H01.FR.04, .07, .20)', async () => {
+    const { cp, clock, csmsCall, boot, present } = setup({ features });
+    await boot();
+    const reserve = (id: number, extra: JsonObject = {}) =>
+      csmsCall('ReserveNow', {
+        id,
+        expiryDateTime: inMinutes(clock, 30),
+        idToken: token(`TAG-${id}`),
+        ...extra,
+      });
+    expect(await reserve(1)).toEqual({ status: 'Accepted' });
+    // Two EVSEs, one reservation: both stay Available, one may go to anyone.
+    expect(cp.snapshot().connectors.map((c) => c.status)).toEqual(['Available', 'Available']);
+    expect(await reserve(2)).toEqual({ status: 'Accepted' });
+    await csmsCall('TriggerMessage', { requestedMessage: 'StatusNotification' });
+    expect(cp.snapshot().connectors.map((c) => c.status)).toEqual(['Reserved', 'Reserved']);
+    expect(await reserve(3)).toEqual({ status: 'Occupied' });
+    expect(await present(1, 'TAG-X')).toBe('rejected');
+    expect(await present(1, 'TAG-1')).toBe('authorized');
+    expect(cp.snapshot().reservations.map((r) => r.reservationId)).toEqual([2]);
+    // A connector type the station does not have (H01.FR.06).
+    expect(await reserve(4, { connectorType: 'cCCS2' })).toEqual({ status: 'Rejected' });
+  });
+
+  it('lets a token of the reservation group use it (H03.FR.04)', async () => {
+    const { clock, csmsCall, boot, present } = setup({
+      features,
+      csms: {
+        Authorize: (payload) => ({
+          idTokenInfo: {
+            status: 'Accepted',
+            ...((payload.idToken as JsonObject).idToken === 'TAG-G' && {
+              groupIdToken: token('GROUP'),
+            }),
+          },
+        }),
+      },
+    });
+    await boot();
+    await csmsCall('ReserveNow', {
+      id: 6,
+      expiryDateTime: inMinutes(clock, 30),
+      idToken: token('TAG-R'),
+      groupIdToken: token('GROUP'),
+      evseId: 1,
+    });
+    expect(await present(1, 'TAG-X')).toBe('rejected');
+    expect(await present(1, 'TAG-G')).toBe('authorized');
+  });
+
+  it('refuses reservations it cannot take', async () => {
+    const { clock, csmsCall, boot } = setup({
+      features,
+      deviceModel: { ReservationCtrlr: { NonEvseSpecific: false } },
+    });
+    await boot();
+    // Without evseId only with NonEvseSpecific (H01.FR.19); not an unknown EVSE; not in the past.
+    expect(
+      await csmsCall('ReserveNow', {
+        id: 1,
+        expiryDateTime: inMinutes(clock, 30),
+        idToken: token('T'),
+      }),
+    ).toEqual({
+      status: 'Rejected',
+    });
+    expect(
+      await csmsCall('ReserveNow', {
+        id: 2,
+        expiryDateTime: inMinutes(clock, 30),
+        idToken: token('T'),
+        evseId: 9,
+      }),
+    ).toEqual({ status: 'Rejected' });
+    expect(
+      await csmsCall('ReserveNow', {
+        id: 3,
+        expiryDateTime: inMinutes(clock, -1),
+        idToken: token('T'),
+        evseId: 1,
+      }),
+    ).toEqual({ status: 'Rejected' });
+  });
+
+  it('refuses a remote start for another token on a reserved EVSE', async () => {
+    const { clock, csmsCall, boot } = setup({ features });
+    await boot();
+    await csmsCall('ReserveNow', {
+      id: 7,
+      expiryDateTime: inMinutes(clock, 30),
+      idToken: token('TAG-R'),
+      evseId: 1,
+    });
+    expect(
+      await csmsCall('RequestStartTransaction', {
+        idToken: token('TAG-X'),
+        remoteStartId: 1,
+        evseId: 1,
+      }),
+    ).toEqual({ status: 'Rejected' });
+    expect(
+      await csmsCall('RequestStartTransaction', {
+        idToken: token('TAG-R'),
+        remoteStartId: 2,
+        evseId: 1,
+      }),
+    ).toEqual({ status: 'Accepted' });
+  });
+
+  it('keeps reservations across a restart', async () => {
+    const first = setup({ features });
+    await first.boot();
+    await first.csmsCall('ReserveNow', {
+      id: 8,
+      expiryDateTime: inMinutes(first.clock, 30),
+      idToken: token('TAG-R'),
+      evseId: 2,
+    });
+    const second = setup({ features, restore: first.cp.persistentState() });
+    await second.boot();
+    expect(second.cp.snapshot().reservations).toMatchObject([{ reservationId: 8, connectorId: 2 }]);
+    expect(second.statuses()).toEqual(['1/1:Available', '2/1:Reserved']);
+  });
+
+  it('answers NotSupported without the Reservation profile', async () => {
+    const { clock, csmsCall, boot } = setup();
+    await boot();
+    expect(
+      await csmsCall('ReserveNow', {
+        id: 1,
+        expiryDateTime: inMinutes(clock, 30),
+        idToken: token('T'),
+        evseId: 1,
+      }),
+    ).toMatchObject({ errorCode: 'NotSupported' });
   });
 });
