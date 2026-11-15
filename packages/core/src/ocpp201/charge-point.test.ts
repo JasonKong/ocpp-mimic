@@ -4,7 +4,11 @@ import { sequentialIds } from '../ids.js';
 import { OCPP201_MESSAGE_SET } from '../message-set.js';
 import { parseFrame, type CallFrame, type Frame, type JsonObject } from '../ocppj.js';
 import { resolvePersonas } from '../persona.js';
-import { createChargePoint201, type PersistedChargePoint201 } from './charge-point.js';
+import {
+  createChargePoint201,
+  type ChargePoint201Options,
+  type PersistedChargePoint201,
+} from './charge-point.js';
 
 const T0 = Date.parse('2026-11-15T10:00:00Z');
 const BOOT = { model: 'AC-7', vendorName: 'VendorX', firmwareVersion: '1.0.0' };
@@ -12,7 +16,11 @@ const BOOT = { model: 'AC-7', vendorName: 'VendorX', firmwareVersion: '1.0.0' };
 type Responder = (payload: JsonObject) => JsonObject | undefined;
 
 function setup(
-  options: { csms?: Record<string, Responder>; restore?: PersistedChargePoint201 } = {},
+  options: {
+    csms?: Record<string, Responder>;
+    restore?: PersistedChargePoint201;
+    deviceModel?: ChargePoint201Options['deviceModel'];
+  } = {},
 ) {
   const clock = new ManualClock(T0);
   const frames: Frame[] = [];
@@ -21,6 +29,7 @@ function setup(
     BootNotification: () => ({ status: 'Accepted', currentTime: iso(), interval: 60 }),
     Heartbeat: () => ({ currentTime: iso() }),
     StatusNotification: () => ({}),
+    NotifyReport: () => ({}),
     ...options.csms,
   };
   const cp = createChargePoint201({
@@ -34,6 +43,7 @@ function setup(
       if (parsed.ok) frames.push(parsed.frame);
     },
     ...(options.restore !== undefined && { restore: options.restore }),
+    ...(options.deviceModel !== undefined && { deviceModel: options.deviceModel }),
   });
   let answered = 0;
   let csmsIds = 0;
@@ -224,11 +234,11 @@ describe('a 2.0.1 station: status and availability', () => {
 });
 
 describe('a 2.0.1 station: the RPC framework', () => {
-  it('answers CALLs it does not handle yet with NotSupported, and 1.6 actions with NotImplemented', async () => {
+  it('answers CALLs outside its scope with NotSupported, and 1.6 actions with NotImplemented', async () => {
     const { frames, boot, settle, cp } = setup();
     await boot();
     cp.receive(
-      '[2,"x1","GetVariables",{"getVariableData":[{"component":{"name":"A"},"variable":{"name":"B"}}]}]',
+      '[2,"x1","SetDisplayMessage",{"message":{"id":1,"priority":"NormalCycle","message":{"format":"UTF8","content":"hi"}}}]',
     );
     cp.receive('[2,"x2","RemoteStartTransaction",{"idTag":"A"}]');
     await settle();
@@ -273,5 +283,101 @@ describe('2.0.1 personas', () => {
       'p.yaml: certification profile SmartCharging is supported in the persona but not implemented yet',
     ]);
     expect(errors.some((e) => e.startsWith('bad.yaml: $.boot.vendorName'))).toBe(true);
+  });
+});
+
+describe('a 2.0.1 station: Device Model', () => {
+  const heartbeat = {
+    component: { name: 'OCPPCommCtrlr' },
+    variable: { name: 'HeartbeatInterval' },
+  };
+
+  it('takes the boot interval as HeartbeatInterval and follows SetVariables', async () => {
+    const { calls, csmsCall, advance, boot, cp } = setup();
+    await boot();
+    expect(await csmsCall('GetVariables', { getVariableData: [heartbeat] })).toMatchObject({
+      getVariableResult: [{ attributeStatus: 'Accepted', attributeValue: '60' }],
+    });
+    expect(
+      await csmsCall('SetVariables', { setVariableData: [{ ...heartbeat, attributeValue: '10' }] }),
+    ).toMatchObject({
+      setVariableResult: [{ attributeStatus: 'Accepted', attributeType: 'Actual' }],
+    });
+    const before = calls('Heartbeat').length;
+    await advance(30_000);
+    expect(calls('Heartbeat').length - before).toBe(3);
+    expect(cp.snapshot().config['OCPPCommCtrlr/HeartbeatInterval']).toBe('10');
+    // Write-only values stay out of snapshots.
+    expect(cp.snapshot().config['SecurityCtrlr/BasicAuthPassword']).toBeUndefined();
+  });
+
+  it('sends a base report in NotifyReport pages of ItemsPerMessageGetReport entries', async () => {
+    const { calls, csmsCall, advance, boot } = setup();
+    await boot();
+    expect(await csmsCall('GetBaseReport', { requestId: 7, reportBase: 'FullInventory' })).toEqual({
+      status: 'Accepted',
+    });
+    await advance(0);
+    const pages = calls('NotifyReport').map((c) => c.payload);
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages.map((p) => p.seqNo)).toEqual(pages.map((_, i) => i));
+    expect(pages.map((p) => p.tbc === true)).toEqual(pages.map((_, i) => i < pages.length - 1));
+    expect(pages.every((p) => p.requestId === 7)).toBe(true);
+    const entries = pages.flatMap((p) => p.reportData as unknown[]);
+    expect(entries.length).toBeGreaterThan(60);
+    expect(pages.every((p) => (p.reportData as unknown[]).length <= 20)).toBe(true);
+    for (const call of calls('NotifyReport')) {
+      expect(OCPP201_MESSAGE_SET.validateRequest(call.action, call.payload).ok).toBe(true);
+    }
+  });
+
+  it('answers a report while the boot is Pending, as a CSMS may ask for one first', async () => {
+    const { calls, csmsCall, advance, boot, cp } = setup({
+      csms: {
+        BootNotification: () => ({
+          status: 'Pending',
+          currentTime: new Date(T0).toISOString(),
+          interval: 300,
+        }),
+      },
+    });
+    await boot();
+    expect(cp.snapshot().registration).toBe('Pending');
+    await csmsCall('GetBaseReport', { requestId: 1, reportBase: 'SummaryInventory' });
+    await advance(0);
+    expect(calls('NotifyReport')).toHaveLength(1);
+  });
+
+  it('enforces ItemsPerMessage, answers EmptyResultSet, and keeps values across a restart', async () => {
+    const first = setup({ deviceModel: { OCPPCommCtrlr: { WebSocketPingInterval: 45 } } });
+    await first.boot();
+    const tooMany = Array.from({ length: 21 }, () => heartbeat);
+    await first.csmsCall('GetVariables', { getVariableData: tooMany });
+    const error = first.frames.find((f) => f.type === 4);
+    expect(error?.type === 4 && error.errorCode).toBe('OccurrenceConstraintViolation');
+    expect(
+      await first.csmsCall('GetReport', { requestId: 2, componentCriteria: ['Problem'] }),
+    ).toEqual({
+      status: 'EmptyResultSet',
+    });
+    await first.csmsCall('SetVariables', {
+      setVariableData: [
+        {
+          component: { name: 'TxCtrlr' },
+          variable: { name: 'TxStartPoint' },
+          attributeValue: 'EVConnected,Authorized',
+        },
+      ],
+    });
+    const saved = first.cp.persistentState();
+    const second = setup({ restore: saved });
+    expect(second.cp.snapshot().config).toMatchObject({
+      'TxCtrlr/TxStartPoint': 'EVConnected,Authorized',
+      // Saved values win over the persona's on a restart, as 1.6 configuration does.
+      'OCPPCommCtrlr/WebSocketPingInterval': '45',
+    });
+    expect(() => setup({ deviceModel: { OCPPCommCtrlr: { HeartbeatInterval: 'soon' } } })).toThrow(
+      'deviceModel: OCPPCommCtrlr.HeartbeatInterval: not an integer',
+    );
   });
 });

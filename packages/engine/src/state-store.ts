@@ -36,8 +36,10 @@ export interface StationDefinition {
   password?: string;
   /** Security Profile and the certificates for TLS (Security Whitepaper). */
   security?: StationSecurity;
-  /** Configuration values on top of the persona's. */
+  /** Configuration values on top of the persona's (1.6 stations). */
   config?: Record<string, string>;
+  /** Device Model values on top of the persona's (2.0.1 stations): component → variable → value. */
+  deviceModel?: Record<string, Record<string, string>>;
   /** Initial energy multiplier; the saved charge point state keeps later changes. */
   energyMultiplier?: number;
   /** Names for selecting stations (at most 10). */

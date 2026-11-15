@@ -2,9 +2,9 @@
  * An OCPP 2.0.1 charging station, built on the same pure parts as the 1.6
  * charge point (device facts, timers, outbox, energy) with 2.0.1's messages:
  * boot and registration, heartbeats, StatusNotification per EVSE and
- * connector, and ChangeAvailability for the station, an EVSE or a connector.
- * Later M5 tasks add the Device Model, transactions, authorization and the
- * feature profiles.
+ * connector, ChangeAvailability for the station, an EVSE or a connector, and
+ * the Device Model (GetVariables, SetVariables, GetBaseReport, GetReport).
+ * Later M5 tasks add transactions, authorization and the feature profiles.
  *
  * It does no IO and implements the engine's ChargePoint interface, so the
  * fleet, scenarios and the API drive it like a 1.6 station. Connector `n`
@@ -39,6 +39,7 @@ import { OCPP201_MESSAGE_SET, type Ocpp201RpcTypes } from '../message-set.js';
 import { createOutbox, type OutboxEntry } from '../outbox.js';
 import {
   createRpc,
+  RpcCallError,
   type CallOutcome,
   type Rpc,
   type RpcHandlers,
@@ -51,6 +52,15 @@ import type {
   Ocpp201RequestOf,
   Ocpp201ResponseOf,
 } from './messages.js';
+import {
+  applyOverrides,
+  componentKey,
+  createDeviceModel,
+  parseComponentKey,
+  variableKey,
+  type DeviceModelOverrides,
+} from './device-model.js';
+import { standardVariables } from './standard-variables.js';
 import { connectorStatus201, stationStatus201, type ConnectorStatus201 } from './status.js';
 
 type Out = Ocpp201RpcTypes['out'];
@@ -71,6 +81,10 @@ export interface ChargePoint201Options {
   boot: ChargingStationType;
   /** EVSEs, each with one connector. */
   connectors: number;
+  /** Certification profiles the station supports (the persona's `features`). Default Core. */
+  features?: readonly string[];
+  /** Device Model overrides: the persona's and the station's `deviceModel`. */
+  deviceModel?: DeviceModelOverrides;
   timing?: Partial<ChargePointTiming>;
   /** Power each connector offers, in W. Default 7360 (32 A at 230 V). */
   offeredPowerW?: number;
@@ -101,6 +115,8 @@ export interface PersistedChargePoint201 {
   energyMultiplier: number;
   /** Availability set by the CSMS persists across reboots (B11.FR.02, B12.FR.06). */
   availability: { station: Availability; connectors: Record<string, Availability> };
+  /** Persistent Device Model values: `component/variable/attribute` → value. */
+  deviceModel: Record<string, string>;
 }
 
 function checkedMultiplier(value: number): number {
@@ -136,7 +152,6 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
   let rpc: Rpc<Ocpp201RpcTypes> | undefined;
   let registration: Registration = 'Offline';
-  let heartbeatIntervalS = 0;
   let heartbeatTimer: TimerHandle | undefined;
   let bootTimer: TimerHandle | undefined;
   /** Why the next BootNotification is sent. */
@@ -164,6 +179,62 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     },
     log,
   });
+
+  // ---- Device Model ---------------------------------------------------------
+
+  const applied = applyOverrides(
+    standardVariables({
+      connectors: options.connectors,
+      features: options.features ?? ['Core'],
+      offeredW,
+    }),
+    options.deviceModel,
+  );
+  if (!applied.ok) throw new Error(`deviceModel: ${applied.problems.join('; ')}`);
+  const deviceModel = createDeviceModel({
+    definitions: applied.definitions,
+    ...(options.restore !== undefined && { saved: options.restore.deviceModel }),
+    read(key) {
+      if (key === 'ClockCtrlr/DateTime') return timestamp();
+      const [componentText = '', variableName] = key.split('/');
+      const component = parseComponentKey(componentText);
+      if (component === undefined) return undefined;
+      if (component.name === 'ChargingStation' && variableName === 'AvailabilityState') {
+        return stationStatus201(station);
+      }
+      const connector =
+        component.evse === undefined ? undefined : findConnector(station, component.evse.id);
+      if (connector === undefined) return undefined;
+      if (variableName === 'AvailabilityState') return connectorStatus201(connector, station);
+      if (variableName === 'Power') {
+        return String(Math.round(energy.sync(connector.connectorId).powerW));
+      }
+      return undefined;
+    },
+  });
+  const dmInt = (component: string, variable: string) =>
+    Number(deviceModel.get(component, variable) ?? '0');
+  /** The message limits of DeviceDataCtrlr, per request type (B06.FR.16, .17 and the like). */
+  function checkLimits(
+    kind: 'GetVariables' | 'SetVariables' | 'GetReport',
+    items: number,
+    request: unknown,
+  ): void {
+    const maxItems = dmInt('DeviceDataCtrlr', `ItemsPerMessage:${kind}`);
+    if (maxItems > 0 && items > maxItems) {
+      throw new RpcCallError(
+        'OccurenceConstraintViolation',
+        `more than ${maxItems} items (ItemsPerMessage${kind})`,
+      );
+    }
+    const maxBytes = dmInt('DeviceDataCtrlr', `BytesPerMessage:${kind}`);
+    if (maxBytes > 0 && JSON.stringify(request).length > maxBytes) {
+      throw new RpcCallError(
+        'FormationViolation',
+        `longer than ${maxBytes} bytes (BytesPerMessage${kind})`,
+      );
+    }
+  }
 
   // ---- Sending ------------------------------------------------------------
 
@@ -251,7 +322,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       return;
     }
     bootReason = 'PowerUp';
-    if (interval > 0) heartbeatIntervalS = interval;
+    // The CSMS's interval becomes HeartbeatInterval (B01.FR.04).
+    if (interval > 0) deviceModel.set('OCPPCommCtrlr', 'HeartbeatInterval', String(interval));
     startHeartbeat();
     reportStatuses(true);
     outbox.pump();
@@ -260,16 +332,79 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   function startHeartbeat(): void {
     stopTimer(heartbeatTimer);
     heartbeatTimer = undefined;
-    if (heartbeatIntervalS <= 0) return;
-    heartbeatTimer = later(heartbeatIntervalS * 1000, () => {
+    const intervalS = dmInt('OCPPCommCtrlr', 'HeartbeatInterval');
+    if (intervalS <= 0 || !online()) return;
+    heartbeatTimer = later(intervalS * 1000, () => {
       void sendIfOnline('Heartbeat', {});
       startHeartbeat();
+    });
+  }
+
+  /** A Device Model value changed by SetVariables: apply what depends on it. */
+  function variableChanged(key: string): void {
+    if (key === 'OCPPCommCtrlr/HeartbeatInterval') startHeartbeat();
+  }
+
+  type ReportData = NonNullable<Ocpp201RequestOf<'NotifyReport'>['reportData']>;
+
+  /**
+   * Sends a report in NotifyReport pages of ItemsPerMessageGetReport entries,
+   * numbered from 0, `tbc` on all but the last. Sent once connected, also
+   * while the boot is Pending: a CSMS may ask for a report before accepting.
+   */
+  function sendReport(requestId: number, data: ReportData): void {
+    const size = Math.max(1, dmInt('DeviceDataCtrlr', 'ItemsPerMessage:GetReport'));
+    const generatedAt = timestamp();
+    const pages = Math.max(1, Math.ceil(data.length / size));
+    later(0, () => {
+      for (let seqNo = 0; seqNo < pages; seqNo++) {
+        void rpc?.call('NotifyReport', {
+          requestId,
+          generatedAt,
+          seqNo,
+          ...(seqNo < pages - 1 && { tbc: true }),
+          reportData: data.slice(seqNo * size, (seqNo + 1) * size),
+        });
+      }
     });
   }
 
   // ---- Commands from the CSMS ---------------------------------------------
 
   const handlers: RpcHandlers<Ocpp201RpcTypes> = {
+    GetVariables(request) {
+      checkLimits('GetVariables', request.getVariableData.length, request);
+      return {
+        getVariableResult: deviceModel.getVariables(request.getVariableData) as [
+          ReturnType<typeof deviceModel.getVariables>[number],
+          ...ReturnType<typeof deviceModel.getVariables>,
+        ],
+      };
+    },
+
+    SetVariables(request) {
+      checkLimits('SetVariables', request.setVariableData.length, request);
+      const { results, changed: keys } = deviceModel.setVariables(request.setVariableData);
+      for (const key of keys) variableChanged(key);
+      if (keys.length > 0) changed();
+      return { setVariableResult: results as typeof results & [unknown] };
+    },
+
+    GetBaseReport(request) {
+      const report = deviceModel.baseReport(request.reportBase);
+      if (report === undefined) return { status: 'NotSupported' };
+      sendReport(request.requestId, report);
+      return { status: 'Accepted' };
+    },
+
+    GetReport(request) {
+      checkLimits('GetReport', request.componentVariable?.length ?? 0, request);
+      const report = deviceModel.customReport(request.componentCriteria, request.componentVariable);
+      if (report.length === 0) return { status: 'EmptyResultSet' };
+      sendReport(request.requestId, report);
+      return { status: 'Accepted' };
+    },
+
     ChangeAvailability(request) {
       const availability: Availability = request.operationalStatus;
       // No EVSE: the whole station. An EVSE: its connector (one per EVSE).
@@ -471,7 +606,17 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
             }),
           };
         }),
-        config: {},
+        // The Device Model's readable Actual values, keyed `component/variable`.
+        config: Object.fromEntries(
+          deviceModel
+            .definitions()
+            .filter((d) => d.attributes.Actual?.mutability !== 'WriteOnly')
+            .map((d) => {
+              const component = componentKey(d.component);
+              const variable = variableKey(d.variable);
+              return [`${component}/${variable}`, deviceModel.get(component, variable) ?? ''];
+            }),
+        ),
         queuedMessages: outbox.entries.length,
         ...(options.boot.firmwareVersion !== undefined && {
           firmwareVersion: options.boot.firmwareVersion,
@@ -509,6 +654,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
             ]),
           ),
         },
+        deviceModel: deviceModel.persistentValues(),
       };
     },
 

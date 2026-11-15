@@ -851,6 +851,15 @@ faults:
 
   A component key is `Name`, `Name:instance`, `Name@evse` or `Name@evse.connector`; a variable key is `Name` or `Name:instance`. A scalar sets the Actual value of a standard variable; an object defines a vendor variable. `power`, `timing`, `evs`, `usage` and `firmware` mean what they mean for 1.6. Scenario stations and the API take `deviceModel` overrides the way they take `config` for 1.6.
 
+Implemented (T62):
+
+- `core/src/ocpp201/device-model.ts` is the store and the CSMS operations; `standard-variables.ts` lists the standard variables with spec defaults: ChargingStation, EVSE and Connector (AvailabilityState, Available, SupplyPhases, Power, ConnectorType), OCPPCommCtrlr, TxCtrlr, AuthCtrlr, AuthCacheCtrlr, SampledDataCtrlr, AlignedDataCtrlr, DeviceDataCtrlr (ItemsPerMessage and BytesPerMessage 20 and 8192 for GetReport, GetVariables and SetVariables), ClockCtrlr and SecurityCtrlr. AvailabilityState, Power and DateTime are read from the station when asked. The controllers of the other certification profiles arrive with their tasks.
+- GetVariables and SetVariables follow B05 and B06: per item UnknownComponent, UnknownVariable, NotSupportedAttributeType, Rejected (WriteOnly on Get; ReadOnly, constant or an invalid value on Set, with `attributeStatusInfo.reasonCode` ReadOnly or InvalidValue), an empty string for an unset attribute; more items than ItemsPerMessage get CALLERROR OccurrenceConstraintViolation, a longer request than BytesPerMessage FormatViolation.
+- GetBaseReport supports all three bases and GetReport the component-variable selection and criteria of B08; reports go out as NotifyReport pages, also while the boot is Pending, since a CSMS may ask for one before accepting the station.
+- The boot interval becomes OCPPCommCtrlr.HeartbeatInterval, and changing it with SetVariables restarts the heartbeat timer. Values the CSMS sets are saved; saved values win over the persona's after a restart, as 1.6 configuration does.
+- Personas and stations take `deviceModel` (checked when the persona loads and when the station is created); the API accepts it for 2.0.1 stations, and a 1.6 station refuses it. WebSocketPingInterval comes from it. Snapshots show the readable Actual values under `config`, keyed `component/variable`.
+- Checked by hand against CitrineOS v2.1.0: GetBaseReport FullInventory (four NotifyReport pages), SetVariables and GetVariables through its REST API, every frame valid.
+
 1.6 keys and their 2.0.1 counterparts, for porting personas and scenarios by hand (nothing is converted automatically):
 
 | 1.6 key | 2.0.1 variable |

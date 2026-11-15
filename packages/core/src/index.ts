@@ -5,6 +5,15 @@ export * from './ocpp16-messages.js';
 /** OCPP 2.0.1 datatypes and enumerations; their names repeat 1.6 ones, so they live in a namespace. */
 export * as ocpp201 from './ocpp201/index.js';
 export {
+  applyOverrides,
+  createDeviceModel,
+  type DeviceModel,
+  type DeviceModelOverride,
+  type DeviceModelOverrides,
+  type VariableDefinition,
+} from './ocpp201/device-model.js';
+export { standardVariables } from './ocpp201/standard-variables.js';
+export {
   CERTIFICATION_PROFILES,
   createChargePoint201,
   type ChargePoint201,

@@ -849,6 +849,15 @@ faults:
 
   组件键写作 `Name`、`Name:instance`、`Name@evse` 或 `Name@evse.connector`；变量键写作 `Name` 或 `Name:instance`。标量设置标准变量的 Actual 值；对象定义厂商自己的变量。`power`、`timing`、`evs`、`usage` 和 `firmware` 的含义与 1.6 相同。场景里的桩和 API 接受 `deviceModel` 覆盖，就像 1.6 接受 `config`。
 
+已实现（T62）：
+
+- `core/src/ocpp201/device-model.ts` 是存储和 CSMS 操作；`standard-variables.ts` 列出标准变量及其规范默认值：ChargingStation、EVSE 和 Connector（AvailabilityState、Available、SupplyPhases、Power、ConnectorType），OCPPCommCtrlr、TxCtrlr、AuthCtrlr、AuthCacheCtrlr、SampledDataCtrlr、AlignedDataCtrlr、DeviceDataCtrlr（GetReport、GetVariables、SetVariables 的 ItemsPerMessage 和 BytesPerMessage 为 20 和 8192）、ClockCtrlr 和 SecurityCtrlr。AvailabilityState、Power 和 DateTime 在被读取时从桩取值。其他认证 profile 的控制器随各自的任务加入。
+- GetVariables 和 SetVariables 按 B05 和 B06：逐项回答 UnknownComponent、UnknownVariable、NotSupportedAttributeType、Rejected（Get 遇到 WriteOnly；Set 遇到 ReadOnly、constant 或无效值，`attributeStatusInfo.reasonCode` 为 ReadOnly 或 InvalidValue），未设置的属性回空字符串；条目多于 ItemsPerMessage 回 CALLERROR OccurrenceConstraintViolation，请求长于 BytesPerMessage 回 FormatViolation。
+- GetBaseReport 支持全部三种报告，GetReport 支持 B08 的组件-变量选择和条件；报告以 NotifyReport 分页发送，启动为 Pending 时也发送，因为 CSMS 可能在接受桩之前就要求报告。
+- 启动时的间隔写入 OCPPCommCtrlr.HeartbeatInterval，用 SetVariables 修改它会重启心跳定时器。CSMS 设置的值会保存；重启后保存的值优先于 persona 的值，与 1.6 的配置一致。
+- persona 和桩接受 `deviceModel`（加载 persona 和创建桩时检查）；API 对 2.0.1 桩接受它，1.6 桩拒绝它。WebSocketPingInterval 取自其中。快照在 `config` 下显示可读的 Actual 值，键为 `component/variable`。
+- 已手工对 CitrineOS v2.1.0 验证：通过它的 REST API 发 GetBaseReport FullInventory（四页 NotifyReport）、SetVariables 和 GetVariables，每一帧都合规。
+
 1.6 配置项和对应的 2.0.1 变量，供手工移植 persona 和场景时参考（不做自动转换）：
 
 | 1.6 配置项 | 2.0.1 变量 |

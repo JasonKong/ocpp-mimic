@@ -41,6 +41,19 @@ export type CallFailure =
   | { kind: 'InvalidRequest'; issues: ValidationIssue[] }
   | { kind: 'Closed' };
 
+/**
+ * Thrown by a handler to answer with a CALLERROR of this code (in its 1.6
+ * spelling; the message set renames it) instead of a result.
+ */
+export class RpcCallError extends Error {
+  constructor(
+    readonly errorCode: RpcErrorName,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 /** How a CALL ended: the validated answer, or why there is none. */
 export type RpcOutcome<R> = { ok: true; payload: R } | { ok: false; failure: CallFailure };
 
@@ -217,6 +230,10 @@ export function createRpc<T extends RpcTypes = Ocpp16RpcTypes>(options: RpcOptio
     try {
       response = await handler(request.value);
     } catch (error) {
+      if (error instanceof RpcCallError) {
+        if (!closed) sendError(id, error.errorCode, error.message);
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       emit({ type: 'handler-error', action: csmsAction, message });
       if (!closed) sendError(id, 'InternalError', message);

@@ -26,6 +26,7 @@ import {
   type ConnectionSecurity,
   type IdGenerator,
   type InjectionRequest,
+  type DeviceModelOverrides,
   type PersistedChargePoint201,
   type PersistedStation,
   type ResolvedPersona,
@@ -197,6 +198,19 @@ interface Entry {
   usage: boolean;
 }
 
+/** A persona's Device Model overrides with a station's on top, variable by variable. */
+function mergeDeviceModel(
+  persona: DeviceModelOverrides | undefined,
+  station: Record<string, Record<string, string>> | undefined,
+): DeviceModelOverrides | undefined {
+  if (station === undefined) return persona;
+  const merged: DeviceModelOverrides = { ...persona };
+  for (const [component, variables] of Object.entries(station)) {
+    merged[component] = { ...merged[component], ...variables };
+  }
+  return merged;
+}
+
 /** Whether a saved state belongs to a 2.0.1 station. */
 function isState201(state: PersistedStation): state is PersistedChargePoint201 {
   return (state as { ocpp?: string }).ocpp === '2.0.1';
@@ -282,16 +296,27 @@ export function createFleet(options: FleetOptions): Fleet {
     const persona = options.personas.get(definition.persona);
     if (persona === undefined) throw new Error(`unknown persona ${definition.persona}`);
     const { options: personaOptions } = persona;
-    if (
-      persona.ocpp === '2.0.1' &&
-      (definition.config !== undefined ||
-        definition.password !== undefined ||
-        definition.security !== undefined)
-    ) {
+    if (persona.ocpp === '2.0.1' && definition.config !== undefined) {
       throw new Error(
-        `station ${definition.id}: config, password and security are not supported for 2.0.1 stations yet`,
+        `station ${definition.id}: config holds 1.6 configuration keys; a 2.0.1 station takes deviceModel`,
       );
     }
+    if (persona.ocpp === '1.6' && definition.deviceModel !== undefined) {
+      throw new Error(`station ${definition.id}: deviceModel is for 2.0.1 stations; use config`);
+    }
+    if (
+      persona.ocpp === '2.0.1' &&
+      (definition.password !== undefined || definition.security !== undefined)
+    ) {
+      throw new Error(
+        `station ${definition.id}: password and security are not supported for 2.0.1 stations yet`,
+      );
+    }
+    // The station's Device Model values go on top of the persona's, variable by variable.
+    const deviceModel =
+      persona.ocpp === '2.0.1'
+        ? mergeDeviceModel(persona.options.deviceModel, definition.deviceModel)
+        : undefined;
     const configValues: Record<string, string> = {
       ...(persona.ocpp === '1.6' ? persona.options.config?.values : {}),
       ...(definition.password !== undefined && { AuthorizationKey: definition.password }),
@@ -333,9 +358,10 @@ export function createFleet(options: FleetOptions): Fleet {
           ? {}
           : connectionSettings(definition.csmsUrl, holder.chargePoint.connectionSecurity()),
       onConnectFailed: () => holder.chargePoint?.connectionFailed(),
-      // 2.0.1 stations read it from the Device Model once it exists; 30 s like 1.6's default.
       pingIntervalMs:
-        config === undefined ? 30_000 : configInt(config, 'WebSocketPingInterval') * 1000,
+        config === undefined
+          ? Number(deviceModel?.OCPPCommCtrlr?.WebSocketPingInterval ?? 30) * 1000
+          : configInt(config, 'WebSocketPingInterval') * 1000,
       ...(options.backoff !== undefined && { backoff: options.backoff }),
       onText: (text) => injector.incoming(text),
       onOpen: () => (wire === undefined ? holder.chargePoint?.connected() : wire.opened()),
@@ -400,6 +426,7 @@ export function createFleet(options: FleetOptions): Fleet {
         ? createChargePoint201({
             ...persona.options,
             ...common,
+            ...(deviceModel !== undefined && { deviceModel }),
             ...(restore !== undefined && isState201(restore) && { restore }),
           })
         : createChargePoint({
