@@ -34,15 +34,18 @@ function setup(
     Authorize: () => ({ idTokenInfo: { status: 'Accepted' } }),
     TransactionEvent: () => ({}),
     NotifyEvent: () => ({}),
+    NotifyCustomerInformation: () => ({}),
     MeterValues: () => ({}),
     ...options.csms,
   };
+  const restarts: number[] = [];
   const cp = createChargePoint201({
     clock,
     ids: sequentialIds('cp-'),
     boot: BOOT,
     connectors: 2,
     timing: { actionDelayMs: 0 },
+    restart: (downtimeMs) => restarts.push(downtimeMs),
     send: (text) => {
       const parsed = parseFrame(text);
       if (parsed.ok) frames.push(parsed.frame);
@@ -135,6 +138,7 @@ function setup(
   const allValid = () =>
     calls().every((c) => OCPP201_MESSAGE_SET.validateRequest(c.action, c.payload).ok);
   return {
+    restarts,
     clock,
     cp,
     frames,
@@ -842,5 +846,241 @@ describe('a 2.0.1 station: authorization', () => {
     await csmsCall('GetLocalListVersion', {});
     const error = frames.find((f) => f.type === 4);
     expect(error?.type === 4 && error.errorCode).toBe('NotSupported');
+  });
+});
+
+describe('a 2.0.1 station: remote control and operations', () => {
+  const tag = (idToken: string) => ({ idToken, type: 'ISO14443' });
+  const txPayload = (calls: ReturnType<typeof setup>['calls'], index: number) =>
+    calls('TransactionEvent')[index]?.payload as {
+      triggerReason: string;
+      idToken?: unknown;
+      transactionInfo: { transactionId: string; remoteStartId?: number };
+    };
+
+  it('starts remotely (authorizing first) and stops remotely', async () => {
+    const { cp, calls, csmsCall, boot, settle, events } = setup();
+    await boot();
+    expect(
+      await csmsCall('RequestStartTransaction', {
+        idToken: tag('REMOTE-1'),
+        remoteStartId: 7,
+        evseId: 1,
+      }),
+    ).toEqual({ status: 'Accepted' });
+    await settle();
+    expect(calls('Authorize')).toHaveLength(1);
+    cp.plugIn(1);
+    await settle();
+    // With PowerPathClosed the cable completes the start; the remote start id comes along.
+    expect(txPayload(calls, 0)).toMatchObject({
+      triggerReason: 'CablePluggedIn',
+      idToken: tag('REMOTE-1'),
+      transactionInfo: { remoteStartId: 7 },
+    });
+    const id = txPayload(calls, 0).transactionInfo.transactionId;
+    expect(await csmsCall('RequestStopTransaction', { transactionId: 'nope' })).toEqual({
+      status: 'Rejected',
+    });
+    expect(await csmsCall('RequestStopTransaction', { transactionId: id })).toEqual({
+      status: 'Accepted',
+    });
+    await settle();
+    expect(events()).toEqual(['Started CablePluggedIn', 'Ended RemoteStop Remote']);
+    // A busy EVSE, an unknown one, or the refuse switch: Rejected.
+    await csmsCall('RequestStartTransaction', { idToken: tag('A'), remoteStartId: 8, evseId: 2 });
+    expect(
+      await csmsCall('RequestStartTransaction', { idToken: tag('B'), remoteStartId: 9, evseId: 2 }),
+    ).toEqual({
+      status: 'Rejected',
+    });
+    expect(
+      await csmsCall('RequestStartTransaction', { idToken: tag('B'), remoteStartId: 9, evseId: 5 }),
+    ).toEqual({
+      status: 'Rejected',
+    });
+    cp.setBehaviour({ refuseRemoteStart: true });
+    expect(
+      await csmsCall('RequestStartTransaction', { idToken: tag('C'), remoteStartId: 10 }),
+    ).toEqual({
+      status: 'Rejected',
+    });
+  });
+
+  it('starts with RemoteStart when the authorization starts it (F02.FR.21)', async () => {
+    const { csmsCall, boot, settle, events } = setup({
+      deviceModel: { TxCtrlr: { TxStartPoint: 'Authorized' } },
+    });
+    await boot();
+    await csmsCall('RequestStartTransaction', {
+      idToken: tag('REMOTE-3'),
+      remoteStartId: 4,
+      evseId: 1,
+    });
+    await settle();
+    expect(events()).toEqual(['Started RemoteStart']);
+  });
+
+  it('gives a token to a transaction that started without one, and returns its id', async () => {
+    const { cp, calls, csmsCall, boot, settle, events } = setup({
+      deviceModel: {
+        TxCtrlr: { TxStartPoint: 'EVConnected' },
+        AuthCtrlr: { AuthorizeRemoteStart: false },
+      },
+    });
+    await boot();
+    cp.plugIn(1);
+    await settle();
+    const id = txPayload(calls, 0).transactionInfo.transactionId;
+    expect(
+      await csmsCall('RequestStartTransaction', {
+        idToken: tag('REMOTE-2'),
+        remoteStartId: 3,
+        evseId: 1,
+      }),
+    ).toEqual({ status: 'Accepted', transactionId: id });
+    await settle();
+    expect(calls('Authorize')).toHaveLength(0);
+    expect(events()).toEqual(['Started CablePluggedIn', 'Updated RemoteStart']);
+    expect(txPayload(calls, 1).idToken).toEqual(tag('REMOTE-2'));
+  });
+
+  it('unlocks a connector unless an authorized transaction runs on it', async () => {
+    const { cp, csmsCall, boot, settle, present } = setup();
+    await boot();
+    cp.setBehaviour({ cableLock: true });
+    await present(1, 'TAG-1');
+    cp.plugIn(1);
+    await settle();
+    expect(cp.snapshot().connectors[0]?.locked).toBe(true);
+    expect(await csmsCall('UnlockConnector', { evseId: 1, connectorId: 1 })).toEqual({
+      status: 'OngoingAuthorizedTransaction',
+    });
+    expect(await csmsCall('UnlockConnector', { evseId: 3, connectorId: 1 })).toEqual({
+      status: 'UnknownConnector',
+    });
+    expect(await csmsCall('UnlockConnector', { evseId: 2, connectorId: 1 })).toEqual({
+      status: 'Unlocked',
+    });
+  });
+
+  it('sends what TriggerMessage asks for, after its answer', async () => {
+    const { cp, calls, csmsCall, boot, settle, present, statuses, frames } = setup();
+    await boot();
+    await present(1, 'TAG-1');
+    cp.plugIn(1);
+    await settle();
+    const from = frames.length;
+    for (const requestedMessage of [
+      'Heartbeat',
+      'StatusNotification',
+      'MeterValues',
+      'TransactionEvent',
+    ]) {
+      expect(await csmsCall('TriggerMessage', { requestedMessage, evse: { id: 1 } })).toEqual({
+        status: 'Accepted',
+      });
+    }
+    await settle();
+    expect(calls('Heartbeat')).toHaveLength(1);
+    expect(statuses(from)).toEqual(['1/1:Occupied']);
+    expect(calls('MeterValues')[0]?.payload).toMatchObject({
+      evseId: 1,
+      meterValue: [{ sampledValue: [{ context: 'Trigger' }] }],
+    });
+    expect(calls('TransactionEvent').at(-1)?.payload).toMatchObject({ triggerReason: 'Trigger' });
+    // Already accepted: no BootNotification; unknown messages: NotImplemented.
+    expect(await csmsCall('TriggerMessage', { requestedMessage: 'BootNotification' })).toEqual({
+      status: 'NotImplemented',
+    });
+    expect(await csmsCall('TriggerMessage', { requestedMessage: 'SignV2GCertificate' })).toEqual({
+      status: 'NotImplemented',
+    });
+    expect(
+      await csmsCall('TriggerMessage', { requestedMessage: 'Heartbeat', evse: { id: 9 } }),
+    ).toEqual({
+      status: 'Rejected',
+    });
+  });
+
+  it('resets Immediate at once and OnIdle after the transactions end', async () => {
+    const { cp, csmsCall, boot, settle, present, events, restarts, calls, advance } = setup();
+    await boot();
+    await present(1, 'TAG-1');
+    cp.plugIn(1);
+    await settle();
+    expect(await csmsCall('Reset', { type: 'OnIdle' })).toEqual({ status: 'Scheduled' });
+    expect(restarts).toEqual([]);
+    await present(1, 'TAG-1');
+    await advance(0);
+    expect(restarts).toHaveLength(1);
+    // After the restart the boot says why.
+    cp.disconnected();
+    await boot();
+    expect(calls('BootNotification').at(-1)?.payload).toMatchObject({ reason: 'RemoteReset' });
+    await present(2, 'TAG-2');
+    cp.plugIn(2);
+    await settle();
+    expect(await csmsCall('Reset', { type: 'Immediate', evseId: 2 })).toEqual({
+      status: 'Accepted',
+    });
+    await settle();
+    expect(events().slice(-1)).toEqual(['Ended ResetCommand ImmediateReset']);
+    expect(restarts).toHaveLength(1);
+    expect(await csmsCall('Reset', { type: 'Immediate', evseId: 9 })).toEqual({
+      status: 'Rejected',
+    });
+  });
+
+  it('reports and clears customer information, and answers DataTransfer', async () => {
+    const { calls, csmsCall, boot, settle, present } = setup();
+    await boot();
+    await present(1, 'TAG-1');
+    expect(
+      await csmsCall('CustomerInformation', {
+        requestId: 1,
+        report: true,
+        clear: true,
+        idToken: tag('TAG-1'),
+      }),
+    ).toEqual({ status: 'Accepted' });
+    await settle();
+    expect(calls('NotifyCustomerInformation')[0]?.payload).toMatchObject({
+      requestId: 1,
+      seqNo: 0,
+      data: 'authorization cache: ISO14443 TAG-1 Accepted',
+    });
+    await csmsCall('CustomerInformation', {
+      requestId: 2,
+      report: true,
+      clear: false,
+      idToken: tag('TAG-1'),
+    });
+    await settle();
+    expect(calls('NotifyCustomerInformation')[1]?.payload).toMatchObject({
+      data: 'No information available',
+    });
+    expect(
+      await csmsCall('CustomerInformation', {
+        requestId: 3,
+        report: false,
+        clear: false,
+        idToken: tag('A'),
+      }),
+    ).toEqual({
+      status: 'Rejected',
+    });
+    expect(
+      await csmsCall('CustomerInformation', {
+        requestId: 4,
+        report: true,
+        clear: false,
+        idToken: tag('A'),
+        customerIdentifier: 'x',
+      }),
+    ).toEqual({ status: 'Invalid' });
+    expect(await csmsCall('DataTransfer', { vendorId: 'acme' })).toEqual({
+      status: 'UnknownVendorId',
+    });
   });
 });

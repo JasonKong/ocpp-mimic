@@ -77,8 +77,10 @@ import {
 import { sampleMeter201 } from './meter-values.js';
 import {
   applyLocalList,
+  cachedToken,
   decideToken,
   EMPTY_LOCAL_LIST_201,
+  tokenKey,
   rememberToken,
   sameGroup,
   type AuthCache201,
@@ -249,6 +251,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   let bootTimer: TimerHandle | undefined;
   /** Why the next BootNotification is sent. */
   let bootReason: BootReasonEnumType = 'PowerUp';
+  /** A reset waiting for the transactions it concerns to end (OnIdle, B12.FR.01). */
+  let scheduledReset: { evseId?: number } | undefined;
   const online = () => rpc !== undefined && registration === 'Accepted';
 
   const timers = createStationTimers(clock);
@@ -740,6 +744,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     applyDevice({ type: 'TransactionEnded', connectorId });
     updateLock(connectorId);
     changed();
+    if (scheduledReset !== undefined) later(0, runScheduledReset);
   }
 
   /**
@@ -930,6 +935,130 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     });
   }
 
+  // ---- Remote control and reset ---------------------------------------------
+
+  const commandDelay = (
+    command:
+      | 'RequestStartTransaction'
+      | 'RequestStopTransaction'
+      | 'Reset'
+      | 'UnlockConnector'
+      | 'TriggerMessage',
+  ) => timing.actionDelaysMs?.[command] ?? timing.actionDelayMs;
+
+  /**
+   * A remote start (F01, F02): with AuthorizeRemoteStart the token is
+   * authorized as a local one would be; then the connector waits for the
+   * cable, or the transaction already started (EVConnected) gets the token.
+   */
+  async function remoteStart(
+    connectorId: number,
+    idToken: IdTokenType,
+    remoteStartId: number,
+  ): Promise<void> {
+    let info: TokenInfo | undefined;
+    if (dmValue('AuthCtrlr', 'AuthorizeRemoteStart') !== 'false') {
+      const result = await authorize(idToken);
+      if (!result.ok || isMasterPass(result.info)) {
+        log(`connector ${connectorId}: remote start refused, ${idToken.idToken} not authorized`);
+        return;
+      }
+      info = result.info;
+    }
+    authorizations.set(connectorId, {
+      idToken,
+      remoteStartId,
+      ...(info !== undefined && { info }),
+    });
+    const tx = transactions.get(connectorId);
+    if (tx !== undefined && tx.remoteStartId === undefined) tx.remoteStartId = remoteStartId;
+    if (findConnector(station, connectorId)?.plugged !== true) awaitCable(connectorId);
+    evaluate(connectorId, tx === undefined ? 'Authorized' : 'RemoteStart', idToken);
+  }
+
+  /** Restarts the station after a reset: transactions end, then it reboots (B11, B12). */
+  function resetStation(type: 'Immediate' | 'OnIdle'): void {
+    for (const connectorId of [...transactions.keys()]) {
+      authorizations.delete(connectorId);
+      endTransaction(connectorId, 'ResetCommand', 'ImmediateReset');
+    }
+    bootReason = 'RemoteReset';
+    log(`${type} reset`);
+    options.restart?.(
+      type === 'Immediate' ? timing.resetDowntimeMs.Hard : timing.resetDowntimeMs.Soft,
+    );
+  }
+
+  /** Resets one EVSE: its transaction ends and its status is reported again. */
+  function resetEvse(evseId: number): void {
+    if (transactions.has(evseId)) {
+      authorizations.delete(evseId);
+      endTransaction(evseId, 'ResetCommand', 'ImmediateReset');
+    }
+    reported.delete(evseId);
+    reportStatuses();
+    log(`EVSE ${evseId} reset`);
+  }
+
+  /** An OnIdle reset proceeds once nothing it concerns has a transaction. */
+  function runScheduledReset(): void {
+    const reset = scheduledReset;
+    if (reset === undefined) return;
+    if (reset.evseId !== undefined) {
+      if (transactions.has(reset.evseId)) return;
+      scheduledReset = undefined;
+      resetEvse(reset.evseId);
+      return;
+    }
+    if (transactions.size > 0) return;
+    scheduledReset = undefined;
+    resetStation('OnIdle');
+  }
+
+  /** What the station holds about a customer, as lines (the cache and the local list). */
+  function customerData(idToken: IdTokenType, clear: boolean): string[] {
+    const lines: string[] = [];
+    const cached = cachedToken(authCache, idToken, now(), dmInt('AuthCacheCtrlr', 'LifeTime'));
+    if (cached !== undefined) {
+      lines.push(`authorization cache: ${idToken.type} ${idToken.idToken} ${cached.status}`);
+      // Cleared from the cache; the local list only changes by SendLocalList (N10.FR.03).
+      if (clear) {
+        const { [tokenKey(idToken)]: _removed, ...rest } = authCache;
+        authCache = rest;
+        changed();
+      }
+    }
+    const listed = localList.entries[tokenKey(idToken)];
+    if (listed !== undefined) {
+      lines.push(`local authorization list: ${idToken.type} ${idToken.idToken} ${listed.status}`);
+    }
+    for (const [connectorId, tx] of transactions) {
+      if (tx.idToken !== undefined && tokenKey(tx.idToken) === tokenKey(idToken)) {
+        lines.push(`transaction ${tx.id} on EVSE ${connectorId}`);
+      }
+    }
+    return lines;
+  }
+
+  /** Sends NotifyCustomerInformation pages of up to 512 characters (N09.FR.05, .06). */
+  function sendCustomerInformation(requestId: number, lines: string[]): void {
+    const text = lines.length > 0 ? lines.join('\n') : 'No information available';
+    const pages: string[] = [];
+    for (let i = 0; i < text.length; i += 512) pages.push(text.slice(i, i + 512));
+    const generatedAt = timestamp();
+    later(0, () => {
+      pages.forEach((data, seqNo) => {
+        void sendIfOnline('NotifyCustomerInformation', {
+          data,
+          seqNo,
+          generatedAt,
+          requestId,
+          ...(seqNo < pages.length - 1 && { tbc: true }),
+        });
+      });
+    });
+  }
+
   /** A Device Model value changed by SetVariables: apply what depends on it. */
   function variableChanged(key: string): void {
     if (key === 'OCPPCommCtrlr/HeartbeatInterval') startHeartbeat();
@@ -969,6 +1098,144 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   // ---- Commands from the CSMS ---------------------------------------------
 
   const handlers: RpcHandlers<Ocpp201RpcTypes> = {
+    RequestStartTransaction(request) {
+      const busy = (id: number) =>
+        authorizations.has(id) || transactions.get(id)?.idToken !== undefined;
+      const usable = (id: number) => {
+        const connector = findConnector(station, id);
+        return (
+          connector !== undefined &&
+          !busy(id) &&
+          connectorStatus201(connector, station) !== 'Unavailable' &&
+          connectorStatus201(connector, station) !== 'Faulted'
+        );
+      };
+      // Without an EVSE the station picks a free one (F01.FR.06).
+      const evseId =
+        request.evseId ??
+        connectors(station).find((c) => usable(c.connectorId) && !c.plugged)?.connectorId ??
+        connectors(station).find((c) => usable(c.connectorId))?.connectorId;
+      if (behaviour.refuseRemoteStart || evseId === undefined || !usable(evseId)) {
+        return { status: 'Rejected' };
+      }
+      const running = transactions.get(evseId);
+      later(commandDelay('RequestStartTransaction'), () =>
+        remoteStart(evseId, request.idToken, request.remoteStartId),
+      );
+      // A transaction without a token gets this one; its id goes back (F01.FR.13).
+      return {
+        status: 'Accepted',
+        ...(running !== undefined && { transactionId: running.id }),
+      };
+    },
+
+    RequestStopTransaction(request) {
+      const entry = [...transactions].find(([, tx]) => tx.id === request.transactionId);
+      if (entry === undefined) return { status: 'Rejected' };
+      const [connectorId] = entry;
+      later(commandDelay('RequestStopTransaction'), () =>
+        deauthorize(connectorId, 'RemoteStop', 'Remote'),
+      );
+      return { status: 'Accepted' };
+    },
+
+    UnlockConnector(request) {
+      const connector = findConnector(station, request.evseId);
+      if (connector === undefined || request.connectorId !== 1)
+        return { status: 'UnknownConnector' };
+      // An authorized transaction keeps its cable (F05.FR.02).
+      if (transactions.has(request.evseId) && authorizations.has(request.evseId)) {
+        return { status: 'OngoingAuthorizedTransaction' };
+      }
+      later(commandDelay('UnlockConnector'), () => {
+        if (findConnector(station, request.evseId)?.locked === true) {
+          applyDevice({ type: 'Unlock', connectorId: request.evseId });
+        }
+      });
+      return { status: 'Unlocked' };
+    },
+
+    TriggerMessage(request) {
+      const evseId = request.evse?.id;
+      if (evseId !== undefined && findConnector(station, evseId) === undefined) {
+        return { status: 'Rejected' };
+      }
+      const targets =
+        evseId === undefined ? connectors(station).map((c) => c.connectorId) : [evseId];
+      const senders: Partial<Record<string, () => void>> = {
+        // Only before the CSMS accepted the boot (F06.FR.17).
+        ...(registration !== 'Accepted' && {
+          BootNotification: () => {
+            bootReason = 'Triggered';
+            stopTimer(bootTimer);
+            bootTimer = undefined;
+            void boot();
+          },
+        }),
+        Heartbeat: () => void sendIfOnline('Heartbeat', {}),
+        StatusNotification: () => {
+          for (const id of targets) reported.delete(id);
+          reportStatuses();
+        },
+        MeterValues: () => {
+          for (const id of targets) {
+            const value = sample(id, dmValue('AlignedDataCtrlr', 'Measurands'), 'Trigger');
+            if (value !== undefined)
+              void sendIfOnline('MeterValues', { evseId: id, meterValue: [value] });
+          }
+        },
+        TransactionEvent: () => {
+          for (const id of targets) {
+            const tx = transactions.get(id);
+            if (tx === undefined) continue;
+            const value = sample(id, dmValue('SampledDataCtrlr', 'TxUpdatedMeasurands'), 'Trigger');
+            sendEvent(id, tx, 'Updated', 'Trigger', {
+              ...(value !== undefined && { meterValue: [value] }),
+            });
+          }
+        },
+      };
+      const send = senders[request.requestedMessage];
+      if (send === undefined) return { status: 'NotImplemented' };
+      // The answer goes first, then the message (F06.FR.04).
+      later(commandDelay('TriggerMessage'), send);
+      return { status: 'Accepted' };
+    },
+
+    Reset(request) {
+      if (request.evseId !== undefined) {
+        if (findConnector(station, request.evseId) === undefined) return { status: 'Rejected' };
+        if (deviceModel.get(`EVSE@${request.evseId}`, 'AllowReset') === 'false') {
+          return { status: 'Rejected' };
+        }
+      }
+      const busy =
+        request.evseId === undefined ? transactions.size > 0 : transactions.has(request.evseId);
+      if (request.type === 'OnIdle' && busy) {
+        scheduledReset = request.evseId === undefined ? {} : { evseId: request.evseId };
+        return { status: 'Scheduled' };
+      }
+      later(commandDelay('Reset'), () =>
+        request.evseId === undefined ? resetStation(request.type) : resetEvse(request.evseId),
+      );
+      return { status: 'Accepted' };
+    },
+
+    DataTransfer() {
+      return { status: 'UnknownVendorId' };
+    },
+
+    CustomerInformation(request) {
+      const references = [request.idToken, request.customerIdentifier, request.customerCertificate];
+      if (references.filter((r) => r !== undefined).length !== 1) return { status: 'Invalid' };
+      if (!request.report && !request.clear) return { status: 'Rejected' };
+      // ocpp-mimic keeps customer data by idToken only.
+      const lines =
+        request.idToken === undefined ? [] : customerData(request.idToken, request.clear);
+      if (request.report || request.clear) sendCustomerInformation(request.requestId, lines);
+      return { status: 'Accepted' };
+    },
+
     ClearCache() {
       if (dmValue('AuthCacheCtrlr', 'Enabled') === 'false') return { status: 'Rejected' };
       authCache = {};
