@@ -269,6 +269,8 @@ export interface DeviceModelOptions {
   saved?: Readonly<Record<string, string>>;
   /** Reads a dynamic variable's Actual value by `component/variable` key. */
   read?: (key: string) => string | undefined;
+  /** The station's own check of a SetVariables value: why it is refused, or undefined. */
+  check?: (key: string, value: string) => string | undefined;
   /** Message limits from DeviceDataCtrlr; read when a request comes in. */
 }
 
@@ -453,7 +455,11 @@ export function createDeviceModel(options: DeviceModelOptions): DeviceModel {
         ) {
           return reject('ReadOnly');
         }
-        const problem = valueProblem(definition, item.attributeValue);
+        const problem =
+          valueProblem(definition, item.attributeValue) ??
+          (attributeType === 'Actual'
+            ? options.check?.(found.key, item.attributeValue)
+            : undefined);
         if (problem !== undefined) return reject('InvalidValue', problem);
         if (values.get(attributeType) !== item.attributeValue) {
           values.set(attributeType, item.attributeValue);

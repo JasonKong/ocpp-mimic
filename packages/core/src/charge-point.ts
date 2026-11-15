@@ -131,7 +131,8 @@ export type DelayedCommand =
   | 'RequestStopTransaction'
   | 'Reset'
   | 'UnlockConnector'
-  | 'TriggerMessage';
+  | 'TriggerMessage'
+  | 'CustomerInformation';
 
 export const DEFAULT_TIMING: ChargePointTiming = {
   startTransactionDelayMs: 500,
@@ -297,6 +298,8 @@ export interface ConnectionSecurity {
   centralSystemRoots: string[];
   /** The station's client certificate and key, for Security Profile 3. */
   chargePointCertificate?: ChargePointCertificate;
+  /** A 2.0.1 network profile's CSMS address, used instead of the station's own. */
+  csmsUrl?: string;
 }
 
 export type { PluggedEv };

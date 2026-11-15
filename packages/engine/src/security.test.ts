@@ -49,6 +49,29 @@ describe('connection settings per Security Profile', () => {
     });
   });
 
+  it('uses a 2.0.1 network profile address instead of the station one', () => {
+    expect(
+      connectionSettings('ws://h/ocpp', {
+        profile: 2,
+        authorizationKey: KEY,
+        centralSystemRoots: ['CA'],
+        csmsUrl: 'wss://other/ocpp',
+      }),
+    ).toEqual({
+      url: 'wss://other/ocpp',
+      password: KEY,
+      tls: { ca: 'CA', minVersion: 'TLSv1.2' },
+    });
+    expect(
+      connectionSettings('wss://h/ocpp', {
+        profile: 2,
+        authorizationKey: KEY,
+        ...none,
+        csmsUrl: 'ws://x',
+      }),
+    ).toEqual({ error: 'Security Profile 2 needs a wss:// CSMS address' });
+  });
+
   it('profile 3 uses the client certificate instead of a password', () => {
     const roots = { centralSystemRoots: ['CA'] };
     expect(

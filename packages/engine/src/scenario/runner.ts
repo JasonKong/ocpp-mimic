@@ -240,6 +240,8 @@ export async function runScenario(
     );
     if (versions.length > 0) return result('error', versions.join('\n'));
     const csmsUrl = csms?.url ?? csmsTarget;
+    // The built-in `csmsUrl`, unless the scenario or --var defines its own.
+    if (!Object.hasOwn(vars, 'csmsUrl')) vars.csmsUrl = csmsUrl;
     for (const definition of scenario.stations) {
       const station = fleet.add({
         id: definition.id,

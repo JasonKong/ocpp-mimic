@@ -51,7 +51,11 @@ export const FEATURE_PROFILES = [
 ] as const;
 
 /** 2.0.1 certification profiles implemented so far. */
-export const IMPLEMENTED_201_PROFILES: readonly string[] = ['Core', 'LocalAuthListManagement'];
+export const IMPLEMENTED_201_PROFILES: readonly string[] = [
+  'Core',
+  'AdvancedSecurity',
+  'LocalAuthListManagement',
+];
 
 /** Feature profiles this version of the charge point implements. */
 export const IMPLEMENTED_FEATURE_PROFILES: readonly string[] = [
@@ -191,6 +195,7 @@ export const Persona201Schema = object(
             Reset: durationSchema,
             UnlockConnector: durationSchema,
             TriggerMessage: durationSchema,
+            CustomerInformation: durationSchema,
           },
         ),
       },

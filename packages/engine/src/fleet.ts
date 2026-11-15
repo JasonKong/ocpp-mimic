@@ -304,18 +304,23 @@ export function createFleet(options: FleetOptions): Fleet {
     if (persona.ocpp === '1.6' && definition.deviceModel !== undefined) {
       throw new Error(`station ${definition.id}: deviceModel is for 2.0.1 stations; use config`);
     }
-    if (
-      persona.ocpp === '2.0.1' &&
-      (definition.password !== undefined || definition.security !== undefined)
-    ) {
-      throw new Error(
-        `station ${definition.id}: password and security are not supported for 2.0.1 stations yet`,
-      );
-    }
-    // The station's Device Model values go on top of the persona's, variable by variable.
+    // The station's Device Model values go on top of the persona's, variable by variable;
+    // `password` and `security.profile` are SecurityCtrlr variables of a 2.0.1 station.
+    const securityCtrlr: Record<string, string> = {
+      ...(definition.password !== undefined && { BasicAuthPassword: definition.password }),
+      ...(definition.security?.profile !== undefined && {
+        SecurityProfile: String(definition.security.profile),
+      }),
+    };
     const deviceModel =
       persona.ocpp === '2.0.1'
-        ? mergeDeviceModel(persona.options.deviceModel, definition.deviceModel)
+        ? mergeDeviceModel(
+            mergeDeviceModel(
+              persona.options.deviceModel,
+              Object.keys(securityCtrlr).length > 0 ? { SecurityCtrlr: securityCtrlr } : undefined,
+            ),
+            definition.deviceModel,
+          )
         : undefined;
     const configValues: Record<string, string> = {
       ...(persona.ocpp === '1.6' ? persona.options.config?.values : {}),
@@ -353,10 +358,17 @@ export function createFleet(options: FleetOptions): Fleet {
       url: definition.csmsUrl,
       subprotocol: MESSAGE_SETS[persona.ocpp].subprotocol,
       chargeBoxId: definition.id,
-      connectionSettings: () =>
-        holder.chargePoint === undefined
-          ? {}
-          : connectionSettings(definition.csmsUrl, holder.chargePoint.connectionSecurity()),
+      connectionSettings: () => {
+        if (holder.chargePoint === undefined) return {};
+        const security = holder.chargePoint.connectionSecurity();
+        // A 2.0.1 network profile may name another CSMS: it must be allowed too.
+        if (security.csmsUrl !== undefined && !isAllowedCsms(security.csmsUrl, allowed)) {
+          return {
+            error: `CSMS address ${security.csmsUrl} is not allowed (allowed: ${allowed.join(', ')})`,
+          };
+        }
+        return connectionSettings(definition.csmsUrl, security);
+      },
       onConnectFailed: () => holder.chargePoint?.connectionFailed(),
       pingIntervalMs:
         config === undefined
@@ -409,6 +421,20 @@ export function createFleet(options: FleetOptions): Fleet {
     const common = {
       clock,
       ids,
+      ...(persona.definition.firmware?.transfer === 'real' && {
+        transfer: createHttpFileTransfer(),
+      }),
+      // The PEM files are where a new station starts; its saved certificates take over later.
+      certificates: {
+        centralSystemRoots: pem.ca === undefined ? [] : [pem.ca],
+        manufacturerRoots: pem.manufacturerRoot === undefined ? [] : [pem.manufacturerRoot],
+        ...(pem.cert !== undefined &&
+          pem.key !== undefined && {
+            chargePoint: { certificate: pem.cert, privateKey: pem.key },
+          }),
+      },
+      certificateTools,
+      serialNumber: definition.id,
       ...(definition.energyMultiplier !== undefined && {
         energyMultiplier: definition.energyMultiplier,
       }),
@@ -433,20 +459,6 @@ export function createFleet(options: FleetOptions): Fleet {
             ...persona.options,
             ...common,
             config: { ...persona.options.config, values: configValues },
-            ...(persona.definition.firmware?.transfer === 'real' && {
-              transfer: createHttpFileTransfer(),
-            }),
-            // The PEM files are where a new station starts; its saved certificates take over later.
-            certificates: {
-              centralSystemRoots: pem.ca === undefined ? [] : [pem.ca],
-              manufacturerRoots: pem.manufacturerRoot === undefined ? [] : [pem.manufacturerRoot],
-              ...(pem.cert !== undefined &&
-                pem.key !== undefined && {
-                  chargePoint: { certificate: pem.cert, privateKey: pem.key },
-                }),
-            },
-            certificateTools,
-            serialNumber: definition.id,
             ...(restore !== undefined && !isState201(restore) && { restore }),
           });
 
@@ -851,29 +863,34 @@ export function connectionSettings(
   security: ConnectionSecurity,
 ): ConnectionSettings {
   const { profile, authorizationKey, centralSystemRoots, chargePointCertificate } = security;
+  // A 2.0.1 network profile's address replaces the station's own.
+  const url = security.csmsUrl ?? csmsUrl;
+  const target = security.csmsUrl === undefined ? {} : { url: security.csmsUrl };
   const ca = centralSystemRoots.length > 0 ? { ca: centralSystemRoots.join('\n') } : {};
   if (profile <= 1) {
     if (profile === 1 && authorizationKey === undefined) {
       return { error: 'Security Profile 1 needs an AuthorizationKey' };
     }
     return {
+      ...target,
       ...(authorizationKey !== undefined && { password: authorizationKey }),
       ...(centralSystemRoots.length > 0 && { tls: ca }),
     };
   }
-  if (!csmsUrl.startsWith('wss://')) {
+  if (!url.startsWith('wss://')) {
     return { error: `Security Profile ${profile} needs a wss:// CSMS address` };
   }
   if (profile === 2) {
     if (authorizationKey === undefined) {
       return { error: 'Security Profile 2 needs an AuthorizationKey' };
     }
-    return { password: authorizationKey, tls: { ...ca, minVersion: 'TLSv1.2' } };
+    return { ...target, password: authorizationKey, tls: { ...ca, minVersion: 'TLSv1.2' } };
   }
   if (chargePointCertificate === undefined) {
     return { error: 'Security Profile 3 needs a client certificate and key' };
   }
   return {
+    ...target,
     tls: {
       ...ca,
       cert: chargePointCertificate.certificate,

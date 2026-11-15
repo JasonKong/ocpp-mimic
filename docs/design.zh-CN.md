@@ -318,7 +318,7 @@ HTTP，用于调用被测系统：
 
 **模板和变量**
 
-字符串里的 `{{NAME}}` 在步骤执行前替换。取值优先级从低到高：`vars`、命令行的 `--var NAME=value`、前面步骤保存的变量。`{{env.NAME}}` 读取环境变量，这类值在输出和报告里显示为 `***`。如果整个字符串只有一个模板，替换后保留原值的类型，所以 `"{{tx}}"` 可以代表数字。`{{now}}`、`{{now+30m}}`、`{{now-1h}}` 给出当前时间（加减一个时长）的 ISO 8601 时间戳，例如 CSMS API 要求的未来时间。未知的变量名在场景开始前就报错；保存的变量只在保存它的步骤之后才算已定义。
+字符串里的 `{{NAME}}` 在步骤执行前替换。取值优先级从低到高：`vars`、命令行的 `--var NAME=value`、前面步骤保存的变量。`{{env.NAME}}` 读取环境变量，这类值在输出和报告里显示为 `***`。如果整个字符串只有一个模板，替换后保留原值的类型，所以 `"{{tx}}"` 可以代表数字。`{{csmsUrl}}` 是场景中各桩连接的地址，除非 `vars` 或 `--var` 另行定义。`{{now}}`、`{{now+30m}}`、`{{now-1h}}` 给出当前时间（加减一个时长）的 ISO 8601 时间戳，例如 CSMS API 要求的未来时间。未知的变量名在场景开始前就报错；保存的变量只在保存它的步骤之后才算已定义。
 
 **时长**沿用 persona 的写法：数字表示毫秒，或以 `ms`、`s`、`m`、`h` 结尾的字符串。
 
@@ -815,7 +815,7 @@ M5 确定（#135）。M5 在同一个引擎里、在 1.6J 旁边加上 OCPP 2.0.
 已实现（T60）：
 
 - 带 `ocpp: "2.0.1"` 的 persona 用它自己的 schema 校验：`boot` 是 BootNotification 的 chargingStation 信息，`features` 列认证 profile，`timing.commandDelays` 用 2.0.1 的 action 名，`connectors` 表示若干个各带一个连接器的 EVSE。`ResolvedPersona` 带 `ocpp`。内置 `generic-2.0.1`。
-- 遇到 2.0.1 persona 时，车队创建 2.0.1 桩（`core/src/ocpp201/charge-point.ts` 的 `createChargePoint201`），使用 `ocpp2.0.1` 子协议。在 Device Model 和安全任务加上 2.0.1 的写法之前，2.0.1 桩拒绝桩的 `config`、`password` 和 `security`。保存的状态记下版本，另一个版本的状态不会被恢复。
+- 遇到 2.0.1 persona 时，车队创建 2.0.1 桩（`core/src/ocpp201/charge-point.ts` 的 `createChargePoint201`），使用 `ocpp2.0.1` 子协议。2.0.1 桩拒绝桩的 `config`，改用 `deviceModel`；`password` 和 `security` 设置 SecurityCtrlr 变量和证书（T69）。保存的状态记下版本，另一个版本的状态不会被恢复。
 - 桩带启动原因（PowerUp）和 chargingStation 信息启动；Pending 和 Rejected 按间隔重试，期间不上报；按启动时的间隔发心跳；启动被接受后上报每个连接器的 2.0.1 状态，之后每次变化再报；处理针对整桩、EVSE 或连接器的 ChangeAvailability（先回答，经过动作延迟后生效；未知 EVSE 或连接器回 Rejected）。CSMS 设置的可用性在重启后保留。尚未处理的 CALL 回 NotSupported。快照带 `ocpp` 和每个连接器的 `evseId`。
 
 **Device Model**
@@ -922,9 +922,15 @@ faults:
 
 **安全、证书、固件和日志**
 
-- Security Profile 1 至 3 的连接方式与 1.6 相同。SecurityCtrlr.BasicAuthPassword 只写；SetVariables 修改它后桩用新密码重连。SecurityCtrlr.SecurityProfile 在 2.0.1 里只读：升级按 A05 进行，先用 SetNetworkProfile 写入一个配置槽，再用 SetVariables 设置 OCPPCommCtrlr.NetworkConfigurationPriority，然后 Reset。之后桩先尝试第一优先级，失败 NetworkProfileConnectionAttempts 次后退到下一个。降低 profile 会被拒绝。
-- 证书：InstallCertificate（CSMSRootCertificate 和 ManufacturerRootCertificate；V2G 和 MO 类型属于 ISO 15118，拒绝）、GetInstalledCertificateIds、DeleteCertificate、ChargingStationCertificate 的 SignCertificate 和 CertificateSigned（CertSigningWaitMinimum、CertSigningRepeatTimes）、AdditionalRootCertificateCheck，以及按附录安全事件发送的 SecurityEventNotification。复用 1.6 安全白皮书的代码；白皮书本来就取自这些用例。
-- UpdateFirmware 总是签名形式（requestId、location、retrieveDateTime、installDateTime、signingCertificate、signature），上报 1.6 SignedUpdateFirmware 的那些状态，支持 AllowNewSessionsPendingFirmwareUpdate。GetLog 和 LogStatusNotification 与 1.6 相同。
+- Security Profile 1 至 3 的连接方式与 1.6 相同。SecurityCtrlr.BasicAuthPassword 只写；SetVariables 修改它后，下一次连接使用新密码（A01 不要求重连）。SecurityCtrlr.SecurityProfile 在 2.0.1 里只读：升级按 A05 进行，先用 SetNetworkProfile 写入一个配置槽，再用 SetVariables 设置 OCPPCommCtrlr.NetworkConfigurationPriority，然后 Reset。之后桩先尝试第一优先级，失败 NetworkProfileConnectionAttempts 次后退到下一个。降低 profile 会被拒绝。
+- 证书：InstallCertificate（CSMSRootCertificate 和 ManufacturerRootCertificate；V2G 和 MO 根证书属于 ISO 15118，只保存）、GetInstalledCertificateIds、DeleteCertificate、ChargingStationCertificate 的 SignCertificate 和 CertificateSigned（CertSigningWaitMinimum、CertSigningRepeatTimes）、AdditionalRootCertificateCheck，以及按附录安全事件发送的 SecurityEventNotification。复用 1.6 安全白皮书的代码；白皮书本来就取自这些用例。
+- UpdateFirmware 校验签名更新（signingCertificate 和 signature，L01），也接受未签名的更新（L02）；上报 1.6 SignedUpdateFirmware 的那些状态，带 requestId。GetLog 和 LogStatusNotification 与 1.6 相同。
+- 已实现（T69）：`core/src/ocpp201/security.ts` 负责 2.0.1 桩的安全部分，复用 `certificates.ts`、`security-events.ts` 和 `firmware.ts`；1.6 桩暂时保留自己的一份流程。桩的 `password` 和 `security`（profile 和 PEM 文件）设置 SecurityCtrlr.BasicAuthPassword、SecurityProfile 以及新桩的初始证书。
+  - 网络配置：配置槽 0 至 2，槽 0 是桩自己的地址和 Security Profile。SetNetworkProfile 拒绝其他槽号、更低的 Security Profile（B09.FR.04）、JSON 以外的传输方式，以及不用 wss:// 的 profile 2 或 3。NetworkConfigurationPriority 回 RebootRequired，下次重启后生效；列出的槽未设置，或其 profile 缺少密码、CSMS 根证书或 ChargingStationCertificate 时拒绝（A05.FR.02、.03）。桩按各槽的地址（须是允许的 CSMS）和 Security Profile 连接，每个槽尝试 NetworkProfileConnectionAttempts 次，然后退回最近一次连接成功的槽（B10.FR.07）。更高的 profile 连接成功后成为 SecurityProfile，更低的槽从 NetworkConfigurationPriority 中移除（A05.FR.06）。ActiveNetworkProfile 显示正在使用的槽。
+  - 证书：CertificateEntries 统计已安装的证书（最多 20 个）。不能删除桩自己的证书（M04.FR.06），正在使用 profile 2 或 3 的槽时也不能删除最后一个 CSMS 根证书。profile 3 下续签的证书会触发重连，新证书连不上时换回旧证书。AdditionalRootCertificateCheck 为 true 时，被替换的 CSMS 根证书保留为后备，直到连接成功（M05.FR.12 至 .14）。安全事件使用 2.0.1 的名称和关键性；传输层报告的 1.6 名称会被转换。
+  - 固件：时间在未来时发 DownloadScheduled 和 InstallScheduled，等交易结束后安装，发 InstallRebooting，然后以启动原因 FirmwareUpdate 重启。下一次启动被接受后发 Installed 和 FirmwareUpdated，引擎重启后也一样。TriggerMessage 发送最近一次的 FirmwareStatusNotification（Installed 之后为 Idle）、LogStatusNotification（Idle 或正在进行的上传），以及 SignChargingStationCertificate 的新 CSR（与 CertificateSigned 一样只在 AdvancedSecurity 下）。`generic-2.0.1` 支持 AdvancedSecurity。
+  - 未实现：安装等待交易结束期间不把 EVSE 设为 Unavailable（L01.FR.07，AllowNewSessionsPendingFirmwareUpdate）；未签名的更新会被接受（L02），而 TC_L_18_CS 期望支持安全固件更新的桩拒绝它。
+  - `scenarios/regression/ocpp201-security.yaml` 覆盖 Security Profile 1 至 3、错误的密码、未知的服务器证书、证书续签、升级到 profile 2 及回退、CA 证书、签名固件、GetLog，以及启动和复位的安全事件。`scenarios/citrineos/security.yaml` 通过 CitrineOS 覆盖证书、GetLog、固件更新和 SetNetworkProfile。
 
 **Smart Charging 和预约**
 
@@ -1153,9 +1159,9 @@ M5 的计划（见「M5 OCPP 2.0.1」），每行注明实现它的 M5 任务。
 | CustomerInformation | N | 上报或清除为某个 idToken 保存的数据 | T68 |
 | DataTransfer | P | 默认回 UnknownVendorId；persona 可以定义回答 | T68 |
 | SetNetworkProfile | B | 把一个连接配置存进配置槽 | T69 |
-| InstallCertificate、GetInstalledCertificateIds、DeleteCertificate | M | CSMS 根证书和制造商根证书 | T69 |
+| InstallCertificate、GetInstalledCertificateIds、DeleteCertificate | M | CSMS 根证书和制造商根证书；V2G 和 MO 根证书只保存 | T69 |
 | CertificateSigned | A | 安装 ChargingStationCertificate，profile 3 时重连 | T69 |
-| UpdateFirmware | L | 签名固件更新 | T69 |
+| UpdateFirmware | L | 签名（L01）或未签名（L02）固件更新 | T69 |
 | GetLog | N | 上传安全日志或诊断日志 | T69 |
 | SetChargingProfile、GetChargingProfiles、ClearChargingProfile、GetCompositeSchedule | K | 按组合计划模型 | T70 |
 | ReserveNow、CancelReservation | H | EVSE、任意 EVSE 或连接器类型；groupIdToken | T71 |

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { CertificateTools } from '../certificates.js';
 import { ManualClock } from '../clock.js';
 import { sequentialIds } from '../ids.js';
 import { OCPP201_MESSAGE_SET } from '../message-set.js';
@@ -11,6 +12,51 @@ import {
 } from './charge-point.js';
 
 const T0 = Date.parse('2026-11-15T10:00:00Z');
+
+/**
+ * Fake X.509 as in the 1.6 tests: a certificate is `CERT <name> BY <issuer>
+ * KEY <key>`, valid when its issuer is a trusted root; a signature is valid
+ * when it is "good".
+ */
+const cert = (name: string, issuer = name, key = `${name}-key`) =>
+  `CERT ${name} BY ${issuer} KEY ${key}`;
+function fakeTools(): CertificateTools & { csrs: string[] } {
+  const csrs: string[] = [];
+  return {
+    csrs,
+    inspect(pem) {
+      const match = /^CERT (\S+) BY (\S+) KEY (\S+)/.exec(pem);
+      if (match === null) return undefined;
+      return {
+        hashData: {
+          hashAlgorithm: 'SHA256',
+          issuerNameHash: `name-${match[2]}`,
+          issuerKeyHash: `key-${match[2]}`,
+          serialNumber: (match[1] ?? '').toUpperCase(),
+        },
+        validFrom: 0,
+        validTo: Number.MAX_SAFE_INTEGER,
+      };
+    },
+    verifyChain(chain, roots) {
+      const issuer = /^CERT \S+ BY (\S+)/.exec(chain)?.[1];
+      return issuer !== undefined && roots.some((root) => root.startsWith(`CERT ${issuer} `));
+    },
+    createCsr(subject) {
+      const csr = `CSR CN=${subject.commonName} O=${subject.organization ?? '-'}`;
+      csrs.push(csr);
+      return { csr, privateKey: `cp-key-${csrs.length}` };
+    },
+    matchesKey: (certificate, privateKey) => certificate.endsWith(`KEY ${privateKey}`),
+    verifySignature: (_data, signature) => signature === 'good',
+  };
+}
+const hashOf = (name: string, issuer = name) => ({
+  hashAlgorithm: 'SHA256',
+  issuerNameHash: `name-${issuer}`,
+  issuerKeyHash: `key-${issuer}`,
+  serialNumber: name.toUpperCase(),
+});
 const BOOT = { model: 'AC-7', vendorName: 'VendorX', firmwareVersion: '1.0.0' };
 
 type Responder = (payload: JsonObject) => JsonObject | undefined;
@@ -21,6 +67,7 @@ function setup(
     restore?: PersistedChargePoint201;
     deviceModel?: ChargePoint201Options['deviceModel'];
     features?: string[];
+    extra?: Partial<ChargePoint201Options>;
   } = {},
 ) {
   const clock = new ManualClock(T0);
@@ -36,6 +83,10 @@ function setup(
     NotifyEvent: () => ({}),
     NotifyCustomerInformation: () => ({}),
     MeterValues: () => ({}),
+    SecurityEventNotification: () => ({}),
+    FirmwareStatusNotification: () => ({}),
+    LogStatusNotification: () => ({}),
+    SignCertificate: () => ({ status: 'Accepted' }),
     ...options.csms,
   };
   const restarts: number[] = [];
@@ -53,6 +104,7 @@ function setup(
     ...(options.restore !== undefined && { restore: options.restore }),
     ...(options.deviceModel !== undefined && { deviceModel: options.deviceModel }),
     features: options.features ?? ['Core', 'LocalAuthListManagement'],
+    ...options.extra,
   });
   let answered = 0;
   let csmsIds = 0;
@@ -1082,5 +1134,505 @@ describe('a 2.0.1 station: remote control and operations', () => {
     expect(await csmsCall('DataTransfer', { vendorId: 'acme' })).toEqual({
       status: 'UnknownVendorId',
     });
+  });
+});
+
+describe('a 2.0.1 station: security', () => {
+  const variable = (component: string, name: string) => ({
+    component: { name: component },
+    variable: { name },
+  });
+  async function getValue(
+    csmsCall: (action: string, payload: JsonObject) => Promise<unknown>,
+    component: string,
+    name: string,
+  ) {
+    const answer = (await csmsCall('GetVariables', {
+      getVariableData: [variable(component, name)],
+    })) as { getVariableResult: { attributeValue?: string }[] };
+    return answer.getVariableResult[0]?.attributeValue;
+  }
+  const setValue = (
+    csmsCall: (action: string, payload: JsonObject) => Promise<unknown>,
+    component: string,
+    name: string,
+    value: string,
+  ) =>
+    csmsCall('SetVariables', {
+      setVariableData: [{ ...variable(component, name), attributeValue: value }],
+    }) as Promise<{ setVariableResult: { attributeStatus: string }[] }>;
+
+  it('sends StartupOfTheDevice once booted and logs a password change without sending it', async () => {
+    const { cp, calls, csmsCall, boot } = setup();
+    await boot();
+    expect(calls('SecurityEventNotification').map((c) => c.payload.type)).toEqual([
+      'StartupOfTheDevice',
+    ]);
+    const result = await setValue(
+      csmsCall,
+      'SecurityCtrlr',
+      'BasicAuthPassword',
+      'secret-0123456789',
+    );
+    expect(result.setVariableResult[0]?.attributeStatus).toBe('Accepted');
+    // Not critical: in the security log only, without the password (A01.FR.11, .12).
+    expect(calls('SecurityEventNotification')).toHaveLength(1);
+    const logged = cp.snapshot().securityEvents.at(-1);
+    expect(logged).toMatchObject({ type: 'ReconfigurationOfSecurityParameters' });
+    expect(JSON.stringify(logged)).not.toContain('secret');
+    expect(cp.connectionSecurity()).toMatchObject({
+      profile: 0,
+      authorizationKey: 'secret-0123456789',
+    });
+  });
+
+  it('installs, lists and deletes CA certificates (M03 to M05)', async () => {
+    const tools = fakeTools();
+    const { cp, csmsCall, boot } = setup({
+      extra: {
+        certificateTools: tools,
+        certificates: { chargePoint: { certificate: cert('cs', 'csms'), privateKey: 'k' } },
+      },
+    });
+    await boot();
+    for (const [certificateType, name] of [
+      ['CSMSRootCertificate', 'csms'],
+      ['ManufacturerRootCertificate', 'maker'],
+      ['V2GRootCertificate', 'v2g'],
+    ] as const) {
+      expect(
+        await csmsCall('InstallCertificate', { certificateType, certificate: cert(name) }),
+      ).toEqual({
+        status: 'Accepted',
+      });
+    }
+    expect(
+      await csmsCall('InstallCertificate', {
+        certificateType: 'MORootCertificate',
+        certificate: 'junk',
+      }),
+    ).toEqual({
+      status: 'Rejected',
+    });
+    expect(await getValue(csmsCall, 'SecurityCtrlr', 'CertificateEntries')).toBe('4');
+    expect(
+      await csmsCall('GetInstalledCertificateIds', {
+        certificateType: ['CSMSRootCertificate', 'V2GRootCertificate'],
+      }),
+    ).toEqual({
+      status: 'Accepted',
+      certificateHashDataChain: [
+        { certificateType: 'CSMSRootCertificate', certificateHashData: hashOf('csms') },
+        { certificateType: 'V2GRootCertificate', certificateHashData: hashOf('v2g') },
+      ],
+    });
+    expect(
+      await csmsCall('GetInstalledCertificateIds', { certificateType: ['MORootCertificate'] }),
+    ).toEqual({
+      status: 'NotFound',
+    });
+    // The station's own certificate cannot be deleted (M04.FR.06).
+    expect(
+      await csmsCall('DeleteCertificate', { certificateHashData: hashOf('cs', 'csms') }),
+    ).toEqual({
+      status: 'Failed',
+    });
+    expect(await csmsCall('DeleteCertificate', { certificateHashData: hashOf('v2g') })).toEqual({
+      status: 'Accepted',
+    });
+    expect(await csmsCall('DeleteCertificate', { certificateHashData: hashOf('v2g') })).toEqual({
+      status: 'NotFound',
+    });
+    expect(cp.snapshot().certificates).toEqual({
+      centralSystemRoots: 1,
+      manufacturerRoots: 1,
+      chargePoint: true,
+    });
+  });
+
+  it('renews its certificate on a trigger, with back-off, and rejects a wrong one (A02)', async () => {
+    const tools = fakeTools();
+    const { cp, calls, csmsCall, boot, advance } = setup({
+      features: ['Core', 'AdvancedSecurity'],
+      deviceModel: { SecurityCtrlr: { CertSigningWaitMinimum: 10, CertSigningRepeatTimes: 2 } },
+      extra: {
+        certificateTools: tools,
+        serialNumber: 'SN-1',
+        certificates: { centralSystemRoots: [cert('csms')] },
+      },
+    });
+    await boot();
+    expect(
+      await csmsCall('TriggerMessage', { requestedMessage: 'SignChargingStationCertificate' }),
+    ).toEqual({
+      status: 'Accepted',
+    });
+    expect(calls('SignCertificate')[0]?.payload).toEqual({
+      csr: 'CSR CN=SN-1 O=ocpp-mimic',
+      certificateType: 'ChargingStationCertificate',
+    });
+    // No CertificateSigned: the same CSR again after 10 s, then 20 s, then no more (A02.FR.17 to .19).
+    await advance(10_000);
+    await advance(20_000);
+    await advance(60_000);
+    expect(calls('SignCertificate')).toHaveLength(3);
+    expect(tools.csrs).toHaveLength(1);
+    // Signed by an unknown CA: rejected, reported, no retry (A02.FR.07, .20).
+    expect(
+      await csmsCall('CertificateSigned', { certificateChain: cert('cs', 'rogue', 'cp-key-1') }),
+    ).toEqual({
+      status: 'Rejected',
+    });
+    expect(calls('SecurityEventNotification').at(-1)?.payload).toMatchObject({
+      type: 'InvalidChargingStationCertificate',
+    });
+    await csmsCall('TriggerMessage', { requestedMessage: 'SignChargingStationCertificate' });
+    expect(
+      await csmsCall('CertificateSigned', { certificateChain: cert('cs', 'csms', 'cp-key-2') }),
+    ).toEqual({
+      status: 'Accepted',
+    });
+    expect(cp.connectionSecurity().chargePointCertificate).toEqual({
+      certificate: cert('cs', 'csms', 'cp-key-2'),
+      privateKey: 'cp-key-2',
+    });
+  });
+
+  it('leaves certificate signing to the AdvancedSecurity profile', async () => {
+    const { csmsCall, boot } = setup({ extra: { certificateTools: fakeTools() } });
+    await boot();
+    expect(
+      await csmsCall('TriggerMessage', { requestedMessage: 'SignChargingStationCertificate' }),
+    ).toEqual({
+      status: 'NotImplemented',
+    });
+    expect(await csmsCall('CertificateSigned', { certificateChain: cert('cs') })).toMatchObject({
+      errorCode: 'NotSupported',
+    });
+  });
+
+  it('upgrades its Security Profile through a network profile and a reboot (A05, B09, B10)', async () => {
+    const tools = fakeTools();
+    const { cp, calls, csmsCall, boot, restarts, advance } = setup({
+      extra: { certificateTools: tools, certificates: { centralSystemRoots: [cert('csms')] } },
+    });
+    await boot();
+    const profile = (slot: number, securityProfile: number, url: string) =>
+      csmsCall('SetNetworkProfile', {
+        configurationSlot: slot,
+        connectionData: {
+          ocppVersion: 'OCPP20',
+          ocppTransport: 'JSON',
+          ocppCsmsUrl: url,
+          messageTimeout: 30,
+          securityProfile,
+          ocppInterface: 'Wired0',
+        },
+      });
+    expect(await profile(5, 1, 'ws://csms.test/ocpp')).toEqual({ status: 'Rejected' });
+    expect(await profile(1, 2, 'ws://csms.test/ocpp')).toEqual({ status: 'Rejected' });
+    expect(await profile(1, 2, 'wss://csms.test/ocpp')).toEqual({ status: 'Accepted' });
+    // Profile 2 needs a password first (A05.FR.02 and its prerequisites).
+    expect(
+      (await setValue(csmsCall, 'OCPPCommCtrlr', 'NetworkConfigurationPriority', '1,0'))
+        .setVariableResult[0],
+    ).toMatchObject({ attributeStatus: 'Rejected' });
+    await setValue(csmsCall, 'SecurityCtrlr', 'BasicAuthPassword', 'secret-0123456789');
+    expect(
+      (await setValue(csmsCall, 'OCPPCommCtrlr', 'NetworkConfigurationPriority', '1,0'))
+        .setVariableResult[0],
+    ).toMatchObject({ attributeStatus: 'RebootRequired' });
+    // Nothing changes before the reboot.
+    expect(cp.connectionSecurity()).toMatchObject({ profile: 0 });
+    expect(await csmsCall('Reset', { type: 'OnIdle' })).toEqual({ status: 'Accepted' });
+    await advance(0);
+    expect(restarts).toHaveLength(1);
+    cp.disconnected();
+    expect(cp.connectionSecurity()).toMatchObject({
+      profile: 2,
+      csmsUrl: 'wss://csms.test/ocpp',
+      authorizationKey: 'secret-0123456789',
+      centralSystemRoots: [cert('csms')],
+    });
+    await boot();
+    expect(calls('BootNotification').at(-1)?.payload).toMatchObject({ reason: 'RemoteReset' });
+    // Connected: profile 2 now, slot 0 (profile 0) gone (A05.FR.06).
+    expect(await getValue(csmsCall, 'SecurityCtrlr', 'SecurityProfile')).toBe('2');
+    expect(await getValue(csmsCall, 'OCPPCommCtrlr', 'NetworkConfigurationPriority')).toBe('1');
+    expect(await getValue(csmsCall, 'OCPPCommCtrlr', 'ActiveNetworkProfile')).toBe('1');
+    expect(cp.snapshot().securityEvents.map((e) => e.type)).toContain(
+      'ReconfigurationOfSecurityParameters',
+    );
+    // No way back to a lower profile (B09.FR.04).
+    expect(await profile(2, 1, 'ws://csms.test/ocpp')).toEqual({ status: 'Rejected' });
+    expect(cp.persistentState().security?.slots).toEqual({
+      '1': { securityProfile: 2, csmsUrl: 'wss://csms.test/ocpp' },
+    });
+  });
+
+  it('falls back to the next network profile after the connection attempts (B10.FR.03, .07)', async () => {
+    const reconnects: number[] = [];
+    const { cp, csmsCall, boot, advance } = setup({
+      deviceModel: {
+        OCPPCommCtrlr: { NetworkProfileConnectionAttempts: 2 },
+        SecurityCtrlr: { BasicAuthPassword: 'secret-0123456789' },
+      },
+      extra: { reconnect: () => reconnects.push(1) },
+    });
+    await boot();
+    await csmsCall('SetNetworkProfile', {
+      configurationSlot: 1,
+      connectionData: {
+        ocppVersion: 'OCPP20',
+        ocppTransport: 'JSON',
+        ocppCsmsUrl: 'ws://new-csms.test/ocpp',
+        messageTimeout: 30,
+        securityProfile: 1,
+        ocppInterface: 'Wired0',
+      },
+    });
+    await setValue(csmsCall, 'OCPPCommCtrlr', 'NetworkConfigurationPriority', '1,0');
+    await csmsCall('Reset', { type: 'Immediate' });
+    await advance(0);
+    cp.disconnected();
+    expect(cp.connectionSecurity()).toMatchObject({
+      profile: 1,
+      csmsUrl: 'ws://new-csms.test/ocpp',
+    });
+    cp.connectionFailed();
+    expect(reconnects).toHaveLength(0);
+    cp.connectionFailed();
+    expect(reconnects).toHaveLength(1);
+    expect(cp.connectionSecurity().profile).toBe(0);
+    expect(cp.connectionSecurity().csmsUrl).toBeUndefined();
+    await boot();
+    // Back on slot 0: the Security Profile stays 0.
+    expect(await getValue(csmsCall, 'SecurityCtrlr', 'SecurityProfile')).toBe('0');
+    expect(await getValue(csmsCall, 'OCPPCommCtrlr', 'ActiveNetworkProfile')).toBe('0');
+  });
+});
+
+describe('a 2.0.1 station: firmware and logs', () => {
+  const firmware = { downloadMs: 1000, installMs: 1000, uploadMs: 1000 };
+  const statusesOf = (calls: (action?: string) => CallFrame[], action: string) =>
+    calls(action).map((c) => String(c.payload.status));
+
+  it('updates its firmware, reboots and reports Installed from the new firmware (L01, L02)', async () => {
+    const { cp, calls, csmsCall, boot, advance, restarts } = setup({ extra: { firmware } });
+    await boot();
+    expect(
+      await csmsCall('UpdateFirmware', {
+        requestId: 7,
+        firmware: {
+          location: 'https://files.test/fw-2.0.0.bin',
+          retrieveDateTime: new Date(T0).toISOString(),
+        },
+      }),
+    ).toEqual({ status: 'Accepted' });
+    await advance(5000);
+    expect(statusesOf(calls, 'FirmwareStatusNotification')).toEqual([
+      'Downloading',
+      'Downloaded',
+      'Installing',
+      'InstallRebooting',
+    ]);
+    expect(calls('FirmwareStatusNotification').every((c) => c.payload.requestId === 7)).toBe(true);
+    expect(restarts).toHaveLength(1);
+    cp.disconnected();
+    await boot();
+    expect(calls('BootNotification').at(-1)?.payload).toEqual({
+      reason: 'FirmwareUpdate',
+      chargingStation: { ...BOOT, firmwareVersion: '2.0.0' },
+    });
+    expect(calls('FirmwareStatusNotification').at(-1)?.payload).toEqual({
+      status: 'Installed',
+      requestId: 7,
+    });
+    expect(calls('SecurityEventNotification').map((c) => c.payload.type)).toEqual([
+      'StartupOfTheDevice',
+      'ResetOrReboot',
+      'FirmwareUpdated',
+    ]);
+    // After Installed a trigger answers Idle (L01.FR.25).
+    await csmsCall('TriggerMessage', { requestedMessage: 'FirmwareStatusNotification' });
+    expect(calls('FirmwareStatusNotification').at(-1)?.payload).toEqual({ status: 'Idle' });
+    expect(cp.snapshot().firmwareVersion).toBe('2.0.0');
+  });
+
+  it('checks the signing certificate and the signature of signed firmware', async () => {
+    const tools = fakeTools();
+    const { calls, csmsCall, boot, advance } = setup({
+      extra: {
+        firmware,
+        certificateTools: tools,
+        certificates: { manufacturerRoots: [cert('maker')] },
+      },
+    });
+    await boot();
+    const signed = (signingCertificate: string, signature: string, requestId: number) =>
+      csmsCall('UpdateFirmware', {
+        requestId,
+        firmware: {
+          location: 'https://files.test/fw-3.0.0.bin',
+          retrieveDateTime: new Date(T0).toISOString(),
+          signingCertificate,
+          signature,
+        },
+      });
+    expect(await signed(cert('signer', 'rogue'), 'good', 1)).toEqual({
+      status: 'InvalidCertificate',
+    });
+    expect(calls('SecurityEventNotification').at(-1)?.payload).toMatchObject({
+      type: 'InvalidFirmwareSigningCertificate',
+    });
+    // Without a FileTransfer the signature check is the persona's setting.
+    const {
+      calls: calls2,
+      csmsCall: csmsCall2,
+      boot: boot2,
+      advance: advance2,
+    } = setup({
+      extra: {
+        firmware: { ...firmware, signature: 'fail' },
+        certificateTools: tools,
+        certificates: { manufacturerRoots: [cert('maker')] },
+      },
+    });
+    await boot2();
+    expect(
+      await csmsCall2('UpdateFirmware', {
+        requestId: 2,
+        firmware: {
+          location: 'https://files.test/fw-3.0.0.bin',
+          retrieveDateTime: new Date(T0).toISOString(),
+          signingCertificate: cert('signer', 'maker'),
+          signature: 'whatever',
+        },
+      }),
+    ).toEqual({ status: 'Accepted' });
+    await advance2(5000);
+    expect(statusesOf(calls2, 'FirmwareStatusNotification')).toEqual([
+      'Downloading',
+      'Downloaded',
+      'InvalidSignature',
+    ]);
+    expect(calls2('SecurityEventNotification').at(-1)?.payload).toMatchObject({
+      type: 'InvalidFirmwareSignature',
+    });
+    // A new request cancels the one in progress (L01.FR.24).
+    expect(await signed(cert('signer', 'maker'), 'good', 3)).toEqual({ status: 'Accepted' });
+    expect(await signed(cert('signer', 'maker'), 'good', 4)).toEqual({
+      status: 'AcceptedCanceled',
+    });
+    await advance(5000);
+    expect(calls('FirmwareStatusNotification').at(-1)?.payload).toEqual({
+      status: 'InstallRebooting',
+      requestId: 4,
+    });
+  });
+
+  it('waits for the transactions to end before installing (L01.FR.06)', async () => {
+    const { cp, calls, csmsCall, boot, advance, present } = setup({ extra: { firmware } });
+    await boot();
+    await present(1, 'TAG-1');
+    cp.plugIn(1);
+    await advance(0);
+    await csmsCall('UpdateFirmware', {
+      requestId: 9,
+      firmware: {
+        location: 'https://files.test/fw-2.1.0.bin',
+        retrieveDateTime: new Date(T0).toISOString(),
+      },
+    });
+    await advance(10_000);
+    expect(statusesOf(calls, 'FirmwareStatusNotification')).toEqual(['Downloading', 'Downloaded']);
+    await present(1, 'TAG-1');
+    await advance(5000);
+    expect(statusesOf(calls, 'FirmwareStatusNotification').slice(2)).toEqual([
+      'Installing',
+      'InstallRebooting',
+    ]);
+  });
+
+  it('uploads the security log with GetLog and reports its progress (N01)', async () => {
+    const uploads: { url: string; fileName: string; content: string }[] = [];
+    const transfer = {
+      download: () => Promise.resolve(undefined),
+      upload: (url: string, fileName: string, content: string) => {
+        uploads.push({ url, fileName, content });
+        return Promise.resolve(true);
+      },
+    };
+    const { calls, csmsCall, boot, advance } = setup({ extra: { firmware, transfer } });
+    await boot();
+    const answer = (await csmsCall('GetLog', {
+      logType: 'SecurityLog',
+      requestId: 3,
+      log: { remoteLocation: 'https://logs.test/upload/' },
+    })) as { status: string; filename: string };
+    expect(answer).toEqual({ status: 'Accepted', filename: 'security-20261115T100000Z.log' });
+    await advance(1000);
+    expect(calls('LogStatusNotification').map((c) => c.payload)).toEqual([
+      { status: 'Uploading', requestId: 3 },
+      { status: 'Uploaded', requestId: 3 },
+    ]);
+    expect(uploads[0]?.url).toBe('https://logs.test/upload/security-20261115T100000Z.log');
+    expect(uploads[0]?.content).toContain('StartupOfTheDevice');
+    await csmsCall('TriggerMessage', { requestedMessage: 'LogStatusNotification' });
+    expect(calls('LogStatusNotification').at(-1)?.payload).toEqual({ status: 'Idle' });
+  });
+
+  it('cancels a log upload in progress for a new GetLog (N01.FR.12)', async () => {
+    const { calls, csmsCall, boot, advance } = setup({ extra: { firmware } });
+    await boot();
+    const request = (requestId: number) =>
+      csmsCall('GetLog', {
+        logType: 'DiagnosticsLog',
+        requestId,
+        log: { remoteLocation: 'ftp://logs.test/' },
+      });
+    expect(await request(1)).toMatchObject({ status: 'Accepted' });
+    expect(await request(2)).toMatchObject({ status: 'AcceptedCanceled' });
+    await csmsCall('TriggerMessage', { requestedMessage: 'LogStatusNotification' });
+    expect(calls('LogStatusNotification').at(-1)?.payload).toEqual({
+      status: 'Uploading',
+      requestId: 2,
+    });
+    await advance(2000);
+    expect(calls('LogStatusNotification').at(-1)?.payload).toEqual({
+      status: 'Uploaded',
+      requestId: 2,
+    });
+  });
+
+  it('keeps certificates, network profiles, the security log and the firmware version across a restart', async () => {
+    const tools = fakeTools();
+    const first = setup({ extra: { firmware, certificateTools: tools } });
+    await first.boot();
+    await first.csmsCall('InstallCertificate', {
+      certificateType: 'CSMSRootCertificate',
+      certificate: cert('csms'),
+    });
+    await first.csmsCall('UpdateFirmware', {
+      requestId: 5,
+      firmware: {
+        location: 'https://files.test/fw-4.0.0.bin',
+        retrieveDateTime: new Date(T0).toISOString(),
+      },
+    });
+    await first.advance(5000);
+    const saved = first.cp.persistentState();
+    const second = setup({ restore: saved, extra: { firmware, certificateTools: tools } });
+    await second.boot();
+    expect(second.cp.snapshot()).toMatchObject({
+      firmwareVersion: '4.0.0',
+      certificates: { centralSystemRoots: 1 },
+    });
+    // The new firmware reports Installed after the power cycle too.
+    expect(second.calls('FirmwareStatusNotification').at(-1)?.payload).toEqual({
+      status: 'Installed',
+      requestId: 5,
+    });
+    expect(second.cp.snapshot().securityEvents.map((e) => e.type)).toContain('ResetOrReboot');
   });
 });
