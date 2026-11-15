@@ -1,0 +1,321 @@
+# OCPP 2.0.1 Smart Charging (functional block K) against the built-in CSMS.
+name: TC_K_60_CS and TC_K_05_CS A TxProfile caps a running transaction until it is cleared
+station: { id: REG201-SC-TX, persona: regression-2.0.1 }
+steps:
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: { ev: compact-40kwh }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started }
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - expectConnector: { chargingState: Charging, powerW: { $gt: 7000 } }
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 1
+        chargingProfile:
+          id: 1
+          stackLevel: 0
+          chargingProfilePurpose: TxProfile
+          chargingProfileKind: Relative
+          transactionId: '{{tx}}'
+          chargingSchedule:
+            - {
+                id: 1,
+                chargingRateUnit: W,
+                chargingSchedulePeriod: [{ startPeriod: 0, limit: 3680 }],
+              }
+      answer: { status: Accepted }
+  - expectConnector: { powerW: 3680, limitW: 3680 }
+  - csmsCall:
+      action: GetCompositeSchedule
+      payload: { evseId: 1, duration: 600, chargingRateUnit: W }
+      answer:
+        status: Accepted
+        schedule:
+          {
+            evseId: 1,
+            chargingRateUnit: W,
+            chargingSchedulePeriod: [{ startPeriod: 0, limit: 3680 }],
+          }
+  - csmsCall:
+      action: ClearChargingProfile
+      payload: { chargingProfileId: 1 }
+      answer: { status: Accepted }
+  - expectConnector: { powerW: { $gt: 7000 }, limitW: { $exists: false } }
+---
+name: TC_K_02_CS, TC_K_14_CS and TC_K_16_CS Profiles the station refuses
+station: { id: REG201-SC-REFUSE, persona: regression-2.0.1 }
+steps:
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 1
+        chargingProfile:
+          id: 1
+          stackLevel: 0
+          chargingProfilePurpose: TxProfile
+          chargingProfileKind: Relative
+          transactionId: no-such-transaction
+          chargingSchedule:
+            - {
+                id: 1,
+                chargingRateUnit: W,
+                chargingSchedulePeriod: [{ startPeriod: 0, limit: 3680 }],
+              }
+      answer: { status: Rejected }
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 9
+        chargingProfile:
+          id: 2
+          stackLevel: 0
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Absolute
+          chargingSchedule:
+            - id: 1
+              startSchedule: '2026-01-01T00:00:00Z'
+              chargingRateUnit: W
+              chargingSchedulePeriod: [{ startPeriod: 0, limit: 3680 }]
+      answer: { status: Rejected }
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 0
+        chargingProfile:
+          id: 3
+          stackLevel: 0
+          chargingProfilePurpose: ChargingStationExternalConstraints
+          chargingProfileKind: Absolute
+          chargingSchedule:
+            - id: 1
+              startSchedule: '2026-01-01T00:00:00Z'
+              chargingRateUnit: W
+              chargingSchedulePeriod: [{ startPeriod: 0, limit: 3680 }]
+      answer: { status: Rejected }
+  - csmsCall:
+      action: GetCompositeSchedule
+      payload: { evseId: 9, duration: 600 }
+      answer: { status: Rejected }
+---
+name: TC_K_01_CS, TC_K_10_CS, TC_K_03_CS and TC_K_41_CS Defaults, the station maximum and the composite schedule
+station: { id: REG201-SC-DEFAULT, persona: regression-2.0.1 }
+steps:
+  # Every EVSE: 6 kW (K01.FR.14).
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 0
+        chargingProfile:
+          id: 10
+          stackLevel: 0
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Absolute
+          chargingSchedule:
+            - id: 1
+              startSchedule: '2026-01-01T00:00:00Z'
+              chargingRateUnit: W
+              chargingSchedulePeriod: [{ startPeriod: 0, limit: 6000 }]
+      answer: { status: Accepted }
+  # EVSE 2 alone: 4 kW, in place of the evseId 0 one (K01.FR.15).
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 2
+        chargingProfile:
+          id: 11
+          stackLevel: 0
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Absolute
+          chargingSchedule:
+            - id: 1
+              startSchedule: '2026-01-01T00:00:00Z'
+              chargingRateUnit: W
+              chargingSchedulePeriod: [{ startPeriod: 0, limit: 4000 }]
+      answer: { status: Accepted }
+  # The station together: 8 kW.
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 0
+        chargingProfile:
+          id: 12
+          stackLevel: 0
+          chargingProfilePurpose: ChargingStationMaxProfile
+          chargingProfileKind: Absolute
+          chargingSchedule:
+            - id: 1
+              startSchedule: '2026-01-01T00:00:00Z'
+              chargingRateUnit: W
+              chargingSchedulePeriod: [{ startPeriod: 0, limit: 8000 }]
+      answer: { status: Accepted }
+  - csmsCall:
+      action: GetCompositeSchedule
+      payload: { evseId: 1, duration: 600, chargingRateUnit: W }
+      answer:
+        {
+          status: Accepted,
+          schedule: { chargingSchedulePeriod: [{ startPeriod: 0, limit: 6000 }] },
+        }
+  - csmsCall:
+      action: GetCompositeSchedule
+      payload: { evseId: 2, duration: 600, chargingRateUnit: W }
+      answer:
+        {
+          status: Accepted,
+          schedule: { chargingSchedulePeriod: [{ startPeriod: 0, limit: 4000 }] },
+        }
+  # The station: 6 kW + 4 kW, capped at 8 kW (K08.FR.03, .04).
+  - csmsCall:
+      action: GetCompositeSchedule
+      payload: { evseId: 0, duration: 600, chargingRateUnit: W }
+      answer:
+        {
+          status: Accepted,
+          schedule: { chargingSchedulePeriod: [{ startPeriod: 0, limit: 8000 }] },
+        }
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  - expectConnector: { powerW: 6000, limitW: 6000 }
+---
+name: TC_K_29_CS to TC_K_32_CS, TC_K_06_CS and TC_K_08_CS Get and clear profiles
+station: { id: REG201-SC-GET, persona: regression-2.0.1 }
+steps:
+  - csmsCall:
+      action: GetChargingProfiles
+      payload: { requestId: 1, chargingProfile: {} }
+      answer: { status: NoProfiles }
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 0
+        chargingProfile:
+          id: 20
+          stackLevel: 0
+          chargingProfilePurpose: ChargingStationMaxProfile
+          chargingProfileKind: Absolute
+          chargingSchedule:
+            - id: 1
+              startSchedule: '2026-01-01T00:00:00Z'
+              chargingRateUnit: A
+              chargingSchedulePeriod: [{ startPeriod: 0, limit: 32 }]
+      answer: { status: Accepted }
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 1
+        chargingProfile:
+          id: 21
+          stackLevel: 1
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Recurring
+          recurrencyKind: Daily
+          chargingSchedule:
+            - id: 1
+              startSchedule: '2026-01-01T00:00:00Z'
+              chargingRateUnit: A
+              chargingSchedulePeriod:
+                [{ startPeriod: 0, limit: 16 }, { startPeriod: 28800, limit: 10 }]
+      answer: { status: Accepted }
+  - csmsCall:
+      action: GetChargingProfiles
+      payload: { requestId: 2, chargingProfile: {} }
+      answer: { status: Accepted }
+  - expect:
+      sent: ReportChargingProfiles
+      payload:
+        {
+          requestId: 2,
+          evseId: 0,
+          chargingLimitSource: CSO,
+          tbc: true,
+          chargingProfile: [{ id: 20 }],
+        }
+  - expect:
+      sent: ReportChargingProfiles
+      payload: { requestId: 2, evseId: 1, tbc: { $exists: false }, chargingProfile: [{ id: 21 }] }
+  - csmsCall:
+      action: GetChargingProfiles
+      payload: { requestId: 3, evseId: 1, chargingProfile: { chargingProfileId: [21] } }
+      answer: { status: Accepted }
+  - expect: { sent: ReportChargingProfiles, payload: { requestId: 3, evseId: 1 } }
+  - csmsCall:
+      action: ClearChargingProfile
+      payload:
+        { chargingProfileCriteria: { chargingProfilePurpose: TxDefaultProfile, stackLevel: 1 } }
+      answer: { status: Accepted }
+  - csmsCall:
+      action: ClearChargingProfile
+      payload:
+        { chargingProfileCriteria: { chargingProfilePurpose: TxDefaultProfile, stackLevel: 1 } }
+      answer: { status: Unknown }
+  - csmsCall:
+      action: GetChargingProfiles
+      payload: { requestId: 4, evseId: 1, chargingProfile: {} }
+      answer: { status: NoProfiles }
+---
+name: TC_K_37_CS A remote start with a TxProfile
+station: { id: REG201-SC-REMOTE, persona: regression-2.0.1 }
+steps:
+  - csmsCall:
+      action: RequestStartTransaction
+      payload:
+        idToken: { idToken: TAG-R, type: ISO14443 }
+        remoteStartId: 37
+        evseId: 1
+        chargingProfile:
+          id: 30
+          stackLevel: 0
+          chargingProfilePurpose: TxProfile
+          chargingProfileKind: Relative
+          chargingSchedule:
+            - {
+                id: 1,
+                chargingRateUnit: W,
+                chargingSchedulePeriod: [{ startPeriod: 0, limit: 2000 }],
+              }
+      answer: { status: Accepted }
+  - plugIn: {}
+  - expect:
+      {
+        sent: TransactionEvent,
+        payload: { eventType: Started, transactionInfo: { remoteStartId: 37 } },
+      }
+  - expectConnector: { powerW: 2000, limitW: 2000 }
+  - expectStation: { chargingProfiles: [{ chargingProfileId: 30, purpose: TxProfile }] }
+---
+name: A charging profile of 0 suspends the EVSE
+station: { id: REG201-SC-ZERO, persona: regression-2.0.1 }
+steps:
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  - expect:
+      {
+        sent: TransactionEvent,
+        payload: { eventType: Started, transactionInfo: { chargingState: Charging } },
+      }
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 1
+        chargingProfile:
+          id: 40
+          stackLevel: 5
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Absolute
+          chargingSchedule:
+            - id: 1
+              startSchedule: '2026-01-01T00:00:00Z'
+              chargingRateUnit: W
+              chargingSchedulePeriod: [{ startPeriod: 0, limit: 0 }]
+      answer: { status: Accepted }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        {
+          eventType: Updated,
+          triggerReason: ChargingStateChanged,
+          transactionInfo: { chargingState: SuspendedEVSE },
+        }
+  - expectConnector: { powerW: 0, chargingState: SuspendedEVSE }

@@ -42,7 +42,7 @@ jobs:
           docker compose -f tools/citrineos/docker-compose.yml logs --tail 100 citrine
           exit 1
       - name: Add the scenarios' tokens to CitrineOS
-        run: tools/citrineos/register.sh AA000010 AA000011 AA000001:Accepted:MIMIC-GROUP AA000002:Accepted:MIMIC-GROUP
+        run: tools/citrineos/register.sh AA000010 AA000011 AA000020 AA000021 AA000001:Accepted:MIMIC-GROUP AA000002:Accepted:MIMIC-GROUP
       - name: Run the scenarios against CitrineOS
         run: |
           set -o pipefail

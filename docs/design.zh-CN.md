@@ -935,6 +935,7 @@ faults:
 **Smart Charging 和预约**
 
 - M3 的组合计划模型两种版本共用。2.0.1 里 profile 带 `evseId`（0 代表整桩），用途为 ChargingStationMaxProfile、TxDefaultProfile 或 TxProfile；ChargingStationExternalConstraints 只来自外部系统，拒绝。一个 profile 带一个充电计划；多于一个的属于 ISO 15118，拒绝。GetChargingProfiles 用 ReportChargingProfiles 分页回答；ClearChargingProfile 按 id 或条件清除；GetCompositeSchedule 按 EVSE 回答。SmartChargingCtrlr 设定各项上限。
+- 已实现（T70）：`core/src/ocpp201/smart-charging.ts` 负责 2.0.1 的规则，并把 profile 转换成 1.6 模型（`charging-profile.ts`）来计算，所以等价 profile 的组合计划与 1.6 相同（有测试比较二者）。SetChargingProfile 拒绝：未知的 EVSE（K01.FR.28）、ChargingStationExternalConstraints、设在 EVSE 上或为 Relative 的 ChargingStationMaxProfile、evseId 0 上的 TxProfile、EVSE 上没有交易或 transactionId 不符的 TxProfile（K01.FR.09、.16、.33）、多于一个的计划、RateUnit 以外的单位、超过 PeriodsPerSchedule 的时段、高于 ProfileStackLevel 的 stackLevel，以及同一 EVSE 上 stackLevel 和用途相同且有效期重叠的 profile（K01.FR.06；TxProfile 按同一交易判断，K01.FR.39）。相同 id 的 profile 被替换（K01.FR.05）。限值与 1.6 一样作用于能量模型：EVSE 自己的 TxProfile 或 TxDefaultProfile，以及它在有交易的 EVSE 之间分得的 ChargingStationMaxProfile 份额；限值为 0 时以 ChargingStateChanged 上报 SuspendedEVSE。交易结束时删除它的 TxProfile，其他 profile 重启后保留（K01.FR.27）。GetChargingProfiles 按 EVSE 各发一条 ReportChargingProfiles（chargingLimitSource 为 CSO）；GetCompositeSchedule 对没有交易的 EVSE 按此刻开始一笔交易来计算（K08.FR.06），未知的 EVSE 或单位回 Rejected；ClearChargingProfile 按 id 或条件清除。RequestStartTransaction 带的 TxProfile 会先检查（不合格时回 Rejected，reasonCode 为 InvalidProfile），交易开始后带上 transactionId 安装（K05）。SmartChargingCtrlr（Available、Enabled、maxLimit 为 20 的 Entries:ChargingProfiles、LimitChangeSignificance、PeriodsPerSchedule 24、ProfileStackLevel 10、RateUnit A,W、Phases3to1）只在支持该 profile 时存在；不支持时四条消息回 NotSupported（K01.FR.29），远程启动带的 profile 被忽略（K05.FR.04）。`generic-2.0.1` 支持 SmartCharging。`scenarios/regression/ocpp201-smart-charging.yaml` 和 `scenarios/citrineos/smart-charging.yaml` 覆盖这些消息。
 - ReserveNow 可以预约一个 EVSE、任意 EVSE（ReservationCtrlr.NonEvseSpecific）或某种连接器类型，可带 groupIdToken；另有 CancelReservation；ReservationStatusUpdate 上报 Expired 和 Removed。被预约的连接器上报 Reserved；对任意 EVSE 的预约，桩保持足够数量的 EVSE 空闲。
 
 **内置 CSMS**
@@ -1163,7 +1164,7 @@ M5 的计划（见「M5 OCPP 2.0.1」），每行注明实现它的 M5 任务。
 | CertificateSigned | A | 安装 ChargingStationCertificate，profile 3 时重连 | T69 |
 | UpdateFirmware | L | 签名（L01）或未签名（L02）固件更新 | T69 |
 | GetLog | N | 上传安全日志或诊断日志 | T69 |
-| SetChargingProfile、GetChargingProfiles、ClearChargingProfile、GetCompositeSchedule | K | 按组合计划模型 | T70 |
+| SetChargingProfile、GetChargingProfiles、ClearChargingProfile、GetCompositeSchedule | K | 按与 1.6 共用的组合计划模型 | T70 |
 | ReserveNow、CancelReservation | H | EVSE、任意 EVSE 或连接器类型；groupIdToken | T71 |
 
 DataTransfer 两个方向都有，两张表各算一次：共 44 个不同的 action。

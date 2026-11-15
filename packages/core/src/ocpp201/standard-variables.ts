@@ -66,6 +66,8 @@ export const LOCAL_LIST_SIZE = 100;
 export const NETWORK_SLOTS = ['0', '1', '2'] as const;
 /** Certificates installed at most (CertificateEntries maxLimit). */
 export const CERTIFICATE_ENTRIES_MAX = 20;
+/** Charging profiles installed at most (SmartChargingCtrlr.Entries maxLimit). */
+export const CHARGING_PROFILES_MAX = 20;
 const TX_POINTS = 'EVConnected,Authorized,PowerPathClosed,EnergyTransfer';
 const AVAILABILITY = 'Available,Occupied,Reserved,Unavailable,Faulted';
 
@@ -201,6 +203,27 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
       variable(list, 'Entries', 'integer', ro(), { maxLimit: LOCAL_LIST_SIZE, ...dynamic }),
       variable(list, 'ItemsPerMessage', 'integer', ro('50', true)),
       variable(list, 'BytesPerMessage', 'integer', ro('8192', true)),
+    );
+  }
+
+  if (input.features.includes('SmartCharging')) {
+    const smart: ComponentType = { name: 'SmartChargingCtrlr' };
+    out.push(
+      variable(smart, 'Available', 'boolean', ro('true')),
+      variable(smart, 'Enabled', 'boolean', rw('true')),
+      variable(smart, 'Entries', 'integer', ro(), {
+        instance: 'ChargingProfiles',
+        maxLimit: CHARGING_PROFILES_MAX,
+        ...dynamic,
+      }),
+      variable(smart, 'LimitChangeSignificance', 'decimal', rw('10'), {
+        unit: 'Percent',
+        minLimit: 0,
+      }),
+      variable(smart, 'PeriodsPerSchedule', 'integer', ro('24')),
+      variable(smart, 'ProfileStackLevel', 'integer', ro('10')),
+      variable(smart, 'RateUnit', 'MemberList', ro('A,W'), { valuesList: 'A,W' }),
+      variable(smart, 'Phases3to1', 'boolean', ro('false')),
     );
   }
 

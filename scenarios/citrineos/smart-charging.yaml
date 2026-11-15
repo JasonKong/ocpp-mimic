@@ -1,0 +1,133 @@
+# Smart Charging with CitrineOS as the CSMS.
+name: TC_K_01_CSMS, TC_K_29_CSMS, TC_K_43_CSMS and TC_K_05_CSMS Set, get, compose and clear a TxDefaultProfile
+csms: ws://localhost:8081
+station: { id: MIMIC-K01, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=MIMIC-K01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        evseId: 1
+        chargingProfile:
+          id: 101
+          stackLevel: 0
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Absolute
+          chargingSchedule:
+            - id: 1
+              startSchedule: '2026-01-01T00:00:00Z'
+              chargingRateUnit: W
+              chargingSchedulePeriod: [{ startPeriod: 0, limit: 4000 }]
+  - expect: { received: SetChargingProfile, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/getChargingProfiles?identifier=MIMIC-K01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        { requestId: 7, evseId: 1, chargingProfile: { chargingProfilePurpose: TxDefaultProfile } }
+  - expect: { received: GetChargingProfiles, answer: { status: Accepted } }
+  - expect:
+      sent: ReportChargingProfiles
+      payload: { requestId: 7, evseId: 1, chargingProfile: [{ id: 101 }] }
+      answer: {}
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/getCompositeSchedule?identifier=MIMIC-K01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { evseId: 1, duration: 600, chargingRateUnit: W }
+  - expect:
+      received: GetCompositeSchedule
+      answer:
+        {
+          status: Accepted,
+          schedule: { evseId: 1, chargingSchedulePeriod: [{ startPeriod: 0, limit: 4000 }] },
+        }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/clearChargingProfile?identifier=MIMIC-K01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { chargingProfileId: 101 }
+  - expect: { received: ClearChargingProfile, answer: { status: Accepted } }
+---
+name: TC_K_60_CSMS A TxProfile for an ongoing transaction
+csms: ws://localhost:8081
+station: { id: MIMIC-K60, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - presentCard: { idToken: AA000020, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started }
+      answer: {}
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=MIMIC-K60&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        evseId: 1
+        chargingProfile:
+          id: 160
+          stackLevel: 0
+          chargingProfilePurpose: TxProfile
+          chargingProfileKind: Relative
+          transactionId: '{{tx}}'
+          chargingSchedule:
+            - {
+                id: 1,
+                chargingRateUnit: W,
+                chargingSchedulePeriod: [{ startPeriod: 0, limit: 3000 }],
+              }
+  - expect: { received: SetChargingProfile, answer: { status: Accepted } }
+  - expectConnector: { powerW: 3000, limitW: 3000 }
+---
+name: TC_K_37_CSMS A remote start with a TxProfile
+csms: ws://localhost:8081
+station: { id: MIMIC-K37, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/requestStartTransaction?identifier=MIMIC-K37&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        idToken: { idToken: AA000021, type: ISO14443 }
+        remoteStartId: 137
+        evseId: 1
+        chargingProfile:
+          id: 137
+          stackLevel: 0
+          chargingProfilePurpose: TxProfile
+          chargingProfileKind: Relative
+          chargingSchedule:
+            - {
+                id: 1,
+                chargingRateUnit: W,
+                chargingSchedulePeriod: [{ startPeriod: 0, limit: 2500 }],
+              }
+  - expect: { received: RequestStartTransaction, answer: { status: Accepted } }
+  - expect: { sent: Authorize, answer: { idTokenInfo: { status: Accepted } } }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, transactionInfo: { remoteStartId: 137 } }
+      answer: {}
+  - expectConnector: { powerW: 2500, limitW: 2500 }
