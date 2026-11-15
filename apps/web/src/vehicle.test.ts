@@ -136,6 +136,13 @@ describe('vehicle card rows', () => {
     expect(plain.capacity?.truth).toBeUndefined();
   });
 
+  it('shows times to the target in wall-clock time under an energy multiplier', () => {
+    const fast = { ...detail('1.6', {}, { msToTarget: 3_600_000 }), energyMultiplier: 60 };
+    const rows = byField(vehicleRows(fast, '1.6', EV));
+    expect(rows.timeToTarget?.values[0]?.text).toBe('1 min (energy ×60)');
+    expect(rows.timeToTarget?.truth?.text).toBe('1 min (energy ×60)');
+  });
+
   it('names the vehicle when the token is its identity', () => {
     const rows = byField(
       vehicleRows(

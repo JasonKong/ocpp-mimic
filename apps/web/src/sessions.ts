@@ -132,7 +132,9 @@ export interface EnergyFigures {
   chargingMs: number;
   suspendedMs: number;
   idleMs: number;
-  /** Estimated and true ETA to the target, and the time left from `now`. */
+  /** The energy multiplier the times below were converted with (1: real time). */
+  multiplier: number;
+  /** Estimated and true ETA to the target in wall-clock time, and the time left from `now`. */
   etaAt?: string;
   leftMs?: number;
   trueEtaAt?: string;
@@ -143,8 +145,9 @@ export interface EnergyFigures {
   targetFrom: 'chargingNeeds' | 'default';
   departureTime?: string;
   reachesTargetBeforeDeparture?: boolean;
-  /** The estimate misses the truth by more than 5 minutes or 10 %. */
+  /** The estimate misses the truth by more than 5 minutes or 10 % (of simulated time). */
   off?: boolean;
+  /** The gap in wall-clock time. */
   gapMs?: number;
   /** Latest per-phase readings. */
   phases?: { phase: 'L1' | 'L2' | 'L3'; currentA?: number; voltageV?: number }[];
@@ -177,6 +180,17 @@ export function energyFigures(detail: SessionDetail, now: number): EnergyFigures
           },
         ];
   });
+  // Under an energy multiplier the times to the target are simulated: they pass that much faster.
+  const multiplier =
+    detail.energyMultiplier !== undefined && detail.energyMultiplier > 0
+      ? detail.energyMultiplier
+      : 1;
+  const wallEta = (at: string | undefined, ms: number | undefined) =>
+    at === undefined || ms === undefined
+      ? undefined
+      : new Date(Date.parse(at) + ms / multiplier).toISOString();
+  const etaAt = wallEta(estimate.at, estimate.msToTarget);
+  const trueEtaAt = wallEta(truth?.at, truth?.msToTarget);
   const left = (eta: string) => Math.max(0, Date.parse(eta) - now);
   const powerW = latest('powerW');
   const socPercent = latest('socPercent');
@@ -191,8 +205,9 @@ export function energyFigures(detail: SessionDetail, now: number): EnergyFigures
     chargingMs: durations.charging,
     suspendedMs: durations.suspendedEV + durations.suspendedEVSE,
     idleMs: durations.idle,
-    ...(estimate.etaAt !== undefined && { etaAt: estimate.etaAt, leftMs: left(estimate.etaAt) }),
-    ...(truth?.etaAt !== undefined && { trueEtaAt: truth.etaAt, trueLeftMs: left(truth.etaAt) }),
+    multiplier,
+    ...(etaAt !== undefined && { etaAt, leftMs: left(etaAt) }),
+    ...(trueEtaAt !== undefined && { trueEtaAt, trueLeftMs: left(trueEtaAt) }),
     ...(estimate.reason !== undefined &&
       estimate.reason !== 'target reached' && { reason: estimate.reason }),
     targetSoc: estimate.targetSoc,
@@ -201,7 +216,7 @@ export function energyFigures(detail: SessionDetail, now: number): EnergyFigures
     ...(estimate.reachesTargetBeforeDeparture !== undefined && {
       reachesTargetBeforeDeparture: estimate.reachesTargetBeforeDeparture,
     }),
-    ...(gap !== undefined && { off: gap.off, gapMs: gap.gapMs }),
+    ...(gap !== undefined && { off: gap.off, gapMs: gap.gapMs / multiplier }),
     ...(phases.length > 0 && { phases }),
     ...(powers.length > 0 && { peakPowerW: Math.max(...powers) }),
     ...(socs.length > 0 && { startSocPercent: socs[0] ?? 0, endSocPercent: socs.at(-1) ?? 0 }),

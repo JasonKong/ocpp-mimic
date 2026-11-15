@@ -70,6 +70,9 @@ const fmtTime = (iso: string) => formatTime(iso).slice(0, 5);
       <span v-if="showTruth && f.off" class="warning" role="status"
         >the estimate is off by {{ formatDuration(f.gapMs ?? 0) }}</span
       >
+      <span v-if="f.multiplier !== 1" class="note"
+        >energy ×{{ f.multiplier }}: times are wall-clock, the session runs that much faster</span
+      >
       <span v-if="f.departureTime" class="note"
         >departure {{ fmtTime(f.departureTime) }}:
         {{

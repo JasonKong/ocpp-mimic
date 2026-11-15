@@ -471,6 +471,16 @@ describe('the energy panel', () => {
     );
   });
 
+  it('says when times are wall-clock under an energy multiplier', async () => {
+    const fast = { ...detail, energyMultiplier: 60 };
+    const shown = text(
+      await render(EnergyPanel, { detail: fast, showTruth: false, now: T0 + 20 * 60_000 }),
+    );
+    expect(shown).toContain('energy ×60: times are wall-clock');
+    // 50 simulated minutes left at ×60 is 50 seconds.
+    expect(shown).toContain('in 50 s');
+  });
+
   it('sums up a finished session and says when there is no estimate', async () => {
     const finished: SessionDetail = {
       ...detail,
