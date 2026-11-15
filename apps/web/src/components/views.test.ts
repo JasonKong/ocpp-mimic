@@ -5,10 +5,18 @@
 import { describe, expect, it } from 'vitest';
 import { createSSRApp, h, type Component } from 'vue';
 import { renderToString } from 'vue/server-renderer';
-import type { DeviceModelEntry, RecordEntry, StationSnapshot, StationSummary } from '../api.js';
+import type {
+  DeviceModelEntry,
+  RecordEntry,
+  SessionDetail,
+  SessionSummary,
+  StationSnapshot,
+  StationSummary,
+} from '../api.js';
 import DeviceModelBrowser from './DeviceModelBrowser.vue';
 import FleetOverview from './FleetOverview.vue';
 import MessageLog from './MessageLog.vue';
+import SessionsView from './SessionsView.vue';
 import StationDetail from './StationDetail.vue';
 import StationList from './StationList.vue';
 import TransactionEvents from './TransactionEvents.vue';
@@ -266,5 +274,124 @@ describe('the 2.0.1 views', () => {
     ];
     const html = await render(MessageLog, { entries, stationId: 'SIM-201' });
     expect(text(html)).toContain('2.0.1 StatusNotification');
+  });
+});
+
+describe('the Sessions view', () => {
+  const summary = (n: number, extra: Partial<SessionSummary> = {}): SessionSummary => ({
+    stationId: 'SIM-201',
+    n,
+    ocpp: '2.0.1',
+    state: 'finished',
+    source: 'local',
+    evseId: 1,
+    idToken: { idToken: 'AA000001', type: 'ISO14443' },
+    requestedAt: '2026-11-15T10:00:00.000Z',
+    energyWh: 12_400,
+    ...extra,
+  });
+  const remote: SessionDetail = {
+    session: {
+      ...summary(2, { state: 'running', source: 'remote', remoteStartId: 42 }),
+      idToken: { idToken: 'APP-USER-1', type: 'Central' },
+      connectorId: 1,
+      transactionId: '5b0c9a61-3a3c-4b5e-9d55-0f1d7c2e8a11',
+      startedAt: '2026-11-15T10:00:01.000Z',
+      timeline: [
+        {
+          seq: 10,
+          at: '2026-11-15T10:00:00.000Z',
+          action: 'RequestStartTransaction',
+          direction: 'csms-to-cp',
+          messageType: 2,
+        },
+        {
+          seq: 11,
+          at: '2026-11-15T10:00:00.080Z',
+          action: 'RequestStartTransaction',
+          direction: 'cp-to-csms',
+          messageType: 3,
+          status: 'Accepted',
+          sincePreviousMs: 80,
+        },
+        {
+          seq: 12,
+          at: '2026-11-15T10:00:01.000Z',
+          action: 'TransactionEvent',
+          direction: 'cp-to-csms',
+          messageType: 2,
+          status: 'Started RemoteStart',
+          sincePreviousMs: 920,
+        },
+      ],
+      samples: [],
+      truth: [],
+      states: [],
+      costs: [],
+    },
+    summary: summary(2, { state: 'running', source: 'remote' }),
+    estimate: { targetSoc: 100, targetFrom: 'default', taperSoc: 80, reason: 'no SoC reported' },
+    durations: { charging: 0, suspendedEV: 0, suspendedEVSE: 0, idle: 0 },
+  };
+  const props = (extra: Record<string, unknown> = {}) => ({
+    station: station201,
+    sessions: [
+      summary(3, { state: 'not-started', source: 'remote', failure: { reason: 'Rejected' } }),
+      remote.summary,
+      summary(1),
+    ],
+    detail: remote,
+    selectedN: 2,
+    showTruth: false,
+    now: Date.parse('2026-11-15T10:30:01.000Z'),
+    ...extra,
+  });
+
+  it('lists sessions with their start source, and shows how the open one started', async () => {
+    const html = await render(SessionsView, props());
+    const shown = text(html);
+    expect(shown).toContain('#3 Remote start Rejected EVSE 1 · AA000001');
+    expect(shown).toContain('#1 Card 12.40 kWh EVSE 1 · AA000001');
+    expect(shown).toContain('Session #2 Remote start Running');
+    expect(shown).toContain('idToken APP-USER-1 (Central)');
+    expect(shown).toContain('remoteStartId 42');
+    expect(shown).toContain('Duration 30 min');
+    expect(shown).toContain('CSMS → CP RequestStartTransaction');
+    expect(shown).toContain('+80 ms CP → CSMS RequestStartTransaction answer Accepted');
+    expect(shown).toContain('Started RemoteStart');
+    expect(html).toContain('class="version-badge v201"');
+  });
+
+  it('names 1.6 things as 1.6 does and explains a session that never started', async () => {
+    const failed: SessionDetail = {
+      ...remote,
+      session: {
+        ...remote.session,
+        ocpp: '1.6',
+        state: 'not-started',
+        source: 'remote',
+        failure: { reason: 'NotAuthorized', detail: 'Invalid' },
+        idToken: { idToken: 'APP-USER-1' },
+        timeline: [],
+      },
+    };
+    const station16 = { ...station201, ocpp: '1.6' as const };
+    const shown = text(await render(SessionsView, props({ station: station16, detail: failed })));
+    expect(shown).toContain('Connector Connector 1');
+    expect(shown).toContain('idTag APP-USER-1');
+    expect(shown).not.toContain('remoteStartId');
+    expect(shown).toContain('Not authorized (Invalid)');
+    expect(shown).toContain('No start messages recorded.');
+  });
+
+  it('offers a remote start only when the station uses the built-in CSMS', async () => {
+    expect(
+      await render(SessionsView, props({ station: { ...station201, csms: 'builtin' } })),
+    ).toContain('Remote start via the built-in CSMS');
+    const external = text(
+      await render(SessionsView, props({ station: { ...station201, csms: 'external' } })),
+    );
+    expect(external).not.toContain('Remote start via the built-in CSMS');
+    expect(external).toContain('Remote starts come from the station');
   });
 });

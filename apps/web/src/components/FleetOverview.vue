@@ -152,6 +152,9 @@ const total = computed(() => row('All', props.stations));
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 12px;
+  /* A wide table scrolls inside the card instead of widening the page. */
+  min-width: 0;
+  overflow-x: auto;
 }
 header {
   display: flex;

@@ -212,6 +212,112 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
+// ---- Sessions (docs/session-ui.md) -------------------------------------------
+
+export type SessionSource = 'local' | 'remote' | 'noAuth';
+export type SessionState = 'starting' | 'running' | 'finished' | 'not-started';
+
+export interface SessionIdToken {
+  idToken: string;
+  type?: string;
+}
+
+/** What a list of sessions shows of one. */
+export interface SessionSummary {
+  stationId: string;
+  n: number;
+  ocpp: OcppVersion;
+  state: SessionState;
+  source: SessionSource;
+  evseId?: number;
+  idToken?: SessionIdToken;
+  remoteStartId?: number;
+  transactionId?: number | string;
+  requestedAt: string;
+  startedAt?: string;
+  endedAt?: string;
+  failure?: { reason: string; detail?: string };
+  energyWh: number;
+  socPercent?: number;
+}
+
+export interface TimelineStep {
+  seq: number;
+  at: string;
+  action: string;
+  direction: 'cp-to-csms' | 'csms-to-cp';
+  messageType: 2 | 3 | 4;
+  status?: string;
+  sincePreviousMs?: number;
+}
+
+export interface ReportedSample {
+  at: string;
+  seq: number;
+  context?: string;
+  energyWh?: number;
+  powerW?: number;
+  offeredW?: number;
+  socPercent?: number;
+  currentA?: Partial<Record<'L1' | 'L2' | 'L3', number>>;
+  voltageV?: Partial<Record<'L1' | 'L2' | 'L3', number>>;
+}
+
+export interface TrueSample {
+  at: string;
+  socPercent: number;
+  energyWh: number;
+  powerW: number;
+  msUntilFull?: number;
+}
+
+export interface SessionRecord extends Omit<SessionSummary, 'energyWh' | 'socPercent'> {
+  connectorId?: number;
+  timeline: TimelineStep[];
+  samples: ReportedSample[];
+  truth: TrueSample[];
+  states: {
+    at: string;
+    state: 'charging' | 'suspendedEV' | 'suspendedEVSE' | 'idle';
+    seq?: number;
+  }[];
+  meterStartWh?: number;
+  meterStopWh?: number;
+  meterStartSeq?: number;
+  meterStopSeq?: number;
+  chargingNeeds?: Record<string, unknown>;
+  costs: { at: string; seq: number; totalCost: number; from: string }[];
+  stopReason?: string;
+  framesTruncated?: true;
+}
+
+export interface SessionEstimate {
+  socPercent?: number;
+  at?: string;
+  refinedSocPercent?: number;
+  capacityWh?: number;
+  capacityFrom?: 'chargingNeeds' | 'readings';
+  targetSoc: number;
+  targetFrom: 'chargingNeeds' | 'default';
+  taperSoc: number;
+  powerW?: number;
+  energyLeftWh?: number;
+  msToTarget?: number;
+  etaAt?: string;
+  departureTime?: string;
+  reachesTargetBeforeDeparture?: boolean;
+  reason?: string;
+}
+
+export interface SessionDetail {
+  session: SessionRecord;
+  summary: SessionSummary;
+  estimate: SessionEstimate;
+  truth?: { at: string; socPercent: number; msToTarget?: number; etaAt?: string };
+  gap?: { gapMs: number; off: boolean };
+  durations: Record<'charging' | 'suspendedEV' | 'suspendedEVSE' | 'idle', number>;
+}
+
 const station = (id: string) => `/api/stations/${encodeURIComponent(id)}`;
 const connector = (id: string, connectorId: number) => `${station(id)}/connectors/${connectorId}`;
 
@@ -264,7 +370,23 @@ export const api = {
     request<StationSnapshot>('DELETE', `${connector(id, c)}/fault`),
   messages: (id: string, limit = 500) =>
     request<{ entries: RecordEntry[] }>('GET', `${station(id)}/messages?limit=${limit}`),
+  sessions: (id: string) =>
+    request<{ sessions: SessionSummary[] }>('GET', `${station(id)}/sessions`),
+  session: (id: string, n: number) => request<SessionDetail>('GET', `${station(id)}/sessions/${n}`),
+  sessionFrames: (id: string, n: number) =>
+    request<{ frames: FrameRecord[] }>('GET', `${station(id)}/sessions/${n}/frames`),
+  /** Has the built-in CSMS start a session on the station (only when it is the station's CSMS). */
+  remoteStart: (id: string, idToken: SessionIdToken, evseId?: number) =>
+    request<{ action: string; status: string; remoteStartId?: number }>(
+      'POST',
+      `${station(id)}/remote-start`,
+      { idToken, ...(evseId !== undefined && { evseId }) },
+    ),
 };
+
+/** Where a session's frames export as the recorder's JSONL. */
+export const sessionFramesUrl = (id: string, n: number) =>
+  `${station(id)}/sessions/${n}/frames?format=jsonl`;
 
 /**
  * What /api/events pushes: fleet summaries to everyone (all on connecting,
@@ -273,6 +395,7 @@ export const api = {
  */
 export type ApiEvent =
   | { type: 'record'; entry: RecordEntry }
+  | { type: 'session'; session: SessionSummary }
   | { type: 'station'; station: StationSnapshot }
   | { type: 'fleet'; stations: StationSummary[]; removed: string[]; full?: true };
 
