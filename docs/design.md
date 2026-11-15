@@ -719,7 +719,19 @@ Every number is within the exit thresholds; the heap no longer grows. The exit r
 | RSS peak (MB) | 156 | 265 |
 | Heap floor after the ramp-up, first quarter → last (MB) | 57.8 → 55.5 | 126.4 → 124.4 |
 
-A 2.0.1 station holds its Device Model (102 variables with their attributes for two EVSEs), which is most of the extra 70 KB of heap per station; the heap does not grow. Everything is well within the exit thresholds. The reference machine's numbers come from the `bench` workflow with `persona: load-ac-2.0.1`.
+A 2.0.1 station holds its Device Model (102 variables with their attributes for two EVSEs), which is most of the extra 70 KB of heap per station; the heap does not grow. Everything is well within the exit thresholds. On the reference machine (the `bench` workflow, 1,000 stations for 10 minutes, 10 started a second, 30 % charging, `--store`, 10 records per station), run the same day for both personas:
+
+| | `load-ac-1.6` ([43686586649](https://github.com/JasonKong/ocpp-mimic/actions/runs/43686586649)) | `load-ac-2.0.1` ([43686584412](https://github.com/JasonKong/ocpp-mimic/actions/runs/43686584412)) |
+| --- | --- | --- |
+| Engine CPU after the ramp-up, mean / max (% of a core) | 4.7 / 7.6 | 4.3 / 8.9 |
+| Event-loop delay, worst 5-second p99 / max (ms) | 1.8 / 25 | 3.6 / 225 |
+| Heartbeats late, p99 / max (ms) | 1.4 / 12 | 1.7 / 154 |
+| WebSocket connect, p99 / max (ms) | 4.5 / 18 | 9.7 / 58 |
+| BootNotification accepted, p99 / max (ms) | 101 / 273 | 101 / 496 |
+| RSS peak (MB) | 257 | 335 |
+| Heap floor after the ramp-up, first quarter → last (MB) | 52.6 → 52.5 | 121.5 → 122.4 |
+
+Both are within the exit thresholds. The 2.0.1 run has one spike of 225 ms that the 1.6 run does not, which #180 looks into.
 
 **Implemented: OpenTelemetry export (T47)**
 
@@ -989,6 +1001,24 @@ Implemented (T64):
 - The Web UI shows the version, an EVSE and connector tree with the 2.0.1 statuses and charging state, the token type when presenting a card, and a Device Model browser where writable variables can be changed as a local operator would.
 - Implemented (T72): the station list marks 2.0.1 stations and the add form names each persona's version. A 2.0.1 station's view shows `OCPP 2.0.1`, each EVSE with its connector status, charging state and transactionId, and a token type picker for presenting a card (`POST …/id-tag` takes `type`, one of IdTokenEnumType). Below it, the transaction events (time, EVSE, transactionId, seqNo, eventType, triggerReason, chargingState, stoppedReason) come from the station's records, and the Device Model browser groups variables by component (each EVSE followed by its connectors), filters them, shows the Actual value with its mutability, the other attributes and the characteristics, never a WriteOnly value, and sets a ReadWrite value as a local operator (`PATCH /api/stations/:id/device-model` with `component`, `variable` and `value`, checked like SetVariables; `GET` lists the variables). The message log summarizes 2.0.1 messages and shows their schema problems as for 1.6. `/api/health` lists both subprotocols, `/api/personas` gives each persona's `ocpp` (and a 2.0.1 persona's `features`), and fleet summaries carry `ocpp`. The views are tested by rendering them with Vue's server renderer (a `web` vitest project with the Vue plugin).
 
+**Accepted (T76)**
+
+M5's exit criterion is met: the CitrineOS workflow passed the full 2.0.1 suite on main ([43688861535](https://github.com/JasonKong/ocpp-mimic/actions/runs/43688861535)).
+- **The suite:** 53 scenarios for the Part 6 CSMS test cases of Core, Advanced Security, Local Authorization List Management, Smart Charging and Reservation. Every frame is valid against OCA's 2.0.1 schemas.
+- **The rest, with both versions:**
+  - The 1.6 regression suite and the SteVe suite ([43687960751](https://github.com/JasonKong/ocpp-mimic/actions/runs/43687960751)) are still green.
+  - The CI smoke plan runs a mixed 1.6 / 2.0.1 fleet with the usage model.
+  - 1,000 2.0.1 stations stay within the M4 thresholds on the reference machine.
+  - A recorded 2.0.1 session replays against the built-in CSMS without differences, and calibrating it gives back the generic persona's values.
+  - A 2.0.1 station can be added, charged and inspected from the Web UI.
+
+Follow-ups, outside any milestone:
+- #176: shared modules for both versions' certificate, firmware and log flows.
+- #177: Unavailable EVSEs while a 2.0.1 installation waits, and refusing unsigned updates.
+- #178: the security-profile test cases against CitrineOS.
+- #179: behaviour switches for the failures some CSMS tests need.
+- #180: the 2.0.1 event-loop spike on the reference machine.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
@@ -1144,7 +1174,7 @@ A card on the local list is decided locally before the cache (`LocalAuthListEnab
 
 ## OCPP 2.0.1 coverage
 
-Planned for M5 (see "M5 OCPP 2.0.1"); each row names the M5 task that implements it. Functional blocks are those of Part 2.
+Implemented in M5 (see "M5 OCPP 2.0.1"); each row names the M5 task that implemented it. Functional blocks are those of Part 2.
 
 **Charging station → CSMS** (16 of 25 in scope)
 

@@ -717,7 +717,19 @@ thresholds:
 | RSS 峰值（MB） | 156 | 265 |
 | 爬坡后堆的底线，第一个四分之一 → 最后（MB） | 57.8 → 55.5 | 126.4 → 124.4 |
 
-2.0.1 桩保存自己的 Device Model（两个 EVSE 时有 102 个变量及其属性），这是每个桩多出约 70 KB 堆的主要原因；堆不增长。所有数字都远在出口阈值以内。参考机器的数字由 `bench` 工作流以 `persona: load-ac-2.0.1` 运行得到。
+2.0.1 桩保存自己的 Device Model（两个 EVSE 时有 102 个变量及其属性），这是每个桩多出约 70 KB 堆的主要原因；堆不增长。所有数字都远在出口阈值以内。在参考机器上（`bench` 工作流，1,000 个桩运行 10 分钟，每秒启动 10 个，30 % 充电，带 `--store`，每个桩保留 10 条记录），两个 persona 同一天运行：
+
+| | `load-ac-1.6`（[43686586649](https://github.com/JasonKong/ocpp-mimic/actions/runs/43686586649)） | `load-ac-2.0.1`（[43686584412](https://github.com/JasonKong/ocpp-mimic/actions/runs/43686584412)） |
+| --- | --- | --- |
+| 爬坡后引擎 CPU，平均 / 最高（单核的 %） | 4.7 / 7.6 | 4.3 / 8.9 |
+| 事件循环延迟，最差 5 秒 p99 / 最大（ms） | 1.8 / 25 | 3.6 / 225 |
+| 心跳延迟，p99 / 最大（ms） | 1.4 / 12 | 1.7 / 154 |
+| WebSocket 连接，p99 / 最大（ms） | 4.5 / 18 | 9.7 / 58 |
+| BootNotification 被接受，p99 / 最大（ms） | 101 / 273 | 101 / 496 |
+| RSS 峰值（MB） | 257 | 335 |
+| 爬坡后堆的底线，第一个四分之一 → 最后（MB） | 52.6 → 52.5 | 121.5 → 122.4 |
+
+两者都在出口阈值以内。2.0.1 有一次 225 ms 的尖峰，1.6 没有；#180 跟进。
 
 **已实现：OpenTelemetry 导出（T47）**
 
@@ -987,6 +999,25 @@ faults:
 - Web UI 显示版本、带 2.0.1 状态和充电状态的 EVSE / 连接器树、出示卡时的 token 类型，以及一个 Device Model 浏览器，可以像本地运维人员那样修改可写变量。
 - 已实现（T72）：桩列表标出 2.0.1 桩，新建表单在每个 persona 后注明版本。2.0.1 桩的视图显示 `OCPP 2.0.1`、每个 EVSE 的连接器状态、充电状态和 transactionId，以及出示卡时的 token 类型选择（`POST …/id-tag` 接受 `type`，取值为 IdTokenEnumType）。其下方是交易事件表（时间、EVSE、transactionId、seqNo、eventType、triggerReason、chargingState、stoppedReason），取自桩的记录；Device Model 浏览器按组件分组变量（每个 EVSE 后跟它的连接器），可以过滤，显示 Actual 值及其可变性、其他属性和特征，从不显示 WriteOnly 的值，并能像本地运维人员那样设置 ReadWrite 的值（`PATCH /api/stations/:id/device-model`，带 `component`、`variable` 和 `value`，与 SetVariables 做同样的检查；`GET` 列出变量）。消息日志能概括 2.0.1 消息，并像 1.6 一样显示其 schema 问题。`/api/health` 列出两种子协议，`/api/personas` 给出每个 persona 的 `ocpp`（2.0.1 persona 还有 `features`），车队摘要带 `ocpp`。这些视图的测试用 Vue 的服务端渲染器渲染（一个带 Vue 插件的 `web` vitest 项目）。
 
+
+**已验收（T76）**
+
+M5 的出口标准已满足：CitrineOS 工作流在 main 上通过了完整的 2.0.1 套件（[43688861535](https://github.com/JasonKong/ocpp-mimic/actions/runs/43688861535)）。
+- **套件：** 53 个场景，覆盖 Core、Advanced Security、Local Authorization List Management、Smart Charging 和 Reservation 的 Part 6 CSMS 测试用例。每一帧都符合 OCA 的 2.0.1 schema。
+- **其余部分对两种版本都可用：**
+  - 1.6 回归套件和 SteVe 套件（[43687960751](https://github.com/JasonKong/ocpp-mimic/actions/runs/43687960751)）仍然通过。
+  - CI 冒烟计划运行 1.6 / 2.0.1 混合车队和使用模型。
+  - 1,000 个 2.0.1 桩在参考机器上保持在 M4 阈值以内。
+  - 录制的 2.0.1 会话对内置 CSMS 回放没有差异，校准它得到的是通用 persona 的值。
+  - 可以在 Web UI 中添加、充电和查看 2.0.1 桩。
+
+后续工作，不属于任何里程碑：
+- #176：两种版本的证书、固件和日志流程改用共享模块。
+- #177：2.0.1 安装等待期间把 EVSE 设为 Unavailable，以及拒绝未签名的更新。
+- #178：对 CitrineOS 运行安全 profile 的测试用例。
+- #179：为部分 CSMS 测试所需的失败加行为开关。
+- #180：参考机器上 2.0.1 的事件循环尖峰。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。
@@ -1142,7 +1173,7 @@ TriggerMessage 属于 Remote Trigger profile，提前到 M1 是因为很多 CSMS
 
 ## OCPP 2.0.1 覆盖范围
 
-M5 的计划（见「M5 OCPP 2.0.1」），每行注明实现它的 M5 任务。功能块指 Part 2 的功能块。
+已在 M5 实现（见「M5 OCPP 2.0.1」），每行注明实现它的 M5 任务。功能块指 Part 2 的功能块。
 
 **充电桩 → CSMS**（25 个里 16 个在范围内）
 
