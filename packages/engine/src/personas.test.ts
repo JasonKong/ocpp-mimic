@@ -43,7 +43,11 @@ describe('persona registry', () => {
     });
     const registry = await loadPersonas([BUILT_IN_PERSONAS_DIR, dir]);
     expect(registry.errors).toEqual([]);
-    expect(registry.list().map((p) => p.id)).toEqual(['generic-1.6', 'vendorX-fw2.5']);
+    expect(registry.list().map((p) => p.id)).toEqual([
+      'generic-1.6',
+      'generic-2.0.1',
+      'vendorX-fw2.5',
+    ]);
     expect(registry.get('vendorX-fw2.5')?.options).toMatchObject({
       boot: {
         chargePointVendor: 'VendorX',

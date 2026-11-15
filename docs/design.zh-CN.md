@@ -812,6 +812,12 @@ M5 确定（#135）。M5 在同一个引擎里、在 1.6J 旁边加上 OCPP 2.0.
 - 目前已从 1.6 闭包里搬出：`station-timers.ts`（定时器和 `halt()`）、`outbox.ts`（保证送达；版本差异通过 `prepare`、`final` 和 `answered` 钩子传入，1.6 用它们填 CSMS 的 transactionId 和处理 SecurityEventNotification 的规则）以及 `energy.ts`（电表、EV、能量倍率、限值、充满定时器）。证书库、文件传输和预约到期随复用它们的 2.0.1 任务一起搬（T69、T71）。
 - `ChargePoint.ocpp` 表示版本。传输层提供并要求桩的子协议，记录器按桩的版本用对应的 OCA schema 检查每一帧，某个版本的 schema 在第一次用到时加载。
 
+已实现（T60）：
+
+- 带 `ocpp: "2.0.1"` 的 persona 用它自己的 schema 校验：`boot` 是 BootNotification 的 chargingStation 信息，`features` 列认证 profile，`timing.commandDelays` 用 2.0.1 的 action 名，`connectors` 表示若干个各带一个连接器的 EVSE。`ResolvedPersona` 带 `ocpp`。内置 `generic-2.0.1`。
+- 遇到 2.0.1 persona 时，车队创建 2.0.1 桩（`core/src/ocpp201/charge-point.ts` 的 `createChargePoint201`），使用 `ocpp2.0.1` 子协议。在 Device Model 和安全任务加上 2.0.1 的写法之前，2.0.1 桩拒绝桩的 `config`、`password` 和 `security`。保存的状态记下版本，另一个版本的状态不会被恢复。
+- 桩带启动原因（PowerUp）和 chargingStation 信息启动；Pending 和 Rejected 按间隔重试，期间不上报；按启动时的间隔发心跳；启动被接受后上报每个连接器的 2.0.1 状态，之后每次变化再报；处理针对整桩、EVSE 或连接器的 ChangeAvailability（先回答，经过动作延迟后生效；未知 EVSE 或连接器回 Rejected）。CSMS 设置的可用性在重启后保留。尚未处理的 CALL 回 NotSupported。快照带 `ocpp` 和每个连接器的 `evseId`。
+
 **Device Model**
 
 - 一个存放组件（名称、实例、EVSE id、连接器 id）及其变量（名称、实例）的存储。变量有 Actual 属性，可选 Target、MinSet、MaxSet，每个属性有可变性（ReadOnly、WriteOnly、ReadWrite）、persistent 和 constant 标记，另有 characteristics（dataType、unit、valuesList、maxLimit；监控不在范围内，所以 supportsMonitoring 为 false）。

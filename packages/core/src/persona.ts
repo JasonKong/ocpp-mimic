@@ -19,6 +19,9 @@ import { UsageSchema, usageProblems } from './usage.js';
 import { evProfileProblems, type EvProfile } from './ev.js';
 import type { FirmwareSettings } from './firmware.js';
 import { ChargePointErrorCodeSchema, OCPP16_MESSAGES } from './ocpp16-messages.js';
+import { CERTIFICATION_PROFILES, type ChargePoint201Options } from './ocpp201/charge-point.js';
+import { ChargingStationSchema } from './ocpp201/messages.js';
+import type { OcppVersion } from './message-set.js';
 import {
   array,
   boolean,
@@ -45,6 +48,9 @@ export const FEATURE_PROFILES = [
   'RemoteTrigger',
 ] as const;
 
+/** 2.0.1 certification profiles implemented so far. */
+export const IMPLEMENTED_201_PROFILES: readonly string[] = ['Core'];
+
 /** Feature profiles this version of the charge point implements. */
 export const IMPLEMENTED_FEATURE_PROFILES: readonly string[] = [
   'Core',
@@ -55,6 +61,51 @@ export const IMPLEMENTED_FEATURE_PROFILES: readonly string[] = [
   'SmartCharging',
 ];
 
+const timingFields = {
+  startTransactionDelay: durationSchema,
+  actionDelay: durationSchema,
+  resetDowntime: object({}, { soft: durationSchema, hard: durationSchema }),
+  bootRetry: durationSchema,
+};
+
+/** Fields every persona can have, whatever its OCPP version. */
+const commonFields = {
+  extends: string(),
+  description: string(),
+  power: object({}, { offeredW: number(), evW: number() }),
+  firmware: object(
+    {},
+    {
+      downloadTime: durationSchema,
+      installTime: durationSchema,
+      uploadTime: durationSchema,
+      download: oneOf(['succeed', 'fail']),
+      install: oneOf(['succeed', 'fail']),
+      upload: oneOf(['succeed', 'fail']),
+      signature: oneOf(['succeed', 'fail']),
+      transfer: oneOf(['simulated', 'real']),
+    },
+  ),
+  evs: record(
+    object(
+      { capacityKWh: number(), initialSoc: number(), maxPowerW: number(), phases: integer() },
+      { taperSoc: number(), targetSoc: number() },
+    ),
+  ),
+  usage: UsageSchema,
+  faults: array(
+    object(
+      { errorCode: ChargePointErrorCodeSchema },
+      {
+        name: string(),
+        info: string({ maxLength: 50 }),
+        vendorErrorCode: string({ maxLength: 50 }),
+      },
+    ),
+  ),
+};
+
+/** An OCPP 1.6 persona (`ocpp` absent or "1.6"). */
 export const PersonaSchema = object(
   {
     persona: string({ maxLength: 64 }),
@@ -62,16 +113,14 @@ export const PersonaSchema = object(
     connectors: integer({ minimum: 1 }),
   },
   {
-    extends: string(),
-    description: string(),
-    power: object({}, { offeredW: number(), evW: number() }),
+    ...commonFields,
+    ocpp: oneOf(['1.6']),
     features: array(oneOf(FEATURE_PROFILES)),
     config: record(union(string(), number(), boolean())),
     timing: object(
       {},
       {
-        startTransactionDelay: durationSchema,
-        actionDelay: durationSchema,
+        ...timingFields,
         commandDelays: object(
           {},
           {
@@ -83,42 +132,43 @@ export const PersonaSchema = object(
             TriggerMessage: durationSchema,
           },
         ),
-        resetDowntime: object({}, { soft: durationSchema, hard: durationSchema }),
-        bootRetry: durationSchema,
       },
-    ),
-    firmware: object(
-      {},
-      {
-        downloadTime: durationSchema,
-        installTime: durationSchema,
-        uploadTime: durationSchema,
-        download: oneOf(['succeed', 'fail']),
-        install: oneOf(['succeed', 'fail']),
-        upload: oneOf(['succeed', 'fail']),
-        signature: oneOf(['succeed', 'fail']),
-        transfer: oneOf(['simulated', 'real']),
-      },
-    ),
-    evs: record(
-      object(
-        { capacityKWh: number(), initialSoc: number(), maxPowerW: number(), phases: integer() },
-        { taperSoc: number(), targetSoc: number() },
-      ),
-    ),
-    usage: UsageSchema,
-    faults: array(
-      object(
-        { errorCode: ChargePointErrorCodeSchema },
-        {
-          name: string(),
-          info: string({ maxLength: 50 }),
-          vendorErrorCode: string({ maxLength: 50 }),
-        },
-      ),
     ),
   },
 );
+
+/** An OCPP 2.0.1 persona: `ocpp: "2.0.1"`, BootNotification's chargingStation block as `boot`. */
+export const Persona201Schema = object(
+  {
+    persona: string({ maxLength: 64 }),
+    ocpp: oneOf(['2.0.1']),
+    boot: ChargingStationSchema,
+    connectors: integer({ minimum: 1 }),
+  },
+  {
+    ...commonFields,
+    features: array(oneOf(CERTIFICATION_PROFILES)),
+    timing: object(
+      {},
+      {
+        ...timingFields,
+        commandDelays: object(
+          {},
+          {
+            ChangeAvailability: durationSchema,
+            RequestStartTransaction: durationSchema,
+            RequestStopTransaction: durationSchema,
+            Reset: durationSchema,
+            UnlockConnector: durationSchema,
+            TriggerMessage: durationSchema,
+          },
+        ),
+      },
+    ),
+  },
+);
+
+export type Persona201Definition = Infer<typeof Persona201Schema>;
 
 export type PersonaDefinition = Infer<typeof PersonaSchema>;
 
@@ -131,14 +181,36 @@ export type PersonaChargePointOptions = Pick<
   evPowerW?: number;
 };
 
-export interface ResolvedPersona {
+/** The parts of a 2.0.1 station's options a persona decides. */
+export type Persona201Options = Pick<
+  ChargePoint201Options,
+  'boot' | 'connectors' | 'timing' | 'offeredPowerW' | 'evPowerW'
+> & { features: readonly string[]; firmware?: Partial<FirmwareSettings> };
+
+interface ResolvedPersonaBase {
   id: string;
   /** Where the persona came from, e.g. its file path. */
   source: string;
-  definition: PersonaDefinition;
-  options: PersonaChargePointOptions;
   /** Non-fatal problems, such as advertising a feature profile not implemented yet. */
   warnings: string[];
+}
+
+/** A persona with its options; `ocpp` tells the two versions apart. */
+export type ResolvedPersona =
+  | (ResolvedPersonaBase & {
+      ocpp: '1.6';
+      definition: PersonaDefinition;
+      options: PersonaChargePointOptions;
+    })
+  | (ResolvedPersonaBase & {
+      ocpp: '2.0.1';
+      definition: Persona201Definition;
+      options: Persona201Options;
+    });
+
+/** The OCPP version a persona document declares; 1.6 when it says nothing. */
+export function personaVersion(data: { ocpp?: unknown }): OcppVersion {
+  return data.ocpp === '2.0.1' ? '2.0.1' : '1.6';
 }
 
 export interface PersonaSource {
@@ -171,7 +243,9 @@ function toMs(value: number | string | undefined): number | undefined {
   return value === undefined ? undefined : parseDuration(value);
 }
 
-function timingFrom(definition: PersonaDefinition): Partial<ChargePointTiming> {
+function timingFrom(
+  definition: PersonaDefinition | Persona201Definition,
+): Partial<ChargePointTiming> {
   const t = definition.timing;
   if (t === undefined) return {};
   const commandDelays: Partial<Record<DelayedCommand, number>> = {};
@@ -233,6 +307,19 @@ export function personaToOptions(definition: PersonaDefinition): PersonaChargePo
   };
 }
 
+/** Station options for a validated 2.0.1 persona. */
+export function persona201ToOptions(definition: Persona201Definition): Persona201Options {
+  return {
+    boot: definition.boot,
+    connectors: definition.connectors,
+    timing: timingFrom(definition),
+    features: definition.features ?? ['Core'],
+    ...(definition.power?.offeredW !== undefined && { offeredPowerW: definition.power.offeredW }),
+    ...(definition.power?.evW !== undefined && { evPowerW: definition.power.evW }),
+    ...(definition.firmware !== undefined && { firmware: firmwareFrom(definition.firmware) }),
+  };
+}
+
 /**
  * Validates persona documents and resolves `extends`. Every problem is
  * reported with the document's source; a persona with an error is left out.
@@ -284,7 +371,9 @@ export function resolvePersonas(sources: readonly PersonaSource[]): ResolvePerso
   for (const [id, { source }] of raw) {
     const data = mergedOf(id, [id]);
     if (data === undefined) continue;
-    const validated = validate(PersonaSchema, data);
+    const ocpp = personaVersion(data);
+    const validated =
+      ocpp === '2.0.1' ? validate(Persona201Schema, data) : validate(PersonaSchema, data);
     if (!validated.ok) {
       for (const issue of validated.issues)
         errors.push(`${source}: ${issue.path}: ${issue.message}`);
@@ -304,19 +393,38 @@ export function resolvePersonas(sources: readonly PersonaSource[]): ResolvePerso
       errors.push(...usageIssues.map((issue) => `${source}: ${issue.path}: ${issue.message}`));
       continue;
     }
+    if (ocpp === '2.0.1') {
+      const definition201 = definition as Persona201Definition;
+      const warnings = (definition201.features ?? [])
+        .filter((feature) => !IMPLEMENTED_201_PROFILES.includes(feature))
+        .map(
+          (feature) =>
+            `${source}: certification profile ${feature} is supported in the persona but not implemented yet`,
+        );
+      personas.set(id, {
+        id,
+        source,
+        ocpp,
+        definition: definition201,
+        options: persona201ToOptions(definition201),
+        warnings,
+      });
+      continue;
+    }
+    const definition16 = definition as PersonaDefinition;
     let options: PersonaChargePointOptions;
     try {
-      options = personaToOptions(definition);
+      options = personaToOptions(definition16);
     } catch (error) {
       errors.push(`${source}: ${error instanceof Error ? error.message : String(error)}`);
       continue;
     }
-    const warnings = (definition.features ?? [])
+    const warnings = (definition16.features ?? [])
       .filter((feature) => !IMPLEMENTED_FEATURE_PROFILES.includes(feature))
       .map(
         (feature) => `${source}: feature profile ${feature} is advertised but not implemented yet`,
       );
-    personas.set(id, { id, source, definition, options, warnings });
+    personas.set(id, { id, source, ocpp, definition: definition16, options, warnings });
   }
 
   return { personas, errors };

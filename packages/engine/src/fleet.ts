@@ -8,7 +8,8 @@ import {
   configInt,
   createChargePoint,
   createConfig,
-  OCPP16_MESSAGE_SET,
+  createChargePoint201,
+  MESSAGE_SETS,
   DEFAULT_RAMP_UP,
   createUsageDriver,
   rampUpDelays,
@@ -25,7 +26,8 @@ import {
   type ConnectionSecurity,
   type IdGenerator,
   type InjectionRequest,
-  type PersistedChargePoint,
+  type PersistedChargePoint201,
+  type PersistedStation,
   type ResolvedPersona,
 } from '@ocpp-mimic/core';
 import {
@@ -195,6 +197,11 @@ interface Entry {
   usage: boolean;
 }
 
+/** Whether a saved state belongs to a 2.0.1 station. */
+function isState201(state: PersistedStation): state is PersistedChargePoint201 {
+  return (state as { ocpp?: string }).ocpp === '2.0.1';
+}
+
 export function createFleet(options: FleetOptions): Fleet {
   const clock = options.clock ?? createSystemClock();
   const ids = options.ids ?? randomIds;
@@ -222,7 +229,7 @@ export function createFleet(options: FleetOptions): Fleet {
   function saveMany(ids: Iterable<string>): void {
     const store = options.store;
     if (store === undefined) return;
-    const states: [string, PersistedChargePoint][] = [];
+    const states: [string, PersistedStation][] = [];
     for (const id of ids) {
       const entry = entries.get(id);
       if (entry !== undefined) states.push([id, entry.station.chargePoint.persistentState()]);
@@ -262,7 +269,7 @@ export function createFleet(options: FleetOptions): Fleet {
 
   function build(
     definition: StationDefinition,
-    restore?: PersistedChargePoint,
+    restore?: PersistedStation,
     replace = false,
   ): VirtualStation {
     if (!replace && entries.has(definition.id))
@@ -275,8 +282,18 @@ export function createFleet(options: FleetOptions): Fleet {
     const persona = options.personas.get(definition.persona);
     if (persona === undefined) throw new Error(`unknown persona ${definition.persona}`);
     const { options: personaOptions } = persona;
+    if (
+      persona.ocpp === '2.0.1' &&
+      (definition.config !== undefined ||
+        definition.password !== undefined ||
+        definition.security !== undefined)
+    ) {
+      throw new Error(
+        `station ${definition.id}: config, password and security are not supported for 2.0.1 stations yet`,
+      );
+    }
     const configValues: Record<string, string> = {
-      ...personaOptions.config?.values,
+      ...(persona.ocpp === '1.6' ? persona.options.config?.values : {}),
       ...(definition.password !== undefined && { AuthorizationKey: definition.password }),
       ...(definition.security?.profile !== undefined && {
         SecurityProfile: String(definition.security.profile),
@@ -297,10 +314,10 @@ export function createFleet(options: FleetOptions): Fleet {
       throw new Error(`station ${definition.id}: ${usage.problems.join('; ')}`);
     }
     // Throws on invalid overrides, before anything starts.
-    const config = createConfig({
-      numberOfConnectors: personaOptions.connectors,
-      values: configValues,
-    });
+    const config =
+      persona.ocpp === '1.6'
+        ? createConfig({ numberOfConnectors: personaOptions.connectors, values: configValues })
+        : undefined;
 
     // The transport's callbacks need the charge point, which needs the transport's send().
     const holder: { chargePoint?: ChargePoint } = {};
@@ -309,15 +326,16 @@ export function createFleet(options: FleetOptions): Fleet {
     const reported = new Set<string>();
     const transport = createTransport({
       url: definition.csmsUrl,
-      // Every station speaks 1.6 until 2.0.1 personas exist.
-      subprotocol: OCPP16_MESSAGE_SET.subprotocol,
+      subprotocol: MESSAGE_SETS[persona.ocpp].subprotocol,
       chargeBoxId: definition.id,
       connectionSettings: () =>
         holder.chargePoint === undefined
           ? {}
           : connectionSettings(definition.csmsUrl, holder.chargePoint.connectionSecurity()),
       onConnectFailed: () => holder.chargePoint?.connectionFailed(),
-      pingIntervalMs: configInt(config, 'WebSocketPingInterval') * 1000,
+      // 2.0.1 stations read it from the Device Model once it exists; 30 s like 1.6's default.
+      pingIntervalMs:
+        config === undefined ? 30_000 : configInt(config, 'WebSocketPingInterval') * 1000,
       ...(options.backoff !== undefined && { backoff: options.backoff }),
       onText: (text) => injector.incoming(text),
       onOpen: () => (wire === undefined ? holder.chargePoint?.connected() : wire.opened()),
@@ -362,35 +380,48 @@ export function createFleet(options: FleetOptions): Fleet {
       goOnline: () => transport.goOnline(),
       onChange: () => emit({ stationId: definition.id, type: 'injections' }),
     });
-    const cp = createChargePoint({
-      ...personaOptions,
-      config: { ...personaOptions.config, values: configValues },
+    const common = {
       clock,
       ids,
       ...(definition.energyMultiplier !== undefined && {
         energyMultiplier: definition.energyMultiplier,
       }),
-      ...(persona.definition.firmware?.transfer === 'real' && {
-        transfer: createHttpFileTransfer(),
-      }),
-      send: (text) => injector.outgoing(text),
-      restart: (downtimeMs) => transport.restartAfter(downtimeMs),
+      send: (text: string) => injector.outgoing(text),
+      restart: (downtimeMs: number) => transport.restartAfter(downtimeMs),
       reconnect: () => transport.restartAfter(0),
-      // The PEM files are where a new station starts; its saved certificates take over later.
-      certificates: {
-        centralSystemRoots: pem.ca === undefined ? [] : [pem.ca],
-        manufacturerRoots: pem.manufacturerRoot === undefined ? [] : [pem.manufacturerRoot],
-        ...(pem.cert !== undefined &&
-          pem.key !== undefined && { chargePoint: { certificate: pem.cert, privateKey: pem.key } }),
-      },
-      certificateTools,
-      serialNumber: definition.id,
-      onEvent: (event) => {
+      onEvent: (event: ChargePointEvent) => {
         if (event.type === 'changed') scheduleSave(definition.id);
         emit({ stationId: definition.id, type: 'charge-point', event });
       },
-      ...(restore !== undefined && { restore }),
-    });
+    };
+    // A saved state of the other version (the persona changed) is not restored.
+    const cp =
+      persona.ocpp === '2.0.1'
+        ? createChargePoint201({
+            ...persona.options,
+            ...common,
+            ...(restore !== undefined && isState201(restore) && { restore }),
+          })
+        : createChargePoint({
+            ...persona.options,
+            ...common,
+            config: { ...persona.options.config, values: configValues },
+            ...(persona.definition.firmware?.transfer === 'real' && {
+              transfer: createHttpFileTransfer(),
+            }),
+            // The PEM files are where a new station starts; its saved certificates take over later.
+            certificates: {
+              centralSystemRoots: pem.ca === undefined ? [] : [pem.ca],
+              manufacturerRoots: pem.manufacturerRoot === undefined ? [] : [pem.manufacturerRoot],
+              ...(pem.cert !== undefined &&
+                pem.key !== undefined && {
+                  chargePoint: { certificate: pem.cert, privateKey: pem.key },
+                }),
+            },
+            certificateTools,
+            serialNumber: definition.id,
+            ...(restore !== undefined && !isState201(restore) && { restore }),
+          });
 
     holder.chargePoint = cp;
     const connectorOf = (connectorId: number) =>

@@ -1,0 +1,28 @@
+# A plain OCPP 2.0.1 AC charging station with spec-default behaviour.
+# Other 2.0.1 personas can `extends: generic-2.0.1` and override only what differs.
+persona: generic-2.0.1
+ocpp: '2.0.1'
+description: Generic OCPP 2.0.1 AC charging station
+boot:
+  vendorName: ocpp-mimic
+  model: Generic-AC-2.0.1
+  firmwareVersion: 0.0.0
+connectors: 1
+power:
+  offeredW: 7360
+features: [Core]
+timing:
+  startTransactionDelay: 500ms
+  actionDelay: 100ms
+  resetDowntime:
+    soft: 30s
+    hard: 3m
+  bootRetry: 60s
+firmware:
+  downloadTime: 10s
+  installTime: 10s
+  uploadTime: 5s
+evs:
+  compact-40kwh: { capacityKWh: 40, initialSoc: 20, maxPowerW: 7400, phases: 1 }
+  sedan-75kwh: { capacityKWh: 75, initialSoc: 30, maxPowerW: 11000, phases: 3 }
+  test-5kwh: { capacityKWh: 5, initialSoc: 70, maxPowerW: 7400, phases: 1 }
