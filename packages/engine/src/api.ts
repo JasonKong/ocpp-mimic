@@ -23,6 +23,7 @@ import {
   type PluggedEv,
   type ChargePoint201,
 } from '@ocpp-mimic/core';
+import { probeCsms, remoteStartVia } from './csms/probe.js';
 import { resolveEv } from './evs.js';
 import { exportLog } from './logs/export.js';
 import type { Fleet, StationSnapshot, VirtualStation } from './fleet.js';
@@ -668,6 +669,43 @@ const routes: Route[] = [
       stringField(body, 'variable', true),
       typeof body.value === 'string' ? body.value : stringField(body, 'value', true),
     );
+  }),
+
+  route('POST', '/api/stations/:param/remote-start', async (request, context) => {
+    const station = stationOf(context, request.params[0]);
+    const body = await request.body();
+    const token = body.idToken;
+    if (
+      typeof token !== 'object' ||
+      token === null ||
+      typeof (token as Record<string, unknown>).idToken !== 'string'
+    ) {
+      throw new HttpError(400, '"idToken" needs an idToken string');
+    }
+    const { idToken, type } = token as Record<string, unknown>;
+    const evseId = body.evseId;
+    if (evseId !== undefined && !(Number.isInteger(evseId) && Number(evseId) > 0)) {
+      throw new HttpError(400, '"evseId" must be a whole number from 1');
+    }
+    const csmsUrl = station.definition.csmsUrl;
+    if ((station.snapshot().csms ?? (await probeCsms(csmsUrl))) !== 'builtin') {
+      throw new HttpError(
+        409,
+        "the station's CSMS is not ocpp-mimic's built-in CSMS: a remote start must come from that CSMS",
+      );
+    }
+    const answer = await remoteStartVia(csmsUrl, station.id, {
+      idToken: { idToken: idToken as string, ...(typeof type === 'string' && { type }) },
+      ...(evseId !== undefined && { evseId: Number(evseId) }),
+    });
+    if (answer.status !== 200) {
+      const message = (answer.body as { error?: unknown } | undefined)?.error;
+      throw new HttpError(
+        502,
+        `the built-in CSMS answered ${answer.status}: ${String(message ?? '')}`,
+      );
+    }
+    return answer.body;
   }),
 
   route('GET', '/api/stations/:param/sessions', (request, context) => {

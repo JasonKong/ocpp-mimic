@@ -1127,6 +1127,8 @@ interface SessionRecord {
 - 内置 CSMS 是一个独立进程（`ocpp-mimic csms`），在一个端口上接受 WebSocket 连接。它在同一端口上增加控制 API：`GET /api/health` 返回 `{ service: "ocpp-mimic-csms" }`；`POST /api/stations/:id/remote-start` 接收 `{ evseId?, idToken: { idToken, type? } }`，向该站发 RemoteStartTransaction（1.6）或 RequestStartTransaction（2.0.1，remoteStartId 递增，type 默认 Central），并返回站点的应答。和 CSMS 本身一样，这是测试工具，没有认证。
 - 引擎在每次连接时检查一次站点的 CSMS（对 CSMS URL 的 origin 发 `GET`，ws → http，wss → https），在快照里给出 `csms: builtin | external`。`POST /api/stations/:id/remote-start` 转发给内置 CSMS；对外部 CSMS 返回 409：对外部 CSMS，远程启动必须由它自己发起（R-START-5、R-START-6）。
 
+- 已实现（T84）：控制 API 默认开启（`controlApi: false` 关闭），远程启动的应答是站点的应答，加上发出的 `action`，2.0.1 还带 `remoteStartId`；`ocpp-mimic csms` 启动时打印它的地址。引擎只探测本机的 CSMS URL（localhost、127.0.0.1、::1），外部 CSMS 不会收到它没预料到的请求；这时快照显示 `csms: external`，`POST /api/stations/:id/remote-start` 返回 409。
+
 **Web UI**
 
 - 不加路由依赖：选中一个站后，用标签页在"站点"和"会话"之间切换；hash（`#/stations/<id>/sessions/<n>`）可以链接到某个会话。

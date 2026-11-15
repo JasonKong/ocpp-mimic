@@ -40,6 +40,7 @@ import {
 import { resolveEv } from './evs.js';
 import { createHttpFileTransfer } from './file-transfer.js';
 import { createCertificateTools } from './x509.js';
+import { probeCsms, type CsmsKind } from './csms/probe.js';
 import type { PersonaRegistry } from './personas.js';
 import type { StateStore, StationDefinition, StationSecurity } from './state-store.js';
 import { createSystemClock, randomIds } from './system-clock.js';
@@ -97,6 +98,8 @@ export interface StationSnapshot extends ChargePointSnapshot {
   group?: string;
   /** Whether the usage model runs; absent when the station has none. */
   usage?: boolean;
+  /** Whether the CSMS is ocpp-mimic's built-in one; known once a connection opened. */
+  csms?: CsmsKind;
 }
 
 export interface VirtualStation {
@@ -352,6 +355,7 @@ export function createFleet(options: FleetOptions): Fleet {
     // The transport's callbacks need the charge point, which needs the transport's send().
     const holder: { chargePoint?: ChargePoint } = {};
     let connectionError: string | undefined;
+    let csmsKind: CsmsKind | undefined;
     /** Security events already recorded for this run of failed attempts (sent once, A00.FR.315). */
     const reported = new Set<string>();
     const transport = createTransport({
@@ -390,6 +394,11 @@ export function createFleet(options: FleetOptions): Fleet {
         if (event.type === 'open') {
           connectionError = undefined;
           reported.clear();
+          void probeCsms(definition.csmsUrl).then((kind) => {
+            if (csmsKind === kind) return;
+            csmsKind = kind;
+            emit({ stationId: definition.id, type: 'charge-point', event: { type: 'changed' } });
+          });
         }
         emit({ stationId: definition.id, type: 'transport', event });
       },
@@ -523,6 +532,7 @@ export function createFleet(options: FleetOptions): Fleet {
         tags: definition.tags ?? [],
         ...(definition.group !== undefined && { group: definition.group }),
         ...(driver !== undefined && { usage: driver.running }),
+        ...(csmsKind !== undefined && { csms: csmsKind }),
       }),
     };
     const previous = entries.get(definition.id);

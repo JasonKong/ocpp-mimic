@@ -83,6 +83,9 @@ switch (command.kind) {
       process.exit(1);
     }
     console.log(`ocpp-mimic CSMS listening on ${csms.url}/<chargeBoxId>`);
+    console.log(
+      `control API on ${csms.url.replace(/^ws/, 'http').replace(/\/ocpp$/, '')}/api (remote starts from the engine's Web UI)`,
+    );
     const shutdown = () => {
       void csms
         .stop()
