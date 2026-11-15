@@ -13,14 +13,16 @@ Run them locally:
 
 ```bash
 docker compose -f tools/citrineos/docker-compose.yml up -d
-tools/citrineos/register.sh AA000010 AA000011 AA000001:Accepted:MIMIC-GROUP AA000002:Accepted:MIMIC-GROUP
+tools/citrineos/register.sh AA000010 AA000011 AA000020 AA000021 AA000001:Accepted:MIMIC-GROUP AA000002:Accepted:MIMIC-GROUP
 pnpm build
 node packages/cli/dist/main.js run scenarios/citrineos --personas scenarios/personas
 ```
 
 `register.sh` adds the scenarios' idTokens to CitrineOS's database: CitrineOS
 answers Authorize from its Authorizations and only sends tokens it knows in a
-local list, and it has no REST endpoint to create them. CitrineOS keeps state
+local list, and it has no REST endpoint to create them. A scenario that starts
+a transaction uses a token of its own: CitrineOS answers ConcurrentTx for a
+token whose transaction another scenario left open. CitrineOS keeps state
 between runs (local list versions per station, for example), so start a rerun
 from a fresh stack: `docker compose -f tools/citrineos/docker-compose.yml down`
 first.

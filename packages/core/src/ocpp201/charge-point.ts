@@ -91,7 +91,21 @@ import {
 } from './authorization.js';
 import { createSecurity201, type PersistedSecurity201 } from './security.js';
 import {
+  compositeSchedule201,
+  endTransactionProfiles201,
+  installProfile201,
+  limits201,
+  profileProblem,
+  selectProfiles201,
+  clearProfiles201,
+  type ChargingProfile201,
+  type InstallContext201,
+  type InstalledProfile201,
+} from './smart-charging.js';
+import { toWatts, type ChargingRateUnit } from '../charging-profile.js';
+import {
   CERTIFICATE_ENTRIES_MAX,
+  CHARGING_PROFILES_MAX,
   LOCAL_LIST_SIZE,
   standardVariables,
 } from './standard-variables.js';
@@ -99,6 +113,14 @@ import { chargingState, parseTxPoints, startPoint, stopPoint } from './transacti
 import { connectorStatus201, stationStatus201, type ConnectorStatus201 } from './status.js';
 
 type Out = Ocpp201RpcTypes['out'];
+
+/** The CSMS messages of the SmartCharging profile; without it they answer NotSupported (K01.FR.29). */
+const SMART_CHARGING_ACTIONS: ReadonlySet<string> = new Set([
+  'SetChargingProfile',
+  'ClearChargingProfile',
+  'GetChargingProfiles',
+  'GetCompositeSchedule',
+]);
 
 /** The certification profiles a 2.0.1 station can support (Part 5). */
 export const CERTIFICATION_PROFILES = [
@@ -172,6 +194,8 @@ export interface PersistedChargePoint201 {
   localList: LocalList201;
   /** Certificates, network profiles, the security log, firmware; missing in older states. */
   security?: PersistedSecurity201;
+  /** Installed charging profiles (K01.FR.27); missing in older states. */
+  chargingProfiles?: InstalledProfile201[];
 }
 
 export interface PersistedTransaction201 {
@@ -192,6 +216,8 @@ interface Authorization {
   idToken: IdTokenType;
   info?: Omit<IdTokenInfoType, 'customData'>;
   remoteStartId?: number;
+  /** The TxProfile a RequestStartTransaction brought, for the transaction it starts (K05). */
+  txProfile?: ChargingProfile201;
 }
 
 /** A running transaction. */
@@ -331,6 +357,9 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       }
       if (component.name === 'LocalAuthListCtrlr' && variableName === 'Entries') {
         return String(Object.keys(localList.entries).length);
+      }
+      if (component.name === 'SmartChargingCtrlr' && variableName === 'Entries') {
+        return String(chargingProfiles.length);
       }
       const connector =
         component.evse === undefined ? undefined : findConnector(station, component.evse.id);
@@ -556,7 +585,125 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   }
 
   function updatePower(connectorId: number): void {
-    energy.update(connectorId, mayCharge(connectorId), undefined);
+    energy.update(connectorId, mayCharge(connectorId), profileLimitW(connectorId));
+  }
+
+  // ---- Smart Charging (K) ---------------------------------------------------
+
+  // TxProfiles belonged to transactions that a restart ends.
+  let chargingProfiles: InstalledProfile201[] = (options.restore?.chargingProfiles ?? []).filter(
+    (p) => p.profile.chargingProfilePurpose !== 'TxProfile',
+  );
+  let limitTimer: TimerHandle | undefined;
+  const smartCharging = () => features.includes('SmartCharging');
+  const txInfo = (connectorId: number) => {
+    const tx = transactions.get(connectorId);
+    return tx === undefined ? undefined : { startedAt: tx.startedAt };
+  };
+
+  function profileContext(): InstallContext201 {
+    return {
+      maxStackLevel: dmInt('SmartChargingCtrlr', 'ProfileStackLevel'),
+      maxPeriods: dmInt('SmartChargingCtrlr', 'PeriodsPerSchedule'),
+      maxInstalled: CHARGING_PROFILES_MAX,
+      units: dmValue('SmartChargingCtrlr', 'RateUnit')
+        .split(',')
+        .filter((unit): unit is ChargingRateUnit => unit === 'A' || unit === 'W'),
+      evseIds: connectors(station).map((c) => c.connectorId),
+      transactionOn: (evseId) => transactions.get(evseId)?.id,
+      now: now(),
+    };
+  }
+
+  /**
+   * The Smart Charging limit on an EVSE now, in W: its TxProfile or
+   * TxDefaultProfile, and its share of the ChargingStationMaxProfile, which
+   * the EVSEs with a transaction split equally. Undefined without profiles.
+   */
+  function profileLimitW(connectorId: number): number | undefined {
+    if (chargingProfiles.length === 0) return undefined;
+    const conversion = energy.conversion(connectorId);
+    const { own, station: total } = limits201(
+      chargingProfiles,
+      connectorId,
+      now(),
+      txInfo(connectorId),
+    );
+    let watts = own.limit === undefined ? undefined : toWatts(own.limit, conversion);
+    if (total.limit !== undefined) {
+      const share = toWatts(total.limit, conversion) / Math.max(1, transactions.size);
+      watts = watts === undefined ? share : Math.min(watts, share);
+    }
+    return watts;
+  }
+
+  /** Re-evaluates every EVSE at the next moment a limit changes. */
+  function scheduleLimitChange(): void {
+    stopTimer(limitTimer);
+    limitTimer = undefined;
+    const at = now();
+    const changes = connectors(station)
+      .flatMap((c) => {
+        const { own, station: total } = limits201(
+          chargingProfiles,
+          c.connectorId,
+          at,
+          txInfo(c.connectorId),
+        );
+        return [own.next, total.next];
+      })
+      .filter((t): t is number => t !== undefined && t > at);
+    if (changes.length === 0) return;
+    limitTimer = later(Math.min(...changes) - at, () => {
+      limitTimer = undefined;
+      updateAllPowers();
+    });
+  }
+
+  /** Applies the limits to every EVSE; a transaction reports a changed charging state. */
+  function updateAllPowers(): void {
+    for (const connector of connectors(station)) {
+      if (transactions.has(connector.connectorId)) {
+        evaluate(connector.connectorId, 'ChargingStateChanged');
+      } else {
+        updatePower(connector.connectorId);
+      }
+    }
+    scheduleLimitChange();
+    changed();
+  }
+
+  /** Installs the TxProfile of a remote start for its transaction (K05.FR.03). */
+  function installTxProfile(connectorId: number, profile: ChargingProfile201): void {
+    const tx = transactions.get(connectorId);
+    if (tx === undefined) return;
+    const result = installProfile201(
+      chargingProfiles,
+      connectorId,
+      { ...profile, transactionId: tx.id },
+      profileContext(),
+    );
+    if (result.status === 'Rejected') {
+      log(`TxProfile ${profile.id} of the remote start not installed: ${result.reason}`);
+      return;
+    }
+    chargingProfiles = result.profiles;
+    updateAllPowers();
+  }
+
+  /** ReportChargingProfiles, one message per EVSE, `tbc` on all but the last (K09). */
+  function reportProfiles(requestId: number, selected: readonly InstalledProfile201[]): void {
+    const evses = [...new Set(selected.map((p) => p.evseId))].sort((a, b) => a - b);
+    evses.forEach((evseId, index) => {
+      const profiles = selected.filter((p) => p.evseId === evseId).map((p) => p.profile);
+      void sendIfOnline('ReportChargingProfiles', {
+        requestId,
+        chargingLimitSource: 'CSO',
+        evseId,
+        chargingProfile: profiles as [ChargingProfile201, ...ChargingProfile201[]],
+        ...(index < evses.length - 1 && { tbc: true }),
+      });
+    });
   }
 
   function currentChargingState(connectorId: number): ChargingStateEnumType {
@@ -566,7 +713,10 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       plugged: connector?.plugged ?? false,
       authorized: authorizations.has(connectorId),
       evSuspended: connector?.evSuspended ?? false,
-      evseSuspended: !mayCharge(connectorId) && connector?.evSuspended !== true,
+      // Not allowed to charge, or a charging profile of 0 (K01).
+      evseSuspended:
+        (!mayCharge(connectorId) || (profileLimitW(connectorId) ?? Infinity) <= 0) &&
+        connector?.evSuspended !== true,
       powerW: energy.meter(connectorId).powerW,
       evFull: ev !== undefined && !energy.canResume(connectorId),
     });
@@ -760,6 +910,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     transactions.set(connectorId, tx);
     applyDevice({ type: 'TransactionStarted', connectorId, transactionId: 1 });
     updateLock(connectorId);
+    if (auth?.txProfile !== undefined) installTxProfile(connectorId, auth.txProfile);
     const value = sample(
       connectorId,
       dmValue('SampledDataCtrlr', 'TxStartedMeasurands'),
@@ -788,6 +939,11 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     if (tx === undefined) return;
     transactions.delete(connectorId);
     for (const timer of [tx.periodicTimer, tx.endedTimer, tx.limitTimer]) stopTimer(timer);
+    const hadTxProfile = chargingProfiles.some(
+      (p) => p.evseId === connectorId && p.profile.chargingProfilePurpose === 'TxProfile',
+    );
+    chargingProfiles = endTransactionProfiles201(chargingProfiles, connectorId);
+    if (hadTxProfile) scheduleLimitChange();
     // The session is over: a new one needs a new authorization.
     authorizations.delete(connectorId);
     stopTimer(connectTimers.get(connectorId));
@@ -1023,6 +1179,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     connectorId: number,
     idToken: IdTokenType,
     remoteStartId: number,
+    txProfile?: ChargingProfile201,
   ): Promise<void> {
     let info: TokenInfo | undefined;
     if (dmValue('AuthCtrlr', 'AuthorizeRemoteStart') !== 'false') {
@@ -1037,9 +1194,11 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       idToken,
       remoteStartId,
       ...(info !== undefined && { info }),
+      ...(txProfile !== undefined && { txProfile }),
     });
     const tx = transactions.get(connectorId);
     if (tx !== undefined && tx.remoteStartId === undefined) tx.remoteStartId = remoteStartId;
+    if (tx !== undefined && txProfile !== undefined) installTxProfile(connectorId, txProfile);
     if (findConnector(station, connectorId)?.plugged !== true) awaitCable(connectorId);
     evaluate(connectorId, tx === undefined ? 'Authorized' : 'RemoteStart', idToken);
   }
@@ -1210,9 +1369,27 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       if (behaviour.refuseRemoteStart || evseId === undefined || !usable(evseId)) {
         return { status: 'Rejected' };
       }
+      // Its charging profile must be a valid TxProfile without transactionId (K05.FR.05,
+      // F01.FR.09, .11); a station without Smart Charging ignores it (K05.FR.04).
+      const txProfile = smartCharging() ? request.chargingProfile : undefined;
+      if (txProfile !== undefined) {
+        const problem =
+          txProfile.chargingProfilePurpose !== 'TxProfile'
+            ? 'not a TxProfile'
+            : txProfile.transactionId !== undefined
+              ? 'a transactionId is set'
+              : profileProblem({ ...txProfile, transactionId: 'remote' }, evseId, {
+                  ...profileContext(),
+                  transactionOn: () => 'remote',
+                });
+        if (problem !== undefined) {
+          log(`RequestStartTransaction rejected: charging profile ${txProfile.id} ${problem}`);
+          return { status: 'Rejected', statusInfo: { reasonCode: 'InvalidProfile' } };
+        }
+      }
       const running = transactions.get(evseId);
       later(commandDelay('RequestStartTransaction'), () =>
-        remoteStart(evseId, request.idToken, request.remoteStartId),
+        remoteStart(evseId, request.idToken, request.remoteStartId, txProfile),
       );
       // A transaction without a token gets this one; its id goes back (F01.FR.13).
       return {
@@ -1320,6 +1497,67 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
     DataTransfer() {
       return { status: 'UnknownVendorId' };
+    },
+
+    SetChargingProfile(request) {
+      const result = installProfile201(
+        chargingProfiles,
+        request.evseId,
+        request.chargingProfile,
+        profileContext(),
+      );
+      if (result.status === 'Rejected') {
+        log(`SetChargingProfile ${request.chargingProfile.id} rejected: ${result.reason}`);
+        return {
+          status: 'Rejected',
+          statusInfo: { reasonCode: 'InvalidProfile', additionalInfo: result.reason.slice(0, 512) },
+        };
+      }
+      chargingProfiles = result.profiles;
+      // The collection is evaluated again (K01.FR.07), after the answer.
+      later(0, updateAllPowers);
+      return { status: 'Accepted' };
+    },
+
+    ClearChargingProfile(request) {
+      const result = clearProfiles201(chargingProfiles, request);
+      if (result.status === 'Accepted') {
+        chargingProfiles = result.profiles;
+        later(0, updateAllPowers);
+      }
+      return { status: result.status };
+    },
+
+    GetChargingProfiles(request) {
+      const selected = selectProfiles201(chargingProfiles, request);
+      if (selected.length === 0) return { status: 'NoProfiles' };
+      later(0, () => reportProfiles(request.requestId, selected));
+      return { status: 'Accepted' };
+    },
+
+    GetCompositeSchedule(request) {
+      const { evseId } = request;
+      const units = profileContext().units;
+      const unit = request.chargingRateUnit ?? (units.includes('W') ? 'W' : 'A');
+      // An unknown EVSE or unit cannot be reported (K08.FR.05, .07).
+      if ((evseId !== 0 && findConnector(station, evseId) === undefined) || !units.includes(unit)) {
+        return { status: 'Rejected' };
+      }
+      const ids = connectors(station).map((c) => c.connectorId);
+      return {
+        status: 'Accepted',
+        schedule: compositeSchedule201(chargingProfiles, {
+          evseId,
+          from: now(),
+          durationS: request.duration,
+          unit,
+          conversion: evseId === 0 ? { voltageV: 230, phases: 3 } : energy.conversion(evseId),
+          ratingW: evseId === 0 ? offeredW * ids.length : offeredW,
+          evseIds: ids,
+          // An EVSE without a transaction is computed as if one started now (K08.FR.06).
+          transaction: (id) => txInfo(id) ?? { startedAt: now() },
+        }),
+      };
     },
 
     ...security.handlers,
@@ -1507,6 +1745,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         supports: (action) =>
           ((action !== 'SendLocalList' && action !== 'GetLocalListVersion') ||
             features.includes('LocalAuthListManagement')) &&
+          (!SMART_CHARGING_ACTIONS.has(action) || smartCharging()) &&
           (action !== 'CertificateSigned' || features.includes('AdvancedSecurity')),
         onEvent: (event) => emit({ type: 'rpc', event }),
       });
@@ -1706,6 +1945,9 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
             ...(token !== undefined && { idTag: token.idToken }),
             energyWh: reading.energyWh,
             powerW: reading.powerW,
+            ...((limit) => (limit === undefined ? {} : { limitW: Math.round(limit * 10) / 10 }))(
+              profileLimitW(connector.connectorId),
+            ),
             ...(ev !== undefined && {
               ev: {
                 ...(ev.name !== undefined && { name: ev.name }),
@@ -1735,7 +1977,12 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         energyMultiplier: energy.multiplier,
         localList: { version: localList.version, size: Object.keys(localList.entries).length },
         reservations: [],
-        chargingProfiles: [],
+        chargingProfiles: chargingProfiles.map((p) => ({
+          chargingProfileId: p.profile.id,
+          connectorId: p.evseId,
+          purpose: p.profile.chargingProfilePurpose,
+          stackLevel: p.profile.stackLevel,
+        })),
       };
     },
 
@@ -1772,6 +2019,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         authCache,
         localList,
         security: security.persistent(),
+        chargingProfiles: chargingProfiles.map((p) => ({ ...p })),
       };
     },
 

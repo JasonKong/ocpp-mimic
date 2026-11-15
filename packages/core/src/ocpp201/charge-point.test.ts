@@ -87,6 +87,7 @@ function setup(
     FirmwareStatusNotification: () => ({}),
     LogStatusNotification: () => ({}),
     SignCertificate: () => ({ status: 'Accepted' }),
+    ReportChargingProfiles: () => ({}),
     ...options.csms,
   };
   const restarts: number[] = [];
@@ -359,7 +360,7 @@ describe('2.0.1 personas', () => {
           ocpp: '2.0.1',
           boot: { vendorName: 'V', model: 'M' },
           connectors: 2,
-          features: ['Core', 'SmartCharging'],
+          features: ['Core', 'Reservation'],
           timing: { commandDelays: { RequestStartTransaction: '1s' } },
         },
       },
@@ -378,11 +379,11 @@ describe('2.0.1 personas', () => {
     expect(persona?.options).toMatchObject({
       boot: { vendorName: 'V', model: 'M' },
       connectors: 2,
-      features: ['Core', 'SmartCharging'],
+      features: ['Core', 'Reservation'],
       timing: { actionDelaysMs: { RequestStartTransaction: 1000 } },
     });
     expect(persona?.warnings).toEqual([
-      'p.yaml: certification profile SmartCharging is supported in the persona but not implemented yet',
+      'p.yaml: certification profile Reservation is supported in the persona but not implemented yet',
     ]);
     expect(errors.some((e) => e.startsWith('bad.yaml: $.boot.vendorName'))).toBe(true);
   });
@@ -1634,5 +1635,321 @@ describe('a 2.0.1 station: firmware and logs', () => {
       requestId: 5,
     });
     expect(second.cp.snapshot().securityEvents.map((e) => e.type)).toContain('ResetOrReboot');
+  });
+});
+
+describe('a 2.0.1 station: Smart Charging', () => {
+  const features = ['Core', 'SmartCharging'];
+  const schedule = (limit: number, unit = 'W', extra: JsonObject = {}) => [
+    {
+      id: 1,
+      startSchedule: new Date(T0).toISOString(),
+      chargingRateUnit: unit,
+      chargingSchedulePeriod: [{ startPeriod: 0, limit }],
+      ...extra,
+    },
+  ];
+  const txDefault = (id: number, limit: number, extra: JsonObject = {}) => ({
+    id,
+    stackLevel: 0,
+    chargingProfilePurpose: 'TxDefaultProfile',
+    chargingProfileKind: 'Absolute',
+    chargingSchedule: schedule(limit),
+    ...extra,
+  });
+
+  it('limits an EVSE with a TxDefaultProfile and reports a limit of 0 as SuspendedEVSE', async () => {
+    const { cp, csmsCall, boot, present, advance, events } = setup({ features });
+    await boot();
+    await present(1, 'TAG-1');
+    cp.plugIn(1);
+    await advance(0);
+    expect(cp.snapshot().connectors[0]).toMatchObject({ powerW: 7360, chargingState: 'Charging' });
+    expect(
+      await csmsCall('SetChargingProfile', { evseId: 1, chargingProfile: txDefault(1, 3680) }),
+    ).toEqual({
+      status: 'Accepted',
+    });
+    expect(cp.snapshot().connectors[0]).toMatchObject({ powerW: 3680, limitW: 3680 });
+    expect(cp.snapshot().chargingProfiles).toEqual([
+      { chargingProfileId: 1, connectorId: 1, purpose: 'TxDefaultProfile', stackLevel: 0 },
+    ]);
+    // A higher stack level of 0 W suspends the EVSE (K01.FR.17).
+    await csmsCall('SetChargingProfile', {
+      evseId: 0,
+      chargingProfile: txDefault(2, 0, { stackLevel: 1 }),
+    });
+    expect(cp.snapshot().connectors[0]).toMatchObject({ powerW: 3680 });
+    // An EVSE's own TxDefaultProfile takes the place of the evseId 0 ones (K01.FR.15).
+    await csmsCall('SetChargingProfile', {
+      evseId: 1,
+      chargingProfile: txDefault(3, 0, { stackLevel: 2 }),
+    });
+    expect(cp.snapshot().connectors[0]).toMatchObject({
+      powerW: 0,
+      chargingState: 'SuspendedEVSE',
+    });
+    expect(events().at(-1)).toBe('Updated ChargingStateChanged');
+    expect(await csmsCall('ClearChargingProfile', { chargingProfileId: 3 })).toEqual({
+      status: 'Accepted',
+    });
+    expect(cp.snapshot().connectors[0]).toMatchObject({ powerW: 3680, chargingState: 'Charging' });
+    expect(await csmsCall('ClearChargingProfile', { chargingProfileId: 3 })).toEqual({
+      status: 'Unknown',
+    });
+  });
+
+  it('follows a schedule over time and stops limiting at validTo', async () => {
+    const { cp, csmsCall, boot, present, advance } = setup({ features });
+    await boot();
+    await present(1, 'TAG-1');
+    cp.plugIn(1);
+    await csmsCall('SetChargingProfile', {
+      evseId: 1,
+      chargingProfile: {
+        ...txDefault(1, 0),
+        validTo: new Date(T0 + 3_600_000).toISOString(),
+        chargingSchedule: [
+          {
+            id: 1,
+            startSchedule: new Date(T0).toISOString(),
+            chargingRateUnit: 'A',
+            chargingSchedulePeriod: [
+              { startPeriod: 0, limit: 10, numberPhases: 1 },
+              { startPeriod: 600, limit: 6, numberPhases: 1 },
+            ],
+          },
+        ],
+      },
+    });
+    expect(cp.snapshot().connectors[0]?.limitW).toBe(2300);
+    await advance(600_000);
+    expect(cp.snapshot().connectors[0]?.limitW).toBe(1380);
+    await advance(3_000_000);
+    expect(cp.snapshot().connectors[0]?.limitW).toBeUndefined();
+    expect(cp.snapshot().connectors[0]?.powerW).toBe(7360);
+  });
+
+  it('applies a TxProfile to its transaction only, and drops it when the transaction ends', async () => {
+    const { cp, csmsCall, boot, present, advance, calls } = setup({ features });
+    await boot();
+    const txProfile = (transactionId: string) => ({
+      id: 7,
+      stackLevel: 0,
+      chargingProfilePurpose: 'TxProfile',
+      chargingProfileKind: 'Relative',
+      transactionId,
+      chargingSchedule: [
+        { id: 1, chargingRateUnit: 'W', chargingSchedulePeriod: [{ startPeriod: 0, limit: 2000 }] },
+      ],
+    });
+    // No transaction on the EVSE (K01.FR.09).
+    expect(
+      await csmsCall('SetChargingProfile', { evseId: 1, chargingProfile: txProfile('x') }),
+    ).toMatchObject({
+      status: 'Rejected',
+    });
+    await present(1, 'TAG-1');
+    cp.plugIn(1);
+    await advance(0);
+    const tx = String(
+      (calls('TransactionEvent')[0]?.payload.transactionInfo as JsonObject).transactionId,
+    );
+    // An unknown transactionId (K01.FR.33), a TxProfile on EVSE 0 (K01.FR.16).
+    expect(
+      await csmsCall('SetChargingProfile', { evseId: 1, chargingProfile: txProfile('other') }),
+    ).toMatchObject({
+      status: 'Rejected',
+    });
+    expect(
+      await csmsCall('SetChargingProfile', { evseId: 0, chargingProfile: txProfile(tx) }),
+    ).toMatchObject({
+      status: 'Rejected',
+    });
+    expect(
+      await csmsCall('SetChargingProfile', { evseId: 1, chargingProfile: txProfile(tx) }),
+    ).toEqual({
+      status: 'Accepted',
+    });
+    expect(cp.snapshot().connectors[0]?.powerW).toBe(2000);
+    await present(1, 'TAG-1');
+    expect(cp.snapshot().chargingProfiles).toEqual([]);
+  });
+
+  it('refuses what 2.0.1 does not allow', async () => {
+    const { csmsCall, boot } = setup({ features });
+    await boot();
+    const set = (evseId: number, chargingProfile: JsonObject) =>
+      csmsCall('SetChargingProfile', { evseId, chargingProfile }) as Promise<{ status: string }>;
+    expect(
+      (await set(1, { ...txDefault(1, 1000), chargingProfilePurpose: 'ChargingStationMaxProfile' }))
+        .status,
+    ).toBe('Rejected');
+    expect(
+      (
+        await set(0, {
+          ...txDefault(1, 1000),
+          chargingProfilePurpose: 'ChargingStationExternalConstraints',
+        })
+      ).status,
+    ).toBe('Rejected');
+    expect((await set(5, txDefault(1, 1000))).status).toBe('Rejected');
+    expect((await set(1, txDefault(1, 1000, { stackLevel: 11 }))).status).toBe('Rejected');
+    expect(await csmsCall('GetCompositeSchedule', { duration: 60, evseId: 5 })).toEqual({
+      status: 'Rejected',
+    });
+  });
+
+  it('reports profiles with ReportChargingProfiles, one message per EVSE (K09)', async () => {
+    const { csmsCall, boot, calls } = setup({ features });
+    await boot();
+    expect(await csmsCall('GetChargingProfiles', { requestId: 1, chargingProfile: {} })).toEqual({
+      status: 'NoProfiles',
+    });
+    await csmsCall('SetChargingProfile', {
+      evseId: 0,
+      chargingProfile: {
+        ...txDefault(1, 20_000),
+        chargingProfilePurpose: 'ChargingStationMaxProfile',
+      },
+    });
+    await csmsCall('SetChargingProfile', { evseId: 1, chargingProfile: txDefault(2, 3000) });
+    await csmsCall('SetChargingProfile', { evseId: 2, chargingProfile: txDefault(3, 3000) });
+    expect(await csmsCall('GetChargingProfiles', { requestId: 5, chargingProfile: {} })).toEqual({
+      status: 'Accepted',
+    });
+    expect(
+      calls('ReportChargingProfiles').map((c) => [
+        c.payload.evseId,
+        (c.payload.chargingProfile as JsonObject[]).map((p) => p.id),
+        c.payload.tbc,
+        c.payload.requestId,
+        c.payload.chargingLimitSource,
+      ]),
+    ).toEqual([
+      [0, [1], true, 5, 'CSO'],
+      [1, [2], true, 5, 'CSO'],
+      [2, [3], undefined, 5, 'CSO'],
+    ]);
+    await csmsCall('GetChargingProfiles', {
+      requestId: 6,
+      evseId: 1,
+      chargingProfile: { chargingProfilePurpose: 'TxDefaultProfile' },
+    });
+    expect(calls('ReportChargingProfiles').at(-1)?.payload).toMatchObject({
+      requestId: 6,
+      evseId: 1,
+    });
+  });
+
+  it('answers GetCompositeSchedule for an EVSE and for the station (K08)', async () => {
+    const { csmsCall, boot } = setup({ features });
+    await boot();
+    await csmsCall('SetChargingProfile', {
+      evseId: 0,
+      chargingProfile: {
+        ...txDefault(1, 0),
+        chargingProfilePurpose: 'ChargingStationMaxProfile',
+        chargingSchedule: [
+          {
+            id: 1,
+            startSchedule: new Date(T0).toISOString(),
+            chargingRateUnit: 'W',
+            chargingSchedulePeriod: [
+              { startPeriod: 0, limit: 10_000 },
+              { startPeriod: 1800, limit: 5000 },
+            ],
+          },
+        ],
+      },
+    });
+    await csmsCall('SetChargingProfile', { evseId: 1, chargingProfile: txDefault(2, 3000) });
+    expect(
+      await csmsCall('GetCompositeSchedule', { duration: 3600, evseId: 1, chargingRateUnit: 'W' }),
+    ).toEqual({
+      status: 'Accepted',
+      schedule: {
+        evseId: 1,
+        duration: 3600,
+        scheduleStart: new Date(T0).toISOString(),
+        chargingRateUnit: 'W',
+        chargingSchedulePeriod: [{ startPeriod: 0, limit: 3000 }],
+      },
+    });
+    expect(await csmsCall('GetCompositeSchedule', { duration: 3600, evseId: 0 })).toMatchObject({
+      status: 'Accepted',
+      schedule: {
+        evseId: 0,
+        chargingRateUnit: 'W',
+        chargingSchedulePeriod: [
+          { startPeriod: 0, limit: 10_000 },
+          { startPeriod: 1800, limit: 5000 },
+        ],
+      },
+    });
+  });
+
+  it('installs the TxProfile of a remote start for the transaction it starts (K05)', async () => {
+    const { cp, csmsCall, boot, advance, calls } = setup({ features });
+    await boot();
+    const chargingProfile = {
+      id: 9,
+      stackLevel: 0,
+      chargingProfilePurpose: 'TxProfile',
+      chargingProfileKind: 'Relative',
+      chargingSchedule: [
+        { id: 1, chargingRateUnit: 'W', chargingSchedulePeriod: [{ startPeriod: 0, limit: 1500 }] },
+      ],
+    };
+    expect(
+      await csmsCall('RequestStartTransaction', {
+        idToken: { idToken: 'TAG-R', type: 'ISO14443' },
+        remoteStartId: 1,
+        evseId: 1,
+        chargingProfile: { ...chargingProfile, chargingProfilePurpose: 'TxDefaultProfile' },
+      }),
+    ).toEqual({ status: 'Rejected', statusInfo: { reasonCode: 'InvalidProfile' } });
+    expect(
+      await csmsCall('RequestStartTransaction', {
+        idToken: { idToken: 'TAG-R', type: 'ISO14443' },
+        remoteStartId: 2,
+        evseId: 1,
+        chargingProfile,
+      }),
+    ).toEqual({ status: 'Accepted' });
+    await advance(0);
+    cp.plugIn(1);
+    await advance(0);
+    const tx = (calls('TransactionEvent')[0]?.payload.transactionInfo as JsonObject).transactionId;
+    expect(cp.snapshot().connectors[0]?.powerW).toBe(1500);
+    expect(cp.persistentState().chargingProfiles?.[0]?.profile).toMatchObject({
+      id: 9,
+      transactionId: tx,
+    });
+  });
+
+  it('keeps its profiles across a restart, except TxProfiles (K01.FR.27)', async () => {
+    const first = setup({ features });
+    await first.boot();
+    await first.csmsCall('SetChargingProfile', { evseId: 1, chargingProfile: txDefault(1, 3000) });
+    const saved = first.cp.persistentState();
+    const second = setup({ features, restore: saved });
+    await second.boot();
+    expect(second.cp.snapshot().chargingProfiles).toEqual([
+      { chargingProfileId: 1, connectorId: 1, purpose: 'TxDefaultProfile', stackLevel: 0 },
+    ]);
+  });
+
+  it('answers NotSupported without the SmartCharging profile (K01.FR.29)', async () => {
+    const { csmsCall, boot } = setup();
+    await boot();
+    expect(
+      await csmsCall('SetChargingProfile', { evseId: 1, chargingProfile: txDefault(1, 1000) }),
+    ).toMatchObject({
+      errorCode: 'NotSupported',
+    });
+    expect(await csmsCall('GetCompositeSchedule', { duration: 60, evseId: 1 })).toMatchObject({
+      errorCode: 'NotSupported',
+    });
   });
 });
