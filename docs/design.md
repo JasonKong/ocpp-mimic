@@ -846,7 +846,7 @@ deviceModel:
   "EVSE@1": { Power: 11000 }
   VendorCtrlr: { Mode: { actual: eco, mutability: ReadWrite, dataType: OptionList, valuesList: "eco,boost" } }
 faults:
-  - { name: Ground fault, component: Connector, techCode: E101, techInfo: GND_FAULT }
+  - { name: Ground fault, errorCode: GroundFailure, info: GND_FAULT, vendorErrorCode: E101 }
 ```
 
   A component key is `Name`, `Name:instance`, `Name@evse` or `Name@evse.connector`; a variable key is `Name` or `Name:instance`. A scalar sets the Actual value of a standard variable; an object defines a vendor variable. `power`, `timing`, `evs`, `usage` and `firmware` mean what they mean for 1.6. Scenario stations and the API take `deviceModel` overrides the way they take `config` for 1.6.
@@ -886,7 +886,8 @@ Implemented (T62):
 - What 1.6 puts in the status (charging, suspended, finishing) is the transaction's `chargingState` in 2.0.1: EVConnected, Charging, SuspendedEV, SuspendedEVSE or Idle, sent in a TransactionEvent with triggerReason ChargingStateChanged when it changes.
 - After an accepted boot the station reports every connector, then each change. There is no station-level status.
 - ChangeAvailability addresses the station (no `evse`), an EVSE or a connector. It answers Accepted, or Scheduled while a transaction runs on the target and applies the change when the transaction ends. The AvailabilityState variables follow.
-- A fault makes its connector, EVSE or the station Faulted and sends NotifyEvent for the component's `Problem` variable (trigger Alerting, actualValue `true`, techCode and techInfo from the persona's catalogue); clearing it sends `false`. A 2.0.1 fault in the catalogue has `name`, `component` (default Connector), `techCode` and `techInfo`.
+- A fault makes its connector, EVSE or the station Faulted and sends NotifyEvent for the component's `Problem` variable (trigger Alerting, actualValue `true`, techCode and techInfo from the persona's catalogue); clearing it sends `false`. The catalogue keeps 1.6's fields so the API, scenarios and the Web UI raise faults the same way for both versions: techCode is `vendorErrorCode`, or `errorCode` without one, and techInfo is `info`.
+- Implemented (T66): ChargingStation, EVSE and Connector have a dynamic `Problem` variable, so GetVariables, SummaryInventory and GetReport with the Problem criterion show faults. NotifyEvent (eventNotificationType HardWiredNotification, one eventId per event) goes out when online and queues with QueueAllMessages; a fault on a connector with a transaction ends it with AbnormalCondition. `scenarios/regression/ocpp201-faults.yaml` covers the fault and its end, the transaction it stops, and the fault injector on a 2.0.1 station: latency, an injected CALLERROR, a dropped CSMS CALL, a power cut that ends the transaction with PowerLoss, a meter rollback and clock drift.
 
 **Transactions**
 

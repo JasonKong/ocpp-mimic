@@ -33,6 +33,7 @@ import {
   reduce,
   type Availability,
   type DeviceEvent,
+  type Fault,
   type ReduceResult,
   type StationState,
 } from '../device.js';
@@ -281,10 +282,14 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       if (component.name === 'ChargingStation' && variableName === 'AvailabilityState') {
         return stationStatus201(station);
       }
+      if (component.name === 'ChargingStation' && variableName === 'Problem') {
+        return String(station.fault !== undefined);
+      }
       const connector =
         component.evse === undefined ? undefined : findConnector(station, component.evse.id);
       if (connector === undefined) return undefined;
       if (variableName === 'AvailabilityState') return connectorStatus201(connector, station);
+      if (variableName === 'Problem') return String(connector.fault !== undefined);
       if (variableName === 'Power') {
         return String(Math.round(energy.sync(connector.connectorId).powerW));
       }
@@ -380,6 +385,48 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     reportStatuses();
     changed();
     return result;
+  }
+
+  // ---- Faults ---------------------------------------------------------------
+
+  let eventId = 0;
+
+  /**
+   * Reports a fault, or its end, as NotifyEvent for the Problem variable of
+   * the connector (or the station for connectorId 0): techCode is the
+   * vendor error code, or the error code; techInfo the info. Sent when
+   * online, queued with QueueAllMessages.
+   */
+  function notifyProblem(connectorId: number, fault: Fault | undefined): void {
+    const component =
+      connectorId === 0
+        ? { name: 'ChargingStation' }
+        : { name: 'Connector', evse: { id: connectorId, connectorId: 1 } };
+    const payload: Ocpp201RequestOf<'NotifyEvent'> = {
+      generatedAt: timestamp(),
+      seqNo: 0,
+      eventData: [
+        {
+          eventId: ++eventId,
+          timestamp: timestamp(),
+          trigger: 'Alerting',
+          actualValue: String(fault !== undefined),
+          eventNotificationType: 'HardWiredNotification',
+          component,
+          variable: { name: 'Problem' },
+          ...(fault === undefined
+            ? { cleared: true }
+            : {
+                techCode: (fault.vendorErrorCode ?? fault.errorCode).slice(0, 50),
+                ...(fault.info !== undefined && { techInfo: fault.info.slice(0, 500) }),
+              }),
+        },
+      ],
+    };
+    if (online()) void sendIfOnline('NotifyEvent', payload);
+    else if (deviceModel.get('OCPPCommCtrlr', 'QueueAllMessages') === 'true') {
+      void outbox.enqueue('NotifyEvent', payload);
+    }
   }
 
   // ---- Transactions ---------------------------------------------------------
@@ -1099,6 +1146,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
     raiseFault(connectorId, fault) {
       if (applyDevice({ type: 'FaultRaised', connectorId, ...fault }).error !== undefined) return;
+      notifyProblem(connectorId, fault);
       // A fault stops the transactions it affects (E06.FR.16).
       const affected = connectorId === 0 ? [...transactions.keys()] : [connectorId];
       for (const id of affected) {
@@ -1108,7 +1156,12 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     },
 
     clearFault(connectorId) {
+      const had =
+        connectorId === 0
+          ? station.fault !== undefined
+          : findConnector(station, connectorId)?.fault !== undefined;
       if (applyDevice({ type: 'FaultCleared', connectorId }).error !== undefined) return;
+      if (had) notifyProblem(connectorId, undefined);
       for (const connector of connectors(station)) updatePower(connector.connectorId);
     },
 

@@ -844,7 +844,7 @@ deviceModel:
   "EVSE@1": { Power: 11000 }
   VendorCtrlr: { Mode: { actual: eco, mutability: ReadWrite, dataType: OptionList, valuesList: "eco,boost" } }
 faults:
-  - { name: Ground fault, component: Connector, techCode: E101, techInfo: GND_FAULT }
+  - { name: Ground fault, errorCode: GroundFailure, info: GND_FAULT, vendorErrorCode: E101 }
 ```
 
   组件键写作 `Name`、`Name:instance`、`Name@evse` 或 `Name@evse.connector`；变量键写作 `Name` 或 `Name:instance`。标量设置标准变量的 Actual 值；对象定义厂商自己的变量。`power`、`timing`、`evs`、`usage` 和 `firmware` 的含义与 1.6 相同。场景里的桩和 API 接受 `deviceModel` 覆盖，就像 1.6 接受 `config`。
@@ -884,7 +884,8 @@ faults:
 - 1.6 放在状态里的内容（充电中、暂停、结束中）在 2.0.1 里是交易的 `chargingState`：EVConnected、Charging、SuspendedEV、SuspendedEVSE 或 Idle，变化时在 TransactionEvent 里发送，triggerReason 为 ChargingStateChanged。
 - 启动被接受后，桩上报每个连接器，之后每次变化再报。没有整桩级别的状态。
 - ChangeAvailability 可以针对整桩（不带 `evse`）、一个 EVSE 或一个连接器。回答 Accepted；目标上有交易时回答 Scheduled，等交易结束再生效。AvailabilityState 变量随之变化。
-- 故障让对应的连接器、EVSE 或整桩变为 Faulted，并针对该组件的 `Problem` 变量发送 NotifyEvent（trigger Alerting，actualValue `true`，techCode 和 techInfo 取自 persona 的故障目录）；清除故障时发送 `false`。故障目录里的 2.0.1 故障有 `name`、`component`（默认 Connector）、`techCode` 和 `techInfo`。
+- 故障让对应的连接器、EVSE 或整桩变为 Faulted，并针对该组件的 `Problem` 变量发送 NotifyEvent（trigger Alerting，actualValue `true`，techCode 和 techInfo 取自 persona 的故障目录）；清除故障时发送 `false`。故障目录沿用 1.6 的字段，这样 API、场景和 Web UI 对两种版本用同样的方式触发故障：techCode 是 `vendorErrorCode`，没有时用 `errorCode`；techInfo 是 `info`。
+- 已实现（T66）：ChargingStation、EVSE 和 Connector 都有动态的 `Problem` 变量，所以 GetVariables、SummaryInventory 和带 Problem 条件的 GetReport 能看到故障。NotifyEvent（eventNotificationType 为 HardWiredNotification，每个事件一个 eventId）在线时发送，QueueAllMessages 为 true 时进队列；有交易的连接器发生故障时，交易以 AbnormalCondition 结束。`scenarios/regression/ocpp201-faults.yaml` 覆盖故障及其清除、它结束的交易，以及 2.0.1 桩上的故障注入器：延迟、注入的 CALLERROR、丢弃 CSMS 的 CALL、以 PowerLoss 结束交易的断电、电表回退和时钟漂移。
 
 **交易**
 
