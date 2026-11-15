@@ -1175,7 +1175,7 @@ Next to M5 the tail grew (the 30-second session saves are the likely cause) and 
 
 Follow-ups, outside any milestone:
 - #216: show ETAs in wall-clock time when the energy multiplier is on.
-- #217: the event loop's tail and heap floor with session saves on the 1,000-station bench.
+- #217: the event loop's tail and heap floor with session saves on the 1,000-station bench. Done: running sessions are saved a slice at a time (at most 50 a second, each once its changes waited 30 s), a touched session is no longer read back from SQLite, and only Authorize frames are kept for later touches. On the reference bench ([1.6](https://github.com/JasonKong/ocpp-mimic/actions/runs/43739632631), [2.0.1](https://github.com/JasonKong/ocpp-mimic/actions/runs/43739635880)): heartbeats late p99 / max 1.7 / 53 ms and 5.9 / 188 ms (were 1.9 / 147 and 67 / 311), meter values late 1.3 / 24 and 27 / 188 ms (were 1.2 / 2 and 84 / 343), event-loop max 60 and 241 ms (were 153 and 365), and the heap floor no longer rises (61.8 → 59 and 130.6 → 129.6 MB). The remaining 2.0.1 spikes are the ones of #180.
 
 ## Observability and UI
 
