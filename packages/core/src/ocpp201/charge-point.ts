@@ -2,9 +2,12 @@
  * An OCPP 2.0.1 charging station, built on the same pure parts as the 1.6
  * charge point (device facts, timers, outbox, energy) with 2.0.1's messages:
  * boot and registration, heartbeats, StatusNotification per EVSE and
- * connector, ChangeAvailability for the station, an EVSE or a connector, and
- * the Device Model (GetVariables, SetVariables, GetBaseReport, GetReport).
- * Later M5 tasks add transactions, authorization and the feature profiles.
+ * connector, ChangeAvailability for the station, an EVSE or a connector, the
+ * Device Model (GetVariables, SetVariables, GetBaseReport, GetReport), and
+ * transactions (TransactionEvent per the Tx start and stop points, meter
+ * values, offline delivery, GetTransactionStatus) with basic authorization.
+ * Later M5 tasks add the authorization cache and local list, remote control
+ * and the feature profiles.
  *
  * It does no IO and implements the engine's ChargePoint interface, so the
  * fleet, scenarios and the API drive it like a 1.6 station. Connector `n`
@@ -34,6 +37,7 @@ import {
   type StationState,
 } from '../device.js';
 import { createEnergy } from '../energy.js';
+import { nextAlignedSample, nextPeriodicSample } from '../meter.js';
 import type { IdGenerator } from '../ids.js';
 import { OCPP201_MESSAGE_SET, type Ocpp201RpcTypes } from '../message-set.js';
 import { createOutbox, type OutboxEntry } from '../outbox.js';
@@ -48,7 +52,15 @@ import {
 import { createStationTimers } from '../station-timers.js';
 import type {
   BootReasonEnumType,
+  ChargingStateEnumType,
   ChargingStationType,
+  IdTokenEnumType,
+  IdTokenType,
+  MeterValueType,
+  ReadingContextEnumType,
+  ReasonEnumType,
+  TransactionEventEnumType,
+  TriggerReasonEnumType,
   Ocpp201RequestOf,
   Ocpp201ResponseOf,
 } from './messages.js';
@@ -60,7 +72,9 @@ import {
   variableKey,
   type DeviceModelOverrides,
 } from './device-model.js';
+import { sampleMeter201 } from './meter-values.js';
 import { standardVariables } from './standard-variables.js';
+import { chargingState, parseTxPoints, startPoint, stopPoint } from './transaction.js';
 import { connectorStatus201, stationStatus201, type ConnectorStatus201 } from './status.js';
 
 type Out = Ocpp201RpcTypes['out'];
@@ -117,6 +131,71 @@ export interface PersistedChargePoint201 {
   availability: { station: Availability; connectors: Record<string, Availability> };
   /** Persistent Device Model values: `component/variable/attribute` → value. */
   deviceModel: Record<string, string>;
+  /** Transactions running at the save; they end with PowerLoss after the restart. */
+  transactions: PersistedTransaction201[];
+}
+
+export interface PersistedTransaction201 {
+  connectorId: number;
+  transactionId: string;
+  /** The seqNo of the next event. */
+  seqNo: number;
+  startedAt: number;
+  meterStartWh: number;
+  idToken?: IdTokenType;
+  remoteStartId?: number;
+  /** Why it stops, when it was deauthorized but keeps running (TxStopPoint without Authorized). */
+  stoppedReason?: ReasonEnumType;
+}
+
+/** A token authorized at a connector. */
+interface Authorization {
+  idToken: IdTokenType;
+  remoteStartId?: number;
+}
+
+/** A running transaction. */
+interface Transaction201 {
+  id: string;
+  seqNo: number;
+  startedAt: number;
+  meterStartWh: number;
+  idToken?: IdTokenType;
+  remoteStartId?: number;
+  /** The charging state the last event reported. */
+  chargingState: ChargingStateEnumType;
+  /** Set when it was deauthorized but keeps running; the Ended event reports it. */
+  stoppedReason?: ReasonEnumType;
+  /** Samples for the Ended event (TxEndedMeasurands, every TxEndedInterval). */
+  endedValues: MeterValueType[];
+  /** MaxEnergyOnInvalidId: the energy (register, Wh) at which charging stops. */
+  energyLimitWh?: number;
+  limitReached?: boolean;
+  periodicTimer?: TimerHandle | undefined;
+  endedTimer?: TimerHandle | undefined;
+  limitTimer?: TimerHandle | undefined;
+}
+
+/** The stoppedReason an ending trigger implies. */
+function reasonFor(trigger: TriggerReasonEnumType): ReasonEnumType {
+  switch (trigger) {
+    case 'StopAuthorized':
+      return 'Local';
+    case 'Deauthorized':
+      return 'DeAuthorized';
+    case 'RemoteStop':
+      return 'Remote';
+    case 'EVCommunicationLost':
+      return 'EVDisconnected';
+    case 'EVConnectTimeout':
+      return 'Timeout';
+    case 'ResetCommand':
+      return 'ImmediateReset';
+    case 'EnergyLimitReached':
+      return 'EnergyLimitReached';
+    default:
+      return 'Other';
+  }
 }
 
 function checkedMultiplier(value: number): number {
@@ -253,7 +332,10 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     timers,
     online,
     call: (action, payload) => rpc?.call(action as Out, payload as never),
-    retryPolicy: () => ({ attempts: 3, intervalS: 60 }),
+    retryPolicy: () => ({
+      attempts: dmInt('OCPPCommCtrlr', 'MessageAttempts:TransactionEvent'),
+      intervalS: dmInt('OCPPCommCtrlr', 'MessageAttemptInterval:TransactionEvent'),
+    }),
     nextKey: () => nextKey('msg'),
     log,
     changed,
@@ -264,18 +346,26 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   /** What a StatusNotification last reported, by connector. */
   const reported = new Map<number, ConnectorStatus201>();
 
-  /** Reports every connector whose status changed, or all of them. */
+  /**
+   * Reports every connector whose status changed, or all of them. Offline,
+   * reports are dropped (the next boot reports all), or queued with
+   * OCPPCommCtrlr.QueueAllMessages.
+   */
   function reportStatuses(all = false): void {
+    const queueAll = deviceModel.get('OCPPCommCtrlr', 'QueueAllMessages') === 'true';
+    if (!online() && !queueAll) return;
     for (const connector of connectors(station)) {
       const status = connectorStatus201(connector, station);
       if (!all && reported.get(connector.connectorId) === status) continue;
       reported.set(connector.connectorId, status);
-      void sendIfOnline('StatusNotification', {
+      const payload = {
         timestamp: timestamp(),
         connectorStatus: status,
         evseId: connector.connectorId,
         connectorId: 1,
-      });
+      };
+      if (online()) void sendIfOnline('StatusNotification', payload);
+      else void outbox.enqueue('StatusNotification', payload);
     }
   }
 
@@ -287,14 +377,387 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     }
     station = result.state;
     // The reducer's messages are 1.6 StatusNotifications; 2.0.1 reports its own view.
-    if (online()) reportStatuses();
+    reportStatuses();
     changed();
     return result;
   }
 
+  // ---- Transactions ---------------------------------------------------------
+
+  /** The token authorized at each connector, until its session ends. */
+  const authorizations = new Map<number, Authorization>();
+  /** EVConnectionTimeOut: an authorization waiting for the cable. */
+  const connectTimers = new Map<number, TimerHandle>();
+  const transactions = new Map<number, Transaction201>();
+  let alignedTimer: TimerHandle | undefined;
+  let alignedEndedTimer: TimerHandle | undefined;
+
+  const dmValue = (component: string, variable: string) =>
+    deviceModel.get(component, variable) ?? '';
+  const sample = (connectorId: number, measurands: string, context: ReadingContextEnumType) =>
+    sampleMeter201(
+      energy.sync(connectorId),
+      now(),
+      measurands,
+      context,
+      energy.extras(connectorId),
+    );
+
+  /**
+   * Whether a connector may draw power: a cable, an authorized token, no
+   * suspension or fault, operative, and no energy limit reached.
+   */
+  function mayCharge(connectorId: number): boolean {
+    const connector = findConnector(station, connectorId);
+    if (connector === undefined) return false;
+    return (
+      connector.plugged &&
+      authorizations.has(connectorId) &&
+      !connector.evSuspended &&
+      !connector.evseSuspended &&
+      connector.fault === undefined &&
+      station.fault === undefined &&
+      connector.availability === 'Operative' &&
+      station.availability === 'Operative' &&
+      transactions.get(connectorId)?.limitReached !== true
+    );
+  }
+
   function updatePower(connectorId: number): void {
-    // No transactions yet: nothing draws power.
-    energy.update(connectorId, false, undefined);
+    energy.update(connectorId, mayCharge(connectorId), undefined);
+  }
+
+  function currentChargingState(connectorId: number): ChargingStateEnumType {
+    const connector = findConnector(station, connectorId);
+    const ev = energy.ev(connectorId);
+    return chargingState({
+      plugged: connector?.plugged ?? false,
+      authorized: authorizations.has(connectorId),
+      evSuspended: connector?.evSuspended ?? false,
+      evseSuspended: !mayCharge(connectorId) && connector?.evSuspended !== true,
+      powerW: energy.meter(connectorId).powerW,
+      evFull: ev !== undefined && !energy.canResume(connectorId),
+    });
+  }
+
+  /**
+   * Sends a TransactionEvent through the outbox: in order, kept while
+   * offline (marked `offline`), retried per MessageAttempts. A not-Accepted
+   * idTokenInfo in the answer deauthorizes the transaction.
+   */
+  function sendEvent(
+    connectorId: number,
+    tx: Transaction201,
+    eventType: TransactionEventEnumType,
+    triggerReason: TriggerReasonEnumType,
+    extra: {
+      idToken?: IdTokenType;
+      meterValue?: MeterValueType[];
+      stoppedReason?: ReasonEnumType;
+    } = {},
+  ): void {
+    tx.chargingState = eventType === 'Ended' ? tx.chargingState : currentChargingState(connectorId);
+    const meterValue = extra.meterValue?.filter((m) => m !== undefined) ?? [];
+    const [firstValue, ...otherValues] = meterValue;
+    const payload: Ocpp201RequestOf<'TransactionEvent'> = {
+      eventType,
+      timestamp: timestamp(),
+      triggerReason,
+      seqNo: tx.seqNo++,
+      transactionInfo: {
+        transactionId: tx.id,
+        chargingState: eventType === 'Ended' ? currentChargingState(connectorId) : tx.chargingState,
+        ...(extra.stoppedReason !== undefined && { stoppedReason: extra.stoppedReason }),
+        ...(eventType === 'Started' &&
+          tx.remoteStartId !== undefined && { remoteStartId: tx.remoteStartId }),
+      },
+      ...(!online() && { offline: true }),
+      evse: { id: connectorId, connectorId: 1 },
+      ...(extra.idToken !== undefined && { idToken: extra.idToken }),
+      ...(firstValue !== undefined && { meterValue: [firstValue, ...otherValues] }),
+    };
+    void outbox.enqueue('TransactionEvent', payload, tx.id).then((outcome) => {
+      if (!outcome.ok || eventType === 'Ended') return;
+      const info = (outcome.payload as Ocpp201ResponseOf<'TransactionEvent'>).idTokenInfo;
+      if (info === undefined || info.status === 'Accepted') return;
+      if (transactions.get(connectorId) !== tx) return;
+      log(`connector ${connectorId}: the CSMS answered ${info.status} for the transaction's token`);
+      invalidated(connectorId, tx);
+    });
+    changed();
+  }
+
+  /** The CSMS no longer accepts the token (E05): stop, or cap the energy at MaxEnergyOnInvalidId. */
+  function invalidated(connectorId: number, tx: Transaction201): void {
+    if (dmValue('TxCtrlr', 'StopTxOnInvalidId') !== 'false') {
+      deauthorize(connectorId, 'Deauthorized', 'DeAuthorized');
+      return;
+    }
+    tx.energyLimitWh = tx.meterStartWh + dmInt('TxCtrlr', 'MaxEnergyOnInvalidId');
+    checkEnergyLimit(connectorId, tx);
+  }
+
+  function checkEnergyLimit(connectorId: number, tx: Transaction201): void {
+    stopTimer(tx.limitTimer);
+    tx.limitTimer = undefined;
+    if (tx.energyLimitWh === undefined || tx.limitReached === true) return;
+    const reading = energy.sync(connectorId);
+    if (reading.energyWh >= tx.energyLimitWh) {
+      tx.limitReached = true;
+      updatePower(connectorId);
+      sendEvent(connectorId, tx, 'Updated', 'EnergyLimitReached');
+      return;
+    }
+    if (reading.powerW <= 0) return;
+    const ms = ((tx.energyLimitWh - reading.energyWh) / reading.powerW) * 3_600_000;
+    tx.limitTimer = later(Math.ceil(ms / energy.multiplier), () =>
+      checkEnergyLimit(connectorId, tx),
+    );
+  }
+
+  function updateLock(connectorId: number): void {
+    const connector = findConnector(station, connectorId);
+    if (connector === undefined) return;
+    const shouldLock = behaviour.cableLock && transactions.has(connectorId);
+    if (shouldLock && !connector.locked) applyDevice({ type: 'Lock', connectorId });
+    if (!shouldLock && connector.locked) applyDevice({ type: 'Unlock', connectorId });
+  }
+
+  /** Periodic samples of a running transaction: TxUpdated events and the TxEnded collection. */
+  function schedulePeriodic(connectorId: number, tx: Transaction201): void {
+    scheduleUpdated(connectorId, tx);
+    scheduleEnded(connectorId, tx);
+  }
+
+  function scheduleUpdated(connectorId: number, tx: Transaction201): void {
+    stopTimer(tx.periodicTimer);
+    tx.periodicTimer = undefined;
+    const due = nextPeriodicSample(
+      tx.startedAt,
+      dmInt('SampledDataCtrlr', 'TxUpdatedInterval'),
+      now(),
+    );
+    if (due === undefined) return;
+    tx.periodicTimer = later(due - now(), () => {
+      if (transactions.get(connectorId) !== tx) return;
+      const value = sample(
+        connectorId,
+        dmValue('SampledDataCtrlr', 'TxUpdatedMeasurands'),
+        'Sample.Periodic',
+      );
+      sendEvent(connectorId, tx, 'Updated', 'MeterValuePeriodic', {
+        ...(value !== undefined && { meterValue: [value] }),
+      });
+      scheduleUpdated(connectorId, tx);
+    });
+  }
+
+  function scheduleEnded(connectorId: number, tx: Transaction201): void {
+    stopTimer(tx.endedTimer);
+    tx.endedTimer = undefined;
+    const due = nextPeriodicSample(
+      tx.startedAt,
+      dmInt('SampledDataCtrlr', 'TxEndedInterval'),
+      now(),
+    );
+    if (due === undefined) return;
+    tx.endedTimer = later(due - now(), () => {
+      if (transactions.get(connectorId) !== tx) return;
+      const value = sample(
+        connectorId,
+        dmValue('SampledDataCtrlr', 'TxEndedMeasurands'),
+        'Sample.Periodic',
+      );
+      if (value !== undefined) tx.endedValues.push(value);
+      scheduleEnded(connectorId, tx);
+    });
+  }
+
+  /** Clock-aligned samples: MeterValueClock events, idle MeterValues, and the aligned TxEnded collection. */
+  function scheduleAligned(): void {
+    stopTimer(alignedTimer);
+    stopTimer(alignedEndedTimer);
+    alignedTimer = alignedEndedTimer = undefined;
+    const due = nextAlignedSample(dmInt('AlignedDataCtrlr', 'Interval'), now());
+    if (due !== undefined) {
+      alignedTimer = later(due - now(), () => {
+        const measurands = dmValue('AlignedDataCtrlr', 'Measurands');
+        for (const connector of connectors(station)) {
+          const id = connector.connectorId;
+          const tx = transactions.get(id);
+          const value = sample(id, measurands, 'Sample.Clock');
+          if (value === undefined) continue;
+          if (tx !== undefined) {
+            sendEvent(id, tx, 'Updated', 'MeterValueClock', { meterValue: [value] });
+          } else if (dmValue('AlignedDataCtrlr', 'SendDuringIdle') === 'true') {
+            void sendIfOnline('MeterValues', { evseId: id, meterValue: [value] });
+          }
+        }
+        scheduleAligned();
+      });
+    }
+    const endedDue = nextAlignedSample(dmInt('AlignedDataCtrlr', 'TxEndedInterval'), now());
+    if (endedDue !== undefined) {
+      alignedEndedTimer = later(endedDue - now(), () => {
+        for (const [id, tx] of transactions) {
+          const value = sample(
+            id,
+            dmValue('AlignedDataCtrlr', 'TxEndedMeasurands'),
+            'Sample.Clock',
+          );
+          if (value !== undefined) tx.endedValues.push(value);
+        }
+        scheduleAligned();
+      });
+    }
+  }
+
+  function startTransaction(connectorId: number, trigger: TriggerReasonEnumType): void {
+    const auth = authorizations.get(connectorId);
+    const tx: Transaction201 = {
+      id: ids(),
+      seqNo: 0,
+      startedAt: now(),
+      meterStartWh: energy.sync(connectorId).energyWh,
+      ...(auth !== undefined && { idToken: auth.idToken }),
+      ...(auth?.remoteStartId !== undefined && { remoteStartId: auth.remoteStartId }),
+      chargingState: currentChargingState(connectorId),
+      endedValues: [],
+    };
+    transactions.set(connectorId, tx);
+    applyDevice({ type: 'TransactionStarted', connectorId, transactionId: 1 });
+    updateLock(connectorId);
+    const value = sample(
+      connectorId,
+      dmValue('SampledDataCtrlr', 'TxStartedMeasurands'),
+      'Transaction.Begin',
+    );
+    sendEvent(
+      connectorId,
+      tx,
+      'Started',
+      auth?.remoteStartId !== undefined && trigger === 'Authorized' ? 'RemoteStart' : trigger,
+      {
+        ...(auth !== undefined && { idToken: auth.idToken }),
+        ...(value !== undefined && { meterValue: [value] }),
+      },
+    );
+    schedulePeriodic(connectorId, tx);
+  }
+
+  function endTransaction(
+    connectorId: number,
+    trigger: TriggerReasonEnumType,
+    stoppedReason: ReasonEnumType,
+    idToken?: IdTokenType,
+  ): void {
+    const tx = transactions.get(connectorId);
+    if (tx === undefined) return;
+    transactions.delete(connectorId);
+    for (const timer of [tx.periodicTimer, tx.endedTimer, tx.limitTimer]) stopTimer(timer);
+    // The session is over: a new one needs a new authorization.
+    authorizations.delete(connectorId);
+    stopTimer(connectTimers.get(connectorId));
+    connectTimers.delete(connectorId);
+    const final = sample(
+      connectorId,
+      dmValue('SampledDataCtrlr', 'TxEndedMeasurands'),
+      'Transaction.End',
+    );
+    updatePower(connectorId);
+    sendEvent(connectorId, tx, 'Ended', trigger, {
+      stoppedReason: tx.stoppedReason ?? stoppedReason,
+      ...(idToken !== undefined && { idToken }),
+      meterValue: [...tx.endedValues, ...(final === undefined ? [] : [final])],
+    });
+    applyDevice({ type: 'TransactionEnded', connectorId });
+    updateLock(connectorId);
+    changed();
+  }
+
+  /**
+   * Re-evaluates a connector after `trigger`: power, then the start or stop
+   * points, then an Updated event for what the trigger changed.
+   */
+  function evaluate(
+    connectorId: number,
+    trigger: TriggerReasonEnumType,
+    idToken?: IdTokenType,
+  ): void {
+    updatePower(connectorId);
+    const connector = findConnector(station, connectorId);
+    if (connector === undefined) return;
+    const conditions = {
+      evConnected: connector.plugged,
+      authorized: authorizations.has(connectorId),
+      energyTransfer: energy.meter(connectorId).powerW > 0,
+    };
+    const tx = transactions.get(connectorId);
+    if (tx === undefined) {
+      if (startPoint(parseTxPoints(dmValue('TxCtrlr', 'TxStartPoint')), conditions) !== undefined) {
+        startTransaction(connectorId, trigger);
+      }
+      return;
+    }
+    if (stopPoint(parseTxPoints(dmValue('TxCtrlr', 'TxStopPoint')), conditions) !== undefined) {
+      endTransaction(connectorId, trigger, reasonFor(trigger), idToken);
+      return;
+    }
+    const state = currentChargingState(connectorId);
+    if (trigger !== 'ChargingStateChanged') {
+      if (trigger === 'Authorized' && tx.idToken === undefined && idToken !== undefined)
+        tx.idToken = idToken;
+      sendEvent(connectorId, tx, 'Updated', trigger, { ...(idToken !== undefined && { idToken }) });
+    } else if (state !== tx.chargingState) {
+      sendEvent(connectorId, tx, 'Updated', 'ChargingStateChanged');
+    }
+    if (tx.energyLimitWh !== undefined) checkEnergyLimit(connectorId, tx);
+  }
+
+  /** The token of the session ends (card, CSMS, timeout); the stop points decide whether the transaction ends. */
+  function deauthorize(
+    connectorId: number,
+    trigger: TriggerReasonEnumType,
+    stoppedReason: ReasonEnumType,
+    idToken?: IdTokenType,
+  ): void {
+    authorizations.delete(connectorId);
+    stopTimer(connectTimers.get(connectorId));
+    connectTimers.delete(connectorId);
+    const tx = transactions.get(connectorId);
+    if (tx !== undefined) tx.stoppedReason = stoppedReason;
+    evaluate(connectorId, trigger, idToken);
+  }
+
+  /** Asks whether a token may charge: Authorize online; offline only with OfflineTxForUnknownIdEnabled. */
+  async function authorize(idToken: IdTokenType): Promise<boolean> {
+    if (dmValue('AuthCtrlr', 'Enabled') === 'false') return true;
+    if (!online()) return dmValue('AuthCtrlr', 'OfflineTxForUnknownIdEnabled') === 'true';
+    const outcome = await sendIfOnline('Authorize', { idToken });
+    return outcome?.ok === true && outcome.payload.idTokenInfo.status === 'Accepted';
+  }
+
+  /** An authorization waits EVConnectionTimeOut for the cable (E03.FR.05). */
+  function awaitCable(connectorId: number): void {
+    stopTimer(connectTimers.get(connectorId));
+    connectTimers.delete(connectorId);
+    const timeoutS = dmInt('TxCtrlr', 'EVConnectionTimeOut');
+    if (timeoutS <= 0) return;
+    connectTimers.set(
+      connectorId,
+      later(timeoutS * 1000, () => {
+        connectTimers.delete(connectorId);
+        if (findConnector(station, connectorId)?.plugged === true) return;
+        log(`connector ${connectorId}: no cable within EVConnectionTimeOut`);
+        if (transactions.has(connectorId)) {
+          authorizations.delete(connectorId);
+          endTransaction(connectorId, 'EVConnectTimeout', 'Timeout');
+        } else {
+          authorizations.delete(connectorId);
+          changed();
+        }
+      }),
+    );
   }
 
   // ---- Registration and heartbeats ----------------------------------------
@@ -343,6 +806,13 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   /** A Device Model value changed by SetVariables: apply what depends on it. */
   function variableChanged(key: string): void {
     if (key === 'OCPPCommCtrlr/HeartbeatInterval') startHeartbeat();
+    if (key.startsWith('AlignedDataCtrlr/')) scheduleAligned();
+    if (
+      key === 'SampledDataCtrlr/TxUpdatedInterval' ||
+      key === 'SampledDataCtrlr/TxEndedInterval'
+    ) {
+      for (const [id, tx] of transactions) schedulePeriodic(id, tx);
+    }
   }
 
   type ReportData = NonNullable<Ocpp201RequestOf<'NotifyReport'>['reportData']>;
@@ -372,6 +842,20 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   // ---- Commands from the CSMS ---------------------------------------------
 
   const handlers: RpcHandlers<Ocpp201RpcTypes> = {
+    GetTransactionStatus(request) {
+      const queued = outbox.entries.some(
+        (e) =>
+          e.action === 'TransactionEvent' &&
+          (request.transactionId === undefined || e.txRef === request.transactionId),
+      );
+      return {
+        messagesInQueue: queued,
+        ...(request.transactionId !== undefined && {
+          ongoingIndicator: [...transactions.values()].some((t) => t.id === request.transactionId),
+        }),
+      };
+    },
+
     GetVariables(request) {
       checkLimits('GetVariables', request.getVariableData.length, request);
       return {
@@ -435,6 +919,36 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   const restored = options.restore;
   if (restored !== undefined) {
     outbox.restore(restored.outbox);
+    // Transactions the power cut interrupted end now, as of the save (E06.FR.16).
+    for (const saved of restored.transactions ?? []) {
+      const final = sampleMeter201(
+        energy.meter(saved.connectorId),
+        restored.savedAt,
+        dmValue('SampledDataCtrlr', 'TxEndedMeasurands'),
+        'Transaction.End',
+      );
+      void outbox.restore([
+        {
+          key: nextKey('msg'),
+          action: 'TransactionEvent',
+          txRef: saved.transactionId,
+          attempts: 0,
+          payload: {
+            eventType: 'Ended',
+            timestamp: new Date(restored.savedAt).toISOString(),
+            triggerReason: 'AbnormalCondition',
+            seqNo: saved.seqNo,
+            transactionInfo: {
+              transactionId: saved.transactionId,
+              stoppedReason: saved.stoppedReason ?? 'PowerLoss',
+            },
+            offline: true,
+            evse: { id: saved.connectorId, connectorId: 1 },
+            ...(final !== undefined && { meterValue: [final] }),
+          },
+        },
+      ]);
+    }
     for (const [id, availability] of Object.entries(restored.availability.connectors)) {
       const connectorId = Number(id);
       if (availability === 'Inoperative' && findConnector(station, connectorId) !== undefined) {
@@ -456,7 +970,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
   // ---- Public interface ---------------------------------------------------
 
-  const notYet = (what: string) => log(`${what} is not available on 2.0.1 stations yet`);
+  // Clock-aligned sampling runs from the start, offline too: its events queue.
+  scheduleAligned();
 
   return {
     ocpp: '2.0.1',
@@ -501,7 +1016,10 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       }
       // Throws a RangeError for an unusable profile, before anything changes.
       if (ev !== undefined) energy.plugEv(connectorId, ev);
-      applyDevice({ type: 'Plug', connectorId });
+      if (applyDevice({ type: 'Plug', connectorId }).error !== undefined) return;
+      stopTimer(connectTimers.get(connectorId));
+      connectTimers.delete(connectorId);
+      evaluate(connectorId, 'CablePluggedIn');
     },
 
     unplug(connectorId) {
@@ -516,19 +1034,44 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       }
       energy.sync(connectorId);
       applyDevice({ type: 'Unplug', connectorId });
+      if (
+        transactions.has(connectorId) &&
+        dmValue('TxCtrlr', 'StopTxOnEVSideDisconnect') !== 'false'
+      ) {
+        // The EV left: the transaction ends whatever the stop points say (E09).
+        endTransaction(connectorId, 'EVCommunicationLost', 'EVDisconnected');
+      } else {
+        evaluate(connectorId, 'EVCommunicationLost');
+      }
       if (energy.removeEv(connectorId)) changed();
       return 'unplugged';
     },
 
-    async presentIdTag(connectorId): Promise<IdTagResult> {
-      if (findConnector(station, connectorId) === undefined) return 'unknown-connector';
-      notYet('Authorization');
-      return 'rejected';
+    async presentIdTag(connectorId, token, type = 'ISO14443'): Promise<IdTagResult> {
+      const connector = findConnector(station, connectorId);
+      if (connector === undefined) return 'unknown-connector';
+      const idToken: IdTokenType = { idToken: token, type: type as IdTokenEnumType };
+      const current =
+        authorizations.get(connectorId)?.idToken ?? transactions.get(connectorId)?.idToken;
+      if (current !== undefined) {
+        // The same token ends the session (E07); another one is refused here.
+        if (current.idToken !== token || current.type !== idToken.type) return 'busy';
+        deauthorize(connectorId, 'StopAuthorized', 'Local', idToken);
+        return 'stopping';
+      }
+      if (!(await authorize(idToken))) {
+        log(`connector ${connectorId}: ${token} rejected`);
+        return 'rejected';
+      }
+      authorizations.set(connectorId, { idToken });
+      if (!connector.plugged) awaitCable(connectorId);
+      evaluate(connectorId, 'Authorized', idToken);
+      return 'authorized';
     },
 
     evSuspend(connectorId) {
       if (applyDevice({ type: 'EvSuspend', connectorId }).error === undefined) {
-        updatePower(connectorId);
+        evaluate(connectorId, 'ChargingStateChanged');
       }
     },
 
@@ -538,7 +1081,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         return;
       }
       if (applyDevice({ type: 'EvResume', connectorId }).error === undefined) {
-        updatePower(connectorId);
+        evaluate(connectorId, 'ChargingStateChanged');
       }
     },
 
@@ -555,11 +1098,18 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     },
 
     raiseFault(connectorId, fault) {
-      applyDevice({ type: 'FaultRaised', connectorId, ...fault });
+      if (applyDevice({ type: 'FaultRaised', connectorId, ...fault }).error !== undefined) return;
+      // A fault stops the transactions it affects (E06.FR.16).
+      const affected = connectorId === 0 ? [...transactions.keys()] : [connectorId];
+      for (const id of affected) {
+        if (transactions.has(id)) endTransaction(id, 'AbnormalCondition', 'Other');
+        else updatePower(id);
+      }
     },
 
     clearFault(connectorId) {
-      applyDevice({ type: 'FaultCleared', connectorId });
+      if (applyDevice({ type: 'FaultCleared', connectorId }).error !== undefined) return;
+      for (const connector of connectors(station)) updatePower(connector.connectorId);
     },
 
     dataTransfer(request) {
@@ -571,6 +1121,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
     setBehaviour(changes) {
       behaviour = { ...behaviour, ...changes };
+      for (const connector of connectors(station)) updateLock(connector.connectorId);
       changed();
     },
 
@@ -588,6 +1139,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         connectors: connectors(station).map((connector) => {
           const reading = energy.sync(connector.connectorId);
           const ev = energy.ev(connector.connectorId);
+          const tx = transactions.get(connector.connectorId);
+          const token = authorizations.get(connector.connectorId)?.idToken ?? tx?.idToken;
           return {
             connectorId: connector.connectorId,
             evseId: connector.connectorId,
@@ -595,6 +1148,9 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
             errorCode: connector.fault === undefined ? 'NoError' : connector.fault.errorCode,
             plugged: connector.plugged,
             locked: connector.locked,
+            chargingState: currentChargingState(connector.connectorId),
+            ...(tx !== undefined && { transactionId: tx.id }),
+            ...(token !== undefined && { idTag: token.idToken }),
             energyWh: reading.energyWh,
             powerW: reading.powerW,
             ...(ev !== undefined && {
@@ -655,6 +1211,16 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
           ),
         },
         deviceModel: deviceModel.persistentValues(),
+        transactions: [...transactions].map(([connectorId, tx]) => ({
+          connectorId,
+          transactionId: tx.id,
+          seqNo: tx.seqNo,
+          startedAt: tx.startedAt,
+          meterStartWh: tx.meterStartWh,
+          ...(tx.idToken !== undefined && { idToken: tx.idToken }),
+          ...(tx.remoteStartId !== undefined && { remoteStartId: tx.remoteStartId }),
+          ...(tx.stoppedReason !== undefined && { stoppedReason: tx.stoppedReason }),
+        })),
       };
     },
 

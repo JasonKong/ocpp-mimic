@@ -30,6 +30,9 @@ function setup(
     Heartbeat: () => ({ currentTime: iso() }),
     StatusNotification: () => ({}),
     NotifyReport: () => ({}),
+    Authorize: () => ({ idTokenInfo: { status: 'Accepted' } }),
+    TransactionEvent: () => ({}),
+    MeterValues: () => ({}),
     ...options.csms,
   };
   const cp = createChargePoint201({
@@ -59,7 +62,13 @@ function setup(
         const frame = frames[answered++];
         if (frame?.type !== 2) continue;
         const reply = responders[frame.action]?.(frame.payload);
-        if (reply !== undefined) cp.receive(JSON.stringify([3, frame.id, reply]));
+        if (reply === undefined) continue;
+        const error = reply.__callError;
+        cp.receive(
+          JSON.stringify(
+            typeof error === 'string' ? [4, frame.id, error, '', {}] : [3, frame.id, reply],
+          ),
+        );
       }
     }
     throw new Error('the station never settled');
@@ -101,7 +110,41 @@ function setup(
     cp.connected();
     await settle();
   }
-  return { clock, cp, frames, calls, statuses, csmsCall, advance, boot, settle };
+  /** The TransactionEvents sent, as `eventType triggerReason [stoppedReason]`. */
+  const events = () =>
+    calls('TransactionEvent').map((c) => {
+      const p = c.payload as {
+        eventType: string;
+        triggerReason: string;
+        transactionInfo: { stoppedReason?: string };
+      };
+      return [p.eventType, p.triggerReason, p.transactionInfo.stoppedReason]
+        .filter(Boolean)
+        .join(' ');
+    });
+  /** Presents a card while the fake CSMS answers the Authorize. */
+  async function present(connectorId: number, token: string, type?: string) {
+    const result = cp.presentIdTag(connectorId, token, type);
+    await settle();
+    return result;
+  }
+  /** Every CALL so far must be a valid 2.0.1 request. */
+  const allValid = () =>
+    calls().every((c) => OCPP201_MESSAGE_SET.validateRequest(c.action, c.payload).ok);
+  return {
+    clock,
+    cp,
+    frames,
+    calls,
+    statuses,
+    csmsCall,
+    advance,
+    boot,
+    settle,
+    events,
+    allValid,
+    present,
+  };
 }
 
 describe('a 2.0.1 station: boot and registration', () => {
@@ -379,5 +422,258 @@ describe('a 2.0.1 station: Device Model', () => {
     expect(() => setup({ deviceModel: { OCPPCommCtrlr: { HeartbeatInterval: 'soon' } } })).toThrow(
       'deviceModel: OCPPCommCtrlr.HeartbeatInterval: not an integer',
     );
+  });
+});
+
+describe('a 2.0.1 station: transactions', () => {
+  const tx = (calls: ReturnType<typeof setup>['calls'], index: number) =>
+    calls('TransactionEvent')[index]?.payload as {
+      seqNo: number;
+      transactionInfo: { transactionId: string; chargingState?: string };
+      idToken?: unknown;
+      evse?: unknown;
+      offline?: boolean;
+      meterValue?: { sampledValue: { context?: string; measurand?: string }[] }[];
+    };
+
+  it('starts at PowerPathClosed and ends when the same card stops it', async () => {
+    const { cp, present, calls, boot, settle, events, allValid } = setup();
+    await boot();
+    expect(await present(1, 'TAG-1')).toBe('authorized');
+    expect(calls('Authorize')[0]?.payload).toEqual({
+      idToken: { idToken: 'TAG-1', type: 'ISO14443' },
+    });
+    cp.plugIn(1);
+    await settle();
+    expect(events()).toEqual(['Started CablePluggedIn']);
+    const started = tx(calls, 0);
+    expect(started).toMatchObject({
+      seqNo: 0,
+      idToken: { idToken: 'TAG-1', type: 'ISO14443' },
+      evse: { id: 1, connectorId: 1 },
+      transactionInfo: { chargingState: 'Charging' },
+    });
+    expect(started.meterValue?.[0]?.sampledValue[0]).toMatchObject({
+      context: 'Transaction.Begin',
+      measurand: 'Energy.Active.Import.Register',
+    });
+    expect(cp.snapshot().connectors[0]).toMatchObject({
+      status: 'Occupied',
+      chargingState: 'Charging',
+      transactionId: started.transactionInfo.transactionId,
+      idTag: 'TAG-1',
+    });
+    expect(await present(1, 'OTHER')).toBe('busy');
+    expect(await present(1, 'TAG-1')).toBe('stopping');
+    await settle();
+    expect(events()).toEqual(['Started CablePluggedIn', 'Ended StopAuthorized Local']);
+    expect(tx(calls, 1)).toMatchObject({
+      seqNo: 1,
+      transactionInfo: { transactionId: started.transactionInfo.transactionId },
+    });
+    expect(tx(calls, 1).meterValue?.at(-1)?.sampledValue[0]?.context).toBe('Transaction.End');
+    expect(cp.snapshot().connectors[0]?.transactionId).toBeUndefined();
+    expect(allValid()).toBe(true);
+  });
+
+  it('follows other start and stop points: EVConnected for both', async () => {
+    const { cp, present, boot, settle, events, calls } = setup({
+      deviceModel: { TxCtrlr: { TxStartPoint: 'EVConnected', TxStopPoint: 'EVConnected' } },
+    });
+    await boot();
+    cp.plugIn(1);
+    await settle();
+    expect(tx(calls, 0).transactionInfo.chargingState).toBe('EVConnected');
+    await present(1, 'TAG-1');
+    await settle();
+    await present(1, 'TAG-1');
+    await settle();
+    cp.unplug(1);
+    await settle();
+    // The card stop does not end it; the unplug does, with the card's reason (E07).
+    expect(events()).toEqual([
+      'Started CablePluggedIn',
+      'Updated Authorized',
+      'Updated StopAuthorized',
+      'Ended EVCommunicationLost Local',
+    ]);
+    expect(tx(calls, 1).idToken).toEqual({ idToken: 'TAG-1', type: 'ISO14443' });
+  });
+
+  it('ends on unplugging with EVDisconnected, and refuses unknown cards', async () => {
+    const { cp, present, boot, settle, events } = setup({
+      csms: {
+        Authorize: (payload) => ({
+          idTokenInfo: {
+            status:
+              (payload.idToken as { idToken: string }).idToken === 'BAD' ? 'Invalid' : 'Accepted',
+          },
+        }),
+      },
+    });
+    await boot();
+    expect(await present(1, 'BAD')).toBe('rejected');
+    cp.plugIn(1);
+    await present(1, 'TAG-1', 'KeyCode');
+    await settle();
+    cp.unplug(1);
+    await settle();
+    expect(events()).toEqual(['Started Authorized', 'Ended EVCommunicationLost EVDisconnected']);
+  });
+
+  it('sends periodic samples and collects TxEnded samples for the Ended event', async () => {
+    const { cp, present, boot, settle, advance, events, calls } = setup({
+      deviceModel: { SampledDataCtrlr: { TxUpdatedInterval: 60, TxEndedInterval: 30 } },
+    });
+    await boot();
+    await present(1, 'TAG-1');
+    cp.plugIn(1);
+    await settle();
+    await advance(120_000);
+    await present(1, 'TAG-1');
+    await settle();
+    expect(events()).toEqual([
+      'Started CablePluggedIn',
+      'Updated MeterValuePeriodic',
+      'Updated MeterValuePeriodic',
+      'Ended StopAuthorized Local',
+    ]);
+    expect(tx(calls, 1).meterValue?.[0]?.sampledValue.map((v) => v.measurand)).toEqual([
+      'Energy.Active.Import.Register',
+      'Power.Active.Import',
+    ]);
+    // Four TxEnded samples every 30 s, then the final reading.
+    const ended = tx(calls, 3).meterValue ?? [];
+    expect(ended.map((m) => m.sampledValue[0]?.context)).toEqual([
+      'Sample.Periodic',
+      'Sample.Periodic',
+      'Sample.Periodic',
+      'Sample.Periodic',
+      'Transaction.End',
+    ]);
+  });
+
+  it('queues events while offline, marked offline, and delivers them in order', async () => {
+    const { cp, present, boot, settle, events, calls } = setup({
+      deviceModel: { AuthCtrlr: { OfflineTxForUnknownIdEnabled: true } },
+    });
+    await boot();
+    cp.disconnected();
+    expect(await present(1, 'TAG-1')).toBe('authorized');
+    cp.plugIn(1);
+    await present(1, 'TAG-1');
+    expect(cp.snapshot().queuedMessages).toBe(2);
+    expect(events()).toEqual([]);
+    await boot();
+    await settle();
+    expect(events()).toEqual(['Started CablePluggedIn', 'Ended StopAuthorized Local']);
+    expect([tx(calls, 0).offline, tx(calls, 1).offline]).toEqual([true, true]);
+    expect([tx(calls, 0).seqNo, tx(calls, 1).seqNo]).toEqual([0, 1]);
+  });
+
+  it('retries a failed event MessageAttempts times, MessageAttemptInterval apart', async () => {
+    let failures = 2;
+    const { cp, present, boot, settle, advance, calls } = setup({
+      csms: {
+        TransactionEvent: () => (failures-- > 0 ? { __callError: 'InternalError' } : {}),
+      },
+      deviceModel: {
+        OCPPCommCtrlr: {
+          'MessageAttempts:TransactionEvent': 3,
+          'MessageAttemptInterval:TransactionEvent': 10,
+        },
+      },
+    });
+    await boot();
+    await present(1, 'TAG-1');
+    cp.plugIn(1);
+    await settle();
+    expect(calls('TransactionEvent')).toHaveLength(1);
+    await advance(10_000);
+    expect(calls('TransactionEvent')).toHaveLength(2);
+    await advance(20_000);
+    expect(calls('TransactionEvent')).toHaveLength(3);
+    expect(cp.snapshot().queuedMessages).toBe(0);
+  });
+
+  it('stops when the CSMS invalidates the token, or caps the energy with MaxEnergyOnInvalidId', async () => {
+    const invalid = { TransactionEvent: () => ({ idTokenInfo: { status: 'Blocked' } }) };
+    const stop = setup({ csms: invalid });
+    await stop.boot();
+    await stop.present(1, 'TAG-1');
+    stop.cp.plugIn(1);
+    await stop.settle();
+    expect(stop.events()).toEqual(['Started CablePluggedIn', 'Ended Deauthorized DeAuthorized']);
+
+    const cap = setup({
+      csms: invalid,
+      deviceModel: { TxCtrlr: { StopTxOnInvalidId: false, MaxEnergyOnInvalidId: 0 } },
+    });
+    await cap.boot();
+    await cap.present(1, 'TAG-1');
+    cap.cp.plugIn(1);
+    await cap.settle();
+    expect(cap.events()).toEqual(['Started CablePluggedIn', 'Updated EnergyLimitReached']);
+    expect(cap.cp.snapshot().connectors[0]).toMatchObject({
+      powerW: 0,
+      chargingState: 'SuspendedEVSE',
+    });
+  });
+
+  it('forgets an authorization without a cable after EVConnectionTimeOut', async () => {
+    const plain = setup({ deviceModel: { TxCtrlr: { EVConnectionTimeOut: 30 } } });
+    await plain.boot();
+    await plain.present(1, 'TAG-1');
+    await plain.advance(30_000);
+    expect(plain.cp.snapshot().connectors[0]?.idTag).toBeUndefined();
+    plain.cp.plugIn(1);
+    await plain.settle();
+    expect(plain.events()).toEqual([]);
+
+    const atAuthorized = setup({
+      deviceModel: { TxCtrlr: { EVConnectionTimeOut: 30, TxStartPoint: 'Authorized' } },
+    });
+    await atAuthorized.boot();
+    await atAuthorized.present(1, 'TAG-1');
+    await atAuthorized.advance(30_000);
+    expect(atAuthorized.events()).toEqual(['Started Authorized', 'Ended EVConnectTimeout Timeout']);
+  });
+
+  it('answers GetTransactionStatus', async () => {
+    const { cp, present, boot, settle, csmsCall, calls } = setup();
+    await boot();
+    await present(1, 'TAG-1');
+    cp.plugIn(1);
+    await settle();
+    const id = tx(calls, 0).transactionInfo.transactionId;
+    expect(await csmsCall('GetTransactionStatus', { transactionId: id })).toEqual({
+      messagesInQueue: false,
+      ongoingIndicator: true,
+    });
+    expect(await csmsCall('GetTransactionStatus', { transactionId: 'unknown' })).toEqual({
+      messagesInQueue: false,
+      ongoingIndicator: false,
+    });
+    expect(await csmsCall('GetTransactionStatus', {})).toEqual({ messagesInQueue: false });
+  });
+
+  it('ends a transaction a power cut interrupted with PowerLoss after the restart', async () => {
+    const first = setup();
+    await first.boot();
+    await first.present(1, 'TAG-1');
+    first.cp.plugIn(1);
+    await first.settle();
+    const id = tx(first.calls, 0).transactionInfo.transactionId;
+    const saved = first.cp.persistentState();
+    expect(saved.transactions).toMatchObject([{ connectorId: 1, transactionId: id, seqNo: 1 }]);
+    const second = setup({ restore: saved });
+    await second.boot();
+    expect(second.events()).toEqual(['Ended AbnormalCondition PowerLoss']);
+    expect(tx(second.calls, 0)).toMatchObject({
+      seqNo: 1,
+      offline: true,
+      transactionInfo: { transactionId: id },
+    });
+    expect(second.allValid()).toBe(true);
   });
 });
