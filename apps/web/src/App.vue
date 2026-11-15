@@ -108,14 +108,20 @@ async function openSession(n: number) {
   await loadDetail();
 }
 
+let framesLoading = false;
 async function loadSessionFrames() {
   const id = selectedId.value;
   const n = sessionN.value;
-  if (id === undefined || n === undefined) return;
-  await guard(async () => {
-    const { frames } = await api.sessionFrames(id, n);
-    if (selectedId.value === id && sessionN.value === n) sessionFrames.value = frames;
-  });
+  if (id === undefined || n === undefined || framesLoading) return;
+  framesLoading = true;
+  try {
+    await guard(async () => {
+      const { frames } = await api.sessionFrames(id, n);
+      if (selectedId.value === id && sessionN.value === n) sessionFrames.value = frames;
+    });
+  } finally {
+    framesLoading = false;
+  }
 }
 
 async function openTab(next: 'station' | 'sessions') {
@@ -131,7 +137,8 @@ function sessionChanged(summary: SessionSummary) {
   if (index >= 0) sessions.value.splice(index, 1, summary);
   else sessions.value = [summary, ...sessions.value].sort((a, b) => b.n - a.n);
   if (summary.n === sessionN.value) {
-    sessionFrames.value = undefined;
+    // The frames reload in the background; the log keeps the old ones meanwhile.
+    void loadSessionFrames();
     void loadDetail();
   } else if (sessionN.value === undefined && tab.value === 'sessions') {
     void openSession(summary.n);
@@ -407,6 +414,7 @@ onUnmounted(() => {
             :frames="sessionFrames"
             :now="now"
             :tariff="tariff"
+            :records="selectedRecords"
             @save-tariff="saveTariff"
             @select="openSession"
             @load-frames="loadSessionFrames"

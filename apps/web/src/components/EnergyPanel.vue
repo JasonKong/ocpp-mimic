@@ -10,7 +10,13 @@ import EnergyChart from './EnergyChart.vue';
  * a third party would estimate it (and the simulator's truth beside it), and
  * the chart (R-NRG-1 to R-NRG-5).
  */
-const props = defineProps<{ detail: SessionDetail; showTruth: boolean; now: number }>();
+const props = defineProps<{
+  detail: SessionDetail;
+  showTruth: boolean;
+  now: number;
+  highlightAt?: string | undefined;
+}>();
+const emit = defineEmits<{ 'select-time': [t: number] }>();
 const f = computed(() => energyFigures(props.detail, props.now));
 const finished = computed(() => props.detail.session.state === 'finished');
 const fmtTime = (iso: string) => formatTime(iso).slice(0, 5);
@@ -116,7 +122,13 @@ const fmtTime = (iso: string) => formatTime(iso).slice(0, 5);
       </tbody>
     </table>
 
-    <EnergyChart :session="detail.session" :show-truth="showTruth" :now="now" />
+    <EnergyChart
+      :session="detail.session"
+      :show-truth="showTruth"
+      :now="now"
+      :highlight-at="highlightAt"
+      @select-time="emit('select-time', $event)"
+    />
   </section>
 </template>
 
