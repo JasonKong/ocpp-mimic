@@ -9,6 +9,8 @@ import {
   type StationSnapshot,
 } from '../api.js';
 import { formatEnergy, formatPower, statusTone } from '../format.js';
+import { evseLabel, versionInfo } from '../versions.js';
+import VersionBadge from './VersionBadge.vue';
 
 const props = defineProps<{
   station: StationSnapshot;
@@ -21,13 +23,13 @@ const emit = defineEmits<{
 const idTags = reactive<Record<number, string>>({});
 /** The IdToken type of the next card, per connector (2.0.1 only). */
 const tokenTypes = reactive<Record<number, string>>({});
-const is201 = computed(() => props.station.ocpp === '2.0.1');
+const info = computed(() => versionInfo(props.station.ocpp));
+/** Tokens of this version have a type (2.0.1). */
+const typedTokens = computed(() => info.value.tokenType);
 
 /** 2.0.1: EVSE n holds connector 1; 1.6: connector n. */
 function title(connector: ConnectorSnapshot): string {
-  return is201.value
-    ? `EVSE ${connector.evseId ?? connector.connectorId} · connector 1`
-    : `Connector ${connector.connectorId}`;
+  return evseLabel(props.station.ocpp, connector.evseId ?? connector.connectorId);
 }
 
 /** What the EV and the EVSE are doing: the 2.0.1 charging state, or the 1.6 status. */
@@ -58,7 +60,7 @@ function presentCard(connector: ConnectorSnapshot) {
   const idTag = idTags[connector.connectorId] || connector.idTag || 'TAG-001';
   emit('action', 'idTag', connector.connectorId, {
     idTag,
-    ...(is201.value && { type: tokenTypes[connector.connectorId] ?? 'ISO14443' }),
+    ...(typedTokens.value && { type: tokenTypes[connector.connectorId] ?? 'ISO14443' }),
   });
 }
 
@@ -126,7 +128,7 @@ function inject() {
             title="Energy and SoC advance faster than real time; timestamps stay real"
             >energy ×{{ station.energyMultiplier }}</span
           >
-          <span class="version">OCPP {{ station.ocpp }}</span>
+          <VersionBadge :version="station.ocpp" />
           {{ station.persona }} · {{ station.csmsUrl }} · connection {{ station.transport }} ·
           {{ station.registration }}
           <span v-if="station.queuedMessages > 0"> · {{ station.queuedMessages }} queued</span>
@@ -310,9 +312,15 @@ function inject() {
           >
             Unplug
           </button>
-          <input v-model="idTags[connector.connectorId]" placeholder="TAG-001" class="tag" />
+          <input
+            v-model="idTags[connector.connectorId]"
+            placeholder="TAG-001"
+            class="tag"
+            :title="info.terms.token"
+            :aria-label="info.terms.token"
+          />
           <select
-            v-if="is201"
+            v-if="typedTokens"
             :value="tokenTypes[connector.connectorId] ?? 'ISO14443'"
             title="IdToken type"
             aria-label="IdToken type"
@@ -419,13 +427,6 @@ h2 {
 }
 .multiplier {
   width: 64px;
-}
-.version {
-  margin-right: 6px;
-  padding: 0 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-weight: 600;
 }
 .switches label {
   display: flex;

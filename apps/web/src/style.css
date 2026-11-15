@@ -13,6 +13,11 @@
   --warn-bg: #fef3c7;
   --bad: #b91c1c;
   --bad-bg: #fee2e2;
+  /* One colour per OCPP version. */
+  --v16: #6d28d9;
+  --v16-bg: #ede9fe;
+  --v201: #0e7490;
+  --v201-bg: #cffafe;
   color-scheme: light dark;
 }
 
@@ -32,6 +37,10 @@
     --warn-bg: #3a2a0a;
     --bad: #f87171;
     --bad-bg: #3b1414;
+    --v16: #c4b5fd;
+    --v16-bg: #2e1f4f;
+    --v201: #67e8f9;
+    --v201-bg: #0f3440;
   }
 }
 

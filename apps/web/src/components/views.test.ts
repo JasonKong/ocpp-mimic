@@ -7,6 +7,8 @@ import { createSSRApp, h, type Component } from 'vue';
 import { renderToString } from 'vue/server-renderer';
 import type { DeviceModelEntry, RecordEntry, StationSnapshot, StationSummary } from '../api.js';
 import DeviceModelBrowser from './DeviceModelBrowser.vue';
+import FleetOverview from './FleetOverview.vue';
+import MessageLog from './MessageLog.vue';
 import StationDetail from './StationDetail.vue';
 import StationList from './StationList.vue';
 import TransactionEvents from './TransactionEvents.vue';
@@ -181,7 +183,7 @@ describe('the 2.0.1 views', () => {
     expect(text(await render(DeviceModelBrowser, { variables: undefined }))).toContain('Loading…');
   });
 
-  it('marks 2.0.1 stations in the list', async () => {
+  it('marks every station with its version in the list', async () => {
     const stations: StationSummary[] = [
       {
         id: 'SIM-1',
@@ -199,13 +201,70 @@ describe('the 2.0.1 views', () => {
         tags: [],
         state: 'connected',
         registration: 'Accepted',
-        connectors: [{ connectorId: 1, status: 'Occupied' }],
+        connectors: [
+          { connectorId: 1, status: 'Occupied', chargingState: 'Charging' },
+          // Plugged in but not charging yet.
+          { connectorId: 2, status: 'Occupied', chargingState: 'EVConnected' },
+        ],
       },
     ];
-    const shown = text(
-      await render(StationList, { stations, personas: [], selectedId: undefined }),
-    );
-    expect(shown).toContain('SIM-1 Accepted');
+    const html = await render(StationList, { stations, personas: [], selectedId: undefined });
+    const shown = text(html);
+    expect(shown).toContain('SIM-1 1.6 Accepted');
     expect(shown).toContain('SIM-2 2.0.1 Charging 1');
+    expect(html).toContain('class="version-badge v16"');
+    expect(html).toContain('class="version-badge v201"');
+  });
+
+  it('counts charging 2.0.1 EVSEs in the fleet overview by their charging state', async () => {
+    const stations: StationSummary[] = [
+      {
+        id: 'A',
+        persona: 'generic-1.6',
+        ocpp: '1.6',
+        tags: [],
+        state: 'connected',
+        registration: 'Accepted',
+        connectors: [
+          { connectorId: 1, status: 'SuspendedEV' },
+          { connectorId: 2, status: 'Preparing' },
+        ],
+      },
+      {
+        id: 'B',
+        persona: 'generic-2.0.1',
+        ocpp: '2.0.1',
+        tags: [],
+        state: 'connected',
+        registration: 'Accepted',
+        connectors: [
+          { connectorId: 1, status: 'Occupied', chargingState: 'Charging' },
+          { connectorId: 2, status: 'Occupied', chargingState: 'EVConnected' },
+        ],
+      },
+    ];
+    const html = await render(FleetOverview, { stations });
+    // All: 2 stations, 2 online, 0 offline, 0 stopped, 2 charging, 0 faulted.
+    expect(text(html)).toContain('All 2 2 0 0 2 0');
+  });
+
+  it('shows the version of each frame in the message log', async () => {
+    const entries: RecordEntry[] = [
+      {
+        kind: 'frame',
+        seq: 1,
+        stationId: 'SIM-201',
+        at: '2026-11-15T10:00:00.000Z',
+        direction: 'cp-to-csms',
+        messageType: 2,
+        uniqueId: '1',
+        action: 'StatusNotification',
+        payload: {},
+        ocpp: '2.0.1',
+        text: '[2,"1","StatusNotification",{}]',
+      },
+    ];
+    const html = await render(MessageLog, { entries, stationId: 'SIM-201' });
+    expect(text(html)).toContain('2.0.1 StatusNotification');
   });
 });

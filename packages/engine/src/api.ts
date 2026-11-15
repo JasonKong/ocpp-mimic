@@ -314,6 +314,7 @@ export function stationSummary(snapshot: StationSnapshot): StationSummary {
     connectors: snapshot.connectors.map((c) => ({
       connectorId: c.connectorId,
       status: c.status,
+      ...(c.chargingState !== undefined && { chargingState: c.chargingState }),
     })),
   };
 }
