@@ -194,6 +194,9 @@ describe('parseCommand', () => {
       tls: { cert: 'server.pem', key: 'server.key', ca: 'ca.pem', clientCertificates: 'required' },
       statusMs: 0,
     });
+    expect(parseCommand(['csms', '--tariff', 'tariff.json'])).toMatchObject({
+      tariff: 'tariff.json',
+    });
     expect(parseCommand(['csms', '--delay', '50ms'])).toMatchObject({
       delay: { minMs: 50, maxMs: 50 },
     });

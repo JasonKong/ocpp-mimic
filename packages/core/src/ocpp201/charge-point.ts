@@ -1682,6 +1682,12 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       };
     },
 
+    // A running cost to show the driver (I03); the station only logs it.
+    CostUpdated(request) {
+      log(`running cost of ${request.transactionId}: ${request.totalCost}`);
+      return {};
+    },
+
     RequestStopTransaction(request) {
       const entry = [...transactions].find(([, tx]) => tx.id === request.transactionId);
       if (entry === undefined) return { status: 'Rejected' };

@@ -21,6 +21,10 @@ import {
   type OcppVersion,
   serializeFrame,
   sequentialIds,
+  createSessionTracker,
+  priceSession,
+  type ReferenceTariff,
+  type SessionFrame,
   type CallFrame,
   type Frame,
   type JsonObject,
@@ -112,6 +116,13 @@ export interface BuiltinCsmsOptions {
    * engine's Web UI can make the CSMS start a session remotely.
    */
   controlApi?: boolean;
+  /**
+   * Price 2.0.1 sessions with this tariff: TransactionEvent answers carry the
+   * running (and finally the total) cost, and CostUpdated goes out every
+   * `costUpdatedEveryMs` (default 60 s) for running transactions.
+   */
+  tariff?: ReferenceTariff;
+  costUpdatedEveryMs?: number;
 }
 
 /** What `GET /api/health` of the built-in CSMS answers with. */
@@ -288,6 +299,8 @@ interface ConnectionContext {
   /** Milliseconds to wait before answering a CALL. */
   delay: () => number;
   stats: BuiltinCsmsStats;
+  /** Prices 2.0.1 sessions (see BuiltinCsmsOptions.tariff). */
+  pricing?: { tariff: ReferenceTariff; everyMs: number };
 }
 
 function createConnection(
@@ -311,7 +324,47 @@ function createConnection(
     listeners.add(listener);
     return () => listeners.delete(listener);
   };
-  const send = (frame: Frame) => socket.send(serializeFrame(frame));
+  // With a tariff, the CSMS follows each session as a CSMS would, from the frames it sees.
+  const pricing = context.messages.version === '2.0.1' ? context.pricing : undefined;
+  const tracker =
+    pricing === undefined
+      ? undefined
+      : createSessionTracker({ stationId: chargeBoxId, ocpp: context.messages.version });
+  let seq = 0;
+  const actionOf = new Map<string, string>();
+  const follow = (direction: SessionFrame['direction'], frame: Frame) => {
+    if (tracker === undefined) return;
+    const record: SessionFrame = {
+      seq: ++seq,
+      at: new Date().toISOString(),
+      direction,
+      messageType: frame.type,
+      uniqueId: frame.id,
+    };
+    if (frame.type === MessageTypeId.Call) {
+      record.action = frame.action;
+      record.payload = frame.payload;
+      actionOf.set(frame.id, frame.action);
+    } else {
+      const action = actionOf.get(frame.id);
+      actionOf.delete(frame.id);
+      if (action !== undefined) record.action = action;
+      if (frame.type === MessageTypeId.CallResult) record.payload = frame.payload;
+      else record.errorCode = frame.errorCode;
+    }
+    tracker.frame(record);
+  };
+  /** The running cost of a transaction, tax included, as the tariff makes it. */
+  const costOf = (transactionId: unknown): number | undefined => {
+    const session = tracker?.open().find((s) => s.transactionId === transactionId);
+    return session === undefined || pricing === undefined || session.startedAt === undefined
+      ? undefined
+      : priceSession(session, pricing.tariff, new Date().toISOString()).inclTax;
+  };
+  const send = (frame: Frame) => {
+    follow('csms-to-cp', frame);
+    socket.send(serializeFrame(frame));
+  };
 
   const connection: BuiltinCsmsConnection = {
     chargeBoxId,
@@ -391,10 +444,26 @@ function createConnection(
       }, ms);
   };
 
+  if (pricing !== undefined) {
+    const timer = setInterval(() => {
+      for (const session of tracker?.open() ?? []) {
+        if (session.state !== 'running' || typeof session.transactionId !== 'string') continue;
+        const totalCost = costOf(session.transactionId);
+        if (totalCost === undefined) continue;
+        void connection
+          .call('CostUpdated', { totalCost, transactionId: session.transactionId }, 10_000)
+          .catch(() => {});
+      }
+    }, pricing.everyMs);
+    timer.unref();
+    void closed.then(() => clearInterval(timer));
+  }
+
   socket.on('message', async (data) => {
     const parsed = parseFrame(data.toString());
     if (!parsed.ok) return;
     const { frame } = parsed;
+    follow('cp-to-csms', frame);
     if (context.keepFrames || frame.type !== MessageTypeId.Call) received.push(frame);
     listeners.forEach((listener) => listener());
     if (frame.type !== MessageTypeId.Call) {
@@ -450,7 +519,15 @@ function createConnection(
           errorDetails: {},
         });
       } else {
-        answer({ type: MessageTypeId.CallResult, id: frame.id, payload: reply });
+        const totalCost =
+          frame.action === 'TransactionEvent'
+            ? costOf((frame.payload.transactionInfo as JsonObject | undefined)?.transactionId)
+            : undefined;
+        answer({
+          type: MessageTypeId.CallResult,
+          id: frame.id,
+          payload: totalCost === undefined ? reply : { ...reply, totalCost },
+        });
       }
     } catch (error) {
       answer({
@@ -655,6 +732,9 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       }
     },
     keepFrames: options.keepFrames ?? true,
+    ...(options.tariff !== undefined && {
+      pricing: { tariff: options.tariff, everyMs: options.costUpdatedEveryMs ?? 60_000 },
+    }),
     delay: () =>
       delay === undefined ? 0 : delay.minMs + Math.random() * (delay.maxMs - delay.minMs),
     stats,

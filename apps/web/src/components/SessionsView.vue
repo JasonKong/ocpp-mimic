@@ -1,8 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { FrameRecord, SessionDetail, SessionSummary, StationSnapshot } from '../api.js';
+import type {
+  FrameRecord,
+  ReferenceTariff,
+  SessionDetail,
+  SessionSummary,
+  StationSnapshot,
+} from '../api.js';
 import { versionInfo } from '../versions.js';
 import EnergyPanel from './EnergyPanel.vue';
+import PriceCard from './PriceCard.vue';
 import SessionHeader from './SessionHeader.vue';
 import SessionList from './SessionList.vue';
 import VehicleCard from './VehicleCard.vue';
@@ -21,12 +28,14 @@ const props = defineProps<{
   frames?: FrameRecord[] | undefined;
   showTruth: boolean;
   now: number;
+  tariff?: ReferenceTariff | undefined;
 }>();
 const emit = defineEmits<{
   select: [n: number];
   'update:showTruth': [value: boolean];
   'load-frames': [];
   'remote-start': [request: { idToken: string; type?: string; evseId?: number }];
+  'save-tariff': [tariff: ReferenceTariff];
 }>();
 
 const info = computed(() => versionInfo(props.station.ocpp));
@@ -116,6 +125,13 @@ function openFrame(seq: number) {
               :version="station.ocpp"
               :ev="evOf(detail.session.evseId)"
               :show-truth="showTruth"
+              @open-frame="openFrame"
+            />
+            <PriceCard
+              :detail="detail"
+              :version="station.ocpp"
+              :tariff="tariff"
+              @save-tariff="emit('save-tariff', $event)"
               @open-frame="openFrame"
             />
           </template>

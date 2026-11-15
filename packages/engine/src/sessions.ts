@@ -9,9 +9,12 @@ import {
   estimateGap,
   estimateSession,
   msUntilFull,
+  priceSession,
   sessionTruth,
   stateDurations,
   type ChargePointSnapshot,
+  type ReferenceTariff,
+  type SessionPrice,
   type SessionEstimate,
   type SessionHint,
   type SessionRecord,
@@ -52,7 +55,19 @@ export interface SessionDetail {
   gap?: EstimateGap;
   /** Milliseconds in each charging state, up to the end or now. */
   durations: ReturnType<typeof stateDurations>;
+  /** What the reference tariff makes of the session's reported values. */
+  price: SessionPrice;
 }
+
+/** The reference tariff until one is set: an example to edit, not a real price list. */
+export const DEFAULT_TARIFF: ReferenceTariff = {
+  tariffId: 'reference',
+  currency: 'NZD',
+  fixedFee: { prices: [{ priceFixed: 1 }] },
+  energy: { prices: [{ priceKwh: 0.35 }], taxRates: [{ type: 'GST', tax: 15 }] },
+  chargingTime: { prices: [{ priceMinute: 0.02 }] },
+  idleTime: { prices: [{ priceMinute: 0.5 }] },
+};
 
 export interface SessionServiceOptions {
   store?: StateStore;
@@ -77,6 +92,10 @@ export interface SessionService {
   subscribe(listener: (summary: SessionSummary) => void): () => void;
   /** The station was deleted. */
   forget(stationId: string): void;
+  /** The reference tariff sessions are priced with. */
+  tariff(): ReferenceTariff;
+  /** Sets the reference tariff; the caller checks it first (tariffProblems). */
+  setTariff(tariff: ReferenceTariff): void;
   /** Saves every session that changed since it was last saved. */
   flush(): void;
   stop(): void;
@@ -191,6 +210,8 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
   /** Samples and states counted at the last true sample, per open session. */
   const sampled = new WeakMap<SessionRecord, number>();
   const listeners = new Set<(summary: SessionSummary) => void>();
+  let tariff =
+    (options.store?.loadSetting('tariff') as ReferenceTariff | undefined) ?? DEFAULT_TARIFF;
   const timer = setInterval(() => flushRunning(), options.saveEveryMs ?? 30_000);
   timer.unref();
 
@@ -367,6 +388,7 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
         ...(truth !== undefined && { truth }),
         ...(gap !== undefined && { gap }),
         durations: stateDurations(record, new Date(now()).toISOString()),
+        price: priceSession(record, tariff, new Date(now()).toISOString()),
       };
     },
     frames(stationId, n) {
@@ -382,6 +404,11 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
       dirty.delete(stationId);
       recent.delete(stationId);
       backend.forget(stationId);
+    },
+    tariff: () => tariff,
+    setTariff(value) {
+      tariff = value;
+      options.store?.saveSetting('tariff', value);
     },
     flush: flushRunning,
     stop() {

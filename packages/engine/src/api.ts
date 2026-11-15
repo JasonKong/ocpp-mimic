@@ -13,6 +13,7 @@ import {
   parseInjection,
   parseRampUp,
   tagsProblem,
+  tariffProblems,
   UsageOverrideSchema,
   validate,
   VERSION,
@@ -22,6 +23,7 @@ import {
   type Fault,
   type PluggedEv,
   type ChargePoint201,
+  type ReferenceTariff,
 } from '@ocpp-mimic/core';
 import { probeCsms, remoteStartVia } from './csms/probe.js';
 import { resolveEv } from './evs.js';
@@ -706,6 +708,17 @@ const routes: Route[] = [
       );
     }
     return answer.body;
+  }),
+
+  route('GET', '/api/tariff', (_request, context) => ({ tariff: sessionsOf(context).tariff() })),
+
+  route('PUT', '/api/tariff', async (request, context) => {
+    const body = await request.body();
+    const value = 'tariff' in body ? body.tariff : body;
+    const problems = tariffProblems(value);
+    if (problems.length > 0) throw new HttpError(400, `invalid tariff: ${problems.join('; ')}`);
+    sessionsOf(context).setTariff(value as ReferenceTariff);
+    return { tariff: sessionsOf(context).tariff() };
   }),
 
   route('GET', '/api/stations/:param/sessions', (request, context) => {
