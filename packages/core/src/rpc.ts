@@ -7,21 +7,25 @@
  *   validated response, a CALLERROR, a timeout, or `Closed`. It never
  *   rejects. At most one CALL is unanswered at a time; later calls queue.
  * - Incoming CALLs go to the registered handler for their action. Unknown
- *   actions get NotImplemented, 1.6 actions without a handler NotSupported,
+ *   actions get NotImplemented, known actions without a handler NotSupported,
  *   invalid payloads the validation error code, failing handlers
  *   InternalError.
+ *
+ * Which actions exist, how payloads are validated and how error codes are
+ * spelled come from the message set of the station's OCPP version (default
+ * 1.6). The type parameter carries the same set's payload types.
  */
 import type { Clock, TimerHandle } from './clock.js';
 import type { IdGenerator } from './ids.js';
-import { MessageTypeId, OCPP16_ACTION_NAMES, type RpcErrorCode } from './ocpp16.js';
 import {
-  CHARGE_POINT_ACTIONS,
-  CSMS_ACTIONS,
-  validateRequest,
-  validateResponse,
-  type RequestOf,
-  type ResponseOf,
-} from './ocpp16-messages.js';
+  OCPP16_MESSAGE_SET,
+  type MessageSet,
+  type Ocpp16RpcTypes,
+  type RpcErrorName,
+  type RpcTypes,
+} from './message-set.js';
+import { MessageTypeId } from './ocpp16.js';
+import type { CHARGE_POINT_ACTIONS, CSMS_ACTIONS, ResponseOf } from './ocpp16-messages.js';
 import { parseFrame, serializeFrame, type Frame, type JsonObject } from './ocppj.js';
 import type { ValidationIssue } from './schema.js';
 
@@ -31,18 +35,25 @@ export type CsmsAction = (typeof CSMS_ACTIONS)[number];
 export type CallFailure =
   | { kind: 'CallError'; errorCode: string; errorDescription: string; errorDetails: JsonObject }
   | { kind: 'Timeout' }
-  /** The CSMS answered with a payload that breaks the 1.6 definition. */
+  /** The CSMS answered with a payload that breaks the message definition. */
   | { kind: 'InvalidResponse'; issues: ValidationIssue[]; payload: JsonObject }
-  /** Our own request broke the 1.6 definition, so it was not sent. */
+  /** Our own request broke the message definition, so it was not sent. */
   | { kind: 'InvalidRequest'; issues: ValidationIssue[] }
   | { kind: 'Closed' };
 
-export type CallOutcome<A extends ChargePointAction> =
-  { ok: true; payload: ResponseOf<A> } | { ok: false; failure: CallFailure };
+/** How a CALL ended: the validated answer, or why there is none. */
+export type RpcOutcome<R> = { ok: true; payload: R } | { ok: false; failure: CallFailure };
 
-export type CsmsHandlers = {
-  [A in CsmsAction]?: (request: RequestOf<A>) => ResponseOf<A> | Promise<ResponseOf<A>>;
+/** How a 1.6 CALL ended. */
+export type CallOutcome<A extends ChargePointAction> = RpcOutcome<ResponseOf<A>>;
+
+/** Handlers for the CSMS's CALLs, by action. */
+export type RpcHandlers<T extends RpcTypes> = {
+  [A in T['in']]?: (request: T['requests'][A]) => T['responses'][A] | Promise<T['responses'][A]>;
 };
+
+/** Handlers for the CSMS's 1.6 CALLs. */
+export type CsmsHandlers = RpcHandlers<Ocpp16RpcTypes>;
 
 /** Everything worth logging; the engine feeds these to the event recorder. */
 export type RpcEvent =
@@ -50,36 +61,41 @@ export type RpcEvent =
   | { type: 'received'; text: string }
   | { type: 'invalid-frame'; text: string; reason: string; message: string }
   | { type: 'unmatched-response'; id: string }
-  | { type: 'timeout'; id: string; action: ChargePointAction }
-  | { type: 'handler-error'; action: CsmsAction; message: string };
+  | { type: 'timeout'; id: string; action: string }
+  | { type: 'handler-error'; action: string; message: string };
 
-export interface RpcOptions {
+export interface RpcOptions<T extends RpcTypes = Ocpp16RpcTypes> {
   clock: Clock;
   ids: IdGenerator;
   send: (text: string) => void;
-  handlers?: CsmsHandlers;
+  /** The OCPP version's message set; default 1.6. It must match `T`. */
+  messages?: MessageSet;
+  handlers?: RpcHandlers<T>;
   /**
    * Whether the station handles an action now, for example because it
    * advertises the action's feature profile. Unsupported actions are answered
    * with CALLERROR NotSupported. Default: every action with a handler.
    */
-  supports?: (action: CsmsAction) => boolean;
+  supports?: (action: T['in']) => boolean;
   /** How long to wait for an answer to a CALL. Default 30 s. */
   callTimeoutMs?: number;
   onEvent?: (event: RpcEvent) => void;
 }
 
-export interface Rpc {
-  call<A extends ChargePointAction>(action: A, payload: RequestOf<A>): Promise<CallOutcome<A>>;
+export interface Rpc<T extends RpcTypes = Ocpp16RpcTypes> {
+  call<A extends T['out']>(
+    action: A,
+    payload: T['requests'][A],
+  ): Promise<RpcOutcome<T['responses'][A]>>;
   receive(text: string): void;
   /** Ends every pending and queued call with `Closed`; later calls end the same way. */
   close(): void;
 }
 
 interface QueuedCall {
-  action: ChargePointAction;
+  action: string;
   payload: JsonObject;
-  finish: (outcome: CallOutcome<ChargePointAction>) => void;
+  finish: (outcome: RpcOutcome<unknown>) => void;
 }
 
 interface PendingCall extends QueuedCall {
@@ -87,16 +103,15 @@ interface PendingCall extends QueuedCall {
   timer: TimerHandle;
 }
 
-const ALL_ACTIONS = new Set<string>(OCPP16_ACTION_NAMES);
-const CSMS_ACTION_SET = new Set<string>(CSMS_ACTIONS);
-
 function describeIssues(issues: ValidationIssue[]): string {
   const [first] = issues;
   return first === undefined ? 'invalid payload' : `${first.path}: ${first.message}`;
 }
 
-export function createRpc(options: RpcOptions): Rpc {
-  const { clock, ids, handlers = {}, callTimeoutMs = 30_000 } = options;
+export function createRpc<T extends RpcTypes = Ocpp16RpcTypes>(options: RpcOptions<T>): Rpc<T> {
+  const { clock, ids, callTimeoutMs = 30_000, messages = OCPP16_MESSAGE_SET } = options;
+  const handlers = (options.handlers ?? {}) as Record<string, (request: unknown) => unknown>;
+  const answered = new Set(messages.csmsActions);
   const emit = options.onEvent ?? (() => {});
   const queue: QueuedCall[] = [];
   let pending: PendingCall | undefined;
@@ -110,14 +125,14 @@ export function createRpc(options: RpcOptions): Rpc {
 
   function sendError(
     id: string,
-    errorCode: RpcErrorCode,
+    errorCode: RpcErrorName,
     description: string,
     details: JsonObject = {},
   ): void {
     sendFrame({
       type: MessageTypeId.CallError,
       id,
-      errorCode,
+      errorCode: messages.errorCode(errorCode),
       errorDescription: description,
       errorDetails: details,
     });
@@ -137,7 +152,7 @@ export function createRpc(options: RpcOptions): Rpc {
     sendFrame({ type: MessageTypeId.Call, id, action: next.action, payload: next.payload });
   }
 
-  function complete(outcome: CallOutcome<ChargePointAction>): void {
+  function complete(outcome: RpcOutcome<unknown>): void {
     const done = pending;
     if (done === undefined) return;
     clock.clearTimer(done.timer);
@@ -163,7 +178,7 @@ export function createRpc(options: RpcOptions): Rpc {
       });
       return;
     }
-    const validated = validateResponse(pending.action, frame.payload);
+    const validated = messages.validateResponse(pending.action, frame.payload);
     complete(
       validated.ok
         ? { ok: true, payload: validated.value }
@@ -175,23 +190,25 @@ export function createRpc(options: RpcOptions): Rpc {
   }
 
   async function handleCall(id: string, action: string, payload: JsonObject): Promise<void> {
-    if (!ALL_ACTIONS.has(action)) {
+    if (!messages.isAction(action)) {
       sendError(id, 'NotImplemented', `unknown action ${action}`);
       return;
     }
-    const handler = CSMS_ACTION_SET.has(action)
-      ? (handlers[action as CsmsAction] as ((request: unknown) => unknown) | undefined)
-      : undefined;
-    if (handler === undefined || options.supports?.(action as CsmsAction) === false) {
+    const handler = answered.has(action) ? handlers[action] : undefined;
+    if (handler === undefined || options.supports?.(action as T['in']) === false) {
       sendError(id, 'NotSupported', `${action} is not supported`);
       return;
     }
-    const csmsAction = action as CsmsAction;
-    const request = validateRequest(csmsAction, payload);
+    const csmsAction = action;
+    const request = messages.validateRequest(csmsAction, payload);
     if (!request.ok) {
-      // 1.6 validators report only 1.6 spellings.
-      sendError(id, request.errorCode as RpcErrorCode, describeIssues(request.issues), {
-        issues: request.issues,
+      // The set's validators already use the version's spelling.
+      sendFrame({
+        type: MessageTypeId.CallError,
+        id,
+        errorCode: request.errorCode,
+        errorDescription: describeIssues(request.issues),
+        errorDetails: { issues: request.issues } as unknown as JsonObject,
       });
       return;
     }
@@ -206,7 +223,7 @@ export function createRpc(options: RpcOptions): Rpc {
       return;
     }
     if (closed) return;
-    const checked = validateResponse(csmsAction, response);
+    const checked = messages.validateResponse(csmsAction, response);
     if (!checked.ok) {
       const message = `handler returned an invalid response: ${describeIssues(checked.issues)}`;
       emit({ type: 'handler-error', action: csmsAction, message });
@@ -217,9 +234,12 @@ export function createRpc(options: RpcOptions): Rpc {
   }
 
   return {
-    call<A extends ChargePointAction>(action: A, payload: RequestOf<A>): Promise<CallOutcome<A>> {
+    call<A extends T['out']>(
+      action: A,
+      payload: T['requests'][A],
+    ): Promise<RpcOutcome<T['responses'][A]>> {
       if (closed) return Promise.resolve({ ok: false, failure: { kind: 'Closed' } });
-      const request = validateRequest(action, payload);
+      const request = messages.validateRequest(action, payload);
       if (!request.ok) {
         return Promise.resolve({
           ok: false,
@@ -230,7 +250,7 @@ export function createRpc(options: RpcOptions): Rpc {
         queue.push({
           action,
           payload: payload as JsonObject,
-          finish: resolve as (outcome: CallOutcome<ChargePointAction>) => void,
+          finish: resolve as (outcome: RpcOutcome<unknown>) => void,
         });
         sendNext();
       });
@@ -245,6 +265,12 @@ export function createRpc(options: RpcOptions): Rpc {
         emit({ type: 'invalid-frame', text, reason: error.reason, message: error.message });
         if (error.replyWith !== undefined && error.id !== undefined) {
           sendError(error.id, error.replyWith, error.message);
+        } else if (
+          error.reason === 'unknown-message-type' &&
+          messages.answersUnknownMessageType &&
+          error.id !== undefined
+        ) {
+          sendError(error.id, 'MessageTypeNotSupported', error.message);
         }
         return;
       }

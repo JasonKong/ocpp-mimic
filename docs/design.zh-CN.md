@@ -806,6 +806,12 @@ M5 确定（#135）。M5 在同一个引擎里、在 1.6J 旁边加上 OCPP 2.0.
 - 设备 reducer 仍是连接器事实的唯一来源（插线、锁、授权、交易、EV 或 EVSE 暂停、故障、可用性、预约）。1.6 的状态，以及 2.0.1 的连接器状态和充电状态，都是同一组事实的纯视图。
 - 目录：2.0.1 模块放 `packages/core/src/ocpp201/`，共享部件放 `src/` 顶层，1.6 文件留在原处。
 
+已实现（T59）：
+
+- core 的 `message-set.ts`：`OCPP16_MESSAGE_SET` 和 `OCPP201_MESSAGE_SET`，包含子协议、按发送方分的 action、校验器和错误码拼写。`createRpc` 接收 `messages`，类型由 `RpcTypes` 提供（`Ocpp16RpcTypes`、`Ocpp201RpcTypes`）。2.0.1 桩收到未知消息类型、且能读出 uniqueId 时回 MessageTypeNotSupported；1.6 桩和以前一样忽略。
+- 目前已从 1.6 闭包里搬出：`station-timers.ts`（定时器和 `halt()`）、`outbox.ts`（保证送达；版本差异通过 `prepare`、`final` 和 `answered` 钩子传入，1.6 用它们填 CSMS 的 transactionId 和处理 SecurityEventNotification 的规则）以及 `energy.ts`（电表、EV、能量倍率、限值、充满定时器）。证书库、文件传输和预约到期随复用它们的 2.0.1 任务一起搬（T69、T71）。
+- `ChargePoint.ocpp` 表示版本。传输层提供并要求桩的子协议，记录器按桩的版本用对应的 OCA schema 检查每一帧，某个版本的 schema 在第一次用到时加载。
+
 **Device Model**
 
 - 一个存放组件（名称、实例、EVSE id、连接器 id）及其变量（名称、实例）的存储。变量有 Actual 属性，可选 Target、MinSet、MaxSet，每个属性有可变性（ReadOnly、WriteOnly、ReadWrite）、persistent 和 constant 标记，另有 characteristics（dataType、unit、valuesList、maxLimit；监控不在范围内，所以 supportsMonitoring 为 false）。

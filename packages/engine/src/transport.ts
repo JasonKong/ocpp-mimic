@@ -1,6 +1,6 @@
 /**
- * The WebSocket connection of one virtual charge point to its CSMS: OCPP
- * 1.6J subprotocol, optional Basic Auth, keepalive pings, reconnecting with
+ * The WebSocket connection of one virtual charge point to its CSMS: the
+ * subprotocol of its OCPP version, optional Basic Auth, keepalive pings, reconnecting with
  * exponential backoff and jitter, and two kinds of simulated outage.
  */
 import { OCPP16_SUBPROTOCOL } from '@ocpp-mimic/core';
@@ -60,6 +60,8 @@ export interface ConnectionSettings {
 export interface TransportOptions {
   /** The CSMS's OCPP-J URL; the chargeBoxId is appended as the last path segment. */
   url: string;
+  /** The subprotocol to offer and require: the station's OCPP version. Default `ocpp1.6`. */
+  subprotocol?: string;
   chargeBoxId: string;
   /** Basic Auth password (Security Profiles 1 and 2); the username is the chargeBoxId. */
   password?: string;
@@ -78,7 +80,7 @@ export interface TransportOptions {
   random?: () => number;
   /** A text frame from the CSMS. */
   onText: (text: string) => void;
-  /** The connection is open with the ocpp1.6 subprotocol. */
+  /** The connection is open with the station's subprotocol. */
   onOpen: () => void;
   /** The connection is gone (closed, failed, or taken down for an outage or restart). */
   onClose: () => void;
@@ -106,6 +108,7 @@ export interface Transport {
 
 export function createTransport(options: TransportOptions): Transport {
   const policy: BackoffPolicy = { ...DEFAULT_BACKOFF, ...options.backoff };
+  const subprotocol = options.subprotocol ?? OCPP16_SUBPROTOCOL;
   const random = options.random ?? Math.random;
   const emit = options.onEvent ?? (() => {});
   const target = `${options.url.replace(/\/+$/, '')}/${encodeURIComponent(options.chargeBoxId)}`;
@@ -189,7 +192,7 @@ export function createTransport(options: TransportOptions): Transport {
       headers.Authorization = `Basic ${token}`;
     }
     const tls = settings.tls ?? {};
-    const ws = new WebSocket(target, [OCPP16_SUBPROTOCOL], {
+    const ws = new WebSocket(target, [subprotocol], {
       headers,
       autoPong: false,
       ...(tls.rejectUnauthorized !== undefined && { rejectUnauthorized: tls.rejectUnauthorized }),
@@ -202,10 +205,10 @@ export function createTransport(options: TransportOptions): Transport {
     let opened = false;
 
     ws.on('open', () => {
-      if (ws.protocol !== OCPP16_SUBPROTOCOL) {
+      if (ws.protocol !== subprotocol) {
         emit({
           type: 'error',
-          message: `server did not accept the ${OCPP16_SUBPROTOCOL} subprotocol`,
+          message: `server did not accept the ${subprotocol} subprotocol`,
         });
         connectionLost();
         options.onConnectFailed?.();
