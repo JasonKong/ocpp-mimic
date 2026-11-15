@@ -1135,7 +1135,7 @@ interface SessionRecord {
 - 不加路由依赖：选中一个站后，用标签页在"站点"和"会话"之间切换；hash（`#/stations/<id>/sessions/<n>`）可以链接到某个会话。
 - 组件：SessionList、SessionHeader（启动来源徽章、idToken、remoteStartId、时间线）、EnergyPanel 和 EnergyChart、VehicleCard、PriceCard 和 TariffEditor，以及 SessionLog（复用消息日志的行和摘要）。一个共享开关在"CSMS 视角"和"显示真值"之间切换（R-SRC-1）。
 - `apps/web/src/versions.ts` 存放版本能力表（R-VER-3）：术语、每个版本的车辆字段（session-ui.md 第 6 节），以及版本有没有 remoteStartId、totalCost 和费率。加 2.1 就是加一行。
-- 已实现（T89）：`GET` / `PUT /api/tariff` 保存参考费率（用 `tariffProblems` 检查，存在 `settings` 表里；没设置时用一份示例费率），会话详情带上 `price`。PriceCard 并排显示 CSMS 最新的费用（来自 TransactionEventResponse 或 CostUpdated；OCPP 1.6 则说明它没有费用消息）和参考价，说明两者是否精确到分一致，列出各项及其用到的报文，以及费用更新记录，并用表单编辑费率（每项一个价格、一个税率）。`ocpp-mimic csms --tariff <file>` 让内置 CSMS 用同一个会话追踪器跟踪每个 2.0.1 会话，用同一套算法定价：TransactionEvent 的应答带 totalCost（含税），运行中的交易每分钟收到一次 CostUpdated；它算出的最终费用等于会话的参考价。
+- 已实现（T89）：`GET` / `PUT /api/tariff` 保存参考费率（用 `tariffProblems` 检查，存在 `settings` 表里；没设置时用一份示例费率），会话详情带上 `price`。PriceCard 并排显示 CSMS 最新的费用（来自 TransactionEventResponse 或 CostUpdated；OCPP 1.6 则说明它没有费用消息）和参考价，说明两者是否精确到分一致，列出各项及其用到的报文，以及费用更新记录，并用表单编辑费率（每项一个价格、一个税率）。`ocpp-mimic csms --tariff <file>` 让内置 CSMS 用同一个会话追踪器跟踪每个 2.0.1 会话，用同一套算法定价：TransactionEvent 的应答带 totalCost（含税），运行中的交易每分钟收到一次 CostUpdated；它算出的最终费用等于会话的参考价。2.0.1 桩接受 CostUpdated，并在日志里记下运行中的费用（I03）。
 - 已实现（T88）：VehicleCard 列出 session-ui.md 第 6 节的 12 项车辆信息（`apps/web/src/vehicle.ts`）。每一项给出：桩上报的值（ChargingNeeds、电表值、状态、令牌），第三方推算的值（由读数推算容量、剩余电量和时间、假设的目标、由各相电流推算相数），上报 / 推算标签；版本不提供时给出版本说明，或者说明这个桩或这辆车没有上报；打开显示真值时，附上插着的 EV 在模型里的值（容量、SoC、目标和降功率点、离开时间、最大功率、相数）。来自电表值或状态变化的上报值可以点开对应的报文。ETA 偏差提醒在电量面板里。
 - 已实现（T87）：EnergyPanel 显示已充电量、功率和 SoC（标为上报值，打开显示真值时旁边附上真值）、充电和暂停时长、推算的充到目标时间（说明目标从哪来，推算不了时说明原因）、真值 ETA，推算偏差超限时给出提醒、离开时间判断、各相电流和电压，以及结束会话的总电量、峰值功率、SoC 区间和停止原因。EnergyChart 是 SVG，由 `apps/web/src/chart.ts`（坐标换算、整数刻度、时间刻度、路径、会话的数据序列）绘制：kW 轴上是上报功率和提供功率，% 轴上是 SoC；打开显示真值时，EV 模型的功率和 SoC 用虚线画出。未开始的会话不显示电量面板。
 - 已实现（T86）：站点视图上方新增“站点 / 会话”两个标签页；`#/stations/<id>/sessions/<n>` 可以直接打开某个会话，浏览器前进后退也能跟着走。SessionsView 包括会话列表（两行：编号、启动来源、电量或失败原因；EVSE、令牌、时间）、SessionHeader（来源徽章、令牌和类型、remoteStartId、交易号、开始时间和时长、用文字说明的失败原因、停止原因）和启动时间线，时间线上每一步都能打开对应的报文和应答。`/api/events` 推送的会话摘要会更新列表，打开的会话同时最多只有一个重新加载请求在进行。站点连着内置 CSMS 时提供远程启动表单；连着其他 CSMS 时说明远程启动要由那个 CSMS 发起。“CSMS 视角 / 显示真值”开关已就位，供 T87、T88 的面板使用。车队总览的表格改为在卡片内横向滚动，不再撑宽页面。
@@ -1352,7 +1352,9 @@ TriggerMessage 属于 Remote Trigger profile，提前到 M1 是因为很多 CSMS
 
 DataTransfer 两个方向都有，两张表各算一次：共 44 个不同的 action。
 
-**不在范围内**：下面的充电桩消息桩从不发送，CSMS 消息回 CALLERROR NotSupported：ClearedChargingLimit、NotifyChargingLimit（外部限值）；Get15118EVCertificate、GetCertificateStatus、NotifyEVChargingNeeds、NotifyEVChargingSchedule（ISO 15118）；NotifyDisplayMessages、SetDisplayMessage、GetDisplayMessages、ClearDisplayMessage、CostUpdated（Advanced User Interface）；NotifyMonitoringReport、SetVariableMonitoring、ClearVariableMonitoring、SetMonitoringBase、SetMonitoringLevel、GetMonitoringReport（监控）；PublishFirmware、UnpublishFirmware、PublishFirmwareStatusNotification（本地控制器）。
+M6 加入了下面所列中的两个：NotifyEVChargingNeeds，为 ISO 15118 车发送（T82）；CostUpdated，桩接受并记录（T89）。
+
+**不在范围内**：下面的充电桩消息桩从不发送，CSMS 消息回 CALLERROR NotSupported：ClearedChargingLimit、NotifyChargingLimit（外部限值）；Get15118EVCertificate、GetCertificateStatus、NotifyEVChargingSchedule（ISO 15118）；NotifyDisplayMessages、SetDisplayMessage、GetDisplayMessages、ClearDisplayMessage（Advanced User Interface）；NotifyMonitoringReport、SetVariableMonitoring、ClearVariableMonitoring、SetMonitoringBase、SetMonitoringLevel、GetMonitoringReport（监控）；PublishFirmware、UnpublishFirmware、PublishFirmwareStatusNotification（本地控制器）。
 
 ## 分阶段路线图
 

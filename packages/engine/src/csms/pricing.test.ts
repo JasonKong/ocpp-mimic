@@ -94,6 +94,12 @@ describe('pricing sessions', () => {
       const costs = (await get('/api/stations/PRICED/sessions/1')).session?.costs ?? [];
       return costs.some((c: { from: string }) => c.from === 'CostUpdated') && costs.length >= 3;
     });
+    // The station takes the running cost (I03) instead of refusing it.
+    const messages = (await get('/api/stations/PRICED/messages?action=CostUpdated')).entries as {
+      messageType: number;
+    }[];
+    expect(messages.some((m) => m.messageType === 3)).toBe(true);
+    expect(messages.some((m) => m.messageType === 4)).toBe(false);
     await post('/api/stations/PRICED/connectors/1/id-tag', { idTag: 'AA000001', type: 'ISO14443' });
     await until(
       async () => (await get('/api/stations/PRICED/sessions/1')).session?.state === 'finished',
