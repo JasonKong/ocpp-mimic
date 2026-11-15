@@ -42,6 +42,8 @@ export {
   loadOcaSchemas,
   OCA_SCHEMAS_DIR,
   OCA_SECURITY_SCHEMAS_DIR,
+  OCA_OCPP201_SCHEMAS_DIR,
+  OCA_SCHEMA_DIRS,
   type OcaSchemas,
   type PayloadKind,
 } from './oca-schemas.js';
