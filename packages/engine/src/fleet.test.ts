@@ -100,7 +100,7 @@ describe('fleet', () => {
       const csmsUrl = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
       expect(() =>
         fleet.add({ id: 'SIM-201-X', persona: 'generic-2.0.1', csmsUrl, config: { A: '1' } }),
-      ).toThrow('config, password and security are not supported for 2.0.1 stations yet');
+      ).toThrow('config holds 1.6 configuration keys; a 2.0.1 station takes deviceModel');
       const station = fleet.add({ id: 'SIM-201', persona: 'generic-2.0.1', csmsUrl });
       await until(() => calls.some((c) => c.action === 'StatusNotification'));
       expect(calls[0]).toEqual({

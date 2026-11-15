@@ -20,7 +20,9 @@ import { evProfileProblems, type EvProfile } from './ev.js';
 import type { FirmwareSettings } from './firmware.js';
 import { ChargePointErrorCodeSchema, OCPP16_MESSAGES } from './ocpp16-messages.js';
 import { CERTIFICATION_PROFILES, type ChargePoint201Options } from './ocpp201/charge-point.js';
-import { ChargingStationSchema } from './ocpp201/messages.js';
+import { applyOverrides, type DeviceModelOverrides } from './ocpp201/device-model.js';
+import { ChargingStationSchema, DataEnumSchema, MutabilityEnumSchema } from './ocpp201/messages.js';
+import { standardVariables } from './ocpp201/standard-variables.js';
 import type { OcppVersion } from './message-set.js';
 import {
   array,
@@ -137,6 +139,33 @@ export const PersonaSchema = object(
   },
 );
 
+const scalar = union(string(), number(), boolean());
+
+/** A persona's or station's `deviceModel`: component → variable → value or definition. */
+export const DeviceModelOverridesSchema = record(
+  record(
+    union(
+      scalar,
+      object(
+        {},
+        {
+          actual: scalar,
+          target: scalar,
+          minSet: scalar,
+          maxSet: scalar,
+          mutability: MutabilityEnumSchema,
+          persistent: boolean(),
+          dataType: DataEnumSchema,
+          unit: string(),
+          valuesList: string(),
+          minLimit: number(),
+          maxLimit: number(),
+        },
+      ),
+    ),
+  ),
+);
+
 /** An OCPP 2.0.1 persona: `ocpp: "2.0.1"`, BootNotification's chargingStation block as `boot`. */
 export const Persona201Schema = object(
   {
@@ -148,6 +177,7 @@ export const Persona201Schema = object(
   {
     ...commonFields,
     features: array(oneOf(CERTIFICATION_PROFILES)),
+    deviceModel: DeviceModelOverridesSchema,
     timing: object(
       {},
       {
@@ -185,7 +215,11 @@ export type PersonaChargePointOptions = Pick<
 export type Persona201Options = Pick<
   ChargePoint201Options,
   'boot' | 'connectors' | 'timing' | 'offeredPowerW' | 'evPowerW'
-> & { features: readonly string[]; firmware?: Partial<FirmwareSettings> };
+> & {
+  features: readonly string[];
+  deviceModel?: DeviceModelOverrides;
+  firmware?: Partial<FirmwareSettings>;
+};
 
 interface ResolvedPersonaBase {
   id: string;
@@ -314,6 +348,7 @@ export function persona201ToOptions(definition: Persona201Definition): Persona20
     connectors: definition.connectors,
     timing: timingFrom(definition),
     features: definition.features ?? ['Core'],
+    ...(definition.deviceModel !== undefined && { deviceModel: definition.deviceModel }),
     ...(definition.power?.offeredW !== undefined && { offeredPowerW: definition.power.offeredW }),
     ...(definition.power?.evW !== undefined && { evPowerW: definition.power.evW }),
     ...(definition.firmware !== undefined && { firmware: firmwareFrom(definition.firmware) }),
@@ -395,6 +430,19 @@ export function resolvePersonas(sources: readonly PersonaSource[]): ResolvePerso
     }
     if (ocpp === '2.0.1') {
       const definition201 = definition as Persona201Definition;
+      // Overrides are checked against the standard variables now, not when a station starts.
+      const overrides = applyOverrides(
+        standardVariables({
+          connectors: definition201.connectors,
+          features: definition201.features ?? ['Core'],
+          offeredW: definition201.power?.offeredW ?? 7360,
+        }),
+        definition201.deviceModel,
+      );
+      if (!overrides.ok) {
+        errors.push(...overrides.problems.map((problem) => `${source}: $.deviceModel.${problem}`));
+        continue;
+      }
       const warnings = (definition201.features ?? [])
         .filter((feature) => !IMPLEMENTED_201_PROFILES.includes(feature))
         .map(

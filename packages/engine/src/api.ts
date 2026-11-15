@@ -175,6 +175,31 @@ function evOf(station: VirtualStation, value: unknown): PluggedEv | undefined {
   }
 }
 
+/** `deviceModel`: an object of components, each an object of variables with scalar values. */
+function deviceModelField(value: unknown): Record<string, Record<string, string>> | undefined {
+  if (value === undefined) return undefined;
+  const isObject = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+  if (!isObject(value)) throw new HttpError(400, '"deviceModel" must be an object of components');
+  const out: Record<string, Record<string, string>> = {};
+  for (const [component, variables] of Object.entries(value)) {
+    if (!isObject(variables)) {
+      throw new HttpError(400, `"deviceModel.${component}" must be an object of variables`);
+    }
+    out[component] = {};
+    for (const [variable, v] of Object.entries(variables)) {
+      if (!['string', 'number', 'boolean'].includes(typeof v)) {
+        throw new HttpError(
+          400,
+          `"deviceModel.${component}.${variable}" must be a string, number or boolean`,
+        );
+      }
+      out[component][variable] = String(v);
+    }
+  }
+  return out;
+}
+
 /**
  * A station definition from a request body (`id` given separately for
  * templates). Unknown fields are ignored, as before.
@@ -187,6 +212,7 @@ function definitionFrom(body: Record<string, unknown>, id: string): StationDefin
   ) {
     throw new HttpError(400, '"config" must be an object of strings');
   }
+  const deviceModel = deviceModelField(body.deviceModel);
   if (body.tags !== undefined) {
     const problem = tagsProblem(body.tags);
     if (problem !== undefined) throw new HttpError(400, `"tags": ${problem}`);
@@ -217,6 +243,7 @@ function definitionFrom(body: Record<string, unknown>, id: string): StationDefin
         Object.entries(config).map(([key, value]) => [key, String(value)]),
       ),
     }),
+    ...(deviceModel !== undefined && { deviceModel }),
     ...(body.energyMultiplier !== undefined && {
       energyMultiplier: multiplierField(body),
     }),
