@@ -35,3 +35,158 @@ steps:
         triggerReason: EVCommunicationLost
         transactionInfo: { transactionId: '{{tx}}', stoppedReason: EVDisconnected }
       answer: {}
+---
+name: TC_E_01_CSMS, TC_E_03_CSMS, TC_E_07_CSMS, TC_E_15_CSMS, TC_E_53_CSMS, TC_J_07_CSMS, TC_J_09_CSMS and TC_J_10_CSMS A local session with sampled meter values
+csms: ws://localhost:8081
+station:
+  id: MIMIC-E01
+  persona: regression-2.0.1
+  deviceModel: { SampledDataCtrlr: { TxUpdatedInterval: 1 } }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - presentCard: { idToken: AA000050, result: authorized }
+  - expect: { sent: Authorize, answer: { idTokenInfo: { status: Accepted } } }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Started
+        triggerReason: CablePluggedIn
+        seqNo: 0
+        meterValue: { $contains: { sampledValue: [{ context: Transaction.Begin }] } }
+      answer: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Updated, triggerReason: MeterValuePeriodic }
+      answer: {}
+      within: 5s
+  - presentCard: { idToken: AA000050, result: stopping }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Ended
+        triggerReason: StopAuthorized
+        transactionInfo: { stoppedReason: Local }
+        meterValue: { $contains: { sampledValue: [{ context: Transaction.End }] } }
+      answer: {}
+---
+name: TC_E_02_CSMS, TC_E_08_CSMS and TC_E_22_CSMS Start and stop on the energy transfer
+csms: ws://localhost:8081
+station:
+  id: MIMIC-E02
+  persona: regression-2.0.1
+  deviceModel: { TxCtrlr: { TxStartPoint: EnergyTransfer, TxStopPoint: EnergyTransfer } }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - presentCard: { idToken: AA000051, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started }, answer: {} }
+  - presentCard: { idToken: AA000051, result: stopping }
+  - expect:
+      {
+        sent: TransactionEvent,
+        payload: { eventType: Ended, triggerReason: StopAuthorized },
+        answer: {},
+      }
+  - unplug: {}
+  - presentCard: { idToken: AA000051, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started }, answer: {} }
+  - evSuspend: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Ended }, answer: {} }
+---
+name: TC_E_10_CSMS and TC_E_39_CSMS Start when authorized, and end without a cable in time
+csms: ws://localhost:8081
+station:
+  id: MIMIC-E10
+  persona: regression-2.0.1
+  deviceModel: { TxCtrlr: { TxStartPoint: Authorized, EVConnectionTimeOut: 2 } }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - presentCard: { idToken: AA000052, result: authorized }
+  - expect:
+      {
+        sent: TransactionEvent,
+        payload: { eventType: Started, triggerReason: Authorized },
+        answer: {},
+      }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        {
+          eventType: Ended,
+          triggerReason: EVConnectTimeout,
+          transactionInfo: { stoppedReason: Timeout },
+        }
+      answer: {}
+      within: 5s
+---
+name: TC_E_17_CSMS The EV side disconnects
+csms: ws://localhost:8081
+station: { id: MIMIC-E17, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - presentCard: { idToken: AA000053, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started }, answer: {} }
+  - unplug: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Ended
+        triggerReason: EVCommunicationLost
+        transactionInfo: { stoppedReason: EVDisconnected }
+      answer: {}
+---
+name: TC_E_30_CSMS and TC_E_34_CSMS Check the transaction status
+csms: ws://localhost:8081
+station: { id: MIMIC-E30, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - presentCard: { idToken: AA000054, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started }
+      answer: {}
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/transactions/getTransactionStatus?identifier=MIMIC-E30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { transactionId: '{{tx}}' }
+      expect: { json: [{ success: true }] }
+  - expect:
+      { received: GetTransactionStatus, answer: { ongoingIndicator: true, messagesInQueue: false } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/transactions/getTransactionStatus?identifier=MIMIC-E30&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: {}
+      expect: { json: [{ success: true }] }
+  - expect: { received: GetTransactionStatus, answer: { messagesInQueue: false } }
+---
+name: TC_J_01_CSMS, TC_J_02_CSMS and TC_J_03_CSMS Clock-aligned meter values
+csms: ws://localhost:8081
+station:
+  id: MIMIC-J01
+  persona: regression-2.0.1
+  deviceModel: { AlignedDataCtrlr: { Interval: 2, SendDuringIdle: true, TxEndedInterval: 1 } }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - expect: { sent: MeterValues, payload: { evseId: 1 }, answer: {}, within: 5s }
+  - presentCard: { idToken: AA000055, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started }, answer: {} }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Updated, triggerReason: MeterValueClock }
+      answer: {}
+      within: 5s
+  - presentCard: { idToken: AA000055, result: stopping }
+  - expect: { sent: TransactionEvent, payload: { eventType: Ended }, answer: {} }

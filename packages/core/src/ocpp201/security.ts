@@ -427,8 +427,9 @@ export function createSecurity201(options: Security201Options): Security201 {
           ? tools.verifySignature(image, firmware.signature, firmware.signingCertificate)
           : settings.signature === 'succeed';
       if (!verified) {
+        finish('InvalidSignature');
         securityEvent('InvalidFirmwareSignature', firmware.location.slice(0, 200));
-        return finish('InvalidSignature');
+        return;
       }
       reportFirmware('SignatureVerified', requestId);
     }

@@ -1,0 +1,6 @@
+# A 2.0.1 station with the Core certification profile only, to test how a
+# CSMS handles NotSupported for the other profiles' messages.
+persona: core-only-2.0.1
+extends: regression-2.0.1
+description: regression-2.0.1 with the Core profile only
+features: [Core]

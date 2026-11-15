@@ -96,3 +96,42 @@ steps:
         idToken: { idToken: AA000002 }
         transactionInfo: { stoppedReason: Local }
       answer: {}
+---
+name: TC_C_06_CSMS and TC_C_07_CSMS Blocked and expired tokens
+csms: ws://localhost:8081
+station: { id: MIMIC-C06, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - presentCard: { idToken: AA000063, result: rejected }
+  - expect:
+      {
+        sent: Authorize,
+        payload: { idToken: { idToken: AA000063 } },
+        answer: { idTokenInfo: { status: Blocked } },
+      }
+  - presentCard: { idToken: AA000064, result: rejected }
+  - expect:
+      {
+        sent: Authorize,
+        payload: { idToken: { idToken: AA000064 } },
+        answer: { idTokenInfo: { status: Expired } },
+      }
+---
+name: TC_D_04_CSMS A full update with an empty list
+csms: ws://localhost:8081
+station: { id: MIMIC-D04, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/sendLocalList?identifier=MIMIC-D04&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { versionNumber: 4, updateType: Full }
+      expect: { json: [{ success: true }] }
+  - expect: { received: SendLocalList, answer: { status: Accepted } }
+  - expectStation: { localList: { version: 4, size: 0 } }

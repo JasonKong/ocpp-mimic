@@ -1,0 +1,7 @@
+# regression-2.0.1 whose firmware images never pass their signature check,
+# to test how a CSMS reports InvalidSignature.
+persona: firmware-bad-signature-2.0.1
+extends: regression-2.0.1
+description: regression-2.0.1 whose firmware fails its signature check
+firmware:
+  signature: fail
