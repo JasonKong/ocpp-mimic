@@ -1,0 +1,118 @@
+# Remote control, reset and customer information with CitrineOS as the CSMS.
+name: TC_F_02_CSMS Remote start first, then remote stop
+csms: ws://localhost:8081
+station: { id: MIMIC-F02, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/requestStartTransaction?identifier=MIMIC-F02&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { idToken: { idToken: AA000001, type: ISO14443 }, remoteStartId: 21, evseId: 1 }
+  - expect: { received: RequestStartTransaction, answer: { status: Accepted } }
+  - expect: { sent: Authorize, answer: { idTokenInfo: { status: Accepted } } }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, transactionInfo: { remoteStartId: 21 } }
+      answer: {}
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/requestStopTransaction?identifier=MIMIC-F02&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { transactionId: '{{tx}}' }
+  - expect: { received: RequestStopTransaction, answer: { status: Accepted } }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        { eventType: Ended, triggerReason: RemoteStop, transactionInfo: { stoppedReason: Remote } }
+      answer: {}
+---
+name: TC_F_06_CSMS, TC_F_20_CSMS and TC_F_24_CSMS Unlock and trigger messages
+csms: ws://localhost:8081
+station: { id: MIMIC-F06, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/unlockConnector?identifier=MIMIC-F06&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { evseId: 1, connectorId: 1 }
+  - expect: { received: UnlockConnector, answer: { status: Unlocked } }
+  - plugIn: { evse: 2 }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/triggerMessage?identifier=MIMIC-F06&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestedMessage: Heartbeat }
+  - expect: { received: TriggerMessage, answer: { status: Accepted } }
+  - expect: { sent: Heartbeat, answer: { currentTime: { $exists: true } } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/triggerMessage?identifier=MIMIC-F06&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestedMessage: StatusNotification, evse: { id: 2 } }
+  - expect: { received: TriggerMessage, answer: { status: Accepted } }
+  - expect:
+      { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Occupied }, answer: {} }
+---
+name: TC_B_20_CSMS Reset the station without a transaction
+csms: ws://localhost:8081
+station: { id: MIMIC-B20, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/configuration/reset?identifier=MIMIC-B20&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { type: OnIdle }
+  - expect: { received: Reset, answer: { status: Accepted } }
+  - expect:
+      sent: BootNotification
+      payload: { reason: RemoteReset }
+      answer: { status: Accepted }
+      within: 15s
+---
+name: TC_N_27_CSMS Customer information with data
+csms: ws://localhost:8081
+station: { id: MIMIC-N27, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - presentCard: { idToken: AA000001, result: authorized }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/reporting/customerInformation?identifier=MIMIC-N27&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        {
+          requestId: 27,
+          report: true,
+          clear: false,
+          idToken: { idToken: AA000001, type: ISO14443 },
+        }
+  - expect: { received: CustomerInformation, answer: { status: Accepted } }
+  - expect:
+      sent: NotifyCustomerInformation
+      payload: { requestId: 27, data: { $regex: 'AA000001' } }
+      answer: {}

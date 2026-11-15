@@ -195,6 +195,8 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
         ...dynamic,
       }),
       variable(evse, 'Available', 'boolean', ro('true')),
+      // Resetting one EVSE is supported (B11.FR.10).
+      variable(evse, 'AllowReset', 'boolean', ro('true')),
       variable(evse, 'Problem', 'boolean', ro(), dynamic),
       variable(evse, 'Power', 'decimal', ro(), {
         unit: 'W',
