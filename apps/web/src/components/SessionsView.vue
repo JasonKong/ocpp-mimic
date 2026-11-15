@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
+import { sessionFramesUrl } from '../api.js';
 import type {
   FrameRecord,
+  LogRecord,
+  RecordEntry,
   ReferenceTariff,
   SessionDetail,
   SessionSummary,
@@ -11,6 +14,8 @@ import { versionInfo } from '../versions.js';
 import EnergyPanel from './EnergyPanel.vue';
 import PriceCard from './PriceCard.vue';
 import SessionHeader from './SessionHeader.vue';
+import SessionLog from './SessionLog.vue';
+import { nearestMeterRow, logRows, sessionLogLines } from '../session-log.js';
 import SessionList from './SessionList.vue';
 import VehicleCard from './VehicleCard.vue';
 import VersionBadge from './VersionBadge.vue';
@@ -29,6 +34,8 @@ const props = defineProps<{
   showTruth: boolean;
   now: number;
   tariff?: ReferenceTariff | undefined;
+  /** The station's recent records (frames and log lines), for the log. */
+  records?: RecordEntry[] | undefined;
 }>();
 const emit = defineEmits<{
   select: [n: number];
@@ -52,6 +59,34 @@ function remoteStart() {
     ...(remote.value.evseId > 0 && { evseId: remote.value.evseId }),
   });
 }
+
+// The log needs the open session's frames; they reload when the session changes.
+watch(
+  () => [props.detail?.session.n, props.frames === undefined] as const,
+  ([n, missing]) => {
+    if (n !== undefined && missing) emit('load-frames');
+  },
+  { immediate: true },
+);
+
+/** A meter frame picked in the log marks its moment on the chart, and a click on the chart picks the nearest one. */
+const highlightAt = ref<string | undefined>();
+const selectedSeq = ref<number | undefined>();
+function chartPicked(t: number) {
+  const row = nearestMeterRow(logRows(props.frames ?? []), t);
+  selectedSeq.value = row?.seq;
+  highlightAt.value = row?.at;
+}
+function logPicked(at: string | undefined) {
+  highlightAt.value = at;
+  selectedSeq.value = undefined;
+}
+const stationFrames = computed(() =>
+  (props.records ?? []).filter((r): r is FrameRecord => r.kind === 'frame'),
+);
+const stationLogLines = computed(() =>
+  (props.records ?? []).filter((r): r is LogRecord => r.kind === 'log'),
+);
 
 const openSeq = ref<number | undefined>();
 const openFrames = computed(() =>
@@ -119,7 +154,13 @@ function openFrame(seq: number) {
             @open-frame="openFrame"
           />
           <template v-if="detail.session.state !== 'not-started'">
-            <EnergyPanel :detail="detail" :show-truth="showTruth" :now="now" />
+            <EnergyPanel
+              :detail="detail"
+              :show-truth="showTruth"
+              :now="now"
+              :highlight-at="highlightAt"
+              @select-time="chartPicked"
+            />
             <VehicleCard
               :detail="detail"
               :version="station.ocpp"
@@ -135,6 +176,19 @@ function openFrame(seq: number) {
               @open-frame="openFrame"
             />
           </template>
+          <SessionLog
+            :frames="frames"
+            :session-log-lines="
+              sessionLogLines(records ?? [], detail.session.requestedAt, detail.session.endedAt)
+            "
+            :station-frames="stationFrames"
+            :station-log-lines="stationLogLines"
+            :export-url="sessionFramesUrl(station.id, detail.session.n)"
+            :export-name="`${station.id}-session-${detail.session.n}.jsonl`"
+            :selected-seq="selectedSeq"
+            @select-time="logPicked"
+            @load="emit('load-frames')"
+          />
         </template>
         <p v-else class="hint">{{ sessions.length > 0 ? 'Pick a session.' : '' }}</p>
       </div>

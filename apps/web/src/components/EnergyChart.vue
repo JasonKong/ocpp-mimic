@@ -9,7 +9,14 @@ import { formatTime } from '../format.js';
  * the left axis (kW), reported SoC on the right (%), and with `showTruth` the
  * EV model's power and SoC dashed beside them (R-NRG-2).
  */
-const props = defineProps<{ session: SessionRecord; showTruth: boolean; now: number }>();
+const props = defineProps<{
+  session: SessionRecord;
+  showTruth: boolean;
+  now: number;
+  /** A moment to mark (a meter frame picked in the log). */
+  highlightAt?: string | undefined;
+}>();
+const emit = defineEmits<{ 'select-time': [t: number] }>();
 
 const W = 640;
 const H = 220;
@@ -25,6 +32,19 @@ const kwTicks = computed(() => ticks(0, series.value.maxKw, 4));
 const tTicks = computed(() => timeTicks(series.value.start, series.value.end, 5));
 const path = (points: { t: number; v: number }[], soc = false) =>
   linePath(points, x.value, soc ? ySoc : yKw.value);
+const marker = computed(() =>
+  props.highlightAt === undefined ? undefined : x.value(Date.parse(props.highlightAt)),
+);
+/** A click on the chart picks the moment under it (the log shows the nearest meter frame). */
+function pick(event: MouseEvent) {
+  const svg = event.currentTarget as SVGSVGElement;
+  const box = svg.getBoundingClientRect();
+  if (box.width === 0) return;
+  const px = ((event.clientX - box.left) / box.width) * W;
+  const { start, end } = series.value;
+  const t = start + ((px - M.left) / (W - M.left - M.right)) * (end - start);
+  emit('select-time', Math.min(end, Math.max(start, t)));
+}
 const empty = computed(
   () => series.value.power.length + series.value.soc.length + series.value.offered.length === 0,
 );
@@ -32,7 +52,12 @@ const empty = computed(
 
 <template>
   <figure class="energy-chart">
-    <svg :viewBox="`0 0 ${W} ${H}`" role="img" aria-label="Power and state of charge over time">
+    <svg
+      :viewBox="`0 0 ${W} ${H}`"
+      role="img"
+      aria-label="Power and state of charge over time"
+      @click="pick"
+    >
       <g class="grid">
         <line
           v-for="v in kwTicks"
@@ -70,6 +95,14 @@ const empty = computed(
         <path class="power truth" :d="path(series.truePower)" />
         <path class="soc truth" :d="path(series.trueSoc, true)" />
       </template>
+      <line
+        v-if="marker !== undefined"
+        class="marker"
+        :x1="marker"
+        :x2="marker"
+        :y1="M.top"
+        :y2="H - M.bottom"
+      />
       <text v-if="empty" :x="W / 2" :y="H / 2" class="empty">No meter values yet</text>
     </svg>
     <figcaption>
@@ -129,6 +162,13 @@ path {
 .truth {
   stroke-dasharray: 6 4;
   opacity: 0.7;
+}
+.marker {
+  stroke: var(--warn);
+  stroke-width: 1.5;
+}
+svg {
+  cursor: crosshair;
 }
 .empty {
   fill: var(--muted);

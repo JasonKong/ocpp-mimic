@@ -18,6 +18,7 @@ import FleetOverview from './FleetOverview.vue';
 import MessageLog from './MessageLog.vue';
 import EnergyPanel from './EnergyPanel.vue';
 import PriceCard from './PriceCard.vue';
+import SessionLog from './SessionLog.vue';
 import SessionsView from './SessionsView.vue';
 import VehicleCard from './VehicleCard.vue';
 import StationDetail from './StationDetail.vue';
@@ -647,5 +648,55 @@ describe('the price card', () => {
     expect(text(await render(PriceCard, { detail: none, version: '2.0.1' }))).toContain(
       'the CSMS sent no cost',
     );
+  });
+});
+
+describe('the session log', () => {
+  it('shows the session frames with answers and log lines, and the export link', async () => {
+    const at = (ms: number) => new Date(Date.parse('2026-11-15T10:00:00Z') + ms).toISOString();
+    const frames = [
+      {
+        kind: 'frame' as const,
+        seq: 1,
+        stationId: 'SIM',
+        at: at(0),
+        direction: 'csms-to-cp' as const,
+        messageType: 2 as const,
+        uniqueId: 'r',
+        action: 'RequestStartTransaction',
+        payload: { remoteStartId: 1 },
+        ocpp: '2.0.1' as const,
+        text: '[2]',
+      },
+      {
+        kind: 'frame' as const,
+        seq: 2,
+        stationId: 'SIM',
+        at: at(40),
+        direction: 'cp-to-csms' as const,
+        messageType: 3 as const,
+        uniqueId: 'r',
+        action: 'RequestStartTransaction',
+        payload: { status: 'Accepted' },
+        ocpp: '2.0.1' as const,
+        text: '[3]',
+      },
+    ];
+    const html = await render(SessionLog, {
+      frames,
+      sessionLogLines: [
+        { kind: 'log', seq: 3, stationId: 'SIM', at: at(500), message: 'connection open' },
+      ],
+      stationFrames: [],
+      stationLogLines: [],
+      exportUrl: '/api/stations/SIM/sessions/1/frames?format=jsonl',
+      exportName: 'SIM-session-1.jsonl',
+    });
+    const shown = text(html);
+    expect(shown).toContain('CSMS → CP 2.0.1 RequestStartTransaction');
+    expect(shown).toContain('40 ms');
+    expect(shown).toContain('connection open');
+    expect(html).toContain('href="/api/stations/SIM/sessions/1/frames?format=jsonl"');
+    expect(shown).toContain('This session Whole station');
   });
 });
