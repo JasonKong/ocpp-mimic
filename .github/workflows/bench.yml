@@ -19,6 +19,9 @@ on:
       charging:
         description: Share of stations charging
         default: '0.3'
+      persona:
+        description: Persona from scenarios/personas (load-ac-1.6 or load-ac-2.0.1)
+        default: load-ac-1.6
       store:
         description: Keep station state in SQLite, as serve --store
         type: boolean
@@ -50,6 +53,7 @@ jobs:
           DURATION: ${{ inputs.duration }}
           RATE: ${{ inputs.rate }}
           CHARGING: ${{ inputs.charging }}
+          PERSONA: ${{ inputs.persona }}
           STORE: ${{ inputs.store }}
           RECORD_LIMIT: ${{ inputs.record_limit }}
         run: |
@@ -59,7 +63,8 @@ jobs:
           if [ -n "$RECORD_LIMIT" ]; then extra+=(--record-limit "$RECORD_LIMIT"); fi
           node --cpu-prof --cpu-prof-dir=bench-results packages/cli/dist/bench-main.js \
             --stations "$STATIONS" --duration "$DURATION" --rate "$RATE" \
-            --charging "$CHARGING" --out bench-results "${extra[@]}" | tee bench-results/console.txt
+            --charging "$CHARGING" --persona "$PERSONA" --out bench-results "${extra[@]}" \
+            | tee bench-results/console.txt
       - name: Add the summary to the job summary
         if: always()
         run: |

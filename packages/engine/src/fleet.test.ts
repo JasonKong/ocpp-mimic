@@ -217,6 +217,52 @@ describe('fleet', () => {
   });
 
   it(
+    'runs the usage model on a 2.0.1 station next to a 1.6 one',
+    { timeout: 20_000 },
+    async () => {
+      csms = await startBuiltinCsms();
+      const fleet = await fleetWith();
+      const usage = {
+        sessionsPerHour: 3600,
+        stay: { min: '1500ms', max: '2s' },
+        steps: { min: '50ms', max: '100ms' },
+        evs: { 'test-5kwh': 1 },
+        idTags: { unknownShare: 0 },
+        stopBy: { card: 1, unplug: 0 },
+      };
+      fleet.add({ id: 'MIX-16', persona: 'generic-1.6', csmsUrl: csms.url, usage, seed: 4 });
+      const station = fleet.add({
+        id: 'MIX-201',
+        persona: 'generic-2.0.1',
+        csmsUrl: csms.url,
+        usage,
+        seed: 4,
+      });
+      const connection = await csms.waitForConnection('MIX-201');
+      expect(connection.ocpp).toBe('2.0.1');
+      const started = await connection.waitForCall('TransactionEvent', 10_000);
+      expect(started.payload).toMatchObject({
+        eventType: 'Started',
+        idToken: { idToken: expect.stringMatching(/^LOAD-\d{4}$/), type: 'ISO14443' },
+      });
+      // The card ends the session (stopBy card), and with it the transaction.
+      for (;;) {
+        const event = await connection.waitForCall('TransactionEvent', 10_000);
+        if (event.payload.eventType !== 'Ended') continue;
+        expect(event.payload).toMatchObject({
+          triggerReason: 'StopAuthorized',
+          transactionInfo: { stoppedReason: 'Local' },
+        });
+        break;
+      }
+      expect(station.snapshot().usage).toBe(true);
+      const old = await csms.waitForConnection('MIX-16');
+      expect(old.ocpp).toBe('1.6');
+      await old.waitForCall('StartTransaction', 10_000);
+    },
+  );
+
+  it(
     'runs the usage model while a station runs, and switches it',
     { timeout: 20_000 },
     async () => {

@@ -1,0 +1,26 @@
+# The 2.0.1 counterpart of load-ac-1.6: a two-EVSE 22 kW AC charging station
+# for load tests and the benchmark (docs/design.md, "M4 scale"). Load it with
+# --personas scenarios/personas.
+persona: load-ac-2.0.1
+extends: generic-2.0.1
+description: Two-EVSE 22 kW AC charging station for load tests
+boot:
+  vendorName: ocpp-mimic
+  model: Load-AC-22
+  firmwareVersion: 0.0.0
+connectors: 2
+power:
+  offeredW: 22080
+deviceModel:
+  OCPPCommCtrlr: { HeartbeatInterval: 60 }
+  SampledDataCtrlr: { TxUpdatedInterval: 60 }
+evs:
+  suv-77kwh: { capacityKWh: 77, initialSoc: 25, maxPowerW: 11000, phases: 3 }
+# The same usage model as load-ac-1.6; its cards are ISO14443 tokens.
+usage:
+  sessionsPerHour: 1
+  stay: { min: 20m, max: 2h }
+  evs: { compact-40kwh: 2, sedan-75kwh: 1, suv-77kwh: 1 }
+  idTags: { prefix: LOAD-, count: 500, unknownShare: 0.05, unknownPrefix: UNKNOWN- }
+  cardFirst: 0.3
+  stopBy: { card: 0.7, unplug: 0.3 }

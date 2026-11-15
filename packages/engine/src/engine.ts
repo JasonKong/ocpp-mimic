@@ -108,10 +108,14 @@ export function createEngine(options: EngineOptions = {}): Engine {
       }
     },
     labelsOf: (id) => {
-      const definition = fleet?.get(id)?.definition;
-      return definition === undefined
+      const station = fleet?.get(id);
+      return station === undefined
         ? undefined
-        : { persona: definition.persona, group: definition.group ?? '' };
+        : {
+            persona: station.definition.persona,
+            group: station.definition.group ?? '',
+            ocpp: station.chargePoint.ocpp,
+          };
     },
   });
   const events = new WebSocketServer({ noServer: true });

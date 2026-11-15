@@ -1,6 +1,6 @@
 # A short load plan CI runs on every change (docs/design.md, "M4 scale"):
-# 100 stations with quick sessions and a reconnect storm, against
-# `ocpp-mimic csms`.
+# 100 stations, half OCPP 1.6 and half 2.0.1, with quick sessions and a
+# reconnect storm, against `ocpp-mimic csms`.
 name: Smoke - 100 stations for two minutes
 csms: ws://127.0.0.1:9102/ocpp
 seed: 1
@@ -8,9 +8,17 @@ duration: 2m
 rampUp: { rate: 20, jitter: 0.5 }
 groups:
   - name: ac
-    count: 100
+    count: 50
     id: SMOKE-{001}
     persona: load-ac-1.6
+    usage:
+      sessionsPerHour: 120
+      stay: { min: 15s, max: 40s }
+      steps: { min: 1s, max: 3s }
+  - name: ac201
+    count: 50
+    id: SMOKE201-{001}
+    persona: load-ac-2.0.1
     usage:
       sessionsPerHour: 120
       stay: { min: 15s, max: 40s }

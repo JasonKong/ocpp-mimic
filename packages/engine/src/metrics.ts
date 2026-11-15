@@ -118,8 +118,8 @@ export interface MeteredStation {
 export interface MetricsOptions {
   /** The stations, read on every scrape for the gauges. */
   stations(): Iterable<MeteredStation>;
-  /** A station's persona and group, for labels. */
-  labelsOf(stationId: string): { persona: string; group: string } | undefined;
+  /** A station's persona, group and OCPP version, for labels. */
+  labelsOf(stationId: string): { persona: string; group: string; ocpp?: string } | undefined;
   /** Milliseconds; injected for tests. */
   now?: () => number;
   version?: string;
@@ -188,7 +188,12 @@ const round = (value: number) => Math.round(value * 10) / 10;
 
 export function createMetrics(options: MetricsOptions): Metrics {
   const now = options.now ?? Date.now;
-  const labels = (stationId: string) => options.labelsOf(stationId) ?? { persona: '', group: '' };
+  const labels = (stationId: string) => {
+    const found = options.labelsOf(stationId);
+    return { persona: found?.persona ?? '', group: found?.group ?? '' };
+  };
+  /** The station's OCPP version: connection and frame metrics carry it (two values). */
+  const versionOf = (stationId: string) => options.labelsOf(stationId)?.ocpp ?? '';
 
   const csmsResponse = new Family(() => new Histogram());
   const answers = new Family(() => new Counter());
@@ -253,7 +258,18 @@ export function createMetrics(options: MetricsOptions): Metrics {
     if (record.messageType !== 3) return;
     const payload = (record.payload ?? {}) as Record<string, unknown>;
     const status = (payload.idTagInfo as { status?: string } | undefined)?.status;
-    if (call.action === 'StartTransaction') {
+    if (call.action === 'TransactionEvent') {
+      // 2.0.1: a Started event begins a transaction unless its token is refused.
+      const eventType = (call.payload as { eventType?: string }).eventType;
+      const tokenStatus = (payload.idTokenInfo as { status?: string } | undefined)?.status;
+      if (eventType === 'Started') {
+        transactions.get({
+          outcome: tokenStatus === undefined || tokenStatus === 'Accepted' ? 'started' : 'refused',
+        }).value += 1;
+      } else if (eventType === 'Ended') {
+        transactions.get({ outcome: 'stopped' }).value += 1;
+      }
+    } else if (call.action === 'StartTransaction') {
       transactions.get({ outcome: status === 'Accepted' ? 'started' : 'refused' }).value += 1;
       const meterStart = (call.payload as { meterStart?: number }).meterStart;
       if (typeof payload.transactionId === 'number' && typeof meterStart === 'number') {
@@ -287,8 +303,9 @@ export function createMetrics(options: MetricsOptions): Metrics {
     frame(record) {
       const direction = record.direction === 'cp-to-csms' ? 'sent' : 'received';
       if (record.dropped !== true) {
-        frames.get({ direction }).value += 1;
-        frameBytes.get({ direction }).value += Buffer.byteLength(record.text);
+        const ocpp = versionOf(record.stationId);
+        frames.get({ direction, ocpp }).value += 1;
+        frameBytes.get({ direction, ocpp }).value += Buffer.byteLength(record.text);
       }
       if (record.schemaErrors !== undefined && record.action !== undefined) {
         schemaViolations.get({ direction, action: record.action }).value += 1;
@@ -306,7 +323,24 @@ export function createMetrics(options: MetricsOptions): Metrics {
         if (record.action === 'StatusNotification' && typeof payload.connectorId === 'number') {
           let connectors = statuses.get(record.stationId);
           if (connectors === undefined) statuses.set(record.stationId, (connectors = new Map()));
-          if (payload.connectorId > 0) connectors.set(payload.connectorId, String(payload.status));
+          // 2.0.1 reports per EVSE (EVSE n holds connector n) with connectorStatus.
+          const connectorId = typeof payload.evseId === 'number' ? payload.evseId : payload.connectorId;
+          const status = payload.connectorStatus ?? payload.status;
+          if (connectorId > 0) connectors.set(connectorId, String(status));
+        } else if (record.action === 'TransactionEvent') {
+          const transactionId = (payload.transactionInfo as { transactionId?: string } | undefined)
+            ?.transactionId;
+          const register = energyRegister(payload.meterValue);
+          const key = `${record.stationId} ${String(transactionId)}`;
+          if (payload.eventType === 'Started' && register !== undefined) {
+            meterStarts.set(key, register);
+          } else if (payload.eventType === 'Ended') {
+            const start = meterStarts.get(key);
+            meterStarts.delete(key);
+            if (start !== undefined && register !== undefined) {
+              energy.get(labels(record.stationId)).value += Math.max(0, register - start);
+            }
+          }
         } else if (record.action === 'StopTransaction') {
           const start = meterStarts.get(`${record.stationId} ${String(payload.transactionId)}`);
           if (start !== undefined && typeof payload.meterStop === 'number') {
@@ -332,14 +366,16 @@ export function createMetrics(options: MetricsOptions): Metrics {
       } else if (event.type === 'open') {
         attempting.delete(stationId);
         open.add(stationId);
-        connections.get({ outcome: 'opened' }).value += 1;
+        connections.get({ outcome: 'opened', ocpp: versionOf(stationId) }).value += 1;
       } else if (event.type === 'close' && open.has(stationId)) {
         // The CSMS closed it, or the connection broke (1006: no close frame).
         open.delete(stationId);
         disconnects.get({ cause: event.code === 1006 ? 'error' : 'remote' }).value += 1;
         dropPending(stationId);
       } else if (event.type === 'state' && event.state !== 'open' && event.state !== 'connecting') {
-        if (attempting.delete(stationId)) connections.get({ outcome: 'failed' }).value += 1;
+        if (attempting.delete(stationId)) {
+          connections.get({ outcome: 'failed', ocpp: versionOf(stationId) }).value += 1;
+        }
         // Closed without a close event: the station dropped it itself (stopped,
         // taken offline, an injection, a reset).
         if (open.delete(stationId)) disconnects.get({ cause: 'local' }).value += 1;
@@ -474,6 +510,24 @@ export function createMetrics(options: MetricsOptions): Metrics {
     }
     return { stations, connectors, stationSeries, connectorSeries, queued };
   }
+}
+
+/** The Energy.Active.Import.Register reading (Wh) among 2.0.1 meter values, if any. */
+function energyRegister(meterValue: unknown): number | undefined {
+  if (!Array.isArray(meterValue)) return undefined;
+  for (const value of meterValue as { sampledValue?: unknown }[]) {
+    for (const sample of (value.sampledValue ?? []) as {
+      value?: unknown;
+      measurand?: string;
+      unitOfMeasure?: { unit?: string; multiplier?: number };
+    }[]) {
+      const measurand = sample.measurand ?? 'Energy.Active.Import.Register';
+      if (measurand !== 'Energy.Active.Import.Register' || typeof sample.value !== 'number') continue;
+      const kilo = sample.unitOfMeasure?.unit === 'kWh' ? 1000 : 1;
+      return sample.value * kilo * 10 ** (sample.unitOfMeasure?.multiplier ?? 0);
+    }
+  }
+  return undefined;
 }
 
 function stationState(station: MeteredStation): string {
