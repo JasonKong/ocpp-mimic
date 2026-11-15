@@ -702,6 +702,23 @@ thresholds:
 
 所有数字都在出口阈值以内；堆不再增长。出口运行本身（T54）使用不带 store 的 `load`。
 
+**实测：1,000 个 OCPP 2.0.1 桩（T73）**
+
+`pnpm bench`，1,000 个桩，带 `--store`，每秒启动 20 个，30 % 充电，5 分钟，在同一台笔记本上，两个 persona 各跑一次、先后进行：
+
+| | `load-ac-1.6` | `load-ac-2.0.1` |
+| --- | --- | --- |
+| 爬坡后引擎 CPU，平均 / 最高（单核的 %） | 3.1 / 5.1 | 3.8 / 8.0 |
+| 事件循环延迟，最差 5 秒 p99 / 最大（ms） | 8.4 / 43 | 11.6 / 42 |
+| 心跳延迟，p99 / 最大（ms） | 5.5 / 44 | 6.8 / 31 |
+| 计量值延迟，p99 / 最大（ms） | 4.9 / 23 | 17.6 / 24 |
+| WebSocket 连接，p99 / 最大（ms） | 32 / 236 | 20 / 73 |
+| BootNotification 被接受，p99 / 最大（ms） | 118 / 318 | 110 / 240 |
+| RSS 峰值（MB） | 156 | 265 |
+| 爬坡后堆的底线，第一个四分之一 → 最后（MB） | 57.8 → 55.5 | 126.4 → 124.4 |
+
+2.0.1 桩保存自己的 Device Model（两个 EVSE 时有 102 个变量及其属性），这是每个桩多出约 70 KB 堆的主要原因；堆不增长。所有数字都远在出口阈值以内。参考机器的数字由 `bench` 工作流以 `persona: load-ac-2.0.1` 运行得到。
+
 **已实现：OpenTelemetry 导出（T47）**
 
 - `engine/src/otlp.ts` 把与 `/metrics` 相同的指标写成 OTLP/HTTP JSON 的 `ExportMetricsServiceRequest`：gauge；counter 写成累计的单调 sum（按 OpenTelemetry 的习惯去掉 `_total`，Prometheus exporter 会加回来）；显式分桶的 histogram（把 Prometheus 的累计桶换成每个桶自己的计数，并带最大值）；以及事件循环的 summary。单位 `s` 和 `By` 由名称推断。

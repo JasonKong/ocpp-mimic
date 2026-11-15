@@ -324,7 +324,8 @@ export function createMetrics(options: MetricsOptions): Metrics {
           let connectors = statuses.get(record.stationId);
           if (connectors === undefined) statuses.set(record.stationId, (connectors = new Map()));
           // 2.0.1 reports per EVSE (EVSE n holds connector n) with connectorStatus.
-          const connectorId = typeof payload.evseId === 'number' ? payload.evseId : payload.connectorId;
+          const connectorId =
+            typeof payload.evseId === 'number' ? payload.evseId : payload.connectorId;
           const status = payload.connectorStatus ?? payload.status;
           if (connectorId > 0) connectors.set(connectorId, String(status));
         } else if (record.action === 'TransactionEvent') {
@@ -522,7 +523,8 @@ function energyRegister(meterValue: unknown): number | undefined {
       unitOfMeasure?: { unit?: string; multiplier?: number };
     }[]) {
       const measurand = sample.measurand ?? 'Energy.Active.Import.Register';
-      if (measurand !== 'Energy.Active.Import.Register' || typeof sample.value !== 'number') continue;
+      if (measurand !== 'Energy.Active.Import.Register' || typeof sample.value !== 'number')
+        continue;
       const kilo = sample.unitOfMeasure?.unit === 'kWh' ? 1000 : 1;
       return sample.value * kilo * 10 ** (sample.unitOfMeasure?.multiplier ?? 0);
     }

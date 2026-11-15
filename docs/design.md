@@ -704,6 +704,23 @@ On the reference machine (the `bench` workflow: a GitHub-hosted runner, 2 vCPUs,
 
 Every number is within the exit thresholds; the heap no longer grows. The exit run itself (T54) uses `load`, which keeps no store.
 
+**Measured: 1,000 OCPP 2.0.1 stations (T73)**
+
+`pnpm bench`, 1,000 stations with `--store`, 20 started a second, 30 % charging, 5 minutes, on the same laptop, one run of each persona one after the other:
+
+| | `load-ac-1.6` | `load-ac-2.0.1` |
+| --- | --- | --- |
+| Engine CPU after the ramp-up, mean / max (% of a core) | 3.1 / 5.1 | 3.8 / 8.0 |
+| Event-loop delay, worst 5-second p99 / max (ms) | 8.4 / 43 | 11.6 / 42 |
+| Heartbeats late, p99 / max (ms) | 5.5 / 44 | 6.8 / 31 |
+| Meter values late, p99 / max (ms) | 4.9 / 23 | 17.6 / 24 |
+| WebSocket connect, p99 / max (ms) | 32 / 236 | 20 / 73 |
+| BootNotification accepted, p99 / max (ms) | 118 / 318 | 110 / 240 |
+| RSS peak (MB) | 156 | 265 |
+| Heap floor after the ramp-up, first quarter → last (MB) | 57.8 → 55.5 | 126.4 → 124.4 |
+
+A 2.0.1 station holds its Device Model (102 variables with their attributes for two EVSEs), which is most of the extra 70 KB of heap per station; the heap does not grow. Everything is well within the exit thresholds. The reference machine's numbers come from the `bench` workflow with `persona: load-ac-2.0.1`.
+
 **Implemented: OpenTelemetry export (T47)**
 
 - `engine/src/otlp.ts` writes the same metric families as `/metrics` into an OTLP/HTTP JSON `ExportMetricsServiceRequest`: gauges, cumulative monotonic sums for counters (named without `_total`, as OpenTelemetry does; a Prometheus exporter adds it back), explicit-bucket histograms (the Prometheus buckets turned into per-bucket counts, plus the maximum), and the event-loop summary. Units `s` and `By` follow the name.

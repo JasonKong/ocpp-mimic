@@ -252,7 +252,7 @@ describe('metrics', () => {
       queuedMessages: () => 0,
     });
     m.transport('B-1', { type: 'connecting', url: 'ws://csms/B-1' });
-    m.transport('B-1', { type: 'open' });
+    m.transport('B-1', { type: 'open', protocol: 'ocpp2.0.1' });
     m.frame(
       frame('B-1', 'cp-to-csms', 2, 's1', 'StatusNotification', {
         timestamp: '',
@@ -262,7 +262,10 @@ describe('metrics', () => {
       }),
     );
     const sample = (value: number, context: string) => [
-      { timestamp: '', sampledValue: [{ value, context, measurand: 'Energy.Active.Import.Register' }] },
+      {
+        timestamp: '',
+        sampledValue: [{ value, context, measurand: 'Energy.Active.Import.Register' }],
+      },
     ];
     m.frame(
       frame('B-1', 'cp-to-csms', 2, 't1', 'TransactionEvent', {
@@ -271,7 +274,9 @@ describe('metrics', () => {
         meterValue: sample(1000, 'Transaction.Begin'),
       }),
     );
-    m.frame(frame('B-1', 'csms-to-cp', 3, 't1', undefined, { idTokenInfo: { status: 'Accepted' } }));
+    m.frame(
+      frame('B-1', 'csms-to-cp', 3, 't1', undefined, { idTokenInfo: { status: 'Accepted' } }),
+    );
     m.frame(
       frame('B-1', 'cp-to-csms', 2, 't2', 'TransactionEvent', {
         eventType: 'Ended',
