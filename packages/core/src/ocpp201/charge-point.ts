@@ -13,6 +13,7 @@
  * fleet, scenarios and the API drive it like a 1.6 station. Connector `n`
  * is EVSE `n`'s only connector.
  */
+import type { SessionHint, SessionIdToken, SessionSource } from '../session.js';
 import {
   DEFAULT_BEHAVIOUR,
   DEFAULT_TIMING,
@@ -326,6 +327,13 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   const offeredW = options.offeredPowerW ?? 7360;
   const emit = options.onEvent ?? (() => {});
   const log = (message: string) => emit({ type: 'log', message });
+  const hint = (value: SessionHint) => emit({ type: 'session', hint: value });
+  const tokenRef = (idToken: IdTokenType): SessionIdToken => ({
+    idToken: idToken.idToken,
+    type: idToken.type,
+  });
+  const localSource = (idToken: IdTokenType): SessionSource =>
+    idToken.type === 'NoAuthorization' ? 'noAuth' : 'local';
   const changed = () => emit({ type: 'changed' });
   const now = () => clock.now();
   const timestamp = () => new Date(now()).toISOString();
@@ -1283,7 +1291,17 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
           authorizations.delete(connectorId);
           endTransaction(connectorId, 'EVConnectTimeout', 'Timeout');
         } else {
+          const waiting = authorizations.get(connectorId);
           authorizations.delete(connectorId);
+          if (waiting !== undefined) {
+            hint({
+              kind: 'start-failed',
+              evseId: connectorId,
+              idToken: tokenRef(waiting.idToken),
+              source: waiting.remoteStartId !== undefined ? 'remote' : localSource(waiting.idToken),
+              reason: 'ConnectionTimeout',
+            });
+          }
           changed();
         }
       }),
@@ -1367,6 +1385,13 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       const result = await authorize(idToken);
       if (!result.ok || isMasterPass(result.info)) {
         log(`connector ${connectorId}: remote start refused, ${idToken.idToken} not authorized`);
+        hint({
+          kind: 'start-failed',
+          evseId: connectorId,
+          idToken: tokenRef(idToken),
+          source: 'remote',
+          reason: 'NotAuthorized',
+        });
         return;
       }
       info = result.info;
@@ -1374,6 +1399,14 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     const claim = claimReservation(connectorId, idToken, info?.groupIdToken ?? groupIdToken);
     if (!claim.ok) {
       log(`connector ${connectorId}: remote start refused, the EVSE is reserved`);
+      hint({
+        kind: 'start-failed',
+        evseId: connectorId,
+        idToken: tokenRef(idToken),
+        source: 'remote',
+        reason: 'NotAuthorized',
+        detail: 'the EVSE is reserved',
+      });
       return;
     }
     authorizations.set(connectorId, {
@@ -1382,6 +1415,13 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       ...(info !== undefined && { info }),
       ...(txProfile !== undefined && { txProfile }),
       ...(claim.reservationId !== undefined && { reservationId: claim.reservationId }),
+    });
+    hint({
+      kind: 'authorized',
+      evseId: connectorId,
+      idToken: tokenRef(idToken),
+      source: 'remote',
+      remoteStartId,
     });
     const tx = transactions.get(connectorId);
     if (tx !== undefined && tx.remoteStartId === undefined) tx.remoteStartId = remoteStartId;
@@ -2093,17 +2133,38 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       }
       if (!result.ok) {
         log(`connector ${connectorId}: ${token} rejected`);
+        hint({
+          kind: 'start-failed',
+          evseId: connectorId,
+          idToken: tokenRef(idToken),
+          source: localSource(idToken),
+          reason: 'NotAuthorized',
+        });
         return 'rejected';
       }
       const claim = claimReservation(connectorId, idToken, result.info?.groupIdToken);
       if (!claim.ok) {
         log(`connector ${connectorId}: reserved for another token`);
+        hint({
+          kind: 'start-failed',
+          evseId: connectorId,
+          idToken: tokenRef(idToken),
+          source: localSource(idToken),
+          reason: 'NotAuthorized',
+          detail: 'reserved for another token',
+        });
         return 'rejected';
       }
       authorizations.set(connectorId, {
         idToken,
         ...(result.info !== undefined && { info: result.info }),
         ...(claim.reservationId !== undefined && { reservationId: claim.reservationId }),
+      });
+      hint({
+        kind: 'authorized',
+        evseId: connectorId,
+        idToken: tokenRef(idToken),
+        source: localSource(idToken),
       });
       if (!connector.plugged) awaitCable(connectorId);
       evaluate(connectorId, 'Authorized', idToken);

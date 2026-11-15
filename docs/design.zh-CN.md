@@ -1070,6 +1070,7 @@ interface SessionRecord {
 - **采样和状态。** 上报采样来自 MeterValues 和 TransactionEvent 里的电表值（Energy.Active.Import.Register、Power.Active.Import、Power.Offered、SoC、各相的 Current.Import 和 Voltage）。状态来自 1.6 的 StatusNotification（Charging、SuspendedEV、SuspendedEVSE，Finishing 算空闲）和 2.0.1 的 chargingState（Charging、SuspendedEV、SuspendedEVSE，EVConnected 或 Idle 算空闲）。真值采样由引擎在每个上报采样和状态变化时从 EV 模型取：小数 SoC、电量、功率，以及当前提供功率下的 `msUntilFull`。
 - **费用。** 2.0.1 TransactionEventResponse 的 totalCost 和 CostUpdated，连同它们的 seq。
 - **上限。** 每个会话最多 2,000 个采样（满了就把旧的隔一个删一个）和 2,000 帧；超过后不再保留周期性的电表报文，记录里标出 `framesTruncated`。
+- 已实现（T78）：`packages/core/src/session.ts` 的 `createSessionTracker`，以及两个适配器发出的提示（`{ type: 'session', hint }`）。与设计不同或补充的地方：交易运行之前会话是 `starting`，所以状态是 `starting | running | finished | not-started`；`evseId` 未知时不填（比如没指定 EVSE 又被拒绝的远程启动）；Authorize 不带 EVSE，要等站点的提示才归入会话（被拒的卡立即成为一个未开始的本地会话）；令牌给了已在运行的交易的远程启动，会合并进那个会话，touch 里标出 `mergedInto`，引擎据此搬移它的报文（编号因此可能不连续）；应答只有在它的请求在时间线里时才加入时间线。每帧或每个提示返回它影响的会话，以及属于这些会话的报文 seq，供引擎保存。
 
 **存储和 API**
 

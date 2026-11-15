@@ -8,6 +8,7 @@
  * actions (plug, unplug, cards, faults, EV suspension) come in through the
  * methods below. Timers run on the injected clock.
  */
+import type { SessionHint, SessionSource } from './session.js';
 import {
   cachedAuthorization,
   clearAuthorizationCache,
@@ -162,6 +163,8 @@ export const DEFAULT_BEHAVIOUR: ChargePointBehaviour = {
 export type ChargePointEvent =
   | { type: 'rpc'; event: RpcEvent }
   | { type: 'log'; message: string }
+  /** Who may charge and why, or a start that never became a transaction (see session.ts). */
+  | { type: 'session'; hint: SessionHint }
   /** Something observable changed (status, transaction, registration). */
   | { type: 'changed' };
 
@@ -440,6 +443,9 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
   const emit = options.onEvent ?? (() => {});
   const log = (message: string) => emit({ type: 'log', message });
   const changed = () => emit({ type: 'changed' });
+  const hint = (value: SessionHint) => emit({ type: 'session', hint: value });
+  /** connectorId → why its authorization exists, for the hint when it times out. */
+  const startSources = new Map<number, SessionSource>();
 
   let config: ConfigState = createConfig({
     numberOfConnectors: options.connectors,
@@ -1451,8 +1457,10 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
   }
 
   /** A card is authorized at a connector: start when plugged in, or wait ConnectionTimeOut for the cable. */
-  function authorizeConnector(connectorId: number, idTag: string): void {
+  function authorizeConnector(connectorId: number, idTag: string, source: SessionSource): void {
     authorized.set(connectorId, idTag);
+    startSources.set(connectorId, source);
+    hint({ kind: 'authorized', evseId: connectorId, idToken: { idToken: idTag }, source });
     applyDevice({ type: 'Prepare', connectorId });
     if (findConnector(station, connectorId)?.plugged === true) {
       later(timing.startTransactionDelayMs, () => beginTransaction(connectorId));
@@ -1465,8 +1473,17 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
         connectorId,
         later(timeoutS * 1000, () => {
           prepareTimers.delete(connectorId);
-          if (authorized.delete(connectorId)) {
+          if (authorized.has(connectorId)) {
+            const idTag = authorized.get(connectorId) ?? '';
+            authorized.delete(connectorId);
             log(`connector ${connectorId}: no cable within ConnectionTimeOut`);
+            hint({
+              kind: 'start-failed',
+              evseId: connectorId,
+              idToken: { idToken: idTag },
+              source: startSources.get(connectorId) ?? 'local',
+              reason: 'ConnectionTimeout',
+            });
             applyDevice({ type: 'CancelPrepare', connectorId });
           }
         }),
@@ -1525,6 +1542,14 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
     const stillRunning = transactions.get(connectorId) === started.transaction;
     if (!outcome.ok) {
       log(`StartTransaction failed: ${outcome.failure.kind}`);
+      hint({
+        kind: 'start-failed',
+        evseId: connectorId,
+        idToken: { idToken: idTag },
+        source: startSources.get(connectorId) ?? 'local',
+        reason: 'StartFailed',
+        detail: outcome.failure.kind,
+      });
       if (stillRunning) {
         transactions.delete(connectorId);
         refs.delete(connectorId);
@@ -1873,9 +1898,16 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
           !(await authorizeWithCsms(request.idTag))
         ) {
           log(`remote start: ${request.idTag} not authorized`);
+          hint({
+            kind: 'start-failed',
+            evseId: connectorId,
+            idToken: { idToken: request.idTag },
+            source: 'remote',
+            reason: 'NotAuthorized',
+          });
           return;
         }
-        authorizeConnector(connectorId, request.idTag);
+        authorizeConnector(connectorId, request.idTag, 'remote');
       });
       return { status: 'Accepted' };
     },
@@ -2133,6 +2165,14 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
       const reserved = await reservationAllows(connectorId, idTag);
       if (!reserved.ok) {
         log(`connector ${connectorId}: ${idTag} refused, the connector is reserved`);
+        hint({
+          kind: 'start-failed',
+          evseId: connectorId,
+          idToken: { idToken: idTag },
+          source: 'local',
+          reason: 'NotAuthorized',
+          detail: 'reserved for another idTag',
+        });
         return 'rejected';
       }
       const decision = decideLocalAuthorization({
@@ -2147,12 +2187,19 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
         decision === 'start' || (decision === 'ask' && (await authorizeWithCsms(idTag)));
       if (!accepted) {
         log(`connector ${connectorId}: ${idTag} rejected`);
+        hint({
+          kind: 'start-failed',
+          evseId: connectorId,
+          idToken: { idToken: idTag },
+          source: 'local',
+          reason: 'NotAuthorized',
+        });
         return 'rejected';
       }
       if (reserved.reservationId !== undefined) {
         sessionReservations.set(connectorId, reserved.reservationId);
       }
-      authorizeConnector(connectorId, idTag);
+      authorizeConnector(connectorId, idTag, 'local');
       return 'authorized';
     },
 
