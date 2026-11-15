@@ -18,9 +18,11 @@ export {
   createChargePoint201,
   type ChargePoint201,
   type ChargePoint201Options,
+  type DeviceModelEntry,
   type PersistedChargePoint201,
 } from './ocpp201/charge-point.js';
 export {
+  ID_TOKEN_TYPES,
   OCPP201_RPC_ERROR_CODES,
   OCPP201_SUBPROTOCOL,
   type Ocpp201RpcErrorCode,

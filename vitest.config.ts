@@ -13,6 +13,10 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['packages/*/src/**/*.test.ts', 'apps/web/src/**/*.test.ts'],
+    projects: [
+      { extends: true, test: { name: 'packages', include: ['packages/*/src/**/*.test.ts'] } },
+      // The Web UI compiles its .vue components with the Vue plugin.
+      'apps/web/vitest.config.ts',
+    ],
   },
 });

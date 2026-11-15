@@ -102,6 +102,7 @@ describe('engine API: bulk stations', () => {
     expect(summary.body?.stations[0]).toEqual({
       id: 'LOAD-001',
       persona: 'generic-1.6',
+      ocpp: '1.6',
       group: 'ac',
       tags: ['load'],
       state: 'connected',
@@ -307,7 +308,7 @@ describe('engine API', () => {
     const { api } = await start();
     expect((await api('GET', '/api/health')).body).toMatchObject({
       status: 'ok',
-      ocpp: ['ocpp1.6'],
+      ocpp: ['ocpp1.6', 'ocpp2.0.1'],
     });
     const personas = await api('GET', '/api/personas');
     expect(personas.body?.personas).toContainEqual(
@@ -656,5 +657,81 @@ describe('engine API', () => {
     expect(await (await fetch(`${url}/app.js`)).text()).toBe('console.log(1)');
     expect(await (await fetch(`${url}/stations/SIM-1`)).text()).toMatch(/<title>ocpp-mimic/);
     expect((await fetch(`${url}/../../etc/passwd`)).status).not.toBe(500);
+  });
+});
+
+describe('engine API: OCPP 2.0.1 stations', () => {
+  it('shows the version, presents typed IdTokens and serves the Device Model', async () => {
+    const { api, csmsUrl } = await start();
+    const personas = await api('GET', '/api/personas');
+    expect(
+      (personas.body?.personas as { id: string; ocpp: string; features?: string[] }[]).find(
+        (p) => p.id === 'generic-2.0.1',
+      ),
+    ).toMatchObject({ ocpp: '2.0.1', features: expect.arrayContaining(['Core', 'SmartCharging']) });
+    expect((await api('GET', '/api/health')).body?.ocpp).toEqual(['ocpp1.6', 'ocpp2.0.1']);
+
+    expect(
+      (await api('POST', '/api/stations', { id: 'SIM-201', persona: 'generic-2.0.1', csmsUrl }))
+        .status,
+    ).toBe(201);
+    await until(
+      async () => (await api('GET', '/api/stations/SIM-201')).body?.registration === 'Accepted',
+    );
+    const summary = await api('GET', '/api/stations?view=summary');
+    expect(summary.body?.stations[0]).toMatchObject({ id: 'SIM-201', ocpp: '2.0.1' });
+
+    const card = await api('POST', '/api/stations/SIM-201/connectors/1/id-tag', {
+      idTag: 'TAG-1',
+      type: 'KeyCode',
+    });
+    expect(card.body?.result).toBe('authorized');
+    expect(
+      (await api('POST', '/api/stations/SIM-201/connectors/1/id-tag', { idTag: 'X', type: 'Nope' }))
+        .status,
+    ).toBe(400);
+
+    const model = await api('GET', '/api/stations/SIM-201/device-model');
+    const variables = model.body?.variables as {
+      component: string;
+      variable: string;
+      attributes: { type: string; mutability: string; value?: string }[];
+    }[];
+    expect(variables.find((v) => v.variable === 'HeartbeatInterval')).toMatchObject({
+      component: 'OCPPCommCtrlr',
+      dataType: 'integer',
+      unit: 's',
+      attributes: [{ type: 'Actual', mutability: 'ReadWrite', value: expect.any(String) }],
+    });
+    // A write-only value never leaves the station.
+    expect(variables.find((v) => v.variable === 'BasicAuthPassword')?.attributes).toEqual([
+      { type: 'Actual', mutability: 'WriteOnly' },
+    ]);
+
+    // Set as a local operator, with the SetVariables checks.
+    expect(
+      (
+        await api('PATCH', '/api/stations/SIM-201/device-model', {
+          component: 'OCPPCommCtrlr',
+          variable: 'HeartbeatInterval',
+          value: '120',
+        })
+      ).body,
+    ).toEqual({ status: 'Accepted' });
+    expect(
+      (await api('GET', '/api/stations/SIM-201')).body?.config['OCPPCommCtrlr/HeartbeatInterval'],
+    ).toBe('120');
+    expect(
+      (
+        await api('PATCH', '/api/stations/SIM-201/device-model', {
+          component: 'SecurityCtrlr',
+          variable: 'SecurityProfile',
+          value: '3',
+        })
+      ).body,
+    ).toMatchObject({ status: 'Rejected' });
+
+    await addStation(api, csmsUrl, 'SIM-16');
+    expect((await api('GET', '/api/stations/SIM-16/device-model')).status).toBe(404);
   });
 });

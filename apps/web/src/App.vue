@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import {
   api,
   connectEvents,
+  type DeviceModelEntry,
   type EventsConnection,
   type NewStation,
   type PersonaInfo,
@@ -10,10 +11,12 @@ import {
   type StationSnapshot,
   type StationSummary,
 } from './api.js';
+import DeviceModelBrowser from './components/DeviceModelBrowser.vue';
 import FleetOverview from './components/FleetOverview.vue';
 import MessageLog from './components/MessageLog.vue';
 import StationDetail from './components/StationDetail.vue';
 import StationList from './components/StationList.vue';
+import TransactionEvents from './components/TransactionEvents.vue';
 
 /** Every station as a summary; only the selected one has its full snapshot and records. */
 const summaries = reactive(new Map<string, StationSummary>());
@@ -21,6 +24,8 @@ const records = reactive(new Map<string, RecordEntry[]>());
 const personas = ref<PersonaInfo[]>([]);
 const selectedId = ref<string | undefined>();
 const selected = ref<StationSnapshot | undefined>();
+/** The selected 2.0.1 station's Device Model; undefined while loading. */
+const deviceModel = ref<DeviceModelEntry[] | undefined>();
 const error = ref<string | undefined>();
 const live = ref(false);
 const MAX_RECORDS = 1000;
@@ -51,11 +56,34 @@ async function select(id: string) {
   // Only the selected station's records and snapshots come over the socket.
   events?.subscribe([id]);
   records.clear();
+  let ocpp: string | undefined;
   await guard(async () => {
     const [snapshot, { entries }] = await Promise.all([api.station(id), api.messages(id)]);
     if (selectedId.value !== id) return;
     selected.value = snapshot;
+    ocpp = snapshot.ocpp;
     records.set(id, entries);
+  });
+  if (ocpp === '2.0.1') await loadDeviceModel(id);
+}
+
+async function setVariable(component: string, variable: string, value: string) {
+  const id = selectedId.value;
+  if (id === undefined) return;
+  await guard(async () => {
+    const result = await api.setVariable(id, component, variable, value);
+    if (result.status !== 'Accepted' && result.status !== 'RebootRequired') {
+      error.value = `${component}.${variable}: ${result.status}${result.reason === undefined ? '' : ` (${result.reason})`}`;
+    }
+  });
+  await loadDeviceModel(id);
+}
+
+async function loadDeviceModel(id: string) {
+  deviceModel.value = undefined;
+  await guard(async () => {
+    const { variables } = await api.deviceModel(id);
+    if (selectedId.value === id) deviceModel.value = variables;
   });
 }
 
@@ -116,9 +144,10 @@ async function act(name: string, connectorId?: number, value?: unknown) {
       case 'fault':
         return api.fault(id, c, value as Parameters<typeof api.fault>[2]);
       case 'idTag': {
-        const { result } = await api.idTag(id, c, String(value));
+        const card = value as { idTag: string; type?: string };
+        const { result } = await api.idTag(id, c, card.idTag, card.type);
         if (result !== 'authorized' && result !== 'stopping')
-          error.value = `Card ${String(value)}: ${result}`;
+          error.value = `Card ${card.idTag}: ${result}`;
         return;
       }
       case 'delete':
@@ -181,6 +210,14 @@ onUnmounted(() => events?.close());
         <FleetOverview :stations="stationList" />
         <template v-if="selected">
           <StationDetail :station="selected" :persona="selectedPersona" @action="act" />
+          <template v-if="selected.ocpp === '2.0.1'">
+            <TransactionEvents :entries="selectedRecords" />
+            <DeviceModelBrowser
+              :variables="deviceModel"
+              @refresh="selectedId && loadDeviceModel(selectedId)"
+              @set="setVariable"
+            />
+          </template>
           <MessageLog :entries="selectedRecords" :station-id="selectedId" />
         </template>
         <p v-else class="placeholder">Add a charge point, or pick one on the left.</p>

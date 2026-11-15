@@ -965,6 +965,7 @@ faults:
 - 模板和压测计划接受两种版本的 persona，车队可以混合。使用模型驱动 2.0.1 会话，把卡当作 ISO14443 token 出示。连接和帧相关指标带 `ocpp` 标签（两个取值）。
 - 日志行带桩的版本；日志没写时，导入根据子协议或 action 名判断。回放 2.0.1 日志时，交易用新的 transactionId 发送，保留 seqNo，平移时间戳，并比较 CSMS 的回答（`status`、`idTokenInfo.status`）。校准读 2.0.1 日志的方式与 1.6 相同，日志里有 NotifyReport 帧时从中取 Device Model 的值。
 - Web UI 显示版本、带 2.0.1 状态和充电状态的 EVSE / 连接器树、出示卡时的 token 类型，以及一个 Device Model 浏览器，可以像本地运维人员那样修改可写变量。
+- 已实现（T72）：桩列表标出 2.0.1 桩，新建表单在每个 persona 后注明版本。2.0.1 桩的视图显示 `OCPP 2.0.1`、每个 EVSE 的连接器状态、充电状态和 transactionId，以及出示卡时的 token 类型选择（`POST …/id-tag` 接受 `type`，取值为 IdTokenEnumType）。其下方是交易事件表（时间、EVSE、transactionId、seqNo、eventType、triggerReason、chargingState、stoppedReason），取自桩的记录；Device Model 浏览器按组件分组变量（每个 EVSE 后跟它的连接器），可以过滤，显示 Actual 值及其可变性、其他属性和特征，从不显示 WriteOnly 的值，并能像本地运维人员那样设置 ReadWrite 的值（`PATCH /api/stations/:id/device-model`，带 `component`、`variable` 和 `value`，与 SetVariables 做同样的检查；`GET` 列出变量）。消息日志能概括 2.0.1 消息，并像 1.6 一样显示其 schema 问题。`/api/health` 列出两种子协议，`/api/personas` 给出每个 persona 的 `ocpp`（2.0.1 persona 还有 `features`），车队摘要带 `ocpp`。这些视图的测试用 Vue 的服务端渲染器渲染（一个带 Vue 插件的 `web` vitest 项目）。
 
 ## 观测与 UI
 

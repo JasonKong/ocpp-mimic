@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue';
-import type {
-  Behaviour,
-  ConnectorSnapshot,
-  FaultInfo,
-  PersonaInfo,
-  StationSnapshot,
+import {
+  ID_TOKEN_TYPES,
+  type Behaviour,
+  type ConnectorSnapshot,
+  type FaultInfo,
+  type PersonaInfo,
+  type StationSnapshot,
 } from '../api.js';
-import { formatEnergy, formatPower } from '../format.js';
+import { formatEnergy, formatPower, statusTone } from '../format.js';
 
 const props = defineProps<{
   station: StationSnapshot;
@@ -18,6 +19,25 @@ const emit = defineEmits<{
 }>();
 
 const idTags = reactive<Record<number, string>>({});
+/** The IdToken type of the next card, per connector (2.0.1 only). */
+const tokenTypes = reactive<Record<number, string>>({});
+const is201 = computed(() => props.station.ocpp === '2.0.1');
+
+/** 2.0.1: EVSE n holds connector 1; 1.6: connector n. */
+function title(connector: ConnectorSnapshot): string {
+  return is201.value
+    ? `EVSE ${connector.evseId ?? connector.connectorId} · connector 1`
+    : `Connector ${connector.connectorId}`;
+}
+
+/** What the EV and the EVSE are doing: the 2.0.1 charging state, or the 1.6 status. */
+const stateOf = (connector: ConnectorSnapshot) => connector.chargingState ?? connector.status;
+
+function transaction(connector: ConnectorSnapshot): string {
+  if (connector.transactionId === undefined) return '—';
+  const id = String(connector.transactionId);
+  return id.length > 12 ? `${id.slice(0, 8)}…` : id;
+}
 const faults = reactive<Record<number, number>>({});
 /** EV picked for the next plug-in, per connector; '' plugs in without an EV (fixed power). */
 const evChoice = reactive<Record<number, string>>({});
@@ -35,12 +55,11 @@ const faultCatalogue = (): FaultInfo[] =>
     : [{ name: 'Other error', errorCode: 'OtherError' }];
 
 function presentCard(connector: ConnectorSnapshot) {
-  emit(
-    'action',
-    'idTag',
-    connector.connectorId,
-    idTags[connector.connectorId] || connector.idTag || 'TAG-001',
-  );
+  const idTag = idTags[connector.connectorId] || connector.idTag || 'TAG-001';
+  emit('action', 'idTag', connector.connectorId, {
+    idTag,
+    ...(is201.value && { type: tokenTypes[connector.connectorId] ?? 'ISO14443' }),
+  });
 }
 
 function raiseFault(connector: ConnectorSnapshot) {
@@ -93,15 +112,6 @@ function inject() {
   }
   emit('action', 'inject', undefined, { type: injectType.value, ...parameters });
 }
-
-function statusTone(status: string): string {
-  if (status === 'Charging') return 'good';
-  if (status === 'Faulted') return 'bad';
-  if (status === 'Unavailable') return 'muted';
-  if (status.startsWith('Suspended') || status === 'Finishing' || status === 'Preparing')
-    return 'warn';
-  return '';
-}
 </script>
 
 <template>
@@ -116,6 +126,7 @@ function statusTone(status: string): string {
             title="Energy and SoC advance faster than real time; timestamps stay real"
             >energy ×{{ station.energyMultiplier }}</span
           >
+          <span class="version">OCPP {{ station.ocpp }}</span>
           {{ station.persona }} · {{ station.csmsUrl }} · connection {{ station.transport }} ·
           {{ station.registration }}
           <span v-if="station.queuedMessages > 0"> · {{ station.queuedMessages }} queued</span>
@@ -217,12 +228,19 @@ function statusTone(status: string): string {
         class="connector"
       >
         <div class="top">
-          <h3>Connector {{ connector.connectorId }}</h3>
+          <h3>{{ title(connector) }}</h3>
           <span>
             <span v-if="connector.locked" class="status muted" title="The cable is locked">
               Locked
             </span>
             <span class="status" :class="statusTone(connector.status)">{{ connector.status }}</span>
+            <span
+              v-if="connector.chargingState !== undefined && connector.chargingState !== 'Idle'"
+              class="status"
+              :class="statusTone(connector.chargingState)"
+              title="Charging state"
+              >{{ connector.chargingState }}</span
+            >
           </span>
         </div>
         <dl>
@@ -236,7 +254,13 @@ function statusTone(status: string): string {
           </div>
           <div>
             <dt>Transaction</dt>
-            <dd>{{ connector.transactionId ?? '—' }}</dd>
+            <dd
+              :title="
+                connector.transactionId === undefined ? undefined : String(connector.transactionId)
+              "
+            >
+              {{ transaction(connector) }}
+            </dd>
           </div>
           <div>
             <dt>Error</dt>
@@ -287,13 +311,22 @@ function statusTone(status: string): string {
             Unplug
           </button>
           <input v-model="idTags[connector.connectorId]" placeholder="TAG-001" class="tag" />
+          <select
+            v-if="is201"
+            :value="tokenTypes[connector.connectorId] ?? 'ISO14443'"
+            title="IdToken type"
+            aria-label="IdToken type"
+            @change="tokenTypes[connector.connectorId] = ($event.target as HTMLSelectElement).value"
+          >
+            <option v-for="type in ID_TOKEN_TYPES" :key="type" :value="type">{{ type }}</option>
+          </select>
           <button @click="presentCard(connector)">
             {{ connector.transactionId !== undefined ? 'Present card (stop)' : 'Present card' }}
           </button>
         </div>
         <div class="row">
           <button
-            v-if="connector.status === 'SuspendedEV'"
+            v-if="stateOf(connector) === 'SuspendedEV'"
             @click="emit('action', 'evResume', connector.connectorId)"
           >
             EV resumes
@@ -386,6 +419,13 @@ h2 {
 }
 .multiplier {
   width: 64px;
+}
+.version {
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-weight: 600;
 }
 .switches label {
   display: flex;

@@ -24,7 +24,13 @@ export default defineConfig([
     languageOptions: { parserOptions: { parser: tseslint.parser } },
   },
   {
-    files: ['packages/engine/**', 'packages/cli/**', '*.{js,ts}', 'apps/web/vite.config.ts'],
+    files: [
+      'packages/engine/**',
+      'packages/cli/**',
+      '*.{js,ts}',
+      'apps/web/vite.config.ts',
+      'apps/web/vitest.config.ts',
+    ],
     languageOptions: { globals: globals.node },
   },
   {

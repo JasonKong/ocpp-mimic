@@ -3,13 +3,33 @@
  * action is one of these calls, and state comes back from the engine.
  */
 
+export type OcppVersion = '1.6' | '2.0.1';
+
+/** The IdToken types a 2.0.1 station takes (IdTokenEnumType). */
+export const ID_TOKEN_TYPES = [
+  'ISO14443',
+  'ISO15693',
+  'eMAID',
+  'Central',
+  'KeyCode',
+  'Local',
+  'MacAddress',
+  'NoAuthorization',
+] as const;
+
 export interface ConnectorSnapshot {
   connectorId: number;
+  /** 2.0.1: the EVSE the connector belongs to (connector n is EVSE n's only connector). */
+  evseId?: number;
+  /** 1.6 ChargePointStatus, or 2.0.1 ConnectorStatusEnumType. */
   status: string;
+  /** 2.0.1 ChargingStateEnumType. */
+  chargingState?: string;
   errorCode: string;
   plugged: boolean;
   locked: boolean;
-  transactionId?: number;
+  /** A number in 1.6, a string in 2.0.1. */
+  transactionId?: number | string;
   idTag?: string;
   energyWh: number;
   powerW: number;
@@ -33,6 +53,7 @@ export interface Behaviour {
 
 export interface StationSnapshot {
   id: string;
+  ocpp: OcppVersion;
   persona: string;
   csmsUrl: string;
   running: boolean;
@@ -66,6 +87,9 @@ export interface FaultInfo {
 
 export interface PersonaInfo {
   id: string;
+  ocpp: OcppVersion;
+  /** 2.0.1 certification profiles. */
+  features?: string[];
   description?: string;
   connectors: number;
   faults: FaultInfo[];
@@ -102,6 +126,18 @@ export interface LogRecord {
 
 export type RecordEntry = FrameRecord | LogRecord;
 
+/** One 2.0.1 Device Model variable (GET /api/stations/:id/device-model). */
+export interface DeviceModelEntry {
+  component: string;
+  variable: string;
+  dataType: string;
+  unit?: string;
+  valuesList?: string;
+  minLimit?: number;
+  maxLimit?: number;
+  attributes: { type: string; mutability: string; value?: string }[];
+}
+
 export interface NewStation {
   id: string;
   persona: string;
@@ -116,6 +152,7 @@ export interface NewStation {
 export interface StationSummary {
   id: string;
   persona: string;
+  ocpp: OcppVersion;
   group?: string;
   tags: string[];
   state: 'connected' | 'connecting' | 'offline' | 'stopped';
@@ -195,9 +232,19 @@ export const api = {
   plug: (id: string, c: number, ev?: string) =>
     request<StationSnapshot>('POST', `${connector(id, c)}/plug`, ev !== undefined ? { ev } : {}),
   unplug: (id: string, c: number) => request<StationSnapshot>('POST', `${connector(id, c)}/unplug`),
-  idTag: (id: string, c: number, idTag: string) =>
+  idTag: (id: string, c: number, idTag: string, type?: string) =>
     request<{ result: string; station: StationSnapshot }>('POST', `${connector(id, c)}/id-tag`, {
       idTag,
+      ...(type !== undefined && { type }),
+    }),
+  deviceModel: (id: string) =>
+    request<{ variables: DeviceModelEntry[] }>('GET', `${station(id)}/device-model`),
+  /** Sets an Actual value locally; the answer is a SetVariables attributeStatus. */
+  setVariable: (id: string, component: string, variable: string, value: string) =>
+    request<{ status: string; reason?: string }>('PATCH', `${station(id)}/device-model`, {
+      component,
+      variable,
+      value,
     }),
   evSuspend: (id: string, c: number) =>
     request<StationSnapshot>('POST', `${connector(id, c)}/ev-suspend`),
