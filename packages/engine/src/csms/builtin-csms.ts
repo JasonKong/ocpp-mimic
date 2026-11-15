@@ -1,9 +1,10 @@
 /**
  * The built-in test CSMS, used by scenarios (`csms: builtin`) and the
- * integration tests. It accepts OCPP 1.6J connections on
- * `/ocpp/<chargeBoxId>`, answers every charge point request with a sensible
- * default (or a custom handler, or a reply set per station with setReply),
- * records all frames, and can send CALLs to the charge point.
+ * integration tests. It accepts OCPP 1.6J and OCPP 2.0.1 connections on
+ * `/ocpp/<chargeBoxId>` (the subprotocol the station offers), answers every
+ * charge point request with a sensible default for its version (or a custom
+ * handler, or a reply set per station with setReply), records all frames,
+ * and can send CALLs to the charge point.
  */
 import { createServer, type IncomingMessage, type RequestListener } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
@@ -12,8 +13,11 @@ import type { TLSSocket } from 'node:tls';
 import type { Duplex } from 'node:stream';
 import {
   MessageTypeId,
+  messageSetForSubprotocol,
   OCPP16_SUBPROTOCOL,
   parseFrame,
+  type MessageSet,
+  type OcppVersion,
   serializeFrame,
   sequentialIds,
   type CallFrame,
@@ -64,7 +68,10 @@ export interface BuiltinCsmsTls {
 export interface BuiltinCsmsOptions {
   port?: number;
   host?: string;
-  /** Handlers by action; they replace the defaults for those actions. */
+  /**
+   * Handlers by action; they replace the defaults for those actions, for
+   * stations of either version (`connection.ocpp` tells them apart).
+   */
   handlers?: Record<string, CsmsHandler>;
   /** Accepts or refuses (HTTP 401) a connection, given its Authorization header. */
   authorize?: (chargeBoxId: string, authorization: string | undefined) => boolean;
@@ -93,7 +100,10 @@ export interface BuiltinCsmsOptions {
   responseDelay?: { minMs: number; maxMs: number };
   /** The heartbeat interval (seconds) BootNotification answers with. Default 60. */
   heartbeatInterval?: number;
-  /** idTags starting with this are Invalid in Authorize and StartTransaction answers. */
+  /**
+   * idTags (1.6) and idTokens (2.0.1) starting with this are Invalid in the
+   * answers to Authorize, StartTransaction and TransactionEvent.
+   */
   unknownIdTagPrefix?: string;
 }
 
@@ -124,6 +134,8 @@ export interface ClientCertificate {
 export interface BuiltinCsmsConnection {
   readonly chargeBoxId: string;
   readonly protocol: string;
+  /** The OCPP version the connection speaks. */
+  readonly ocpp: OcppVersion;
   /** Headers of the WebSocket upgrade request. */
   readonly headers: IncomingMessage['headers'];
   /** The client certificate, when the connection uses TLS and the station sent one. */
@@ -195,6 +207,41 @@ function defaultHandlers(options: BuiltinCsmsOptions): Record<string, CsmsHandle
   };
 }
 
+/** Default answers to a 2.0.1 station's requests. */
+function defaultHandlers201(options: BuiltinCsmsOptions): Record<string, CsmsHandler> {
+  const interval = options.heartbeatInterval ?? 60;
+  const prefix = options.unknownIdTagPrefix;
+  const idTokenInfo = (idToken: unknown) => {
+    const token = (idToken as { idToken?: unknown } | undefined)?.idToken;
+    return {
+      status:
+        prefix !== undefined && prefix !== '' && String(token).startsWith(prefix)
+          ? 'Invalid'
+          : 'Accepted',
+    };
+  };
+  const empty: CsmsHandler = () => ({});
+  return {
+    BootNotification: () => ({ status: 'Accepted', currentTime: now(), interval }),
+    Heartbeat: () => ({ currentTime: now() }),
+    Authorize: (payload) => ({ idTokenInfo: idTokenInfo(payload.idToken) }),
+    // A token in the event is authorized like an Authorize (E01.FR.05 and on).
+    TransactionEvent: (payload) =>
+      payload.idToken === undefined ? {} : { idTokenInfo: idTokenInfo(payload.idToken) },
+    DataTransfer: () => ({ status: 'Accepted' }),
+    StatusNotification: empty,
+    MeterValues: empty,
+    NotifyReport: empty,
+    NotifyEvent: empty,
+    NotifyCustomerInformation: empty,
+    SecurityEventNotification: empty,
+    FirmwareStatusNotification: empty,
+    LogStatusNotification: empty,
+    ReportChargingProfiles: empty,
+    ReservationStatusUpdate: empty,
+  };
+}
+
 /** Waits for `predicate` to hold, re-checking whenever `subscribe` signals a change. */
 function waitUntil<T>(
   check: () => T | undefined,
@@ -221,7 +268,9 @@ function waitUntil<T>(
 
 /** What a connection needs from its CSMS. */
 interface ConnectionContext {
+  /** Handlers for the connection's version. */
   handlers: Record<string, CsmsHandler>;
+  messages: MessageSet;
   takeOverride: (chargeBoxId: string, action: string) => CsmsReply | undefined;
   onKeyChanged: (chargeBoxId: string, key: string) => void;
   keepFrames: boolean;
@@ -256,6 +305,7 @@ function createConnection(
   const connection: BuiltinCsmsConnection = {
     chargeBoxId,
     protocol: socket.protocol,
+    ocpp: context.messages.version,
     headers,
     ...(clientCertificate !== undefined && { clientCertificate }),
     get pings() {
@@ -367,10 +417,12 @@ function createConnection(
 
     const handler = handlers[frame.action];
     if (handler === undefined) {
+      // 2.0.1 tells an action it knows but does not handle from one it does not know.
+      const known = context.messages.version === '2.0.1' && context.messages.isAction(frame.action);
       answer({
         type: MessageTypeId.CallError,
         id: frame.id,
-        errorCode: 'NotImplemented',
+        errorCode: known ? 'NotSupported' : 'NotImplemented',
         errorDescription: `the built-in CSMS has no handler for ${frame.action}`,
         errorDetails: {},
       });
@@ -406,25 +458,40 @@ function createConnection(
 export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promise<BuiltinCsms> {
   const { port = 0, host = '127.0.0.1' } = options;
   const authority = options.certificateAuthority;
-  const handlers: Record<string, CsmsHandler> = {
-    ...defaultHandlers(options),
-    SignCertificate: (payload, connection) => {
-      if (authority === undefined) return { status: 'Rejected' };
-      let certificate: string;
-      try {
-        certificate = signCsr(String(payload.csr), authority);
-      } catch {
-        return { status: 'Rejected' };
-      }
-      // The signed certificate follows the answer, as from a CA server (A02 steps 6 to 9).
-      setTimeout(() => {
-        void connection
-          .call('CertificateSigned', { certificateChain: certificate }, 5000)
-          .catch(() => {});
-      }, 50);
-      return { status: 'Accepted' };
+  const signCertificate: CsmsHandler = (payload, connection) => {
+    if (authority === undefined) return { status: 'Rejected' };
+    let certificate: string;
+    try {
+      certificate = signCsr(String(payload.csr), authority);
+    } catch {
+      return { status: 'Rejected' };
+    }
+    // The signed certificate follows the answer, as from a CA server (A02 steps 6 to 9).
+    setTimeout(() => {
+      void connection
+        .call(
+          'CertificateSigned',
+          {
+            certificateChain: certificate,
+            // 2.0.1 names the certificate it signs when the request did (A02.FR.06).
+            ...(connection.ocpp === '2.0.1' &&
+              payload.certificateType !== undefined && {
+                certificateType: payload.certificateType,
+              }),
+          },
+          5000,
+        )
+        .catch(() => {});
+    }, 50);
+    return { status: 'Accepted' };
+  };
+  const handlersFor: Record<OcppVersion, Record<string, CsmsHandler>> = {
+    '1.6': { ...defaultHandlers(options), SignCertificate: signCertificate, ...options.handlers },
+    '2.0.1': {
+      ...defaultHandlers201(options),
+      SignCertificate: signCertificate,
+      ...options.handlers,
     },
-    ...options.handlers,
   };
   const connections = new Map<string, BuiltinCsmsConnection>();
   const listeners = new Set<() => void>();
@@ -450,10 +517,11 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     return override.reply;
   };
 
+  // The first subprotocol the station offers that the CSMS speaks.
   const wss = new WebSocketServer({
     noServer: true,
     handleProtocols: (protocols) =>
-      protocols.has(OCPP16_SUBPROTOCOL) ? OCPP16_SUBPROTOCOL : false,
+      [...protocols].find((protocol) => messageSetForSubprotocol(protocol) !== undefined) ?? false,
   });
   const notFound: RequestListener = (_req, res) => {
     res.writeHead(404).end();
@@ -476,8 +544,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
         );
   const passwords: Record<string, string> = { ...options.passwords };
   const delay = options.responseDelay;
-  const context: ConnectionContext = {
-    handlers,
+  const context: Omit<ConnectionContext, 'handlers' | 'messages'> = {
     takeOverride,
     onKeyChanged: (chargeBoxId, key) => {
       if (options.passwords !== undefined || options.password !== undefined) {
@@ -527,12 +594,17 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      if (ws.protocol !== OCPP16_SUBPROTOCOL) {
+      const messages = messageSetForSubprotocol(ws.protocol);
+      if (messages === undefined) {
         stats.refused += 1;
-        ws.close(1002, 'ocpp1.6 subprotocol required');
+        ws.close(1002, `${OCPP16_SUBPROTOCOL} or ocpp2.0.1 subprotocol required`);
         return;
       }
-      const connection = createConnection(ws, chargeBoxId, req.headers, clientCertificate, context);
+      const connection = createConnection(ws, chargeBoxId, req.headers, clientCertificate, {
+        ...context,
+        handlers: handlersFor[messages.version],
+        messages,
+      });
       connections.set(chargeBoxId, connection);
       stats.opened += 1;
       stats.connected += 1;

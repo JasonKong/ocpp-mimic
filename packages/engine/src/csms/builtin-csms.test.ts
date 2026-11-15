@@ -1,8 +1,10 @@
 import {
   ManualClock,
+  OCPP201_MESSAGE_SET,
   createRpc,
   sequentialIds,
   type CsmsHandlers,
+  type Ocpp201RpcTypes,
   type Rpc,
 } from '@ocpp-mimic/core';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -154,9 +156,9 @@ describe('built-in CSMS', () => {
     expect(await other.call('Heartbeat', {})).toMatchObject({ ok: true });
   });
 
-  it('refuses connections without the ocpp1.6 subprotocol or outside /ocpp/<id>', async () => {
+  it('refuses connections without a subprotocol it speaks or outside /ocpp/<id>', async () => {
     csms = await startBuiltinCsms();
-    await expect(open(`${csms.url}/CP-1`, ['ocpp2.0.1'])).rejects.toThrow();
+    await expect(open(`${csms.url}/CP-1`, ['ocpp2.1'])).rejects.toThrow();
     await expect(open(csms.url.replace('/ocpp', '/other/CP-1'))).rejects.toThrow();
     expect(csms.stats()).toMatchObject({ refused: 2, opened: 0 });
   });
@@ -232,5 +234,173 @@ describe('built-in CSMS', () => {
       await csms.waitForConnection('CP-1')
     ).closed;
     expect(csms.stats()).toMatchObject({ connected: 1, closed: 1 });
+  });
+});
+
+describe('built-in CSMS with OCPP 2.0.1 stations', () => {
+  async function connect201(id: string): Promise<Rpc<Ocpp201RpcTypes>> {
+    if (csms === undefined) throw new Error('start the CSMS first');
+    const socket = await open(`${csms.url}/${id}`, ['ocpp2.0.1']);
+    const rpc = createRpc<Ocpp201RpcTypes>({
+      clock: new ManualClock(),
+      ids: sequentialIds(`${id}-`),
+      send: (text) => socket.send(text),
+      messages: OCPP201_MESSAGE_SET,
+    });
+    socket.on('message', (data) => rpc.receive(data.toString()));
+    return rpc;
+  }
+
+  const at = '2026-11-15T10:00:00Z';
+  const token = (idToken: string) => ({ idToken, type: 'ISO14443' as const });
+  const component = { name: 'Connector', evse: { id: 1, connectorId: 1 } };
+  const variable = { name: 'Problem' };
+  /** A valid request for every station-initiated action in M5's scope. */
+  const requests: { [A in Ocpp201RpcTypes['out']]?: Ocpp201RpcTypes['requests'][A] } = {
+    Authorize: { idToken: token('TAG-1') },
+    BootNotification: { reason: 'PowerUp', chargingStation: { model: 'M', vendorName: 'V' } },
+    DataTransfer: { vendorId: 'acme', data: { any: ['thing'] } },
+    FirmwareStatusNotification: { status: 'Downloading', requestId: 1 },
+    Heartbeat: {},
+    LogStatusNotification: { status: 'Uploading', requestId: 2 },
+    MeterValues: {
+      evseId: 0,
+      meterValue: [{ timestamp: at, sampledValue: [{ value: 1, context: 'Sample.Clock' }] }],
+    },
+    NotifyCustomerInformation: { data: 'none', seqNo: 0, generatedAt: at, requestId: 3 },
+    NotifyEvent: {
+      generatedAt: at,
+      seqNo: 0,
+      eventData: [
+        {
+          eventId: 1,
+          timestamp: at,
+          trigger: 'Alerting',
+          actualValue: 'true',
+          eventNotificationType: 'HardWiredNotification',
+          component,
+          variable,
+        },
+      ],
+    },
+    NotifyReport: {
+      requestId: 4,
+      generatedAt: at,
+      seqNo: 0,
+      reportData: [{ component, variable, variableAttribute: [{ value: 'false' }] }],
+    },
+    ReportChargingProfiles: {
+      requestId: 5,
+      chargingLimitSource: 'CSO',
+      evseId: 1,
+      chargingProfile: [
+        {
+          id: 1,
+          stackLevel: 0,
+          chargingProfilePurpose: 'TxDefaultProfile',
+          chargingProfileKind: 'Absolute',
+          chargingSchedule: [
+            {
+              id: 1,
+              chargingRateUnit: 'W',
+              chargingSchedulePeriod: [{ startPeriod: 0, limit: 3680 }],
+            },
+          ],
+        },
+      ],
+    },
+    ReservationStatusUpdate: { reservationId: 6, reservationUpdateStatus: 'Expired' },
+    SecurityEventNotification: { type: 'StartupOfTheDevice', timestamp: at },
+    SignCertificate: { csr: 'not a CSR' },
+    StatusNotification: { timestamp: at, connectorStatus: 'Available', evseId: 1, connectorId: 1 },
+    TransactionEvent: {
+      eventType: 'Started',
+      timestamp: at,
+      triggerReason: 'Authorized',
+      seqNo: 0,
+      transactionInfo: { transactionId: 'tx-1' },
+      idToken: token('TAG-1'),
+    },
+  };
+
+  it('speaks 2.0.1 to a station offering ocpp2.0.1 and answers every in-scope request', async () => {
+    csms = await startBuiltinCsms();
+    const rpc = await connect201('CP-201');
+    const connection = await csms.waitForConnection('CP-201');
+    expect(connection).toMatchObject({ protocol: 'ocpp2.0.1', ocpp: '2.0.1' });
+    for (const [action, payload] of Object.entries(requests)) {
+      const outcome = await rpc.call(action as Ocpp201RpcTypes['out'], payload as never);
+      // The RPC layer validates the answer against the 2.0.1 definitions.
+      expect(outcome.ok, `${action}: ${JSON.stringify(outcome)}`).toBe(true);
+    }
+    expect(Object.keys(requests)).toHaveLength(16);
+  });
+
+  it('answers Invalid for unknown tokens, and tells unsupported from unknown actions', async () => {
+    csms = await startBuiltinCsms({ unknownIdTagPrefix: 'UNKNOWN-' });
+    const rpc = await connect201('CP-201');
+    expect(await rpc.call('Authorize', { idToken: token('UNKNOWN-1') })).toMatchObject({
+      ok: true,
+      payload: { idTokenInfo: { status: 'Invalid' } },
+    });
+    expect(
+      await rpc.call('TransactionEvent', {
+        ...requests.TransactionEvent!,
+        idToken: token('UNKNOWN-2'),
+      }),
+    ).toMatchObject({ ok: true, payload: { idTokenInfo: { status: 'Invalid' } } });
+    const display = await rpc.call('NotifyDisplayMessages', { requestId: 1 });
+    expect(display).toMatchObject({
+      ok: false,
+      failure: { kind: 'CallError', errorCode: 'NotSupported' },
+    });
+  });
+
+  it('picks the version the station offers and refuses others', async () => {
+    csms = await startBuiltinCsms();
+    const v16 = await open(`${csms.url}/CP-16`, ['ocpp1.6']);
+    const v201 = await open(`${csms.url}/CP-201`, ['ocpp2.0.1', 'ocpp1.6']);
+    expect([v16.protocol, v201.protocol]).toEqual(['ocpp1.6', 'ocpp2.0.1']);
+    await expect(open(`${csms.url}/CP-X`, ['ocpp2.1'])).rejects.toThrow();
+    expect((await csms.waitForConnection('CP-16')).ocpp).toBe('1.6');
+  });
+
+  it('sends CertificateSigned with the certificate type the request named', async () => {
+    const authority = { certificate: 'CA', key: 'KEY' };
+    csms = await startBuiltinCsms({
+      certificateAuthority: authority,
+      handlers: {
+        // The test checks the follow-up CALL only; signing itself is tested with the 1.6 flow.
+        SignCertificate: (payload, connection) => {
+          void connection
+            .call('CertificateSigned', {
+              certificateChain: 'CHAIN',
+              ...(payload.certificateType !== undefined && {
+                certificateType: payload.certificateType,
+              }),
+            })
+            .catch(() => {});
+          return { status: 'Accepted' };
+        },
+      },
+    });
+    const received: unknown[] = [];
+    const socket = await open(`${csms.url}/CP-201`, ['ocpp2.0.1']);
+    socket.on('message', (data) => received.push(JSON.parse(data.toString())));
+    socket.send(
+      JSON.stringify([
+        2,
+        'a',
+        'SignCertificate',
+        { csr: 'x', certificateType: 'ChargingStationCertificate' },
+      ]),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(received).toContainEqual([
+      2,
+      expect.any(String),
+      'CertificateSigned',
+      { certificateChain: 'CHAIN', certificateType: 'ChargingStationCertificate' },
+    ]);
   });
 });

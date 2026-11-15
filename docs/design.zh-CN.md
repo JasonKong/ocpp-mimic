@@ -907,6 +907,7 @@ faults:
 
 - 两种子协议都接受，对 `ocpp2.0.1` 连接运行 2.0.1 会话：回答 BootNotification（Accepted 加心跳间隔）、Heartbeat、StatusNotification、Authorize 和 TransactionEvent（idTokenInfo 为 Accepted，未知前缀为 Invalid）、MeterValues、NotifyReport、NotifyEvent、SecurityEventNotification、各种状态通知、SignCertificate（用测试 CA 签名）、ReportChargingProfiles、ReservationStatusUpdate 和 NotifyCustomerInformation。
 - `csmsCall` 和 `csmsReply` 支持 2.0.1 action，按桩的消息集校验，合规报告检查 2.0.1 的回答。
+- 已实现（T61）：CSMS 选择桩提供的、它会说的第一个子协议，所以 `connection.ocpp` 是 `1.6` 或 `2.0.1`，并按该版本的默认值回答；自定义的 `handlers` 对两种版本都生效。2.0.1 桩发来 CSMS 认识但没有处理器的 action 时回 NotSupported，不认识的回 NotImplemented（1.6 两种情况都仍回 NotImplemented）。SignCertificate 之后的 CertificateSigned 带上请求里写的 `certificateType`。和 1.6 一样，CSMS 不校验 `csmsCall` 和 `csmsReply` 的负载：桩的 RPC 层校验它收到的内容，记录器按桩的版本用 schema 检查每一帧。
 
 **场景**
 

@@ -909,6 +909,7 @@ faults:
 
 - It accepts both subprotocols and runs a 2.0.1 session on `ocpp2.0.1` connections: it answers BootNotification (Accepted with its interval), Heartbeat, StatusNotification, Authorize and TransactionEvent (idTokenInfo Accepted, Invalid for the unknown prefix), MeterValues, NotifyReport, NotifyEvent, SecurityEventNotification, the status notifications, SignCertificate (signed with the test CA), ReportChargingProfiles, ReservationStatusUpdate and NotifyCustomerInformation.
 - `csmsCall` and `csmsReply` work with 2.0.1 actions, validated against the station's message set, and the compliance report checks 2.0.1 answers.
+- Implemented (T61): the CSMS takes the first subprotocol the station offers that it speaks, so `connection.ocpp` is `1.6` or `2.0.1`, and answers with that version's defaults; custom `handlers` apply to both versions. A 2.0.1 station's CALL of an action the CSMS knows but has no handler for gets NotSupported, an unknown one NotImplemented (1.6 keeps NotImplemented for both). SignCertificate's CertificateSigned carries the `certificateType` the request named. As for 1.6, `csmsCall` and `csmsReply` payloads are not validated by the CSMS: the station's RPC layer validates what it receives, and the recorder checks every frame against the schemas of the station's version.
 
 **Scenarios**
 
