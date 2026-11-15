@@ -72,6 +72,7 @@ import type {
   Ocpp201RequestOf,
   Ocpp201ResponseOf,
 } from './messages.js';
+import { chargingNeeds } from './charging-needs.js';
 import {
   applyOverrides,
   componentKey,
@@ -334,6 +335,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   });
   const localSource = (idToken: IdTokenType): SessionSource =>
     idToken.type === 'NoAuthorization' ? 'noAuth' : 'local';
+  /** connectorId → when the EV was plugged in; set while NotifyEVChargingNeeds is still due. */
+  const needsDue = new Map<number, number>();
   const changed = () => emit({ type: 'changed' });
   const now = () => clock.now();
   const timestamp = () => new Date(now()).toISOString();
@@ -1162,6 +1165,21 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     trigger: TriggerReasonEnumType,
     idToken?: IdTokenType,
   ): void {
+    evaluateTransaction(connectorId, trigger, idToken);
+    const connector = findConnector(station, connectorId);
+    if (connector !== undefined) {
+      reportChargingNeeds(connectorId, {
+        evConnected: connector.plugged,
+        authorized: authorizations.has(connectorId),
+      });
+    }
+  }
+
+  function evaluateTransaction(
+    connectorId: number,
+    trigger: TriggerReasonEnumType,
+    idToken?: IdTokenType,
+  ): void {
     updatePower(connectorId);
     const connector = findConnector(station, connectorId);
     if (connector === undefined) return;
@@ -1190,6 +1208,33 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       sendEvent(connectorId, tx, 'Updated', 'ChargingStateChanged');
     }
     if (tx.energyLimitWh !== undefined) checkEnergyLimit(connectorId, tx);
+  }
+
+  /**
+   * An ISO 15118 EV tells its charging needs once per session, when it is
+   * plugged in and authorized (the station then sends NotifyEVChargingNeeds).
+   */
+  function reportChargingNeeds(
+    connectorId: number,
+    conditions: { evConnected: boolean; authorized: boolean },
+  ): void {
+    const pluggedAt = needsDue.get(connectorId);
+    if (pluggedAt === undefined || !conditions.evConnected || !conditions.authorized) return;
+    const ev = energy.ev(connectorId);
+    if (ev?.state.profile.communication !== 'iso15118') return;
+    needsDue.delete(connectorId);
+    const connectorType = deviceModel.get(`Connector@${connectorId}.1`, 'ConnectorType');
+    void sendIfOnline('NotifyEVChargingNeeds', {
+      evseId: connectorId,
+      chargingNeeds: chargingNeeds({
+        profile: ev.state.profile,
+        soc: ev.state.soc,
+        ...(connectorType !== undefined && { connectorType }),
+        pluggedAt,
+      }),
+    })?.then((outcome) => {
+      if (outcome.ok) log(`NotifyEVChargingNeeds: ${String(outcome.payload.status)}`);
+    });
   }
 
   /** The token of the session ends (card, CSMS, timeout); the stop points decide whether the transaction ends. */
@@ -2071,6 +2116,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       // Throws a RangeError for an unusable profile, before anything changes.
       if (ev !== undefined) energy.plugEv(connectorId, ev);
       if (applyDevice({ type: 'Plug', connectorId }).error !== undefined) return;
+      needsDue.set(connectorId, now());
       stopTimer(connectTimers.get(connectorId));
       connectTimers.delete(connectorId);
       evaluate(connectorId, 'CablePluggedIn');
@@ -2088,6 +2134,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       }
       energy.sync(connectorId);
       applyDevice({ type: 'Unplug', connectorId });
+      needsDue.delete(connectorId);
       if (
         transactions.has(connectorId) &&
         dmValue('TxCtrlr', 'StopTxOnEVSideDisconnect') !== 'false'

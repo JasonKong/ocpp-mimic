@@ -37,6 +37,8 @@ export interface EvProfile {
    * as before the setting existed.
    */
   communication?: EvCommunication;
+  /** Minutes after plugging in an `iso15118` EV wants to leave; it says so in its charging needs. */
+  departureMinutes?: number;
 }
 
 /** Whether the station learns the EV's SoC, and so can report it. */
@@ -75,6 +77,12 @@ export function evProfileProblems(profile: EvProfile): string[] {
   if (!(taper >= 0 && taper <= target)) problems.push('taperSoc must be between 0 and targetSoc');
   if (!(profile.initialSoc >= 0 && profile.initialSoc <= 100)) {
     problems.push('initialSoc must be between 0 and 100');
+  }
+  if (
+    profile.departureMinutes !== undefined &&
+    !(Number.isFinite(profile.departureMinutes) && profile.departureMinutes > 0)
+  ) {
+    problems.push('departureMinutes must be greater than 0');
   }
   if (
     profile.communication !== undefined &&

@@ -13,6 +13,7 @@ export {
   type VariableDefinition,
 } from './ocpp201/device-model.js';
 export { standardVariables } from './ocpp201/standard-variables.js';
+export { chargingNeeds, DC_CONNECTOR_TYPES } from './ocpp201/charging-needs.js';
 export {
   CERTIFICATION_PROFILES,
   createChargePoint201,

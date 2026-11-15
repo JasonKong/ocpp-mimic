@@ -190,3 +190,21 @@ steps:
       within: 5s
   - presentCard: { idToken: AA000055, result: stopping }
   - expect: { sent: TransactionEvent, payload: { eventType: Ended }, answer: {} }
+---
+# Beyond the five certified profiles: the station reports an ISO 15118 EV's
+# charging needs (T82). Only that CitrineOS takes the message is checked.
+name: NotifyEVChargingNeeds from an ISO 15118 EV
+csms: ws://localhost:8081
+station: { id: MIMIC-NEEDS, persona: regression-iso15118-2.0.1 }
+steps:
+  - presentCard: { idToken: AA000068, result: authorized }
+  - plugIn: { ev: iso-ac-60kwh }
+  - expect:
+      sent: NotifyEVChargingNeeds
+      payload:
+        evseId: 1
+        chargingNeeds:
+          { requestedEnergyTransfer: AC_three_phase, departureTime: { $regex: '^20\d\d-' } }
+      answer: { status: { $regex: '^(Accepted|Rejected|Processing)$' } }
+  - presentCard: { idToken: AA000068, result: stopping }
+  - expect: { sent: TransactionEvent, payload: { eventType: Ended }, answer: {} }

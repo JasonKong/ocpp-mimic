@@ -434,6 +434,30 @@ describe('2.0.1 sessions', () => {
     expect(h.steps(h.list()[0])).toContain('Authorize.conf Accepted');
   });
 
+  it('keeps the charging needs an ISO 15118 EV reported', async () => {
+    const h = harness({
+      ocpp: '2.0.1',
+      csms: { NotifyEVChargingNeeds: () => ({ status: 'Accepted' }) },
+      deviceModel: { 'Connector@1.1': { ConnectorType: 'cCCS2' } },
+    });
+    await h.boot();
+    await h.present(1, 'AA000010');
+    h.cp.plugIn(1, {
+      profile: {
+        capacityKWh: 60,
+        initialSoc: 30,
+        maxPowerW: 50_000,
+        phases: 3,
+        communication: 'iso15118',
+      },
+    });
+    await h.advance(2000);
+    expect(h.list()[0]?.chargingNeeds).toMatchObject({
+      requestedEnergyTransfer: 'DC',
+      dcChargingParameters: { evEnergyCapacity: 60_000, fullSoC: 100, bulkSoC: 80 },
+    });
+  });
+
   it('marks a NoAuthorization token as noAuth', async () => {
     const h = harness({ ocpp: '2.0.1' });
     await h.boot();

@@ -1121,6 +1121,7 @@ interface SessionRecord {
 - 已实现（T81）：EV profile 的 `communication`（persona、API 和场景里的内联 profile 都可用），由 `evProfileProblems` 检查；`reportsSoc` 决定电表是否采样 SoC。
 - `departureMinutes`（可选）给 `iso15118` 车一个离开时间，从插枪起算。
 - 2.0.1 的桩接 `iso15118` 车时，每次会话在插着枪、交易得到授权后，立即发一次 NotifyEVChargingNeeds（R-EV-3）。EVSE 的连接器类型是直流（cCCS1、cCCS2、cG105、cChaoJi）时用 DC 参数，否则用 AC 参数：capacityKWh → evEnergyCapacity，targetSoc → fullSoC，taperSoc → bulkSoC，maxPowerW → evMaxPower，energyAmount 由 SoC 和容量算出，evMaxCurrent 和 evMaxVoltage 由功率和相数算出，requestedEnergyTransfer 由相数决定（AC_single_phase、AC_three_phase 或 DC）。
+- 已实现（T82）：`packages/core/src/ocpp201/charging-needs.ts` 的 `chargingNeeds` 生成报文内容；2.0.1 桩在每次插枪后、EV 插着且得到授权时（不论交易起点设成什么）发一次，并在日志里记下 CSMS 返回的状态。内置 CSMS 应答 Accepted。`regression-iso15118-2.0.1`（scenarios/personas）提供一辆 AC 和一辆 DC 的 ISO 15118 车，供 `scenarios/regression/ocpp201-charging-needs.yaml` 和一个 CitrineOS 场景使用；连接器类型取自站点的 Device Model（`Connector@1.1.ConnectorType`）。
 
 **从 UI 发起远程启动**
 

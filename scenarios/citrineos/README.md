@@ -48,6 +48,8 @@ or per group of related ones, as far as CitrineOS's REST API can start them:
 | `smart-charging.yaml` | K_01, K_03 to K_06, K_08, K_10, K_19, K_29 to K_37, K_43, K_44, K_60, K_70                                         |
 | `reservation.yaml`    | H_01, H_07, H_08, H_14, H_15, H_17, H_19, H_20, H_22                                                               |
 
+`transactions.yaml` also has a scenario beyond the five profiles: a station with an ISO 15118 EV sends NotifyEVChargingNeeds (T82); it only checks that CitrineOS takes the message.
+
 Not covered, and why:
 
 - **Security Profiles 1 to 3 and certificate renewal** (A_01 to A_04, A_06, A_07, A_09 to A_14, A_19): the test stack serves only security profile 0. The built-in CSMS covers them in `scenarios/regression/ocpp201-security.yaml`.

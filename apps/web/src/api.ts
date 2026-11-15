@@ -45,6 +45,8 @@ export interface EvProfile {
   targetSoc?: number;
   /** How the EV talks to the station; basic reports no SoC. */
   communication?: 'basic' | 'dc' | 'iso15118';
+  /** Minutes after plugging in an ISO 15118 EV wants to leave. */
+  departureMinutes?: number;
 }
 
 /** Test switches; see ChargePointBehaviour in core. */

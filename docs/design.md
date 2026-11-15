@@ -1122,6 +1122,7 @@ The reference tariff is a 2.1 TariffType without conditions, so the same JSON ca
 - Implemented (T81): `communication` on EV profiles (personas, inline profiles in the API and scenarios), checked by `evProfileProblems`; `reportsSoc` decides whether the meter samples SoC.
 - `departureMinutes` (optional) gives an `iso15118` EV a departure time, counted from plugging in.
 - A 2.0.1 station with an `iso15118` EV sends NotifyEVChargingNeeds once per session, right after the transaction is authorized with the cable in (R-EV-3). DC parameters when the EVSE's connector type is a DC one (cCCS1, cCCS2, cG105, cChaoJi), AC otherwise: capacityKWh → evEnergyCapacity, targetSoc → fullSoC, taperSoc → bulkSoC, maxPowerW → evMaxPower, energyAmount from the SoC and capacity, evMaxCurrent and evMaxVoltage from the power and phases, and requestedEnergyTransfer from the phases (AC_single_phase, AC_three_phase or DC).
+- Implemented (T82): `chargingNeeds` in `packages/core/src/ocpp201/charging-needs.ts` builds the payload; the 2.0.1 station sends it once per plug-in, as soon as the EV is plugged in and authorized (whatever the transaction start point), and logs the CSMS's status. The built-in CSMS answers Accepted. `regression-iso15118-2.0.1` (scenarios/personas) has an AC and a DC ISO 15118 EV for `scenarios/regression/ocpp201-charging-needs.yaml` and a CitrineOS scenario; a station's connector type comes from its Device Model (`Connector@1.1.ConnectorType`).
 
 **Remote start from the UI**
 
