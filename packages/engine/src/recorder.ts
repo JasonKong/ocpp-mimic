@@ -27,6 +27,8 @@ export interface FrameRecord {
   injected?: string;
   /** The frame never reached the other side (dropped, or a CALL left unanswered). */
   dropped?: true;
+  /** The station's OCPP version, when the recorder knows it. */
+  ocpp?: '1.6' | '2.0.1';
   text: string;
 }
 
@@ -77,6 +79,8 @@ export interface RecorderOptions {
     payload: unknown,
     stationId: string,
   ) => string[] | undefined;
+  /** A station's OCPP version, kept on its frames (and their log lines). */
+  versionOf?: (stationId: string) => '1.6' | '2.0.1' | undefined;
 }
 
 export function createRecorder(options: RecorderOptions = {}): Recorder {
@@ -112,6 +116,7 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
 
   return {
     frame(stationId, direction, text, marks = {}) {
+      const ocpp = options.versionOf?.(stationId);
       const base = {
         kind: 'frame' as const,
         seq: ++seq,
@@ -119,6 +124,7 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
         at: new Date(now()).toISOString(),
         direction,
         ...marks,
+        ...(ocpp !== undefined && { ocpp }),
         text,
       };
       // A frame that is wrong on purpose is not held against the schema.

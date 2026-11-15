@@ -2,9 +2,12 @@
  * Replay (docs/design.md, "M4 scale"): sends a log's charge-point frames over
  * a replay station's connection with the recorded gaps, answers the CSMS's
  * CALLs with the recorded answers, and compares the CSMS's answers with the
- * recorded ones. uniqueIds are fresh, transactionIds follow the CSMS's new
- * ones, and timestamps move to the present.
+ * recorded ones. uniqueIds are fresh and timestamps move to the present. 1.6
+ * transactionIds follow the CSMS's new ones; 2.0.1 transactionIds, which the
+ * station makes, are fresh, seqNo stays, and remoteStartIds follow the ones
+ * the CSMS sends in RequestStartTransaction.
  */
+import { randomUUID } from 'node:crypto';
 import { lineFrame, type LogLine } from '@ocpp-mimic/core';
 import type { StationWire } from '../fleet.js';
 
@@ -38,7 +41,15 @@ export interface ReplayResult {
 }
 
 /** Fields that change from run to run and are never compared. */
-const VOLATILE = new Set(['currentTime', 'transactionId', 'timestamp', 'expiryDate']);
+const VOLATILE = new Set([
+  'currentTime',
+  'transactionId',
+  'timestamp',
+  'expiryDate',
+  'expiryDateTime',
+  'cacheExpiryDateTime',
+  'remoteStartId',
+]);
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -56,17 +67,39 @@ function shiftTimestamps(value: Json, offsetMs: number): Json {
   );
 }
 
-/** A copy of `value` with recorded transactionIds replaced by the CSMS's. */
-function mapTransactionIds(value: Json, ids: ReadonlyMap<number, number>): Json {
-  if (Array.isArray(value)) return value.map((item) => mapTransactionIds(item, ids));
+/**
+ * Ids that differ between the recording and the replay: 1.6 transactionIds
+ * (numbers, the CSMS's), 2.0.1 transactionIds (strings, the station's own,
+ * fresh for the replay) and 2.0.1 remoteStartIds (the CSMS's).
+ */
+interface IdMaps {
+  transactionIds: Map<number, number>;
+  stationTransactionIds: Map<string, string>;
+  remoteStartIds: Map<number, number>;
+}
+
+/** A copy of `value` with recorded ids replaced by the replay's. */
+function mapIds(value: Json, ids: IdMaps): Json {
+  if (Array.isArray(value)) return value.map((item) => mapIds(item, ids));
   if (value === null || typeof value !== 'object') return value;
   return Object.fromEntries(
-    Object.entries(value).map(([key, child]) => [
-      key,
-      key === 'transactionId' && typeof child === 'number'
-        ? (ids.get(child) ?? child)
-        : mapTransactionIds(child, ids),
-    ]),
+    Object.entries(value).map(([key, child]) => {
+      if (key === 'transactionId' && typeof child === 'number') {
+        return [key, ids.transactionIds.get(child) ?? child];
+      }
+      if (key === 'transactionId' && typeof child === 'string') {
+        let fresh = ids.stationTransactionIds.get(child);
+        if (fresh === undefined) {
+          fresh = randomUUID();
+          ids.stationTransactionIds.set(child, fresh);
+        }
+        return [key, fresh];
+      }
+      if (key === 'remoteStartId' && typeof child === 'number') {
+        return [key, ids.remoteStartIds.get(child) ?? child];
+      }
+      return [key, mapIds(child, ids)];
+    }),
   );
 }
 
@@ -178,7 +211,11 @@ export async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
 
   const firstAt = lines.length > 0 ? Date.parse(lines[0]?.at ?? '') : now();
   const offsetMs = now() - firstAt;
-  const transactionIds = new Map<number, number>();
+  const ids: IdMaps = {
+    transactionIds: new Map(),
+    stationTransactionIds: new Map(),
+    remoteStartIds: new Map(),
+  };
   const pending = new Map<string, (frame: unknown[]) => void>();
   let nextId = 0;
   const consumed = new Set<number>();
@@ -222,8 +259,16 @@ export async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
         result.differences.push(`${action} from the CSMS (log line ${recorded.n}): ${difference}`);
       }
     }
+    // A 2.0.1 remote start: the station's later frames carry the CSMS's new remoteStartId.
+    const recordedRemote = (recorded.payload as { remoteStartId?: unknown } | undefined)
+      ?.remoteStartId;
+    const newRemote = (frame[3] as { remoteStartId?: unknown } | undefined)?.remoteStartId;
+    if (typeof recordedRemote === 'number' && typeof newRemote === 'number') {
+      ids.remoteStartIds.set(recordedRemote, newRemote);
+    }
     const reply = [...answer];
     reply[1] = frame[1];
+    if (reply[0] === 3) reply[2] = mapIds(reply[2] as Json, ids);
     wire.send(JSON.stringify(reply));
   });
 
@@ -243,10 +288,7 @@ export async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
       const recordedId = String(frame[1]);
       const action = String(frame[2]);
       const id = `replay-${++nextId}`;
-      const payload = mapTransactionIds(
-        shiftTimestamps(frame[3] as Json, offsetMs),
-        transactionIds,
-      );
+      const payload = mapIds(shiftTimestamps(frame[3] as Json, offsetMs), ids);
       const answer = new Promise<unknown[] | undefined>((resolve) => {
         const timer = setTimeout(() => {
           pending.delete(id);
@@ -281,7 +323,7 @@ export async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
         typeof recordedTx === 'number' &&
         typeof newTx === 'number'
       ) {
-        transactionIds.set(recordedTx, newTx);
+        ids.transactionIds.set(recordedTx, newTx);
       }
     }
     await sleep(options.settleMs ?? 1000);

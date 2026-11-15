@@ -3,12 +3,17 @@
  * optional header line, then one frame per line. It is what the engine
  * exports, what `import` writes, and what replay and calibration read.
  */
+import { isOcpp16Action } from './ocpp16-messages.js';
+import { isOcpp201Action } from './ocpp201/messages.js';
 import { parseFrame, type Frame } from './ocppj.js';
 
 export const LOG_FORMAT = 'ocpp-mimic-log';
 export const LOG_VERSION = 1;
 
 export type LogDirection = 'cp-to-csms' | 'csms-to-cp';
+
+/** The OCPP version a log line's station speaks. */
+export type LogOcppVersion = '1.6' | '2.0.1';
 
 export interface LogHeader {
   format: typeof LOG_FORMAT;
@@ -31,6 +36,8 @@ export interface LogLine {
   injected?: string;
   /** The frame never reached the other side. */
   dropped?: true;
+  /** The station's OCPP version; logs written before M5 leave it out (see logVersions). */
+  ocpp?: LogOcppVersion;
 }
 
 /** A log line for a frame's text: `frame` when it is an OCPP-J message, else `text`. */
@@ -39,7 +46,7 @@ export function logLine(
   station: string,
   direction: LogDirection,
   text: string,
-  marks: { injected?: string; dropped?: true } = {},
+  marks: { injected?: string; dropped?: true; ocpp?: LogOcppVersion } = {},
 ): LogLine {
   let frame: unknown[] | undefined;
   try {
@@ -55,7 +62,54 @@ export function logLine(
     ...(frame !== undefined ? { frame } : { text }),
     ...(marks.injected !== undefined && { injected: marks.injected }),
     ...(marks.dropped !== undefined && { dropped: marks.dropped }),
+    ...(marks.ocpp !== undefined && { ocpp: marks.ocpp }),
   };
+}
+
+/** The version a subprotocol names (`ocpp1.6`, `ocpp2.0.1`), if any. */
+export function versionOfSubprotocol(subprotocol: string): LogOcppVersion | undefined {
+  if (subprotocol.includes('2.0.1')) return '2.0.1';
+  if (subprotocol.includes('1.6')) return '1.6';
+  return undefined;
+}
+
+/**
+ * Each station's OCPP version: the one its lines carry, else what their
+ * actions tell (an action only one version has, such as TransactionEvent or
+ * StartTransaction). Stations whose actions both versions share are left out.
+ */
+export function logVersions(lines: readonly LogLine[]): Map<string, LogOcppVersion> {
+  const versions = new Map<string, LogOcppVersion>();
+  const votes = new Map<string, { '1.6': number; '2.0.1': number }>();
+  for (const line of lines) {
+    if (line.ocpp !== undefined) {
+      versions.set(line.station, line.ocpp);
+      continue;
+    }
+    const frame = line.frame;
+    if (frame === undefined || frame[0] !== 2 || typeof frame[2] !== 'string') continue;
+    const action = frame[2];
+    const only16 = isOcpp16Action(action) && !isOcpp201Action(action);
+    const only201 = isOcpp201Action(action) && !isOcpp16Action(action);
+    if (!only16 && !only201) continue;
+    const count = votes.get(line.station) ?? { '1.6': 0, '2.0.1': 0 };
+    count[only16 ? '1.6' : '2.0.1'] += 1;
+    votes.set(line.station, count);
+  }
+  for (const [station, count] of votes) {
+    if (versions.has(station)) continue;
+    versions.set(station, count['2.0.1'] > count['1.6'] ? '2.0.1' : '1.6');
+  }
+  return versions;
+}
+
+/** The lines with each station's version filled in where logVersions knows it. */
+export function withVersions(lines: readonly LogLine[]): LogLine[] {
+  const versions = logVersions(lines);
+  return lines.map((line) => {
+    const ocpp = line.ocpp ?? versions.get(line.station);
+    return ocpp === undefined || line.ocpp !== undefined ? line : { ...line, ocpp };
+  });
 }
 
 /** The JSONL text of a log: the header, then one line per frame. */
@@ -116,8 +170,10 @@ export function parseLog(text: string): ParsedLog {
       }
       return;
     }
-    const { at, station, direction, frame, text: kept } = value;
-    if (typeof at !== 'string' || Number.isNaN(Date.parse(at))) {
+    const { at, station, direction, frame, text: kept, ocpp } = value;
+    if (ocpp !== undefined && ocpp !== '1.6' && ocpp !== '2.0.1') {
+      result.problems.push(`line ${n}: "ocpp" must be 1.6 or 2.0.1`);
+    } else if (typeof at !== 'string' || Number.isNaN(Date.parse(at))) {
       result.problems.push(`line ${n}: "at" must be an ISO 8601 time`);
     } else if (typeof station !== 'string' || station === '') {
       result.problems.push(`line ${n}: "station" must be a station id`);

@@ -37,6 +37,7 @@ describe('scenario runner', () => {
     expect(outcomes).toEqual([
       'A fault ends the transaction and clearing it recovers the connector: passed',
       'Card session with periodic meter values: passed',
+      'Card session and remote start on OCPP 2.0.1: passed',
       'StopTransaction is resent after an outage: passed',
       'StopTransaction is resent after a half-open connection: passed',
       'Remote start and stop from the CSMS: passed',

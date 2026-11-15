@@ -50,4 +50,9 @@ describe('recorder', () => {
     expect(injected.schemaErrors).toBeUndefined();
     expect(dropped).toMatchObject({ injected: 'drop', dropped: true });
   });
+  it('keeps the station version on its frames', () => {
+    const recorder = createRecorder({ versionOf: (id) => (id === 'S2' ? '2.0.1' : undefined) });
+    expect(recorder.frame('S2', 'cp-to-csms', '[2,"a","Heartbeat",{}]').ocpp).toBe('2.0.1');
+    expect(recorder.frame('S1', 'cp-to-csms', '[2,"b","Heartbeat",{}]').ocpp).toBeUndefined();
+  });
 });
