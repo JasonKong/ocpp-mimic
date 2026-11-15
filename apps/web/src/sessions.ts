@@ -2,7 +2,14 @@
  * Formatting for the Sessions view: start sources, states, timelines,
  * durations, and the `#/stations/<id>/sessions/<n>` links.
  */
-import type { SessionSource, SessionState, SessionSummary, TimelineStep } from './api.js';
+import type {
+  ReportedSample,
+  SessionDetail,
+  SessionSource,
+  SessionState,
+  SessionSummary,
+  TimelineStep,
+} from './api.js';
 
 export const SOURCE_LABELS: Record<SessionSource, string> = {
   local: 'Card',
@@ -112,4 +119,91 @@ export function formatRoute(route: SessionRoute): string {
   const base = `#/stations/${encodeURIComponent(route.stationId)}`;
   if (!route.sessions) return base;
   return route.n === undefined ? `${base}/sessions` : `${base}/sessions/${route.n}`;
+}
+
+/** The numbers of the energy panel, from a session's detail (R-NRG-1, R-NRG-3, R-NRG-5). */
+export interface EnergyFigures {
+  energyWh: number;
+  /** Latest reported power and SoC; the truth's beside them. */
+  powerW?: number;
+  socPercent?: number;
+  truePowerW?: number;
+  trueSocPercent?: number;
+  chargingMs: number;
+  suspendedMs: number;
+  idleMs: number;
+  /** Estimated and true ETA to the target, and the time left from `now`. */
+  etaAt?: string;
+  leftMs?: number;
+  trueEtaAt?: string;
+  trueLeftMs?: number;
+  /** Why there is no estimate. */
+  reason?: string;
+  targetSoc: number;
+  targetFrom: 'chargingNeeds' | 'default';
+  departureTime?: string;
+  reachesTargetBeforeDeparture?: boolean;
+  /** The estimate misses the truth by more than 5 minutes or 10 %. */
+  off?: boolean;
+  gapMs?: number;
+  /** Latest per-phase readings. */
+  phases?: { phase: 'L1' | 'L2' | 'L3'; currentA?: number; voltageV?: number }[];
+  /** For a finished session. */
+  peakPowerW?: number;
+  startSocPercent?: number;
+  endSocPercent?: number;
+}
+
+export function energyFigures(detail: SessionDetail, now: number): EnergyFigures {
+  const { session, summary, estimate, truth, gap, durations } = detail;
+  const latest = <K extends keyof ReportedSample>(key: K) =>
+    [...session.samples].reverse().find((s) => s[key] !== undefined)?.[key];
+  const lastTruth = session.truth.at(-1);
+  const socs = session.samples.flatMap((s) => (s.socPercent === undefined ? [] : [s.socPercent]));
+  const powers = session.samples.flatMap((s) => (s.powerW === undefined ? [] : [s.powerW]));
+  const phaseSample = [...session.samples]
+    .reverse()
+    .find((s) => s.currentA !== undefined || s.voltageV !== undefined);
+  const phases = (['L1', 'L2', 'L3'] as const).flatMap((phase) => {
+    const currentA = phaseSample?.currentA?.[phase];
+    const voltageV = phaseSample?.voltageV?.[phase];
+    return currentA === undefined && voltageV === undefined
+      ? []
+      : [
+          {
+            phase,
+            ...(currentA !== undefined && { currentA }),
+            ...(voltageV !== undefined && { voltageV }),
+          },
+        ];
+  });
+  const left = (eta: string) => Math.max(0, Date.parse(eta) - now);
+  const powerW = latest('powerW');
+  const socPercent = latest('socPercent');
+  return {
+    energyWh: summary.energyWh,
+    ...(powerW !== undefined && { powerW }),
+    ...(socPercent !== undefined && { socPercent }),
+    ...(lastTruth !== undefined && {
+      truePowerW: lastTruth.powerW,
+      trueSocPercent: lastTruth.socPercent,
+    }),
+    chargingMs: durations.charging,
+    suspendedMs: durations.suspendedEV + durations.suspendedEVSE,
+    idleMs: durations.idle,
+    ...(estimate.etaAt !== undefined && { etaAt: estimate.etaAt, leftMs: left(estimate.etaAt) }),
+    ...(truth?.etaAt !== undefined && { trueEtaAt: truth.etaAt, trueLeftMs: left(truth.etaAt) }),
+    ...(estimate.reason !== undefined &&
+      estimate.reason !== 'target reached' && { reason: estimate.reason }),
+    targetSoc: estimate.targetSoc,
+    targetFrom: estimate.targetFrom,
+    ...(estimate.departureTime !== undefined && { departureTime: estimate.departureTime }),
+    ...(estimate.reachesTargetBeforeDeparture !== undefined && {
+      reachesTargetBeforeDeparture: estimate.reachesTargetBeforeDeparture,
+    }),
+    ...(gap !== undefined && { off: gap.off, gapMs: gap.gapMs }),
+    ...(phases.length > 0 && { phases }),
+    ...(powers.length > 0 && { peakPowerW: Math.max(...powers) }),
+    ...(socs.length > 0 && { startSocPercent: socs[0] ?? 0, endSocPercent: socs.at(-1) ?? 0 }),
+  };
 }

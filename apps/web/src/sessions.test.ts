@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import type { SessionDetail } from './api.js';
 import {
+  energyFigures,
   failureText,
   formatDuration,
   formatRoute,
@@ -60,5 +62,97 @@ describe('session formatting', () => {
     expect(
       ['running', 'starting', 'finished', 'not-started'].map((s) => stateTone(s as 'running')),
     ).toEqual(['good', 'pending', 'muted', 'bad']);
+  });
+});
+
+describe('energy figures', () => {
+  const T0 = Date.parse('2026-11-15T10:00:00Z');
+  const at = (m: number) => new Date(T0 + m * 60_000).toISOString();
+  const detail = (extra: Partial<SessionDetail['session']> = {}): SessionDetail => ({
+    session: {
+      stationId: 'CP-1',
+      n: 1,
+      ocpp: '2.0.1',
+      state: 'running',
+      source: 'local',
+      requestedAt: at(0),
+      startedAt: at(0),
+      timeline: [],
+      samples: [
+        {
+          at: at(1),
+          seq: 1,
+          powerW: 7000,
+          socPercent: 30,
+          currentA: { L1: 16, L2: 15.8 },
+          voltageV: { L1: 231 },
+        },
+        { at: at(2), seq: 2, powerW: 7400, socPercent: 31 },
+      ],
+      truth: [{ at: at(2), socPercent: 31.6, energyWh: 300, powerW: 7390 }],
+      states: [],
+      costs: [],
+      ...extra,
+    },
+    summary: {
+      stationId: 'CP-1',
+      n: 1,
+      ocpp: '2.0.1',
+      state: 'running',
+      source: 'local',
+      requestedAt: at(0),
+      energyWh: 300,
+    },
+    estimate: {
+      targetSoc: 100,
+      targetFrom: 'default',
+      taperSoc: 80,
+      socPercent: 31,
+      at: at(2),
+      etaAt: at(62),
+      msToTarget: 3_600_000,
+    },
+    truth: { at: at(2), socPercent: 31.6, msToTarget: 3_300_000, etaAt: at(57) },
+    gap: { gapMs: 300_000, off: false },
+    durations: { charging: 100_000, suspendedEV: 20_000, suspendedEVSE: 10_000, idle: 5_000 },
+  });
+
+  it('takes the latest reported values, the truth, the ETAs and the phases', () => {
+    const f = energyFigures(detail(), T0 + 2 * 60_000);
+    expect(f).toMatchObject({
+      energyWh: 300,
+      powerW: 7400,
+      socPercent: 31,
+      truePowerW: 7390,
+      trueSocPercent: 31.6,
+      chargingMs: 100_000,
+      suspendedMs: 30_000,
+      idleMs: 5_000,
+      etaAt: at(62),
+      leftMs: 3_600_000,
+      trueEtaAt: at(57),
+      trueLeftMs: 3_300_000,
+      off: false,
+      peakPowerW: 7400,
+      startSocPercent: 30,
+      endSocPercent: 31,
+    });
+    expect(f.phases).toEqual([
+      { phase: 'L1', currentA: 16, voltageV: 231 },
+      { phase: 'L2', currentA: 15.8 },
+    ]);
+    expect(f.reason).toBeUndefined();
+  });
+
+  it('says why there is no estimate', () => {
+    const d = detail({ samples: [{ at: at(1), seq: 1, energyWh: 100 }], truth: [] });
+    d.estimate = { targetSoc: 100, targetFrom: 'default', taperSoc: 80, reason: 'no SoC reported' };
+    delete d.truth;
+    delete d.gap;
+    const f = energyFigures(d, T0);
+    expect(f.reason).toBe('no SoC reported');
+    expect(f.socPercent).toBeUndefined();
+    expect(f.phases).toBeUndefined();
+    expect(f.trueEtaAt).toBeUndefined();
   });
 });
