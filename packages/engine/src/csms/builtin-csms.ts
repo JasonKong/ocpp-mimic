@@ -15,6 +15,7 @@ import {
   MessageTypeId,
   messageSetForSubprotocol,
   OCPP16_SUBPROTOCOL,
+  OCPP201_SUBPROTOCOL,
   parseFrame,
   type MessageSet,
   type OcppVersion,
@@ -105,7 +106,16 @@ export interface BuiltinCsmsOptions {
    * answers to Authorize, StartTransaction and TransactionEvent.
    */
   unknownIdTagPrefix?: string;
+  /**
+   * Serve the control API on the same port (default true): `GET /api/health`
+   * and `POST /api/stations/:id/remote-start`, so a test tool such as the
+   * engine's Web UI can make the CSMS start a session remotely.
+   */
+  controlApi?: boolean;
 }
+
+/** What `GET /api/health` of the built-in CSMS answers with. */
+export const BUILTIN_CSMS_SERVICE = 'ocpp-mimic-csms';
 
 /** Counters over the CSMS's life, for a summary. */
 export interface BuiltinCsmsStats {
@@ -524,14 +534,106 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     handleProtocols: (protocols) =>
       [...protocols].find((protocol) => messageSetForSubprotocol(protocol) !== undefined) ?? false,
   });
-  const notFound: RequestListener = (_req, res) => {
-    res.writeHead(404).end();
+  let remoteStartIds = 0;
+  const control: RequestListener = (req, res) => {
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(body));
+    };
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    if (options.controlApi === false || !url.pathname.startsWith('/api/')) {
+      res.writeHead(404).end();
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/health') {
+      json(200, {
+        service: BUILTIN_CSMS_SERVICE,
+        protocols: [OCPP16_SUBPROTOCOL, OCPP201_SUBPROTOCOL],
+      });
+      return;
+    }
+    const match = /^\/api\/stations\/([^/]+)\/remote-start$/.exec(url.pathname);
+    if (req.method !== 'POST' || match === null) {
+      json(404, { error: 'not found' });
+      return;
+    }
+    const chargeBoxId = decodeURIComponent(match[1] ?? '');
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= 16 * 1024) chunks.push(chunk);
+    });
+    req.on('end', () => {
+      void (async () => {
+        let body: Record<string, unknown>;
+        try {
+          const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+          if (typeof value !== 'object' || value === null || Array.isArray(value))
+            throw new Error();
+          body = value as Record<string, unknown>;
+        } catch {
+          json(400, { error: 'the body must be a JSON object' });
+          return;
+        }
+        const token = body.idToken as Record<string, unknown> | undefined;
+        const evseId = body.evseId;
+        if (typeof token?.idToken !== 'string' || token.idToken === '') {
+          json(400, { error: '"idToken" needs an idToken string' });
+          return;
+        }
+        if (evseId !== undefined && !(Number.isInteger(evseId) && Number(evseId) > 0)) {
+          json(400, { error: '"evseId" must be a whole number from 1' });
+          return;
+        }
+        const connection = connections.get(chargeBoxId);
+        if (connection === undefined) {
+          json(404, { error: `${chargeBoxId} is not connected` });
+          return;
+        }
+        const remoteStartId = ++remoteStartIds;
+        const [action, payload]: [string, JsonObject] =
+          connection.ocpp === '1.6'
+            ? [
+                'RemoteStartTransaction',
+                {
+                  idTag: token.idToken,
+                  ...(evseId !== undefined && { connectorId: Number(evseId) }),
+                },
+              ]
+            : [
+                'RequestStartTransaction',
+                {
+                  remoteStartId,
+                  idToken: {
+                    idToken: token.idToken,
+                    type: typeof token.type === 'string' ? token.type : 'Central',
+                  },
+                  ...(evseId !== undefined && { evseId: Number(evseId) }),
+                },
+              ];
+        try {
+          const answer = await connection.call(action, payload, 10_000);
+          if (answer.type === MessageTypeId.CallResult) {
+            json(200, {
+              action,
+              ...answer.payload,
+              ...(connection.ocpp !== '1.6' && { remoteStartId }),
+            });
+          } else if (answer.type === MessageTypeId.CallError) {
+            json(502, { action, error: answer.errorCode, description: answer.errorDescription });
+          }
+        } catch (caught) {
+          json(504, { action, error: caught instanceof Error ? caught.message : String(caught) });
+        }
+      })();
+    });
   };
   const tls = options.tls;
   const clientCertificates = tls?.clientCertificates ?? 'none';
   const server =
     tls === undefined
-      ? createServer(notFound)
+      ? createServer(control)
       : createHttpsServer(
           {
             cert: tls.cert,
@@ -541,7 +643,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
             requestCert: clientCertificates !== 'none',
             rejectUnauthorized: clientCertificates === 'required',
           },
-          notFound,
+          control,
         );
   const passwords: Record<string, string> = { ...options.passwords };
   const delay = options.responseDelay;

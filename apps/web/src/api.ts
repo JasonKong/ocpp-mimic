@@ -80,6 +80,8 @@ export interface StationSnapshot {
   }[];
   /** Fault injections active on the station. */
   injections?: { id: string; injection: { type: string }; until?: string; remaining?: number }[];
+  /** Whether the CSMS is ocpp-mimic's built-in one, which can start sessions remotely from here. */
+  csms?: 'builtin' | 'external';
 }
 
 export interface FaultInfo {

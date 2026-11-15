@@ -1129,6 +1129,8 @@ The reference tariff is a 2.1 TariffType without conditions, so the same JSON ca
 - The built-in CSMS runs as its own process (`ocpp-mimic csms`) and serves WebSocket connections on one port. It gets a control API on the same port: `GET /api/health` answers `{ service: "ocpp-mimic-csms" }`, and `POST /api/stations/:id/remote-start` with `{ evseId?, idToken: { idToken, type? } }` sends RemoteStartTransaction (1.6) or RequestStartTransaction (2.0.1, a counting remoteStartId, type Central by default) to that station and returns its answer. Like the CSMS itself, it is a test tool without authentication.
 - The engine checks a station's CSMS once per connection (`GET` on the CSMS URL's origin, ws → http, wss → https) and shows `csms: builtin | external` in the snapshot. `POST /api/stations/:id/remote-start` forwards to the built-in CSMS and answers 409 for an external one: against an external CSMS a remote start must come from that CSMS (R-START-5, R-START-6).
 
+- Implemented (T84): the control API is on by default (`controlApi: false` turns it off) and answers a remote start with the station's answer plus the `action` sent and, for 2.0.1, the `remoteStartId`; `ocpp-mimic csms` prints its address. The engine only probes CSMS URLs on this machine (localhost, 127.0.0.1, ::1), so an external CSMS never gets a request it did not expect; its snapshot says `csms: external`, and `POST /api/stations/:id/remote-start` answers 409.
+
 **Web UI**
 
 - No router dependency: when a station is selected, tabs switch between Station and Sessions, and the hash (`#/stations/<id>/sessions/<n>`) links to a session.
