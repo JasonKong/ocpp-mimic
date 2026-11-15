@@ -206,6 +206,15 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
     );
   }
 
+  if (input.features.includes('Reservation')) {
+    const reservation: ComponentType = { name: 'ReservationCtrlr' };
+    out.push(
+      variable(reservation, 'Available', 'boolean', ro('true')),
+      variable(reservation, 'Enabled', 'boolean', rw('true')),
+      variable(reservation, 'NonEvseSpecific', 'boolean', rw('true')),
+    );
+  }
+
   if (input.features.includes('SmartCharging')) {
     const smart: ComponentType = { name: 'SmartChargingCtrlr' };
     out.push(

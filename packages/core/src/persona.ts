@@ -56,6 +56,7 @@ export const IMPLEMENTED_201_PROFILES: readonly string[] = [
   'AdvancedSecurity',
   'LocalAuthListManagement',
   'SmartCharging',
+  'Reservation',
 ];
 
 /** Feature profiles this version of the charge point implements. */

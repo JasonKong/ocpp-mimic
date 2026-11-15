@@ -10,7 +10,7 @@ boot:
 connectors: 1
 power:
   offeredW: 7360
-features: [Core, AdvancedSecurity, LocalAuthListManagement, SmartCharging]
+features: [Core, AdvancedSecurity, LocalAuthListManagement, SmartCharging, Reservation]
 timing:
   startTransactionDelay: 500ms
   actionDelay: 100ms

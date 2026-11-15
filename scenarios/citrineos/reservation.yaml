@@ -1,0 +1,115 @@
+# Reservations with CitrineOS as the CSMS.
+name: TC_H_01_CSMS Reserve a specific EVSE, and use the reservation
+csms: ws://localhost:8081
+station: { id: MIMIC-H01, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  # CitrineOS stores a reservation only for an EVSE it knows from a report.
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/reporting/getBaseReport?identifier=MIMIC-H01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 2011, reportBase: FullInventory }
+  - expect: { received: GetBaseReport, answer: { status: Accepted } }
+  - expect:
+      { sent: NotifyReport, payload: { requestId: 2011, tbc: { $exists: false } }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/reserveNow?identifier=MIMIC-H01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        id: 201
+        expiryDateTime: '{{now+30m}}'
+        idToken: { idToken: AA000030, type: ISO14443 }
+        evseId: 1
+      expect: { json: [{ success: true }] }
+  - expect: { received: ReserveNow, answer: { status: Accepted } }
+  - expect:
+      sent: StatusNotification
+      payload: { evseId: 1, connectorStatus: Reserved }
+      answer: {}
+  - presentCard: { idToken: AA000030, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, reservationId: 201 }
+      answer: {}
+---
+name: TC_H_17_CSMS Cancel a reservation
+csms: ws://localhost:8081
+station: { id: MIMIC-H17, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  # CitrineOS stores a reservation only for an EVSE it knows from a report.
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/reporting/getBaseReport?identifier=MIMIC-H17&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 2171, reportBase: FullInventory }
+  - expect: { received: GetBaseReport, answer: { status: Accepted } }
+  - expect:
+      { sent: NotifyReport, payload: { requestId: 2171, tbc: { $exists: false } }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/reserveNow?identifier=MIMIC-H17&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        id: 217
+        expiryDateTime: '{{now+30m}}'
+        idToken: { idToken: AA000031, type: ISO14443 }
+        evseId: 2
+      expect: { json: [{ success: true }] }
+  - expect: { received: ReserveNow, answer: { status: Accepted } }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/cancelReservation?identifier=MIMIC-H17&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { reservationId: 217 }
+  - expect: { received: CancelReservation, answer: { status: Accepted } }
+  - expect: { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Available } }
+---
+name: TC_H_07_CSMS A reservation that is not used expires
+csms: ws://localhost:8081
+station: { id: MIMIC-H07, persona: regression-2.0.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  # CitrineOS stores a reservation only for an EVSE it knows from a report.
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/reporting/getBaseReport?identifier=MIMIC-H07&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { requestId: 2071, reportBase: FullInventory }
+  - expect: { received: GetBaseReport, answer: { status: Accepted } }
+  - expect:
+      { sent: NotifyReport, payload: { requestId: 2071, tbc: { $exists: false } }, answer: {} }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.0.1/evdriver/reserveNow?identifier=MIMIC-H07&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json:
+        id: 207
+        expiryDateTime: '{{now+3s}}'
+        idToken: { idToken: AA000031, type: ISO14443 }
+        evseId: 1
+      expect: { json: [{ success: true }] }
+  - expect: { received: ReserveNow, answer: { status: Accepted } }
+  - expect:
+      sent: ReservationStatusUpdate
+      payload: { reservationId: 207, reservationUpdateStatus: Expired }
+      answer: {}
+      within: 8s
