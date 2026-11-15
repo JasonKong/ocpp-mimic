@@ -1,10 +1,10 @@
 # ocpp-mimic 设计方案
 
-更新于 2026-11-14 · 英文版：[design.md](design.md)（两版不一致时以英文版为准）
+更新于 2026-11-15 · 英文版：[design.md](design.md)（两版不一致时以英文版为准）
 
 ## 概述
 
-ocpp-mimic 是一个独立的 OCPP 充电桩模拟平台：引擎在服务端进程里同时运行多个虚拟充电桩，每个桩按 OCPP 规范实现，再用 persona 文件复现真实桩的时序和怪癖。首个版本只做 OCPP 1.6J Core，数据模型按 2.0.1 设计。
+ocpp-mimic 是一个独立的 OCPP 充电桩模拟平台：引擎在服务端进程里同时运行多个虚拟充电桩，每个桩按 OCPP 规范实现，再用 persona 文件复现真实桩的时序和怪癖。先做 OCPP 1.6J（M1 至 M4），M5 在同一个引擎里加上 OCPP 2.0.1；数据模型一开始就是按 2.0.1 设计的。
 
 **定位**：引擎按“自动化回归 + 压测”的标准设计；Web UI、CLI 和 CI 脚本都只是引擎的遥控器。手动 QA 是 UI 层的一种用法，不是设计的出发点。
 
@@ -33,7 +33,44 @@ ocpp-mimic 是一个独立的 OCPP 充电桩模拟平台：引擎在服务端进
 
 ## 总体架构
 
-![ocpp-mimic 分层架构](images/architecture.png)
+```mermaid
+flowchart TB
+  web["Web UI<br/>手工测试"]
+  cli["CLI"]
+  runner["场景运行器<br/>CI"]
+  api["引擎 API<br/>REST / WebSocket"]
+  web --> api
+  cli --> api
+  runner --> api
+
+  subgraph engine["引擎进程"]
+    direction TB
+    subgraph services["共享服务"]
+      direction LR
+      fleet["Fleet Manager"]
+      clock["Clock / Scheduler"]
+      events["Event Recorder / Metrics"]
+    end
+    subgraph vcp["虚拟桩 × N"]
+      direction TB
+      subgraph core["packages/core · 纯逻辑"]
+        direction TB
+        persona["Persona<br/>厂商 / 固件差异：<br/>时序、怪癖、功能、默认值"]
+        ev["EV / 电表模型<br/>电池 SoC、充电曲线、<br/>功率限制、电量积分"]
+        device["设备模型<br/>Station → EVSE → Connector 状态机、<br/>配置项、授权、离线队列"]
+        protocol["协议适配层<br/>领域事件 ↔ OCPP 1.6J / 2.0.1 消息"]
+        rpc["RPC 层<br/>CALL / RESULT / ERROR 关联、超时、<br/>出站队列、schema 校验"]
+      end
+      transport["传输层 · packages/engine，全部 IO<br/>WebSocket、TLS / Basic Auth、重连、故障注入"]
+    end
+  end
+
+  api --> engine
+  persona --> device
+  ev --> device
+  device --> protocol --> rpc --> transport
+  transport <-->|"OCPP-J: ws(s)://csms/ocpp/chargeBoxId"| csms[("被测 CSMS")]
+```
 
 Web UI、CLI 和场景运行器都只调用引擎 API。每个虚拟桩内部分六层：上面五层属于纯逻辑的 core 包，只有传输层做网络 IO。
 
@@ -81,7 +118,7 @@ M1 只部署一个服务：Engine 进程；Web UI 和 CLI 都是它的客户端�
 
 **传输层**
 
-- 子协议协商：`ocpp1.6`，预留 `ocpp2.0.1`。
+- 子协议协商：`ocpp1.6` 或 `ocpp2.0.1`，取桩的 persona 的版本（M5）。
 - 安全：无认证，以及 Security Profile 1–3（Basic Auth / TLS + Basic / 双向 TLS）。
 - WebSocket ping/pong 保活。
 - 断线重连：指数退避 + 随机抖动。大量桩同时重连可能压垮 CSMS，这本身就是一个测试场景。
@@ -91,7 +128,7 @@ M1 只部署一个服务：Engine 进程；Web UI 和 CLI 都是它的客户端�
 
 - 按 uniqueId 关联请求和响应，每个 CALL 都有超时。
 - 规范要求（SHOULD）一方在上一个 CALL 得到响应或超时之前不发下一个，所以桩侧需要出站队列。
-- 双向消息先用 core 自己按规范正文写的消息定义校验：自己发出的消息保证合规；CSMS 发来的不合规消息直接标红，等于附带一个 CSMS 合规检查器。engine 再用 OCA 官方的 OCPP 1.6 JSON Schema 对每一帧做第二道检查：schema 文件按 CC BY-ND 4.0 原样附带在 `packages/engine/oca-schemas/`，注明出处，只交给通用的 draft-04 校验器（Ajv）读取，不从中生成任何代码。发现的问题标在消息记录和 Web UI 的消息日志上。另有测试用生成的报文对照 core 的定义和官方 schema，唯一的差异是规范正文要求的 1..* 数组下限：官方 schema 没写，core 会检查（#18）。
+- 双向消息先用 core 自己按规范正文写的消息定义校验：自己发出的消息保证合规；CSMS 发来的不合规消息直接标红，等于附带一个 CSMS 合规检查器。engine 再用 OCA 官方的 OCPP 1.6 JSON Schema 对每一帧做第二道检查：schema 文件按 CC BY-ND 4.0 原样附带在 `packages/engine/oca-schemas/`，注明出处，只交给通用的 draft-04 校验器（Ajv）读取，不从中生成任何代码。发现的问题标在消息记录和 Web UI 的消息日志上。另有测试用生成的报文对照 core 的定义和官方 schema，唯一的差异是规范正文要求的 1..* 数组下限：官方 schema 没写，core 会检查（#18）。2.0.1 桩用同样的方式检查，对照 core 的 2.0.1 定义和 OCA 的 2.0.1 schema（draft-06）。
 - CallError 严格按 `[4, uniqueId, errorCode, errorDescription, errorDetails]` 格式；不支持的 action 回 `NotImplemented`。
 
 ## 设备模型与 EV / 电表模型
@@ -100,7 +137,7 @@ M1 只部署一个服务：Engine 进程；Web UI 和 CLI 都是它的客户端�
 
 **设备模型**
 
-- 层级按 2.0.1 建：Station → EVSE → Connector。1.6 只是把 connectorId 映射到 EVSE / Connector，升级 2.0.1 时不用重写。
+- 层级按 2.0.1 建：Station → EVSE → Connector。1.6 只是把 connectorId 映射到 EVSE / Connector，升级 2.0.1 时不用重写（见「M5 OCPP 2.0.1」）。
 - 连接器状态机照 1.6 规范的状态迁移表实现：Available、Preparing、Charging、SuspendedEV、SuspendedEVSE、Finishing、Reserved、Unavailable、Faulted。可以用 XState 这类库，状态图能直接展示给 QA。
 - 输入事件：插枪、拔枪、锁枪 / 解锁、车辆就绪、车辆暂停、故障发生 / 恢复。
 - 配置项存储：区分类型和只读，支持 `RebootRequired`，重启后保留。
@@ -727,6 +764,163 @@ M4 的出口标准已满足。soak 工作流在 main 上的第二次运行（[43
 
 压测计划放 `scenarios/load/`，导入映射放 `scenarios/import/`，样本日志放 `scenarios/logs/`，压测用的 persona 放 `scenarios/personas/`。测试会把 `scenarios/` 下其余所有文件当作场景校验，所以 `scenarios/examples/` 只放场景。
 
+## M5 OCPP 2.0.1
+
+M5 确定（#135）。M5 在同一个引擎里、在 1.6J 旁边加上 OCPP 2.0.1。一个桩只说一种版本，就是它的 persona 写的那个；桩外围的一切（车队、场景、内置 CSMS、压测、回放、Web UI）两种版本都能用。规范依据是 OCPP 2.0.1 Edition 3（2024-05-06）加 2025-09 的勘误，测试对象是 CitrineOS。
+
+**范围**
+
+按认证 profile（Part 5）：
+
+| Profile | M5 是否包含 |
+| --- | --- |
+| Core | 是 |
+| Advanced Security | 是 |
+| Local Authorization List Management | 是 |
+| Smart Charging | 是 |
+| Reservation | 是 |
+| Advanced Device Management（监控） | 否；NotifyEvent 只用来上报故障 |
+| Advanced User Interface（显示消息、电价和费用） | 否 |
+| ISO 15118 support | 否 |
+
+64 个 action 里有 44 个在范围内，清单见「OCPP 2.0.1 覆盖范围」。其余 20 个，2.0.1 桩认识它们，所以回 CALLERROR NotSupported；根本不属于 2.0.1 的 action 回 NotImplemented。
+
+**出口标准**
+
+覆盖的 profile 的每个 2.0.1 场景在 CI 里对 CitrineOS 通过，这些运行的每一帧都符合 OCA 的 2.0.1 JSON schema，同时 1.6 的回归套件和 SteVe 套件保持全绿。
+
+**选择版本**
+
+- persona 声明 `ocpp: "2.0.1"`（默认 `"1.6"`），桩使用它的 persona 的版本。真实固件只说一种版本，两种版本的设备模型差别太大，一个 persona 描述不了两者。`generic-2.0.1`、`regression-2.0.1` 和 `load-ac-2.0.1` 加入现有的 1.6 persona。
+- 桩只提供自己版本的子协议（`ocpp2.0.1` 或 `ocpp1.6`），CSMS 选了别的就让连接失败。内置 CSMS 两种都接受，取桩提供的那个。
+- 快照、桩列表、State Store、日志和指标都带上版本，字段名 `ocpp`。
+
+**协议接缝**
+
+`charge-point.ts` 是一个把物理行为和 1.6 消息混在一起的闭包。M5 把它拆开，1.6 桩的行为一点不变：
+
+- **按消息集工作的 RPC。** `createRpc` 接收一个 `MessageSet`：按发送方分的 action 名、请求和响应校验器、错误码（1.6 是 `FormationViolation`，2.0.1 是 `FormatViolation`，2.0.1 还加了 `MessageTypeNotSupported`、`RpcFrameworkError`、`GenericError` 等）。每个版本一个消息集。
+- **共享的桩部件。** 两种版本做法相同的部分从闭包里搬到纯模块：带 `halt()` 的定时器、保证送达的发件箱（重试次数、重试间隔、保留原时间戳、发送时填入 id）、功率和电量（EV 模型、电表读数、能量倍率、生效的限值、充满定时器）、证书库和安全日志、文件传输（固件下载、日志上传、重试），以及预约到期。版本不同的地方由回调传入。
+- **两个适配器。** `charge-point.ts` 仍是 1.6 桩，建在共享部件上。`ocpp201/charge-point.ts` 是 2.0.1 桩，建在同样的部件和 2.0.1 模块（Device Model、交易、状态）上。两者都实现引擎使用的 `ChargePoint` 接口。
+- **`ChargePoint` 接口**增加 `ocpp`。连接器操作用 `{ evse?, connector }` 指定连接器；不写 `evse` 时，`connector: n` 指 EVSE n 的第一个连接器，也就是常见的每个 EVSE 一个连接器的布局，所以 1.6 式的调用照样能用。卡是一个 IdToken：`presentIdTag(target, idTag, type?)`，2.0.1 上 type 默认 ISO14443。快照增加可选的 2.0.1 字段（EVSE id、`chargingState`、字符串形式的 `transactionId`）。
+- 设备 reducer 仍是连接器事实的唯一来源（插线、锁、授权、交易、EV 或 EVSE 暂停、故障、可用性、预约）。1.6 的状态，以及 2.0.1 的连接器状态和充电状态，都是同一组事实的纯视图。
+- 目录：2.0.1 模块放 `packages/core/src/ocpp201/`，共享部件放 `src/` 顶层，1.6 文件留在原处。
+
+**Device Model**
+
+- 一个存放组件（名称、实例、EVSE id、连接器 id）及其变量（名称、实例）的存储。变量有 Actual 属性，可选 Target、MinSet、MaxSet，每个属性有可变性（ReadOnly、WriteOnly、ReadWrite）、persistent 和 constant 标记，另有 characteristics（dataType、unit、valuesList、maxLimit；监控不在范围内，所以 supportsMonitoring 为 false）。
+- core 按 Part 2 附录（v1.4）的数据类型定义桩用到的标准变量：Part 5 为覆盖的 profile 要求的控制器组件（OCPPCommCtrlr、TxCtrlr、DeviceDataCtrlr、ClockCtrlr、SecurityCtrlr、SampledDataCtrlr、AlignedDataCtrlr、AuthCtrlr；LocalAuthListCtrlr、SmartChargingCtrlr 和 ReservationCtrlr 随各自的 profile），AuthCacheCtrlr，以及 ChargingStation、EVSE 和 Connector（AvailabilityState、Available、SupplyPhases、Power、ConnectorType）。persona 不包含的 profile，其控制器不出现在报告里，相应的 CALL 回 NotSupported。
+- 桩在需要时从模型读取行为参数（心跳间隔、交易开始点和结束点、测量项和间隔、消息重试次数、授权选项），所以 SetVariables 的效果和 1.6 里 ChangeConfiguration 一样。persistent 的值在重启后保留。WriteOnly 的值（BasicAuthPassword）从不上报。
+- GetVariables 和 SetVariables 逐项回答规范的状态（Accepted、Rejected、UnknownComponent、UnknownVariable、NotSupportedAttributeType、RebootRequired），按 characteristics 检查取值，超出 `DeviceDataCtrlr.ItemsPerMessage` 和 `BytesPerMessage` 的请求被拒绝。
+- GetBaseReport（ConfigurationInventory、FullInventory、SummaryInventory）和 GetReport（componentVariable 列表，以及 Active、Available、Enabled、Problem 条件）回答 Accepted、EmptyResultSet 或 NotSupported，然后分页发送 NotifyReport，每页 `ItemsPerMessage[GetReport]` 条，用 `seqNo` 编号，除最后一页外都带 `tbc`。
+- persona 格式：
+
+```yaml
+persona: generic-2.0.1
+ocpp: "2.0.1"
+boot: { vendorName: ocpp-mimic, model: Generic-AC-2.0.1, firmwareVersion: "1.0.0", serialNumber: SIM-SN-1 }
+evses: # 或者 `connectors: 2`：两个 EVSE，各有一个 cType2 连接器
+  - { connectors: [{ type: cType2 }] }
+  - { connectors: [{ type: cType2 }] }
+features: [Core, AdvancedSecurity, LocalAuthListManagement, SmartCharging, Reservation]
+deviceModel:
+  OCPPCommCtrlr:
+    HeartbeatInterval: 300
+    "MessageAttempts:TransactionEvent": 3
+  TxCtrlr: { TxStartPoint: PowerPathClosed, TxStopPoint: PowerPathClosed }
+  SampledDataCtrlr: { TxUpdatedInterval: 60, TxUpdatedMeasurands: "Energy.Active.Import.Register,Power.Active.Import" }
+  "EVSE@1": { Power: 11000 }
+  VendorCtrlr: { Mode: { actual: eco, mutability: ReadWrite, dataType: OptionList, valuesList: "eco,boost" } }
+faults:
+  - { name: Ground fault, component: Connector, techCode: E101, techInfo: GND_FAULT }
+```
+
+  组件键写作 `Name`、`Name:instance`、`Name@evse` 或 `Name@evse.connector`；变量键写作 `Name` 或 `Name:instance`。标量设置标准变量的 Actual 值；对象定义厂商自己的变量。`power`、`timing`、`evs`、`usage` 和 `firmware` 的含义与 1.6 相同。场景里的桩和 API 接受 `deviceModel` 覆盖，就像 1.6 接受 `config`。
+
+1.6 配置项和对应的 2.0.1 变量，供手工移植 persona 和场景时参考（不做自动转换）：
+
+| 1.6 配置项 | 2.0.1 变量 |
+| --- | --- |
+| HeartbeatInterval | OCPPCommCtrlr.HeartbeatInterval |
+| MeterValueSampleInterval、MeterValuesSampledData | SampledDataCtrlr.TxUpdatedInterval、TxUpdatedMeasurands |
+| StopTxnSampledData | SampledDataCtrlr.TxEndedMeasurands |
+| ClockAlignedDataInterval、MeterValuesAlignedData、StopTxnAlignedData | AlignedDataCtrlr.Interval、Measurands、TxEndedMeasurands |
+| TransactionMessageAttempts、TransactionMessageRetryInterval | OCPPCommCtrlr.MessageAttempts、MessageAttemptInterval（实例 TransactionEvent） |
+| ConnectionTimeOut | TxCtrlr.EVConnectionTimeOut |
+| StopTransactionOnEVSideDisconnect、StopTransactionOnInvalidId | TxCtrlr.StopTxOnEVSideDisconnect、StopTxOnInvalidId |
+| UnlockConnectorOnEVSideDisconnect | OCPPCommCtrlr.UnlockOnEVSideDisconnect |
+| AuthorizeRemoteTxRequests | AuthCtrlr.AuthorizeRemoteStart |
+| LocalAuthorizeOffline、LocalPreAuthorize、AllowOfflineTxForUnknownId | AuthCtrlr.LocalAuthorizeOffline、LocalPreAuthorize、OfflineTxForUnknownIdEnabled |
+| AuthorizationCacheEnabled | AuthCacheCtrlr.Enabled |
+| LocalAuthListEnabled、LocalAuthListMaxLength、SendLocalListMaxLength | LocalAuthListCtrlr.Enabled、Entries、ItemsPerMessage |
+| WebSocketPingInterval、ResetRetries | OCPPCommCtrlr.WebSocketPingInterval、ResetRetries |
+| SecurityProfile、AuthorizationKey、CpoName | SecurityCtrlr.SecurityProfile、BasicAuthPassword、OrganizationName |
+| ChargeProfileMaxStackLevel、ChargingScheduleMaxPeriods、MaxChargingProfilesInstalled、ChargingScheduleAllowedChargingRateUnit | SmartChargingCtrlr.ProfileStackLevel、PeriodsPerSchedule、Entries（实例 ChargingProfiles）、RateUnit |
+
+**状态、可用性和故障**
+
+- StatusNotification 带 `evseId`、`connectorId`、`connectorStatus` 和 `timestamp`。状态是连接器事实的视图：Faulted（连接器、所属 EVSE 或整桩有故障）、Unavailable（任一层级为 Inoperative）、Reserved（已预约且没插线）、Occupied（插着线，或有交易在进行），否则 Available。只授权不会占用连接器；2.0.1 没有 Preparing。
+- 1.6 放在状态里的内容（充电中、暂停、结束中）在 2.0.1 里是交易的 `chargingState`：EVConnected、Charging、SuspendedEV、SuspendedEVSE 或 Idle，变化时在 TransactionEvent 里发送，triggerReason 为 ChargingStateChanged。
+- 启动被接受后，桩上报每个连接器，之后每次变化再报。没有整桩级别的状态。
+- ChangeAvailability 可以针对整桩（不带 `evse`）、一个 EVSE 或一个连接器。回答 Accepted；目标上有交易时回答 Scheduled，等交易结束再生效。AvailabilityState 变量随之变化。
+- 故障让对应的连接器、EVSE 或整桩变为 Faulted，并针对该组件的 `Problem` 变量发送 NotifyEvent（trigger Alerting，actualValue `true`，techCode 和 techInfo 取自 persona 的故障目录）；清除故障时发送 `false`。故障目录里的 2.0.1 故障有 `name`、`component`（默认 Connector）、`techCode` 和 `techInfo`。
+
+**交易**
+
+- 交易由桩发起并命名：`transactionId` 是桩生成的字符串，同一个桩内唯一，最长 36 个字符。每个 TransactionEvent 带 `eventType`（Started、Updated、Ended）、`seqNo`（交易的第一个事件为 0，之后逐个加 1）、`triggerReason`（发生了什么：Authorized、CablePluggedIn、ChargingStateChanged、MeterValuePeriodic、MeterValueClock、RemoteStart、RemoteStop、StopAuthorized、Deauthorized、EVCommunicationLost、EVConnectTimeout、Trigger、ResetCommand、UnlockCommand、AbnormalCondition、EnergyLimitReached）、`transactionInfo`（id、chargingState、stoppedReason、remoteStartId），以及适用时的 `evse`、`idToken` 和 `meterValue`。
+- TxCtrlr.TxStartPoint 和 TxStopPoint 从 EVConnected、Authorized、PowerPathClosed（已连接且已授权）和 EnergyTransfer 中列出条件；ParkingBayOccupancy 和 DataSigned 不在范围内（没有车位传感器，没有签名电表值）。列出的任一开始条件成立时交易开始，列出的任一结束条件不再成立时交易结束。`generic-2.0.1` 两者都用 PowerPathClosed，行为和 1.6 一样：卡被接受且插上线后开始，刷卡停止、远程停止或拔线时结束。
+- 电表值：Started 事件带 SampledDataCtrlr.TxStartedMeasurands（context Transaction.Begin）；Updated 事件每隔 TxUpdatedInterval 带 TxUpdatedMeasurands（Sample.Periodic），在对齐间隔上带 AlignedDataCtrlr.Measurands（Sample.Clock）；Ended 事件带按 SampledDataCtrlr.TxEndedInterval 和 AlignedDataCtrlr.TxEndedInterval 采集的 TxEnded 样本，以及最终读数（Transaction.End）。交易之外，AlignedDataCtrlr.SendDuringIdle 为 true 时对齐数据放在 MeterValues 里发送。EV 模型和能量倍率与 1.6 相同。
+- CSMS 在 Authorize 或 TransactionEvent 回答里给的 idTokenInfo：不是 Accepted 时，TxCtrlr.StopTxOnInvalidId 为 true 则结束交易（stoppedReason DeAuthorized），否则充到 TxCtrlr.MaxEnergyOnInvalidId 为止。
+- EV 侧拔线：StopTxOnEVSideDisconnect 为 true 时结束交易（EVDisconnected）；否则交易保留，充电停止，等线插回来。UnlockOnEVSideDisconnect 释放线缆锁。授权后迟迟不插线，EVConnectionTimeOut 到期后授权失效（如果授权已开始交易，triggerReason 为 EVConnectTimeout）。
+- 离线：TransactionEvent 按顺序进入发件箱，离线时产生的带 `offline: true`。每条最多发送 `MessageAttempts` 次，两次之间等待 `MessageAttemptInterval` 乘以第几次尝试，之后丢弃。OCPPCommCtrlr.QueueAllMessages 为 true 时，StatusNotification 和 NotifyEvent 也进队列。GetTransactionStatus 回答 `messagesInQueue` 和 `ongoingIndicator`。
+- 桩断电时正在进行的交易，在重启后以 stoppedReason PowerLoss 结束，仍在队列里的事件先发。
+
+**授权**
+
+- 卡是一个 IdToken `{ idToken, type }`，类型有 Central、eMAID、ISO14443、ISO15693、KeyCode、Local、MacAddress 和 NoAuthorization；回答里的 idTokenInfo 带 status、groupIdToken 和 cacheExpiryDateTime。
+- AuthCtrlr 选项（LocalAuthorizeOffline、LocalPreAuthorize、OfflineTxForUnknownIdEnabled、AuthorizeRemoteStart、DisableRemoteAuthorization、MasterPassGroupId）、授权缓存（AuthCacheCtrlr.Enabled、LifeTime、Policy、DisablePostAuthorize；ClearCache）和本地列表（LocalAuthListCtrlr、SendLocalList 全量和差量、GetLocalListVersion）按用例 C01 至 C16 实现。规则一致的地方复用 1.6 的缓存和本地列表模块；缓存保留 100 条的上限。
+- 一个 token 开始的交易，可以由 groupIdToken 相同的另一个 token 停止。MasterPassGroupId 组的 token 停止所有交易，但不开始交易。
+
+**远程控制和运维操作**
+
+- RequestStartTransaction（evseId 可选；AuthorizeRemoteStart 为 true 时桩先授权该 token；可附带 TxProfile）、按 transactionId 的 RequestStopTransaction、UnlockConnector（Unlocked、UnlockFailed、OngoingAuthorizedTransaction、UnknownConnector）、TriggerMessage（BootNotification、Heartbeat、StatusNotification、MeterValues、TransactionEvent、FirmwareStatusNotification、LogStatusNotification、SignChargingStationCertificate）、针对整桩或单个 EVSE 的 Reset Immediate 或 OnIdle（启动原因 RemoteReset）、DataTransfer，以及 CustomerInformation（上报或清除桩为某个 idToken 保存的数据，以 NotifyCustomerInformation 分页发送）。
+- persona 的 `timing` 含义与 1.6 相同；`commandDelays` 使用 2.0.1 的 action 名。
+
+**安全、证书、固件和日志**
+
+- Security Profile 1 至 3 的连接方式与 1.6 相同。SecurityCtrlr.BasicAuthPassword 只写；SetVariables 修改它后桩用新密码重连。SecurityCtrlr.SecurityProfile 在 2.0.1 里只读：升级按 A05 进行，先用 SetNetworkProfile 写入一个配置槽，再用 SetVariables 设置 OCPPCommCtrlr.NetworkConfigurationPriority，然后 Reset。之后桩先尝试第一优先级，失败 NetworkProfileConnectionAttempts 次后退到下一个。降低 profile 会被拒绝。
+- 证书：InstallCertificate（CSMSRootCertificate 和 ManufacturerRootCertificate；V2G 和 MO 类型属于 ISO 15118，拒绝）、GetInstalledCertificateIds、DeleteCertificate、ChargingStationCertificate 的 SignCertificate 和 CertificateSigned（CertSigningWaitMinimum、CertSigningRepeatTimes）、AdditionalRootCertificateCheck，以及按附录安全事件发送的 SecurityEventNotification。复用 1.6 安全白皮书的代码；白皮书本来就取自这些用例。
+- UpdateFirmware 总是签名形式（requestId、location、retrieveDateTime、installDateTime、signingCertificate、signature），上报 1.6 SignedUpdateFirmware 的那些状态，支持 AllowNewSessionsPendingFirmwareUpdate。GetLog 和 LogStatusNotification 与 1.6 相同。
+
+**Smart Charging 和预约**
+
+- M3 的组合计划模型两种版本共用。2.0.1 里 profile 带 `evseId`（0 代表整桩），用途为 ChargingStationMaxProfile、TxDefaultProfile 或 TxProfile；ChargingStationExternalConstraints 只来自外部系统，拒绝。一个 profile 带一个充电计划；多于一个的属于 ISO 15118，拒绝。GetChargingProfiles 用 ReportChargingProfiles 分页回答；ClearChargingProfile 按 id 或条件清除；GetCompositeSchedule 按 EVSE 回答。SmartChargingCtrlr 设定各项上限。
+- ReserveNow 可以预约一个 EVSE、任意 EVSE（ReservationCtrlr.NonEvseSpecific）或某种连接器类型，可带 groupIdToken；另有 CancelReservation；ReservationStatusUpdate 上报 Expired 和 Removed。被预约的连接器上报 Reserved；对任意 EVSE 的预约，桩保持足够数量的 EVSE 空闲。
+
+**内置 CSMS**
+
+- 两种子协议都接受，对 `ocpp2.0.1` 连接运行 2.0.1 会话：回答 BootNotification（Accepted 加心跳间隔）、Heartbeat、StatusNotification、Authorize 和 TransactionEvent（idTokenInfo 为 Accepted，未知前缀为 Invalid）、MeterValues、NotifyReport、NotifyEvent、SecurityEventNotification、各种状态通知、SignCertificate（用测试 CA 签名）、ReportChargingProfiles、ReservationStatusUpdate 和 NotifyCustomerInformation。
+- `csmsCall` 和 `csmsReply` 支持 2.0.1 action，按桩的消息集校验，合规报告检查 2.0.1 的回答。
+
+**场景**
+
+- 场景里的桩从 persona 取版本。步骤名不变：对 2.0.1 桩，`presentCard` 接受 `idToken`（`idTag` 的别名）和 `type`，连接器步骤在 `connector` 旁加 `evse`，`fault` 接受 2.0.1 的故障字段。`expect`、`expectNo`、`csmsCall` 和 `csmsReply` 按桩的消息集检查 action 名，所以 2.0.1 场景里写了 1.6 的 action 会在运行前报错。`expectConnector` 匹配 2.0.1 的快照字段（`status`、`chargingState`、`transactionId`、`evse`）。
+- 可追溯性：ocpp-mimic 扮演充电桩。对 CitrineOS 的场景遵循 Part 6 里针对 CSMS 的测试用例（`TC_…_CSMS`），这些用例里测试工具扮演桩；对内置 CSMS 的回归场景遵循针对充电桩的测试用例（`TC_…_CS`），检查 ocpp-mimic 自己。场景名以测试用例 id 开头，例如 `TC_B_01_CS Cold boot, Accepted`。仓库里只放 id，不放规范正文。
+
+**CitrineOS**
+
+- CitrineOS v2.1.0（Apache-2.0），由 `tools/citrineos/docker-compose.yml` 启动，镜像按 digest 固定：`ghcr.io/citrineos/citrineos-server`、`postgis/postgis:16-3.5` 和 `rabbitmq:3-management`。仓库里不复制 CitrineOS 的代码。
+- 桩连接 security profile 0 端口（`ws://localhost:8081/<id>`），它接受未登记的桩，并对 BootNotification 回答 Accepted。Profile 1 至 3 的场景使用 8082、8443 和 8444 端口：桩的密码通过 CitrineOS 的 API 设置，测试 PKI 的服务器证书挂载进去替换 CitrineOS 自带的证书。
+- 场景用 `http` 步骤通过 CitrineOS 的 REST API 驱动它：先从 `POST /dev/token` 取得本地开发 token 存为变量，再调用 `POST /ocpp/2.0.1/<module>/<action>?identifier=<station>&tenantId=1`。这个回答只表示 CALL 已发出，所以场景随后在桩这边 expect 这个 CALL，并检查桩的回答。
+- `.github/workflows/citrineos.yml` 启动整套服务，等服务端健康后运行 `scenarios/citrineos/`，保留 JUnit 报告和各服务的日志。触及 2.0.1 代码或这些场景的 PR、main 分支和手动触发时运行。
+- 已知的 CitrineOS 偏差记在 `scenarios/citrineos/README.md`，写明场景如何处理。未经询问不向上游报告。
+
+**车队、压测、日志和 Web UI**
+
+- 模板和压测计划接受两种版本的 persona，车队可以混合。使用模型驱动 2.0.1 会话，把卡当作 ISO14443 token 出示。连接和帧相关指标带 `ocpp` 标签（两个取值）。
+- 日志行带桩的版本；日志没写时，导入根据子协议或 action 名判断。回放 2.0.1 日志时，交易用新的 transactionId 发送，保留 seqNo，平移时间戳，并比较 CSMS 的回答（`status`、`idTokenInfo.status`）。校准读 2.0.1 日志的方式与 1.6 相同，日志里有 NotifyReport 帧时从中取 Device Model 的值。
+- Web UI 显示版本、带 2.0.1 状态和充电状态的 EVSE / 连接器树、出示卡时的 token 类型，以及一个 Device Model 浏览器，可以像本地运维人员那样修改可写变量。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。
@@ -778,7 +972,7 @@ ocpp-mimic 的差异化在四点：来自真实桩经验的 persona、把场景�
 | [mikuso/ocpp-rpc](https://github.com/mikuso/ocpp-rpc) | Node 的 OCPP-J RPC 库 | 可以直接用作 RPC 层 |
 | [mobilityhouse/ocpp](https://github.com/mobilityhouse/ocpp) | Python OCPP 库 | 参考消息模型和校验 |
 | [steve-community/steve](https://github.com/steve-community/steve) | 开源 CSMS（Java，1.6） | 第二个测试对象，避免只对着一个 CSMS 调出“假兼容” |
-| [citrineos/citrineos-core](https://github.com/citrineos/citrineos-core) | 开源 CSMS（2.0.1） | 2.0.1 阶段的测试对象 |
+| [citrineos/citrineos-core](https://github.com/citrineos/citrineos-core) | 开源 CSMS（2.0.1） | 2.0.1 的测试对象（M5） |
 | OCTT | OCA 官方合规测试工具（付费） | 参考测试用例 |
 
 ## OCPP 1.6J 覆盖范围
@@ -880,16 +1074,82 @@ TriggerMessage 属于 Remote Trigger profile，提前到 M1 是因为很多 CSMS
 
 本地列表里的卡先于授权缓存在本地决定（`LocalAuthListEnabled`、`LocalPreAuthorize`、`LocalAuthorizeOffline`），列表在重启后保留。交易一开始就充电，离线时也一样；StartTransaction 能发时再发，如果 CSMS 回的不是 Accepted，再停止或暂停交易。
 
+## OCPP 2.0.1 覆盖范围
+
+M5 的计划（见「M5 OCPP 2.0.1」），每行注明实现它的 M5 任务。功能块指 Part 2 的功能块。
+
+**充电桩 → CSMS**（25 个里 16 个在范围内）
+
+| 消息 | 功能块 | 模拟器行为 | 任务 |
+| --- | --- | --- | --- |
+| BootNotification | B | 连接后发送，带启动原因和 chargingStation 信息；按返回的间隔处理 Accepted、Pending 和 Rejected | T60 |
+| Heartbeat | G | 按 OCPPCommCtrlr.HeartbeatInterval 发送 | T60 |
+| StatusNotification | G | 启动被接受后每个连接器报一次，之后每次 connectorStatus 变化再报 | T60 |
+| NotifyReport | B | 分页回答 GetBaseReport 和 GetReport | T62 |
+| TransactionEvent | E | 按交易开始点和结束点发送 Started、Updated、Ended，带电表值；离线时排队 | T64 |
+| MeterValues | J | 交易之外的时钟对齐数据（AlignedDataCtrlr.SendDuringIdle），以及 TriggerMessage 要求时 | T64 |
+| Authorize | C | 出示 token 时发送，除非缓存或本地列表已能决定 | T64、T67 |
+| NotifyEvent | N | 故障：组件的 Problem 变量置位和清除 | T66 |
+| NotifyCustomerInformation | N | 分页回答 CustomerInformation | T68 |
+| DataTransfer | P | API 或 persona 发起的厂商数据 | T68 |
+| SecurityEventNotification | A | 严重安全事件，离线时排队 | T69 |
+| SignCertificate | A | ChargingStationCertificate 的 CSR，按退避重发直到收到 CertificateSigned | T69 |
+| FirmwareStatusNotification | L | 签名固件更新的各个状态，带 requestId | T69 |
+| LogStatusNotification | N | Uploading、Uploaded、UploadFailure，带 requestId | T69 |
+| ReportChargingProfiles | K | 分页回答 GetChargingProfiles | T70 |
+| ReservationStatusUpdate | H | Expired 和 Removed | T71 |
+
+**CSMS → 充电桩**（40 个里 29 个在范围内）
+
+| 消息 | 功能块 | 模拟器行为 | 任务 |
+| --- | --- | --- | --- |
+| ChangeAvailability | G | 整桩、EVSE 或连接器；有交易时回答 Scheduled | T60 |
+| GetVariables、SetVariables | B | 逐项回答规范的状态，遵守消息大小限制 | T62 |
+| GetBaseReport、GetReport | B | Accepted、EmptyResultSet 或 NotSupported，随后发送 NotifyReport | T62 |
+| GetTransactionStatus | E | messagesInQueue 和 ongoingIndicator | T64 |
+| ClearCache | C | 清空授权缓存 | T67 |
+| SendLocalList、GetLocalListVersion | D | 带版本的全量和差量更新 | T67 |
+| RequestStartTransaction、RequestStopTransaction | F | 远程开始（可带 TxProfile）和停止 | T68 |
+| UnlockConnector | F | Unlocked、UnlockFailed、OngoingAuthorizedTransaction、UnknownConnector | T68 |
+| TriggerMessage | F | 「远程控制和运维操作」里列出的消息 | T68 |
+| Reset | B | Immediate 或 OnIdle，整桩或 EVSE | T68 |
+| CustomerInformation | N | 上报或清除为某个 idToken 保存的数据 | T68 |
+| DataTransfer | P | 默认回 UnknownVendorId；persona 可以定义回答 | T68 |
+| SetNetworkProfile | B | 把一个连接配置存进配置槽 | T69 |
+| InstallCertificate、GetInstalledCertificateIds、DeleteCertificate | M | CSMS 根证书和制造商根证书 | T69 |
+| CertificateSigned | A | 安装 ChargingStationCertificate，profile 3 时重连 | T69 |
+| UpdateFirmware | L | 签名固件更新 | T69 |
+| GetLog | N | 上传安全日志或诊断日志 | T69 |
+| SetChargingProfile、GetChargingProfiles、ClearChargingProfile、GetCompositeSchedule | K | 按组合计划模型 | T70 |
+| ReserveNow、CancelReservation | H | EVSE、任意 EVSE 或连接器类型；groupIdToken | T71 |
+
+DataTransfer 两个方向都有，两张表各算一次：共 44 个不同的 action。
+
+**不在范围内**：下面的充电桩消息桩从不发送，CSMS 消息回 CALLERROR NotSupported：ClearedChargingLimit、NotifyChargingLimit（外部限值）；Get15118EVCertificate、GetCertificateStatus、NotifyEVChargingNeeds、NotifyEVChargingSchedule（ISO 15118）；NotifyDisplayMessages、SetDisplayMessage、GetDisplayMessages、ClearDisplayMessage、CostUpdated（Advanced User Interface）；NotifyMonitoringReport、SetVariableMonitoring、ClearVariableMonitoring、SetMonitoringBase、SetMonitoringLevel、GetMonitoringReport（监控）；PublishFirmware、UnpublishFirmware、PublishFirmwareStatusNotification（本地控制器）。
+
 ## 分阶段路线图
 
-![分阶段路线图：5 个阶段，4 条出口标准](images/roadmap.png)
+```mermaid
+flowchart TB
+  M1["<b>M1 · MVP</b><br/>单进程引擎；OCPP 1.6J Core 全部消息；多连接器；合规的 CallError<br/>重连 + 离线队列；TriggerMessage；一个 persona；基础 Web UI"]
+  G1{{"出口：替代浏览器版模拟器；远程启停、拔枪、故障、离线测试通过"}}
+  M2["<b>M2 · 自动化</b><br/>场景 DSL + CLI 运行器 + 断言 + JUnit 报告<br/>EV 模型：SoC、充电曲线；能量倍率"]
+  G2{{"出口：第一套回归套件在 CI 里稳定通过"}}
+  M3["<b>M3 · 功能覆盖</b><br/>故障注入；Firmware Management、Smart Charging<br/>Reservation、LocalAuthList；1.6 安全白皮书：Security Profile 1–3"]
+  G3{{"出口：1.6 全部功能场景对 SteVe 通过"}}
+  M4["<b>M4 · 规模</b><br/>车队 / 压测模式；指标导出：Prometheus / OpenTelemetry<br/>日志导入、回放、persona 校准"]
+  G4{{"出口：1,000 个虚拟桩在一台 2 vCPU 机器上稳定运行一小时"}}
+  M5["<b>M5 · OCPP 2.0.1</b><br/>OCPP 2.0.1 适配层：Device Model、TransactionEvent<br/>Core、Advanced Security、Local Auth List、Smart Charging、Reservation；以 CitrineOS 为测试对象"]
+  G5{{"出口：覆盖的 profile 的每个 2.0.1 场景在 CI 里对 CitrineOS 通过"}}
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5
+```
 
 每个阶段以一条出口标准收尾，达标后再进入下一阶段。M4 的具体阈值见「M4 规模」，可以按实际需求调整。
 
 ## 待决问题
 
 - [ ] 部署形态：本地工具（CLI / 桌面），还是托管 SaaS？SaaS 要从公网连别人的 CSMS，涉及多租户和防滥用。
-- [ ] OCPP 2.0.1 何时开始：是否已有目标用户需要 2.0.1？
+- [x] OCPP 2.0.1 何时开始：M4 之后立即开始，覆盖 Core、Advanced Security、Local Authorization List Management、Smart Charging 和 Reservation 这几个 profile（#135）。
 - [ ] 开源还是商用：决定压测、UI、文档要做多重，以及用什么许可证。
 - [ ] 能量倍率是否默认开启，在报告里如何标注。
 - [ ] 首个 persona 参照哪一款真实桩。测试用的样本日志是 ocpp-mimic 自己录下的合成日志（M4）；真实日志必须脱敏，且不使用客户项目的数据。

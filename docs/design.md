@@ -1,10 +1,10 @@
 # ocpp-mimic design
 
-Updated 2026-11-14 · Chinese version: [design.zh-CN.md](design.zh-CN.md). This English version is the source of truth.
+Updated 2026-11-15 · Chinese version: [design.zh-CN.md](design.zh-CN.md). This English version is the source of truth.
 
 ## Overview
 
-ocpp-mimic is a standalone OCPP charge point simulation platform: an engine runs many virtual charge points in one server process. Each charge point implements the OCPP specification, and persona files reproduce the timing and quirks of real hardware. The first release covers OCPP 1.6J Core only, with a data model shaped after 2.0.1.
+ocpp-mimic is a standalone OCPP charge point simulation platform: an engine runs many virtual charge points in one server process. Each charge point implements the OCPP specification, and persona files reproduce the timing and quirks of real hardware. OCPP 1.6J came first (M1 to M4); M5 adds OCPP 2.0.1 on the same engine, whose data model was shaped after 2.0.1 from the start.
 
 **Positioning**: the engine is built to the standard of automated regression and load testing. The Web UI, the CLI and CI scripts are all remote controls for the engine. Manual QA is one way to use the UI layer, not the starting point of the design.
 
@@ -58,7 +58,7 @@ flowchart TB
         persona["Persona<br/>vendor / firmware differences:<br/>timing, quirks, features, defaults"]
         ev["EV / meter model<br/>battery SoC, charging curve,<br/>power limits, meter integration"]
         device["Device model<br/>Station → EVSE → Connector state machine,<br/>config keys, authorization, offline queue"]
-        protocol["Protocol adapter<br/>domain events ↔ OCPP 1.6J messages, 2.0.1 later"]
+        protocol["Protocol adapter<br/>domain events ↔ OCPP 1.6J / 2.0.1 messages"]
         rpc["RPC layer<br/>CALL / RESULT / ERROR correlation, timeouts,<br/>outbound queue, schema validation"]
       end
       transport["Transport · packages/engine, all IO<br/>WebSocket, TLS / Basic Auth, reconnect, fault injection"]
@@ -118,7 +118,7 @@ The transport layer makes sure connections work and fail realistically; the RPC 
 
 **Transport layer**
 
-- Subprotocol negotiation: `ocpp1.6`, with `ocpp2.0.1` reserved.
+- Subprotocol negotiation: `ocpp1.6` or `ocpp2.0.1`, the version of the station's persona (M5).
 - Security: no authentication, plus Security Profiles 1–3 (Basic Auth / TLS + Basic / mutual TLS).
 - WebSocket ping/pong keepalive.
 - Reconnect: exponential backoff with random jitter. Many charge points reconnecting at once can overwhelm a CSMS, which is a test scenario in itself.
@@ -128,7 +128,7 @@ The transport layer makes sure connections work and fail realistically; the RPC 
 
 - Requests and responses are correlated by uniqueId; every CALL has a timeout.
 - The spec says (SHOULD) a party does not send the next CALL until the previous one is answered or times out, so the charge point needs an outbound queue.
-- Messages in both directions are validated against core's 1.6 message definitions, written from the specification with a small dependency-free schema module that also yields the TypeScript types: what we send is guaranteed compliant, and non-compliant messages from the CSMS are flagged, which doubles as a CSMS compliance checker. As a second check, the engine validates every frame against OCA's official OCPP 1.6 JSON Schemas, shipped unchanged with attribution under their CC BY-ND 4.0 licence in `packages/engine/oca-schemas/` and read by a generic draft-04 validator (Ajv); nothing is generated from them. Problems show up on the frame's record and in the Web UI's message log. A test cross-checks core's definitions against the official schemas with generated payloads; the only differences are the 1..* array cardinalities from the specification text, which the schemas leave out and core enforces (#18).
+- Messages in both directions are validated against core's 1.6 message definitions, written from the specification with a small dependency-free schema module that also yields the TypeScript types: what we send is guaranteed compliant, and non-compliant messages from the CSMS are flagged, which doubles as a CSMS compliance checker. As a second check, the engine validates every frame against OCA's official OCPP 1.6 JSON Schemas, shipped unchanged with attribution under their CC BY-ND 4.0 licence in `packages/engine/oca-schemas/` and read by a generic draft-04 validator (Ajv); nothing is generated from them. Problems show up on the frame's record and in the Web UI's message log. A test cross-checks core's definitions against the official schemas with generated payloads; the only differences are the 1..* array cardinalities from the specification text, which the schemas leave out and core enforces (#18). 2.0.1 stations are checked the same way, against core's 2.0.1 definitions and OCA's 2.0.1 schemas (draft-06).
 - CallError strictly follows `[4, uniqueId, errorCode, errorDescription, errorDetails]`; unsupported actions get `NotImplemented`.
 
 ## Device model and EV / meter model
@@ -137,7 +137,7 @@ The device model decides which state a charge point is in and which messages it 
 
 **Device model**
 
-- The hierarchy follows 2.0.1: Station → EVSE → Connector. 1.6 just maps connectorId onto EVSE / Connector, so moving to 2.0.1 needs no rewrite.
+- The hierarchy follows 2.0.1: Station → EVSE → Connector. 1.6 just maps connectorId onto EVSE / Connector, so moving to 2.0.1 needs no rewrite (see "M5 OCPP 2.0.1").
 - The connector state machine covers the 1.6 statuses: Available, Preparing, Charging, SuspendedEV, SuspendedEVSE, Finishing, Reserved, Unavailable, Faulted. A pure reducer derives each status from the connector's physical and logical state (cable, transaction, EV / EVSE suspension, fault, availability) instead of storing it, so only transitions the 1.6 status table allows can happen, and it emits a StatusNotification whenever a status changes. No state-machine library: core stays dependency-free.
 - Input events: plug in, unplug, lock / unlock, EV ready, EV paused, fault raised / cleared.
 - Config key store: typed and read-only aware, supports `RebootRequired`, survives restarts.
@@ -766,6 +766,163 @@ The heap growth follows the number of active sessions while the fleet fills up; 
 
 Load plans go in `scenarios/load/`, import mappings in `scenarios/import/`, sample logs in `scenarios/logs/`, and load personas in `scenarios/personas/`. The tests validate every other file under `scenarios/` as a scenario, so `scenarios/examples/` stays scenario-only.
 
+## M5 OCPP 2.0.1
+
+Decided for M5 (#135). M5 adds OCPP 2.0.1 next to 1.6J on the same engine. A station speaks one version, the one its persona names; everything around the charge point (fleet, scenarios, the built-in CSMS, load tests, replay, the Web UI) works with both. The specification is OCPP 2.0.1 Edition 3 (2024-05-06) with the errata of 2025-09, and the test target is CitrineOS.
+
+**Scope**
+
+By certification profile (Part 5):
+
+| Profile | In M5 |
+| --- | --- |
+| Core | Yes |
+| Advanced Security | Yes |
+| Local Authorization List Management | Yes |
+| Smart Charging | Yes |
+| Reservation | Yes |
+| Advanced Device Management (monitoring) | No; NotifyEvent is used only to report faults |
+| Advanced User Interface (display messages, tariff and cost) | No |
+| ISO 15118 support | No |
+
+44 of the 64 actions are in scope; "OCPP 2.0.1 coverage" lists them. A 2.0.1 station answers the other 20 with CALLERROR NotSupported, since it knows them, and actions that are not 2.0.1 at all with NotImplemented.
+
+**Exit criterion**
+
+Every 2.0.1 scenario for the covered profiles passes against CitrineOS in CI, every frame of those runs is valid against OCA's 2.0.1 JSON schemas, and the 1.6 regression and SteVe suites stay green.
+
+**Choosing the version**
+
+- A persona declares `ocpp: "2.0.1"` (default `"1.6"`), and a station takes its persona's version. A real firmware speaks one version, and the two device models differ too much for one persona to describe both. `generic-2.0.1`, `regression-2.0.1` and `load-ac-2.0.1` join the 1.6 personas.
+- The station offers only its version's subprotocol (`ocpp2.0.1` or `ocpp1.6`) and fails the connection if the CSMS selects another. The built-in CSMS accepts both and takes the one the station offers.
+- Snapshots, the station list, the State Store, logs and metrics carry the version as `ocpp`.
+
+**Protocol seam**
+
+`charge-point.ts` is one closure that mixes physical behaviour with 1.6 messages. M5 splits it without changing anything a 1.6 station does:
+
+- **RPC over a message set.** `createRpc` takes a `MessageSet`: the action names by sender, request and response validators, and the error codes (`FormationViolation` in 1.6, `FormatViolation` in 2.0.1, which also adds `MessageTypeNotSupported`, `RpcFrameworkError`, `GenericError` and others). There is one set per version.
+- **Shared station parts.** What both versions do the same way moves out of the closure into pure modules: timers with `halt()`, the guaranteed-delivery outbox (attempts, retry interval, original timestamps, ids filled in on sending), power and energy (EV model, meter register, energy multiplier, the limit in force, the full-battery timer), the certificate store and security log, file transfers (firmware downloads, log uploads, retries), and reservation expiry. Each takes callbacks for what differs by version.
+- **Two adapters.** `charge-point.ts` stays the 1.6 charge point, built on the shared parts. `ocpp201/charge-point.ts` is the 2.0.1 one, built on the same parts plus the 2.0.1 modules (Device Model, transactions, status). Both implement the `ChargePoint` interface the engine uses.
+- **The `ChargePoint` interface** gains `ocpp`. Connector actions address a connector as `{ evse?, connector }`; without `evse`, `connector: n` means EVSE n's first connector, the usual one-connector-per-EVSE layout, so 1.6-style calls keep working. A card is an IdToken: `presentIdTag(target, idTag, type?)`, with type ISO14443 by default on 2.0.1. Snapshots get optional 2.0.1 fields (EVSE id, `chargingState`, a string `transactionId`).
+- The device reducer stays the one source of connector facts (cable, lock, authorization, transaction, EV or EVSE suspension, fault, availability, reservation). The 1.6 status and the 2.0.1 connector status and charging state are pure views of the same facts.
+- Layout: 2.0.1 modules in `packages/core/src/ocpp201/`, shared parts at the top of `src/`, the 1.6 files where they are.
+
+**Device Model**
+
+- A store of components (name, instance, EVSE id, connector id) and their variables (name, instance). A variable has an Actual attribute and optionally Target, MinSet and MaxSet, each with a mutability (ReadOnly, WriteOnly, ReadWrite) and persistent and constant flags, plus characteristics (dataType, unit, valuesList, maxLimit; supportsMonitoring is false, since monitoring is out of scope).
+- Core defines the standard variables the station uses, with the data types of the Part 2 appendix (v1.4): the controller components Part 5 requires for the covered profiles (OCPPCommCtrlr, TxCtrlr, DeviceDataCtrlr, ClockCtrlr, SecurityCtrlr, SampledDataCtrlr, AlignedDataCtrlr, AuthCtrlr; LocalAuthListCtrlr, SmartChargingCtrlr and ReservationCtrlr with their profiles), AuthCacheCtrlr, and ChargingStation, EVSE and Connector (AvailabilityState, Available, SupplyPhases, Power, ConnectorType). A profile the persona leaves out leaves its controller out of reports, and its CALLs get NotSupported.
+- The station reads its behaviour from the model when it needs it (heartbeat interval, Tx start and stop points, measurands and intervals, message attempts, authorization options), so SetVariables takes effect the way ChangeConfiguration does in 1.6. Persistent values survive restarts. WriteOnly values (BasicAuthPassword) are never reported.
+- GetVariables and SetVariables answer per item with the specification's statuses (Accepted, Rejected, UnknownComponent, UnknownVariable, NotSupportedAttributeType, RebootRequired), check values against the characteristics, and refuse requests beyond `DeviceDataCtrlr.ItemsPerMessage` and `BytesPerMessage`.
+- GetBaseReport (ConfigurationInventory, FullInventory, SummaryInventory) and GetReport (a componentVariable list and the criteria Active, Available, Enabled, Problem) answer Accepted, EmptyResultSet or NotSupported, then send NotifyReport pages of `ItemsPerMessage[GetReport]` entries numbered by `seqNo`, with `tbc` on all but the last.
+- Persona format:
+
+```yaml
+persona: generic-2.0.1
+ocpp: "2.0.1"
+boot: { vendorName: ocpp-mimic, model: Generic-AC-2.0.1, firmwareVersion: "1.0.0", serialNumber: SIM-SN-1 }
+evses: # or `connectors: 2`: two EVSEs with one cType2 connector each
+  - { connectors: [{ type: cType2 }] }
+  - { connectors: [{ type: cType2 }] }
+features: [Core, AdvancedSecurity, LocalAuthListManagement, SmartCharging, Reservation]
+deviceModel:
+  OCPPCommCtrlr:
+    HeartbeatInterval: 300
+    "MessageAttempts:TransactionEvent": 3
+  TxCtrlr: { TxStartPoint: PowerPathClosed, TxStopPoint: PowerPathClosed }
+  SampledDataCtrlr: { TxUpdatedInterval: 60, TxUpdatedMeasurands: "Energy.Active.Import.Register,Power.Active.Import" }
+  "EVSE@1": { Power: 11000 }
+  VendorCtrlr: { Mode: { actual: eco, mutability: ReadWrite, dataType: OptionList, valuesList: "eco,boost" } }
+faults:
+  - { name: Ground fault, component: Connector, techCode: E101, techInfo: GND_FAULT }
+```
+
+  A component key is `Name`, `Name:instance`, `Name@evse` or `Name@evse.connector`; a variable key is `Name` or `Name:instance`. A scalar sets the Actual value of a standard variable; an object defines a vendor variable. `power`, `timing`, `evs`, `usage` and `firmware` mean what they mean for 1.6. Scenario stations and the API take `deviceModel` overrides the way they take `config` for 1.6.
+
+1.6 keys and their 2.0.1 counterparts, for porting personas and scenarios by hand (nothing is converted automatically):
+
+| 1.6 key | 2.0.1 variable |
+| --- | --- |
+| HeartbeatInterval | OCPPCommCtrlr.HeartbeatInterval |
+| MeterValueSampleInterval, MeterValuesSampledData | SampledDataCtrlr.TxUpdatedInterval, TxUpdatedMeasurands |
+| StopTxnSampledData | SampledDataCtrlr.TxEndedMeasurands |
+| ClockAlignedDataInterval, MeterValuesAlignedData, StopTxnAlignedData | AlignedDataCtrlr.Interval, Measurands, TxEndedMeasurands |
+| TransactionMessageAttempts, TransactionMessageRetryInterval | OCPPCommCtrlr.MessageAttempts, MessageAttemptInterval (instance TransactionEvent) |
+| ConnectionTimeOut | TxCtrlr.EVConnectionTimeOut |
+| StopTransactionOnEVSideDisconnect, StopTransactionOnInvalidId | TxCtrlr.StopTxOnEVSideDisconnect, StopTxOnInvalidId |
+| UnlockConnectorOnEVSideDisconnect | OCPPCommCtrlr.UnlockOnEVSideDisconnect |
+| AuthorizeRemoteTxRequests | AuthCtrlr.AuthorizeRemoteStart |
+| LocalAuthorizeOffline, LocalPreAuthorize, AllowOfflineTxForUnknownId | AuthCtrlr.LocalAuthorizeOffline, LocalPreAuthorize, OfflineTxForUnknownIdEnabled |
+| AuthorizationCacheEnabled | AuthCacheCtrlr.Enabled |
+| LocalAuthListEnabled, LocalAuthListMaxLength, SendLocalListMaxLength | LocalAuthListCtrlr.Enabled, Entries, ItemsPerMessage |
+| WebSocketPingInterval, ResetRetries | OCPPCommCtrlr.WebSocketPingInterval, ResetRetries |
+| SecurityProfile, AuthorizationKey, CpoName | SecurityCtrlr.SecurityProfile, BasicAuthPassword, OrganizationName |
+| ChargeProfileMaxStackLevel, ChargingScheduleMaxPeriods, MaxChargingProfilesInstalled, ChargingScheduleAllowedChargingRateUnit | SmartChargingCtrlr.ProfileStackLevel, PeriodsPerSchedule, Entries (instance ChargingProfiles), RateUnit |
+
+**Status, availability and faults**
+
+- StatusNotification carries `evseId`, `connectorId`, `connectorStatus` and `timestamp`. The status is a view of the connector facts: Faulted (a fault on the connector, its EVSE or the station), Unavailable (Inoperative at any level), Reserved (reserved and no cable), Occupied (a cable plugged in, or a transaction running), otherwise Available. Authorization alone does not occupy a connector; 2.0.1 has no Preparing.
+- What 1.6 puts in the status (charging, suspended, finishing) is the transaction's `chargingState` in 2.0.1: EVConnected, Charging, SuspendedEV, SuspendedEVSE or Idle, sent in a TransactionEvent with triggerReason ChargingStateChanged when it changes.
+- After an accepted boot the station reports every connector, then each change. There is no station-level status.
+- ChangeAvailability addresses the station (no `evse`), an EVSE or a connector. It answers Accepted, or Scheduled while a transaction runs on the target and applies the change when the transaction ends. The AvailabilityState variables follow.
+- A fault makes its connector, EVSE or the station Faulted and sends NotifyEvent for the component's `Problem` variable (trigger Alerting, actualValue `true`, techCode and techInfo from the persona's catalogue); clearing it sends `false`. A 2.0.1 fault in the catalogue has `name`, `component` (default Connector), `techCode` and `techInfo`.
+
+**Transactions**
+
+- The station starts and names transactions: `transactionId` is a string the station generates, unique per station and at most 36 characters. Each TransactionEvent carries `eventType` (Started, Updated, Ended), `seqNo` (0 for a transaction's first event, then +1), `triggerReason` (what happened: Authorized, CablePluggedIn, ChargingStateChanged, MeterValuePeriodic, MeterValueClock, RemoteStart, RemoteStop, StopAuthorized, Deauthorized, EVCommunicationLost, EVConnectTimeout, Trigger, ResetCommand, UnlockCommand, AbnormalCondition, EnergyLimitReached), `transactionInfo` (id, chargingState, stoppedReason, remoteStartId), and the `evse`, `idToken` and `meterValue` where they apply.
+- TxCtrlr.TxStartPoint and TxStopPoint list conditions from EVConnected, Authorized, PowerPathClosed (connected and authorized) and EnergyTransfer; ParkingBayOccupancy and DataSigned are out of scope (no bay sensor, no signed meter values). A transaction starts when any listed start condition becomes true and ends when any listed stop condition stops being true. `generic-2.0.1` uses PowerPathClosed for both, which behaves like 1.6: it starts once a card is accepted and the cable is in, and ends on a card stop, a remote stop or unplugging.
+- Meter values: the Started event carries SampledDataCtrlr.TxStartedMeasurands (context Transaction.Begin); Updated events carry TxUpdatedMeasurands every TxUpdatedInterval (Sample.Periodic) and AlignedDataCtrlr.Measurands on the aligned interval (Sample.Clock); the Ended event carries the TxEnded samples gathered every SampledDataCtrlr.TxEndedInterval and AlignedDataCtrlr.TxEndedInterval, plus the final reading (Transaction.End). Outside transactions, aligned data goes in MeterValues when AlignedDataCtrlr.SendDuringIdle is true. The EV model and the energy multiplier work as in 1.6.
+- The CSMS's idTokenInfo, in the Authorize or the TransactionEvent answer: not Accepted ends the transaction (stoppedReason DeAuthorized) when TxCtrlr.StopTxOnInvalidId is true, otherwise charging stops at TxCtrlr.MaxEnergyOnInvalidId.
+- The cable pulled on the EV side ends the transaction (EVDisconnected) when StopTxOnEVSideDisconnect is true; otherwise the transaction stays and charging stops until the cable is back. UnlockOnEVSideDisconnect releases the cable lock. An authorization without a cable expires after EVConnectionTimeOut (triggerReason EVConnectTimeout when it had started a transaction).
+- Offline: TransactionEvents queue in the outbox in order and carry `offline: true` when they were made while offline. Each is sent up to `MessageAttempts` times, waiting `MessageAttemptInterval` times the attempt number between tries, and then dropped. With OCPPCommCtrlr.QueueAllMessages, StatusNotification and NotifyEvent queue too. GetTransactionStatus answers `messagesInQueue` and `ongoingIndicator`.
+- Transactions running when the station loses power end after the restart with stoppedReason PowerLoss, with the events still queued sent first.
+
+**Authorization**
+
+- A card is an IdToken `{ idToken, type }` with the types Central, eMAID, ISO14443, ISO15693, KeyCode, Local, MacAddress and NoAuthorization; an answer's idTokenInfo carries status, groupIdToken and cacheExpiryDateTime.
+- AuthCtrlr options (LocalAuthorizeOffline, LocalPreAuthorize, OfflineTxForUnknownIdEnabled, AuthorizeRemoteStart, DisableRemoteAuthorization, MasterPassGroupId), the authorization cache (AuthCacheCtrlr.Enabled, LifeTime, Policy, DisablePostAuthorize; ClearCache) and the local list (LocalAuthListCtrlr, SendLocalList full and differential, GetLocalListVersion) follow use cases C01 to C16. The 1.6 cache and local-list modules are reused where the rules agree; the cache keeps its 100-entry cap.
+- A transaction started by one token can be stopped by another token with the same groupIdToken. A token of the MasterPassGroupId group stops every transaction and starts none.
+
+**Remote control and operations**
+
+- RequestStartTransaction (optional evseId; with AuthorizeRemoteStart the station authorizes the token first; an optional TxProfile), RequestStopTransaction by transactionId, UnlockConnector (Unlocked, UnlockFailed, OngoingAuthorizedTransaction, UnknownConnector), TriggerMessage (BootNotification, Heartbeat, StatusNotification, MeterValues, TransactionEvent, FirmwareStatusNotification, LogStatusNotification, SignChargingStationCertificate), Reset Immediate or OnIdle for the station or one EVSE (boot reason RemoteReset), DataTransfer, and CustomerInformation (report or clear what the station holds for an idToken, sent as NotifyCustomerInformation pages).
+- Persona `timing` keeps its 1.6 meaning; `commandDelays` use the 2.0.1 action names.
+
+**Security, certificates, firmware and logs**
+
+- Security Profiles 1 to 3 connect as in 1.6. SecurityCtrlr.BasicAuthPassword is write-only; SetVariables changes it and the station reconnects with it. SecurityCtrlr.SecurityProfile is read-only in 2.0.1: an upgrade follows A05, with SetNetworkProfile into a configuration slot, OCPPCommCtrlr.NetworkConfigurationPriority set by SetVariables, and a Reset. The station then tries the first priority and falls back to the next after NetworkProfileConnectionAttempts failures. A lower profile is refused.
+- Certificates: InstallCertificate (CSMSRootCertificate and ManufacturerRootCertificate; the V2G and MO types belong to ISO 15118 and are refused), GetInstalledCertificateIds, DeleteCertificate, SignCertificate and CertificateSigned for the ChargingStationCertificate (CertSigningWaitMinimum, CertSigningRepeatTimes), AdditionalRootCertificateCheck, and SecurityEventNotification with the appendix's security events. The 1.6 Security Whitepaper code is reused; the whitepaper was taken from these same use cases.
+- UpdateFirmware is always the signed form (requestId, location, retrieveDateTime, installDateTime, signingCertificate, signature) and reports the statuses of 1.6's SignedUpdateFirmware, with AllowNewSessionsPendingFirmwareUpdate. GetLog and LogStatusNotification work as in 1.6.
+
+**Smart Charging and Reservation**
+
+- The composite schedule model of M3 serves both versions. In 2.0.1 a profile has an `evseId` (0 for the station) and the purposes ChargingStationMaxProfile, TxDefaultProfile or TxProfile; ChargingStationExternalConstraints is refused, since it only comes from an external system. A profile carries one charging schedule; more are refused, since they are for ISO 15118. GetChargingProfiles answers with ReportChargingProfiles pages; ClearChargingProfile works by id or criteria; GetCompositeSchedule answers per EVSE. SmartChargingCtrlr sets the limits.
+- ReserveNow reserves an EVSE, any EVSE (ReservationCtrlr.NonEvseSpecific) or a connector type, optionally with a groupIdToken; CancelReservation; ReservationStatusUpdate reports Expired and Removed. A reserved connector reports Reserved; for reservations of any EVSE the station keeps enough EVSEs free.
+
+**Built-in CSMS**
+
+- It accepts both subprotocols and runs a 2.0.1 session on `ocpp2.0.1` connections: it answers BootNotification (Accepted with its interval), Heartbeat, StatusNotification, Authorize and TransactionEvent (idTokenInfo Accepted, Invalid for the unknown prefix), MeterValues, NotifyReport, NotifyEvent, SecurityEventNotification, the status notifications, SignCertificate (signed with the test CA), ReportChargingProfiles, ReservationStatusUpdate and NotifyCustomerInformation.
+- `csmsCall` and `csmsReply` work with 2.0.1 actions, validated against the station's message set, and the compliance report checks 2.0.1 answers.
+
+**Scenarios**
+
+- A scenario station takes its version from its persona. Steps keep their names: for a 2.0.1 station `presentCard` takes `idToken` (an alias of `idTag`) and `type`, connector steps take `evse` next to `connector`, and `fault` takes the 2.0.1 fault fields. `expect`, `expectNo`, `csmsCall` and `csmsReply` check action names against the station's message set, so a 1.6 action in a 2.0.1 scenario is an error before the run. `expectConnector` matches the 2.0.1 snapshot fields (`status`, `chargingState`, `transactionId`, `evse`).
+- Traceability: ocpp-mimic plays the Charging Station. Scenarios against CitrineOS follow the Part 6 test cases for a CSMS (`TC_…_CSMS`), in which the test tool takes the station's role; regression scenarios against the built-in CSMS follow those for a Charging Station (`TC_…_CS`) and check ocpp-mimic itself. A scenario's name starts with its test case id, e.g. `TC_B_01_CS Cold boot, Accepted`. Only the ids go into the repo, never the specification's text.
+
+**CitrineOS**
+
+- CitrineOS v2.1.0 (Apache-2.0) from `tools/citrineos/docker-compose.yml`, with images pinned by digest: `ghcr.io/citrineos/citrineos-server`, `postgis/postgis:16-3.5` and `rabbitmq:3-management`. No CitrineOS code is copied into the repo.
+- Stations connect to the security profile 0 port (`ws://localhost:8081/<id>`), which accepts unknown stations and answers BootNotification with Accepted. Profile 1 to 3 scenarios use ports 8082, 8443 and 8444, with the station's password set through CitrineOS's API and the test PKI's server certificate mounted in place of CitrineOS's own.
+- Scenarios drive CitrineOS through its REST API with `http` steps: a local-dev token from `POST /dev/token`, saved as a variable, then `POST /ocpp/2.0.1/<module>/<action>?identifier=<station>&tenantId=1`. The answer only says the CALL was sent, so the scenario then expects the CALL at the station and checks the station's answer.
+- `.github/workflows/citrineos.yml` starts the stack, waits until the server is healthy, runs `scenarios/citrineos/`, and keeps the JUnit report and the stack's logs. It runs on pull requests that touch 2.0.1 code or these scenarios, on main, and by hand.
+- Known CitrineOS deviations are recorded in `scenarios/citrineos/README.md` with how the scenarios handle them. Nothing is reported upstream without asking first.
+
+**Fleet, load, logs and the Web UI**
+
+- Templates and load plans take personas of either version, so a fleet can mix them. The usage model drives 2.0.1 sessions, presenting its cards as ISO14443 tokens. Connection and frame metrics carry an `ocpp` label (two values).
+- Log lines carry the station's version; import detects it from the subprotocol or the action names when a log lacks it. Replay sends a 2.0.1 log's transactions under fresh transactionIds, keeps their seqNo, moves timestamps, and compares the CSMS's answers (`status`, `idTokenInfo.status`). Calibration reads 2.0.1 logs like 1.6 ones and takes Device Model values from NotifyReport frames when the log has them.
+- The Web UI shows the version, an EVSE and connector tree with the 2.0.1 statuses and charging state, the token type when presenting a card, and a Device Model browser where writable variables can be changed as a local operator would.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
@@ -817,7 +974,7 @@ ocpp-mimic differs in four ways: personas grounded in real charge point experien
 | [mikuso/ocpp-rpc](https://github.com/mikuso/ocpp-rpc) | OCPP-J RPC library for Node | Could serve as the RPC layer directly |
 | [mobilityhouse/ocpp](https://github.com/mobilityhouse/ocpp) | Python OCPP library | Reference for the message model and validation |
 | [steve-community/steve](https://github.com/steve-community/steve) | Open-source CSMS (Java, 1.6) | A second test target, so we do not tune against one CSMS into false compatibility |
-| [citrineos/citrineos-core](https://github.com/citrineos/citrineos-core) | Open-source CSMS (2.0.1) | Test target for the 2.0.1 phase |
+| [citrineos/citrineos-core](https://github.com/citrineos/citrineos-core) | Open-source CSMS (2.0.1) | Test target for 2.0.1 (M5) |
 | OCTT | OCA's official compliance test tool (paid) | Reference for test cases |
 
 ## OCPP 1.6J coverage
@@ -919,6 +1076,59 @@ A card on the local list is decided locally before the cache (`LocalAuthListEnab
 
 **1.6 features outside M1** (roadmap M3, designed in "M3 feature coverage"): Firmware Management (UpdateFirmware, GetDiagnostics and their status notifications), Local Auth List Management (SendLocalList, GetLocalListVersion), Reservation (ReserveNow, CancelReservation), Smart Charging (SetChargingProfile, ClearChargingProfile, GetCompositeSchedule), and the Security Whitepaper.
 
+## OCPP 2.0.1 coverage
+
+Planned for M5 (see "M5 OCPP 2.0.1"); each row names the M5 task that implements it. Functional blocks are those of Part 2.
+
+**Charging station → CSMS** (16 of 25 in scope)
+
+| Message | Block | Simulator behaviour | Task |
+| --- | --- | --- | --- |
+| BootNotification | B | After connecting, with a boot reason and the chargingStation block; handles Accepted, Pending and Rejected with the returned interval | T60 |
+| Heartbeat | G | On OCPPCommCtrlr.HeartbeatInterval | T60 |
+| StatusNotification | G | Every connector after an accepted boot, then each change of connectorStatus | T60 |
+| NotifyReport | B | Pages answering GetBaseReport and GetReport | T62 |
+| TransactionEvent | E | Started, Updated and Ended per the Tx start and stop points, with meter values; queued offline | T64 |
+| MeterValues | J | Clock-aligned data outside transactions (AlignedDataCtrlr.SendDuringIdle) and on TriggerMessage | T64 |
+| Authorize | C | For a presented token unless the cache or local list decides it | T64, T67 |
+| NotifyEvent | N | Faults: the component's Problem variable raised and cleared | T66 |
+| NotifyCustomerInformation | N | Pages answering CustomerInformation | T68 |
+| DataTransfer | P | Vendor data from the API or a persona | T68 |
+| SecurityEventNotification | A | Critical security events, queued while offline | T69 |
+| SignCertificate | A | CSR for the ChargingStationCertificate, resent with back-off until CertificateSigned | T69 |
+| FirmwareStatusNotification | L | The signed firmware statuses with the requestId | T69 |
+| LogStatusNotification | N | Uploading, Uploaded, UploadFailure with the requestId | T69 |
+| ReportChargingProfiles | K | Pages answering GetChargingProfiles | T70 |
+| ReservationStatusUpdate | H | Expired and Removed | T71 |
+
+**CSMS → charging station** (29 of 40 in scope)
+
+| Message | Block | Simulator behaviour | Task |
+| --- | --- | --- | --- |
+| ChangeAvailability | G | Station, EVSE or connector; Scheduled while a transaction runs | T60 |
+| GetVariables, SetVariables | B | Per item, with the specification's statuses and the message limits | T62 |
+| GetBaseReport, GetReport | B | Accepted, EmptyResultSet or NotSupported, then NotifyReport | T62 |
+| GetTransactionStatus | E | messagesInQueue and ongoingIndicator | T64 |
+| ClearCache | C | Clears the authorization cache | T67 |
+| SendLocalList, GetLocalListVersion | D | Full and differential updates with versions | T67 |
+| RequestStartTransaction, RequestStopTransaction | F | Remote start (optionally with a TxProfile) and stop | T68 |
+| UnlockConnector | F | Unlocked, UnlockFailed, OngoingAuthorizedTransaction, UnknownConnector | T68 |
+| TriggerMessage | F | The messages listed under "Remote control and operations" | T68 |
+| Reset | B | Immediate or OnIdle, station or EVSE | T68 |
+| CustomerInformation | N | Report or clear the data held for an idToken | T68 |
+| DataTransfer | P | UnknownVendorId by default; personas can define replies | T68 |
+| SetNetworkProfile | B | Stores a connection profile in a slot | T69 |
+| InstallCertificate, GetInstalledCertificateIds, DeleteCertificate | M | CSMS and manufacturer roots | T69 |
+| CertificateSigned | A | Installs the ChargingStationCertificate, reconnecting on profile 3 | T69 |
+| UpdateFirmware | L | Signed firmware update | T69 |
+| GetLog | N | Security or diagnostics log upload | T69 |
+| SetChargingProfile, GetChargingProfiles, ClearChargingProfile, GetCompositeSchedule | K | Per the composite schedule model | T70 |
+| ReserveNow, CancelReservation | H | EVSE, any EVSE or connector type; groupIdToken | T71 |
+
+DataTransfer goes both ways, so the two tables count it twice: 44 distinct actions.
+
+**Out of scope**: the station never sends the charging station messages below and answers the CSMS ones with CALLERROR NotSupported: ClearedChargingLimit, NotifyChargingLimit (external limits); Get15118EVCertificate, GetCertificateStatus, NotifyEVChargingNeeds, NotifyEVChargingSchedule (ISO 15118); NotifyDisplayMessages, SetDisplayMessage, GetDisplayMessages, ClearDisplayMessage, CostUpdated (Advanced User Interface); NotifyMonitoringReport, SetVariableMonitoring, ClearVariableMonitoring, SetMonitoringBase, SetMonitoringLevel, GetMonitoringReport (monitoring); PublishFirmware, UnpublishFirmware, PublishFirmwareStatusNotification (local controller).
+
 ## Roadmap
 
 ```mermaid
@@ -931,8 +1141,9 @@ flowchart TB
   G3{{"Exit: all 1.6 feature scenarios pass against SteVe"}}
   M4["<b>M4 · Scale</b><br/>Fleet / load-test mode; metrics export: Prometheus / OpenTelemetry<br/>Log import, replay, persona calibration"]
   G4{{"Exit: 1,000 virtual charge points run stably for an hour on one 2-vCPU machine"}}
-  M5["<b>M5 · OCPP 2.0.1</b><br/>OCPP 2.0.1 adapter: Device Model, TransactionEvent<br/>CitrineOS as the test target"]
-  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5
+  M5["<b>M5 · OCPP 2.0.1</b><br/>OCPP 2.0.1 adapter: Device Model, TransactionEvent<br/>Core, Advanced Security, Local Auth List, Smart Charging, Reservation; CitrineOS as the test target"]
+  G5{{"Exit: every 2.0.1 scenario for the covered profiles passes against CitrineOS in CI"}}
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5
 ```
 
 Each phase ends with an exit criterion; the next phase starts once it is met. The M4 thresholds are set in "M4 scale" and can be adjusted to real needs.
@@ -940,7 +1151,7 @@ Each phase ends with an exit criterion; the next phase starts once it is met. Th
 ## Open questions
 
 - [ ] Deployment: a local tool (CLI / desktop) or a hosted SaaS? A SaaS connects to other people's CSMSs over the internet, which brings multi-tenancy and abuse prevention.
-- [ ] When to start OCPP 2.0.1: do target users already need it?
+- [x] When to start OCPP 2.0.1: right after M4, with the Core, Advanced Security, Local Authorization List Management, Smart Charging and Reservation profiles (#135).
 - [ ] Open source or commercial: decides how much load testing, UI and documentation to build, and which license to use.
 - [x] Ship OCA's OCPP 1.6 JSON Schema files: yes, unchanged and with attribution, as a second check next to core's own definitions (#18).
 - [ ] Whether the energy multiplier is on by default, and how reports mark it.
