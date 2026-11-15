@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { array, dateTime, integer, object, oneOf, string, validate, type Infer } from './schema.js';
+import {
+  anyValue,
+  array,
+  dateTime,
+  integer,
+  object,
+  oneOf,
+  string,
+  validate,
+  type Infer,
+} from './schema.js';
 
 const Sample = object(
   { name: string({ maxLength: 5 }), count: integer({ minimum: 0 }) },
@@ -56,6 +66,27 @@ describe('schema validation', () => {
       ok: false,
       issues: [{ path: '$.tags[1]', errorCode: 'TypeConstraintViolation' }],
     });
+  });
+
+  it('checks the maximum count of array items', () => {
+    const Pair = array(integer(), { minItems: 1, maxItems: 2 });
+    expect(validate(Pair, [1, 2]).ok).toBe(true);
+    expect(validate(Pair, [1, 2, 3])).toMatchObject({
+      ok: false,
+      issues: [{ path: '$', message: 'more than 2 items' }],
+    });
+  });
+
+  it('allows unknown properties only on open objects, and any value for anyValue', () => {
+    const Open = object({ vendorId: string() }, {}, { additionalProperties: true });
+    expect(validate(Open, { vendorId: 'acme', extra: [1] }).ok).toBe(true);
+    expect(validate(Open, { extra: 1 })).toMatchObject({
+      ok: false,
+      errorCode: 'OccurenceConstraintViolation',
+    });
+    const Data = object({}, { data: anyValue() });
+    for (const data of [null, 0, 'x', [1], { a: 1 }])
+      expect(validate(Data, { data }).ok).toBe(true);
   });
 
   it('collects every issue, the first one deciding the error code', () => {

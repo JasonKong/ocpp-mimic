@@ -4,12 +4,19 @@
  * types are derived from the same definitions that validate them.
  */
 
-/** The OCPP-J error codes a payload validation problem can map to. */
+/**
+ * The OCPP-J error codes a payload validation problem can map to. The schemas
+ * report the OCPP 1.6 spellings (`FormationViolation`,
+ * `OccurenceConstraintViolation`); the 2.0.1 message set renames them to
+ * `FormatViolation` and `OccurrenceConstraintViolation`.
+ */
 export type ValidationErrorCode =
   | 'FormationViolation'
   | 'PropertyConstraintViolation'
   | 'OccurenceConstraintViolation'
-  | 'TypeConstraintViolation';
+  | 'TypeConstraintViolation'
+  | 'FormatViolation'
+  | 'OccurrenceConstraintViolation';
 
 /** One problem found while validating a value. */
 export interface ValidationIssue {
@@ -138,7 +145,10 @@ export function oneOf<const V extends readonly string[]>(values: V): Schema<V[nu
   };
 }
 
-export function array<T>(item: Schema<T>, options: { minItems?: number } = {}): Schema<T[]> {
+export function array<T>(
+  item: Schema<T>,
+  options: { minItems?: number; maxItems?: number } = {},
+): Schema<T[]> {
   return {
     check(value, path, issues) {
       if (!Array.isArray(value)) {
@@ -152,12 +162,19 @@ export function array<T>(item: Schema<T>, options: { minItems?: number } = {}): 
           message: `fewer than ${options.minItems} items`,
         });
       }
+      if (options.maxItems !== undefined && value.length > options.maxItems) {
+        issues.push({
+          path,
+          errorCode: 'OccurenceConstraintViolation',
+          message: `more than ${options.maxItems} items`,
+        });
+      }
       value.forEach((element, index) => item.check(element, `${path}[${index}]`, issues));
     },
   };
 }
 
-type Shape = Record<string, Schema<unknown>>;
+export type Shape = Record<string, Schema<unknown>>;
 type Simplify<T> = { [K in keyof T]: T[K] };
 
 /** The type of an object with the `R` properties required and the `O` properties optional. */
@@ -166,12 +183,14 @@ export type ObjectOf<R extends Shape, O extends Shape> = Simplify<
 >;
 
 /**
- * A JSON object with required and optional properties. Like the OCPP 1.6
- * schemas, it rejects properties it does not know.
+ * A JSON object with required and optional properties. Like the OCPP
+ * schemas, it rejects properties it does not know, unless
+ * `additionalProperties` is true (OCPP 2.0.1's CustomDataType).
  */
 export function object<R extends Shape, O extends Shape = Record<never, never>>(
   required: R,
   optional?: O,
+  options: { additionalProperties?: boolean } = {},
 ): Schema<ObjectOf<R, O>> {
   const optionalShape: Shape = optional ?? {};
   return {
@@ -195,7 +214,7 @@ export function object<R extends Shape, O extends Shape = Record<never, never>>(
       for (const [key, schema] of Object.entries(optionalShape)) {
         if (record[key] !== undefined) schema.check(record[key], `${path}.${key}`, issues);
       }
-      for (const key of Object.keys(record)) {
+      for (const key of options.additionalProperties === true ? [] : Object.keys(record)) {
         if (!Object.hasOwn(required, key) && !Object.hasOwn(optionalShape, key)) {
           issues.push({
             path: `${path}.${key}`,
@@ -204,6 +223,15 @@ export function object<R extends Shape, O extends Shape = Record<never, never>>(
           });
         }
       }
+    },
+  };
+}
+
+/** Any JSON value: OCPP 2.0.1's AnyType (DataTransfer data). */
+export function anyValue(): Schema<unknown> {
+  return {
+    check(value, path, issues) {
+      if (value === undefined) issues.push(typeIssue(path, 'a JSON value', value));
     },
   };
 }
