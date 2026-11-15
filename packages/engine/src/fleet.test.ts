@@ -1,7 +1,10 @@
+import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { WebSocketServer } from 'ws';
 import { createFleet, isAllowedCsms, type Fleet } from './fleet.js';
 import { loadPersonas } from './personas.js';
 import { openStateStore, type StateStore } from './state-store.js';
@@ -69,6 +72,56 @@ describe('fleet', () => {
       running: true,
       transport: 'open',
     });
+  });
+
+  it('runs a 2.0.1 station from a 2.0.1 persona over the ocpp2.0.1 subprotocol', async () => {
+    // A minimal 2.0.1 CSMS: it accepts only ocpp2.0.1 and answers every CALL.
+    const server = new WebSocketServer({
+      port: 0,
+      host: '127.0.0.1',
+      handleProtocols: (protocols) => (protocols.has('ocpp2.0.1') ? 'ocpp2.0.1' : false),
+    });
+    const calls: { action: string; payload: unknown }[] = [];
+    server.on('connection', (ws) =>
+      ws.on('message', (data) => {
+        const frame = JSON.parse(String(data)) as [number, string, string, unknown];
+        if (frame[0] !== 2) return;
+        calls.push({ action: frame[2], payload: frame[3] });
+        const reply =
+          frame[2] === 'BootNotification'
+            ? { status: 'Accepted', currentTime: new Date().toISOString(), interval: 300 }
+            : {};
+        ws.send(JSON.stringify([3, frame[1], reply]));
+      }),
+    );
+    await once(server, 'listening');
+    try {
+      const fleet = await fleetWith();
+      const csmsUrl = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      expect(() =>
+        fleet.add({ id: 'SIM-201-X', persona: 'generic-2.0.1', csmsUrl, config: { A: '1' } }),
+      ).toThrow('config, password and security are not supported for 2.0.1 stations yet');
+      const station = fleet.add({ id: 'SIM-201', persona: 'generic-2.0.1', csmsUrl });
+      await until(() => calls.some((c) => c.action === 'StatusNotification'));
+      expect(calls[0]).toEqual({
+        action: 'BootNotification',
+        payload: {
+          reason: 'PowerUp',
+          chargingStation: {
+            vendorName: 'ocpp-mimic',
+            model: 'Generic-AC-2.0.1',
+            firmwareVersion: '0.0.0',
+          },
+        },
+      });
+      expect(station.snapshot()).toMatchObject({
+        ocpp: '2.0.1',
+        registration: 'Accepted',
+        connectors: [{ connectorId: 1, evseId: 1, status: 'Available' }],
+      });
+    } finally {
+      server.close();
+    }
   });
 
   it('tells subscribers about frames and connection changes until they unsubscribe', async () => {

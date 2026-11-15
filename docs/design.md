@@ -814,6 +814,12 @@ Implemented (T59):
 - Moved out of the 1.6 closure so far: `station-timers.ts` (timers and `halt()`), `outbox.ts` (guaranteed delivery; `prepare`, `final` and `answered` hooks carry what differs by version, for 1.6 the CSMS's transactionId and the SecurityEventNotification rule) and `energy.ts` (meters, EVs, multiplier, limit, full-battery timer). The certificate store, file transfers and reservation expiry move with the 2.0.1 tasks that reuse them (T69, T71).
 - `ChargePoint.ocpp` names the version. The transport offers and requires the station's subprotocol, and the recorder checks each frame against the OCA schemas of its station's version, loading a version's set when first needed.
 
+Implemented (T60):
+
+- A persona with `ocpp: "2.0.1"` is validated by its own schema: `boot` is BootNotification's chargingStation block, `features` lists certification profiles, `timing.commandDelays` uses 2.0.1 action names, and `connectors` gives EVSEs with one connector each. `ResolvedPersona` carries `ocpp`. `generic-2.0.1` is built in.
+- The fleet builds a 2.0.1 station (`createChargePoint201` in `core/src/ocpp201/charge-point.ts`) for a 2.0.1 persona, with the `ocpp2.0.1` subprotocol. Station `config`, `password` and `security` are refused for 2.0.1 stations until the Device Model and security tasks add their 2.0.1 forms. A saved state records its version, and a state of the other version is not restored.
+- The station boots with a reason (PowerUp) and its chargingStation block, retries Pending and Rejected after the interval without reporting meanwhile, sends heartbeats on the boot interval, reports every connector's 2.0.1 status after an accepted boot and each change afterwards, and handles ChangeAvailability for the station, an EVSE or a connector (answered first, applied after the action delay; Rejected for an unknown EVSE or connector). Availability set by the CSMS is kept across restarts. CALLs it does not handle yet get NotSupported. Snapshots carry `ocpp` and each connector's `evseId`.
+
 **Device Model**
 
 - A store of components (name, instance, EVSE id, connector id) and their variables (name, instance). A variable has an Actual attribute and optionally Target, MinSet and MaxSet, each with a mutability (ReadOnly, WriteOnly, ReadWrite) and persistent and constant flags, plus characteristics (dataType, unit, valuesList, maxLimit; supportsMonitoring is false, since monitoring is out of scope).

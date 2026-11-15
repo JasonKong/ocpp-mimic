@@ -74,6 +74,7 @@ import {
 } from './certificates.js';
 import type { IdGenerator } from './ids.js';
 import type { OcppVersion } from './message-set.js';
+import type { PersistedChargePoint201 } from './ocpp201/charge-point.js';
 import { createOutbox, type OutboxEntry } from './outbox.js';
 import { createStationTimers } from './station-timers.js';
 import {
@@ -126,6 +127,8 @@ export type DelayedCommand =
   | 'ChangeAvailability'
   | 'RemoteStartTransaction'
   | 'RemoteStopTransaction'
+  | 'RequestStartTransaction'
+  | 'RequestStopTransaction'
   | 'Reset'
   | 'UnlockConnector'
   | 'TriggerMessage';
@@ -176,7 +179,10 @@ export interface PersistedTransaction {
   transactionId?: number;
 }
 
-/** Everything a charge point keeps across an engine restart. */
+/** What any station keeps across an engine restart: a 1.6 or a 2.0.1 state. */
+export type PersistedStation = PersistedChargePoint | PersistedChargePoint201;
+
+/** Everything a 1.6 charge point keeps across an engine restart. */
 export interface PersistedChargePoint {
   version: 1;
   /** When the state was taken (ms since the epoch); restored transactions end at this time. */
@@ -297,6 +303,8 @@ export type { PluggedEv };
 
 export interface ConnectorSnapshot {
   connectorId: number;
+  /** The EVSE the connector belongs to (2.0.1 stations). */
+  evseId?: number;
   status: string;
   errorCode: string;
   plugged: boolean;
@@ -312,6 +320,8 @@ export interface ConnectorSnapshot {
 }
 
 export interface ChargePointSnapshot {
+  /** The OCPP version the station speaks. */
+  ocpp: OcppVersion;
   registration: Registration;
   connected: boolean;
   station: { status: string; errorCode: string };
@@ -383,7 +393,7 @@ export interface ChargePoint {
   dataTransfer(request: RequestOf<'DataTransfer'>): Promise<CallOutcome<'DataTransfer'>>;
   snapshot(): ChargePointSnapshot;
   /** The state to save for a restart; see ChargePointOptions.restore. */
-  persistentState(): PersistedChargePoint;
+  persistentState(): PersistedStation;
   /** The Security Profile and password to connect with. */
   connectionSecurity(): ConnectionSecurity;
   /**
@@ -399,6 +409,11 @@ export interface ChargePoint {
   connectionFailed(): void;
 }
 
+/** A 1.6 charge point: its saved state is a 1.6 state. */
+export interface ChargePoint16 extends ChargePoint {
+  persistentState(): PersistedChargePoint;
+}
+
 function checkedMultiplier(value: number): number {
   if (!(Number.isFinite(value) && value > 0)) {
     throw new RangeError(`the energy multiplier must be a number above 0, got ${value}`);
@@ -406,7 +421,7 @@ function checkedMultiplier(value: number): number {
   return value;
 }
 
-export function createChargePoint(options: ChargePointOptions): ChargePoint {
+export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
   const { clock, ids } = options;
   const timing: ChargePointTiming = { ...DEFAULT_TIMING, ...options.timing };
   const offeredW = options.offeredPowerW ?? 7360;
@@ -2193,6 +2208,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
     snapshot() {
       const station0 = stationStatus(station);
       return {
+        ocpp: '1.6',
         registration,
         connected: rpc !== undefined,
         station: { status: station0.status, errorCode: station0.errorCode },
@@ -2295,7 +2311,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint {
       options.reconnect?.();
     },
 
-    persistentState() {
+    persistentState(): PersistedChargePoint {
       const savedAt = now();
       return {
         version: 1,
