@@ -82,7 +82,7 @@ export interface SessionServiceOptions {
   /** A station's OCPP version and snapshot; undefined once it is gone. */
   station: (id: string) => { ocpp: '1.6' | '2.0.1'; snapshot(): ChargePointSnapshot } | undefined;
   now?: () => number;
-  /** How often running sessions are saved at most. Default 30 s. */
+  /** How long a running session's changes wait before they are saved. Default 30 s. */
   saveEveryMs?: number;
 }
 
@@ -202,7 +202,14 @@ export function summarize(record: SessionRecord): SessionSummary {
 interface Pending {
   record: SessionRecord;
   frames: FrameRecord[];
+  /** When the session changed first since it was last saved (ms since the epoch). */
+  since: number;
 }
+
+/** Running sessions saved at most per tick, so saves spread instead of coming in bursts. */
+const SAVES_PER_TICK = 50;
+/** Authorize frames kept per station: a card's Authorize joins its session only once the station decides. */
+const AUTHORIZE_FRAMES = 10;
 
 export function createSessionService(options: SessionServiceOptions): SessionService {
   const backend = options.store === undefined ? memoryBackend() : storeBackend(options.store);
@@ -211,14 +218,22 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
   const trackers = new Map<string, SessionTracker>();
   /** Sessions changed since they were last saved, by station and n. */
   const dirty = new Map<string, Map<number, Pending>>();
-  /** Frames seen recently per station, by seq, for touches that name earlier frames. */
-  const recent = new Map<string, Map<number, FrameRecord>>();
+  /**
+   * Earlier frames a touch can name: only Authorize frames, which join a
+   * session when the station's hint comes (see session.ts, loose Authorize).
+   */
+  const authorizeFrames = new Map<string, Map<number, FrameRecord>>();
+  /** Open sessions already in the backend, as `stationId n`; a session not in it is new. */
+  const saved = new Set<string>();
+  const key = (stationId: string, n: number) => `${stationId} ${n}`;
   /** Samples and states counted at the last true sample, per open session. */
   const sampled = new WeakMap<SessionRecord, number>();
   const listeners = new Set<(summary: SessionSummary) => void>();
   let tariff =
     (options.store?.loadSetting('tariff') as ReferenceTariff | undefined) ?? DEFAULT_TARIFF;
-  const timer = setInterval(() => flushRunning(), options.saveEveryMs ?? 30_000);
+  const saveEveryMs = options.saveEveryMs ?? 30_000;
+  // Each tick saves the running sessions whose changes have waited long enough, a slice at a time.
+  const timer = setInterval(() => saveDue(), Math.min(1000, saveEveryMs));
   timer.unref();
 
   function trackerOf(stationId: string): SessionTracker | undefined {
@@ -230,8 +245,10 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
     const open: SessionRecord[] = [];
     const closed: SessionRecord[] = [];
     for (const record of stored) {
-      if (record.state === 'running') open.push(record);
-      else if (record.state === 'starting') {
+      if (record.state === 'running') {
+        open.push(record);
+        saved.add(key(stationId, record.n));
+      } else if (record.state === 'starting') {
         // An authorization does not survive a restart: the start never happens.
         record.state = 'not-started';
         record.failure = { reason: 'StartFailed', detail: 'the engine restarted' };
@@ -275,8 +292,14 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
     });
   }
 
-  function apply(stationId: string, tracker: SessionTracker, touches: SessionTouch[]) {
-    const frames = recent.get(stationId);
+  function apply(
+    stationId: string,
+    tracker: SessionTracker,
+    touches: SessionTouch[],
+    current?: FrameRecord,
+  ) {
+    const frames = authorizeFrames.get(stationId);
+    const frameOf = (seq: number) => (seq === current?.seq ? current : frames?.get(seq));
     const finished: Pending[] = [];
     for (const touch of touches) {
       const { session } = touch;
@@ -285,6 +308,7 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
         flushOne(stationId, touch.mergedInto, into);
         flushOne(stationId, session.n, dirty.get(stationId)?.get(session.n));
         backend.merge(stationId, session.n, touch.mergedInto);
+        saved.delete(key(stationId, session.n));
         continue;
       }
       sampleTruth(stationId, tracker, session);
@@ -294,19 +318,20 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
         dirty.set(stationId, byN);
       }
       let pending = byN.get(session.n);
-      const isNew = pending === undefined && backend.get(stationId, session.n) === undefined;
+      const isNew = pending === undefined && !saved.has(key(stationId, session.n));
       if (pending === undefined) {
-        pending = { record: session, frames: [] };
+        pending = { record: session, frames: [], since: now() };
         byN.set(session.n, pending);
       }
       pending.record = session;
       for (const seq of touch.frames) {
-        const frame = frames?.get(seq);
+        const frame = frameOf(seq);
         if (frame !== undefined) pending.frames.push(frame);
       }
-      if (isNew || session.state === 'finished' || session.state === 'not-started') {
-        finished.push(pending);
-      }
+      const ended = session.state === 'finished' || session.state === 'not-started';
+      if (isNew || ended) finished.push(pending);
+      if (ended) saved.delete(key(stationId, session.n));
+      else saved.add(key(stationId, session.n));
       const summary = summarize(session);
       for (const listener of listeners) listener(summary);
     }
@@ -328,6 +353,22 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
     backend.save([{ record: pending.record, frames: pending.frames }]);
   }
 
+  /** Saves the running sessions whose changes have waited `saveEveryMs`, oldest first, a slice per tick. */
+  function saveDue() {
+    const due: { stationId: string; pending: Pending }[] = [];
+    const cutoff = now() - saveEveryMs;
+    for (const [stationId, byN] of dirty) {
+      for (const pending of byN.values()) {
+        if (pending.since <= cutoff) due.push({ stationId, pending });
+      }
+    }
+    if (due.length === 0) return;
+    due.sort((a, b) => a.pending.since - b.pending.since);
+    const slice = due.slice(0, SAVES_PER_TICK);
+    for (const { stationId, pending } of slice) dirty.get(stationId)?.delete(pending.record.n);
+    backend.save(slice.map(({ pending }) => ({ record: pending.record, frames: pending.frames })));
+  }
+
   function flushRunning() {
     const items: { record: SessionRecord; frames: FrameRecord[] }[] = [];
     for (const byN of dirty.values()) {
@@ -343,14 +384,15 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
       if (record.messageType === undefined) return;
       const tracker = trackerOf(record.stationId);
       if (tracker === undefined) return;
-      let frames = recent.get(record.stationId);
-      if (frames === undefined) {
-        frames = new Map();
-        recent.set(record.stationId, frames);
+      if (record.action === 'Authorize') {
+        let frames = authorizeFrames.get(record.stationId);
+        if (frames === undefined) {
+          frames = new Map();
+          authorizeFrames.set(record.stationId, frames);
+        }
+        frames.set(record.seq, record);
+        if (frames.size > AUTHORIZE_FRAMES) frames.delete(frames.keys().next().value ?? 0);
       }
-      frames.set(record.seq, record);
-      // Earlier frames are only needed by the touches of the next few frames.
-      if (frames.size > 50) frames.delete(frames.keys().next().value ?? 0);
       const touches = tracker.frame({
         seq: record.seq,
         at: record.at,
@@ -361,7 +403,7 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
         ...(record.payload !== undefined && { payload: record.payload }),
         ...(record.messageType === 4 && { errorCode: errorCodeOf(record.text) }),
       });
-      apply(record.stationId, tracker, touches);
+      apply(record.stationId, tracker, touches, record);
     },
     hint(stationId, hint) {
       const tracker = trackerOf(stationId);
@@ -409,7 +451,8 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
     forget(stationId) {
       trackers.delete(stationId);
       dirty.delete(stationId);
-      recent.delete(stationId);
+      authorizeFrames.delete(stationId);
+      for (const k of [...saved]) if (k.startsWith(`${stationId} `)) saved.delete(k);
       backend.forget(stationId);
     },
     tariff: () => tariff,

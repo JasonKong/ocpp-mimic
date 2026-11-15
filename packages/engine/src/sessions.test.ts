@@ -85,6 +85,10 @@ function frames(stationId: string, from = 0) {
         ],
       }),
     ],
+    authorize: (id: string, idTag = 'TAG') => [
+      frame('cp-to-csms', 2, `a${id}`, 'Authorize', { idTag }),
+      frame('csms-to-cp', 3, `a${id}`, 'Authorize', { idTagInfo: { status: 'Accepted' } }),
+    ],
     stop: (id: string) => [
       frame('cp-to-csms', 2, `x${id}`, 'StopTransaction', {
         transactionId: Number(id),
@@ -188,6 +192,58 @@ describe('session service', () => {
       'StopTransaction',
     ]);
     second.stop();
+  });
+
+  it('keeps the Authorize of a card with its session, and reads nothing back while it runs', () => {
+    const store = memoryStore();
+    let reads = 0;
+    const counted = {
+      ...store,
+      loadSession: (stationId: string, n: number) => (reads++, store.loadSession(stationId, n)),
+    };
+    const service = createSessionService({
+      store: counted,
+      station: () => ({ ocpp: '1.6', snapshot }),
+    });
+    const f = frames('CP-1');
+    for (const record of f.authorize('1')) service.frame(record);
+    service.hint('CP-1', {
+      kind: 'authorized',
+      evseId: 1,
+      idToken: { idToken: 'TAG' },
+      source: 'local',
+    });
+    for (const record of [...f.start('1', 'TAG'), ...f.meter('1', 1500), ...f.meter('1', 1600)])
+      service.frame(record);
+    service.flush();
+    expect(reads).toBe(0);
+    expect(service.frames('CP-1', 1).map((r) => r.action)).toEqual([
+      'Authorize',
+      'Authorize',
+      'StartTransaction',
+      'StartTransaction',
+      'MeterValues',
+      'MeterValues',
+    ]);
+    service.stop();
+  });
+
+  it('saves running sessions once their changes have waited, without a stop', async () => {
+    const store = memoryStore();
+    const service = createSessionService({
+      store,
+      saveEveryMs: 50,
+      station: () => ({ ocpp: '1.6', snapshot }),
+    });
+    const f = frames('CP-1');
+    for (const record of [...f.remoteStart('1'), ...f.start('1')]) service.frame(record);
+    service.hint('CP-1', remote);
+    // The new session is written at once; a later change waits for the next tick.
+    for (const record of f.meter('1', 1500)) service.frame(record);
+    expect(store.loadSession('CP-1', 1)?.samples).toHaveLength(0);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(store.loadSession('CP-1', 1)?.samples).toHaveLength(1);
+    service.stop();
   });
 
   it('keeps the newest sessions per station, and open ones', () => {
