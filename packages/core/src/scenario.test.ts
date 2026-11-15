@@ -80,6 +80,7 @@ describe('scenario validation', () => {
             basicAuth: { user: 'u', password: 'p' },
             json: { a: 1 },
             expect: { status: 200 },
+            within: '2s',
           },
         },
       ],
@@ -149,6 +150,7 @@ describe('scenario validation', () => {
         basicAuth: { user: 'u', password: 'p' },
         json: { a: 1 },
         expect: { status: 200 },
+        withinMs: 2000,
       },
     ]);
   });
@@ -320,6 +322,8 @@ describe('scenario validation', () => {
         { expect: { sent: 'StartTransaction', save: { tx: '$.answer.transactionId' } } },
         { csmsCall: { action: 'RemoteStopTransaction', payload: { transactionId: '{{tx}}' } } },
         { http: { url: '{{APP_API}}/x', headers: { Authorization: 'Bearer {{env.TOKEN}}' } } },
+        // The built-in variables need no definition.
+        { http: { url: '{{engineUrl}}/api/stations/{{csmsUrl}}' } },
       ],
     });
     expect(variableProblems(scenario)).toEqual([

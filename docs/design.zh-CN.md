@@ -308,7 +308,7 @@ HTTP，用于调用被测系统：
 
 | 步骤 | 参数 | 作用 |
 | --- | --- | --- |
-| `http` | `method`（默认 GET）、`url`、`headers`、`basicAuth`（`user`、`password`）、`json`、`expect`（`status`、`json`）、`save` | 发请求（超时 10 秒）并检查响应。没写 `expect.status` 时任何 2xx 都算通过；`expect.json` 匹配解析后的响应体 |
+| `http` | `method`（默认 GET）、`url`、`headers`、`basicAuth`（`user`、`password`）、`json`、`expect`（`status`、`json`）、`within`、`save` | 发请求（超时 10 秒）并检查响应。没写 `expect.status` 时任何 2xx 都算通过；`expect.json` 匹配解析后的响应体。有 `within` 时每 250 毫秒重发一次，直到匹配或超时 |
 
 `save: { NAME: <路径> }` 把一个值存成变量，供后面的步骤使用。可用于 `expect`（路径根是 `{ payload, answer }`）、`expectConnector` 和 `expectStation`（快照）、`csmsCall`（`{ answer }`）和 `http`（`{ status, json, text }`）。路径写法如 `$.answer.transactionId`。
 
@@ -318,7 +318,7 @@ HTTP，用于调用被测系统：
 
 **模板和变量**
 
-字符串里的 `{{NAME}}` 在步骤执行前替换。取值优先级从低到高：`vars`、命令行的 `--var NAME=value`、前面步骤保存的变量。`{{env.NAME}}` 读取环境变量，这类值在输出和报告里显示为 `***`。如果整个字符串只有一个模板，替换后保留原值的类型，所以 `"{{tx}}"` 可以代表数字。`{{csmsUrl}}` 是场景中各桩连接的地址，除非 `vars` 或 `--var` 另行定义。`{{now}}`、`{{now+30m}}`、`{{now-1h}}` 给出当前时间（加减一个时长）的 ISO 8601 时间戳，例如 CSMS API 要求的未来时间。未知的变量名在场景开始前就报错；保存的变量只在保存它的步骤之后才算已定义。
+字符串里的 `{{NAME}}` 在步骤执行前替换。取值优先级从低到高：`vars`、命令行的 `--var NAME=value`、前面步骤保存的变量。`{{env.NAME}}` 读取环境变量，这类值在输出和报告里显示为 `***`。如果整个字符串只有一个模板，替换后保留原值的类型，所以 `"{{tx}}"` 可以代表数字。`{{csmsUrl}}` 是场景中各桩连接的地址，`{{engineUrl}}` 是场景运行所在的引擎（它的 API：会话、费率、远程启动），除非 `vars` 或 `--var` 另行定义。`{{now}}`、`{{now+30m}}`、`{{now-1h}}` 给出当前时间（加减一个时长）的 ISO 8601 时间戳，例如 CSMS API 要求的未来时间。未知的变量名在场景开始前就报错；保存的变量只在保存它的步骤之后才算已定义。
 
 **时长**沿用 persona 的写法：数字表示毫秒，或以 `ms`、`s`、`m`、`h` 结尾的字符串。
 
@@ -1135,6 +1135,7 @@ interface SessionRecord {
 - 不加路由依赖：选中一个站后，用标签页在"站点"和"会话"之间切换；hash（`#/stations/<id>/sessions/<n>`）可以链接到某个会话。
 - 组件：SessionList、SessionHeader（启动来源徽章、idToken、remoteStartId、时间线）、EnergyPanel 和 EnergyChart、VehicleCard、PriceCard 和 TariffEditor，以及 SessionLog（复用消息日志的行和摘要）。一个共享开关在"CSMS 视角"和"显示真值"之间切换（R-SRC-1）。
 - `apps/web/src/versions.ts` 存放版本能力表（R-VER-3）：术语、每个版本的车辆字段（session-ui.md 第 6 节），以及版本有没有 remoteStartId、totalCost 和费率。加 2.1 就是加一行。
+- 已实现（T91）：`scenarios/regression/sessions.yaml` 通过引擎 API、对着内置 CSMS 检查会话：1.6 刷卡会话从开始到停止、由引擎 API 经内置 CSMS 发起的远程启动、被拒绝的 1.6 远程启动、带 remoteStartId 的 2.0.1 RequestStartTransaction 和一个被拒绝的、NoAuthorization 启动。SteVe 和 CitrineOS 的远程启动场景现在也检查引擎记下了一个已结束的远程会话，带着 CSMS 给的 idToken（和 remoteStartId），时间线以远程启动开头。场景新增内置变量 `{{engineUrl}}` 和 `http.within`。
 - 已实现（T90）：SessionLog（`apps/web/src/session-log.ts`）显示打开会话的报文（随会话一起加载，之后在后台刷新），也可以切换到整个站点的记录；每个 CALL 带上它的应答和响应时间，找不到 CALL 的应答单独成行，会话期间站点的日志行也排进同一条时间线。过滤：动作、方向、只看错误（CALLERROR、OCA schema 问题、故障注入）、日志行。列表可以折叠、可以拉高；每行能打开 JSON；Export JSONL 下载这个会话的报文。选中一条 MeterValues 或 TransactionEvent，会在电量曲线上标出它的时刻；点击曲线则选中最近的一条。
 - 已实现（T89）：`GET` / `PUT /api/tariff` 保存参考费率（用 `tariffProblems` 检查，存在 `settings` 表里；没设置时用一份示例费率），会话详情带上 `price`。PriceCard 并排显示 CSMS 最新的费用（来自 TransactionEventResponse 或 CostUpdated；OCPP 1.6 则说明它没有费用消息）和参考价，说明两者是否精确到分一致，列出各项及其用到的报文，以及费用更新记录，并用表单编辑费率（每项一个价格、一个税率）。`ocpp-mimic csms --tariff <file>` 让内置 CSMS 用同一个会话追踪器跟踪每个 2.0.1 会话，用同一套算法定价：TransactionEvent 的应答带 totalCost（含税），运行中的交易每分钟收到一次 CostUpdated；它算出的最终费用等于会话的参考价。2.0.1 桩接受 CostUpdated，并在日志里记下运行中的费用（I03）。
 - 已实现（T88）：VehicleCard 列出 session-ui.md 第 6 节的 12 项车辆信息（`apps/web/src/vehicle.ts`）。每一项给出：桩上报的值（ChargingNeeds、电表值、状态、令牌），第三方推算的值（由读数推算容量、剩余电量和时间、假设的目标、由各相电流推算相数），上报 / 推算标签；版本不提供时给出版本说明，或者说明这个桩或这辆车没有上报；打开显示真值时，附上插着的 EV 在模型里的值（容量、SoC、目标和降功率点、离开时间、最大功率、相数）。来自电表值或状态变化的上报值可以点开对应的报文。ETA 偏差提醒在电量面板里。
