@@ -11,6 +11,8 @@ import {
   createMasker,
   logLine,
   parseLog,
+  versionOfSubprotocol,
+  withVersions,
   type LogDirection,
   type LogLine,
   type MaskRules,
@@ -34,6 +36,8 @@ export interface ImportMapping {
     station: FieldSpec;
     direction: FieldSpec & { values?: Record<string, LogDirection> };
     frame: FieldSpec;
+    /** The connection's subprotocol (`ocpp1.6`, `ocpp2.0.1`), when the log has it. */
+    subprotocol?: FieldSpec;
   };
   mask: MaskRules;
 }
@@ -82,6 +86,8 @@ export function parseMapping(
   const station = spec('station');
   const direction = spec('direction');
   const frame = spec('frame');
+  // Optional: without it the version comes from the action names.
+  const subprotocol = fields.subprotocol === undefined ? undefined : spec('subprotocol');
   const time = at.time ?? 'iso';
   if (time !== 'iso' && time !== 'epoch-s' && time !== 'epoch-ms') {
     problems.push('fields.at.time must be iso, epoch-s or epoch-ms');
@@ -124,6 +130,7 @@ export function parseMapping(
           ...(values !== undefined && { values: values as Record<string, LogDirection> }),
         },
         frame,
+        ...(subprotocol !== undefined && { subprotocol }),
       },
       mask: maskRules,
     },
@@ -258,7 +265,7 @@ export function importMapped(
       records.push({
         n: index + (mapping.csv.header ? 2 : 1),
         get: (field) => {
-          const column = fields[field].column;
+          const column = fields[field]?.column;
           const at = typeof column === 'number' ? column : header.indexOf(String(column));
           return at < 0 ? undefined : row[at];
         },
@@ -276,7 +283,7 @@ export function importMapped(
           problems.push(`line ${n}: not JSON`);
           return;
         }
-        records.push({ n, get: (field) => getPath(value, fields[field].path ?? field) });
+        records.push({ n, get: (field) => getPath(value, fields[field]?.path ?? field) });
       } else {
         const match = mapping.pattern?.exec(raw);
         if (match?.groups === undefined) {
@@ -284,7 +291,7 @@ export function importMapped(
           return;
         }
         const groups = match.groups;
-        records.push({ n, get: (field) => groups[fields[field].group ?? field] });
+        records.push({ n, get: (field) => groups[fields[field]?.group ?? field] });
       }
     });
   }
@@ -317,11 +324,17 @@ export function importMapped(
     }
     const frame = get('frame');
     const frameText = typeof frame === 'string' ? frame : JSON.stringify(frame ?? null);
-    lines.push(logLine(new Date(atMs).toISOString(), station, direction, frameText));
+    const subprotocol = fields.subprotocol === undefined ? undefined : get('subprotocol');
+    const ocpp = typeof subprotocol === 'string' ? versionOfSubprotocol(subprotocol) : undefined;
+    lines.push(
+      logLine(new Date(atMs).toISOString(), station, direction, frameText, {
+        ...(ocpp !== undefined && { ocpp }),
+      }),
+    );
   }
   // Stable: lines of the same millisecond keep their order.
   lines.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-  return { lines, problems };
+  return { lines: withVersions(lines), problems };
 }
 
 /** Lines of ocpp-mimic's own format, or of a mapped one. */
@@ -332,7 +345,8 @@ export function importText(
   if (mapping === undefined) {
     const parsed = parseLog(text);
     return {
-      lines: parsed.lines,
+      // Logs written before M5 carry no version: the actions tell it.
+      lines: withVersions(parsed.lines),
       problems: parsed.problems,
       masked: parsed.header?.masked ?? false,
     };

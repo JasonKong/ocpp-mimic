@@ -169,6 +169,76 @@ describe('runReplay', () => {
   });
 });
 
+describe('replaying a 2.0.1 log', () => {
+  it('sends fresh transactionIds, keeps seqNo and follows the CSMS remoteStartId', async () => {
+    const event = (id: string, s: number, eventType: string, seqNo: number) =>
+      cp(s, [
+        2,
+        id,
+        'TransactionEvent',
+        {
+          eventType,
+          timestamp: at(s),
+          triggerReason: eventType === 'Started' ? 'RemoteStart' : 'RemoteStop',
+          seqNo,
+          transactionInfo: { transactionId: 'recorded-tx', remoteStartId: 5 },
+          evse: { id: 1, connectorId: 1 },
+        },
+      ]);
+    const lines = [
+      cp(0, [2, 'h', 'Heartbeat', {}]),
+      csms(0.01, [3, 'h', { currentTime: at(0) }]),
+      csms(1, [
+        2,
+        'r',
+        'RequestStartTransaction',
+        { idToken: { idToken: 'T1', type: 'ISO14443' }, remoteStartId: 5 },
+      ]),
+      cp(1.1, [3, 'r', { status: 'Accepted' }]),
+      event('s', 2, 'Started', 0),
+      csms(2.01, [3, 's', { idTokenInfo: { status: 'Accepted' } }]),
+      event('e', 3, 'Ended', 1),
+      csms(3.01, [3, 'e', {}]),
+    ];
+    const csmsSide: { deliver?: (frame: unknown[]) => void } = {};
+    const fake = fakeWire((frame) => {
+      // While the Heartbeat is answered, the CSMS starts a session with its own remoteStartId.
+      if (frame[2] === 'Heartbeat') {
+        queueMicrotask(() =>
+          csmsSide.deliver?.([
+            2,
+            'csms-1',
+            'RequestStartTransaction',
+            { idToken: { idToken: 'T1', type: 'ISO14443' }, remoteStartId: 99 },
+          ]),
+        );
+        return [3, frame[1], { currentTime: 'x' }];
+      }
+      if (frame[2] !== 'TransactionEvent') return [3, frame[1], { status: 'Accepted' }];
+      const started = (frame[3] as { eventType?: string }).eventType === 'Started';
+      return [3, frame[1], started ? { idTokenInfo: { status: 'Accepted' } } : {}];
+    });
+    csmsSide.deliver = fake.deliver;
+    const result = await runReplay({ wire: fake.wire, lines, sleep: async () => {} });
+    const events = fake.sent
+      .filter((f) => f[0] === 2 && f[2] === 'TransactionEvent')
+      .map(
+        (f) =>
+          f[3] as {
+            seqNo: number;
+            transactionInfo: { transactionId: string; remoteStartId: number };
+          },
+      );
+    expect(events.map((e) => e.seqNo)).toEqual([0, 1]);
+    expect(events.map((e) => e.transactionInfo.remoteStartId)).toEqual([99, 99]);
+    const [first, second] = events.map((e) => e.transactionInfo.transactionId);
+    expect(first).not.toBe('recorded-tx');
+    expect(second).toBe(first);
+    expect(result.differences).toEqual([]);
+    expect(result.csmsCalls.matched).toBe(1);
+  });
+});
+
 describe('stationLines', () => {
   it('takes the only station, or the one asked for', () => {
     const other = { ...SESSION[0]!, station: 'CP2' };

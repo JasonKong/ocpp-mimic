@@ -141,6 +141,53 @@ describe('importMapped', () => {
   });
 });
 
+describe('import: OCPP versions', () => {
+  it('takes the version from a subprotocol column, else from the actions', () => {
+    const mapping = parseMapping({
+      format: 'jsonl',
+      fields: {
+        at: { path: 'time' },
+        station: { path: 'cp' },
+        direction: { path: 'dir' },
+        frame: { path: 'msg' },
+        subprotocol: { path: 'protocol' },
+      },
+    });
+    if (!mapping.ok) throw new Error(mapping.problems.join('; '));
+    const row = (cp: string, msg: unknown[], protocol?: string) =>
+      JSON.stringify({ time: '2026-11-15T10:00:00Z', cp, dir: 'cp-to-csms', msg, protocol });
+    const text = [
+      row('A', [2, '1', 'Heartbeat', {}], 'ocpp2.0.1'),
+      row('B', [2, '2', 'StartTransaction', {}]),
+      row('B', [2, '3', 'Heartbeat', {}]),
+    ].join('\n');
+    const { lines } = importMapped(text, mapping.mapping);
+    expect(lines.map((l) => [l.station, l.ocpp])).toEqual([
+      ['A', '2.0.1'],
+      ['B', '1.6'],
+      ['B', '1.6'],
+    ]);
+  });
+
+  it('fills in the version of an own-format log written before M5', () => {
+    const text = [
+      JSON.stringify({
+        at: '2026-11-15T10:00:00Z',
+        station: 'S',
+        direction: 'cp-to-csms',
+        frame: [2, '1', 'TransactionEvent', {}],
+      }),
+      JSON.stringify({
+        at: '2026-11-15T10:00:01Z',
+        station: 'S',
+        direction: 'cp-to-csms',
+        frame: [2, '2', 'Heartbeat', {}],
+      }),
+    ].join('\n');
+    expect(importText(text, undefined).lines.map((l) => l.ocpp)).toEqual(['2.0.1', '2.0.1']);
+  });
+});
+
 describe('maskLines and importText', () => {
   it('masks with HMAC: the same salt gives the same pseudonyms', () => {
     const text = [

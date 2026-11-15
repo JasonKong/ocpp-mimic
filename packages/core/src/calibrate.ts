@@ -2,10 +2,16 @@
  * Persona calibration (docs/design.md, "M4 scale"): derives a persona's values
  * from logs of one or more stations of the same model. Every value comes with
  * how many samples it rests on and their spread; a value with fewer than 3
- * samples is reported as not derived.
+ * samples is reported as not derived. A 2.0.1 log gives a persona that
+ * extends generic-2.0.1, with Device Model values instead of configuration
+ * keys (from the station's NotifyReport, when the log has one).
  */
 import { createConfig, STANDARD_CONFIG_KEYS } from './config.js';
-import type { LogLine } from './log-format.js';
+import { logVersions, type LogLine, type LogOcppVersion } from './log-format.js';
+import { ChargePointErrorCodeSchema } from './ocpp16-messages.js';
+import { componentKey, variableKey } from './ocpp201/device-model.js';
+import { validate } from './schema.js';
+import { standardVariables } from './ocpp201/standard-variables.js';
 
 /** Fewer samples than this, and a value is not derived. */
 export const MIN_SAMPLES = 3;
@@ -33,6 +39,7 @@ type Frame = unknown[];
 type Payload = Record<string, unknown>;
 
 const median = (values: readonly number[]) => quantile(values, 0.5);
+const structuredCloneJson = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 function quantile(values: readonly number[], q: number): number {
   const sorted = [...values].sort((a, b) => a - b);
   if (sorted.length === 0) return Number.NaN;
@@ -64,9 +71,12 @@ interface Event {
 export interface CalibrateOptions {
   /** The persona's id. Default: the model with `-calibrated`. */
   name?: string;
-  /** The persona it extends. Default generic-1.6. */
+  /** The persona it extends. Default generic-1.6, or generic-2.0.1 for a 2.0.1 log. */
   extends?: string;
 }
+
+/** Whether a 2.0.1 techCode is a 1.6 ChargePointErrorCode (else a vendor's code). */
+const isErrorCode = (code: string) => validate(ChargePointErrorCodeSchema, code).ok;
 
 export function calibrate(lines: readonly LogLine[], options: CalibrateOptions = {}): Calibration {
   const events: Event[] = lines
@@ -79,6 +89,11 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
     }))
     .sort((a, b) => a.at - b.at);
   const stations = [...new Set(events.map((e) => e.station))].sort();
+  // The log's version: what most of its stations speak.
+  const versionCounts = [...logVersions(lines).values()];
+  const version: LogOcppVersion =
+    versionCounts.filter((v) => v === '2.0.1').length > versionCounts.length / 2 ? '2.0.1' : '1.6';
+  const is201 = version === '2.0.1';
   const derived: Derived[] = [];
   const persona: Record<string, unknown> = {};
   const set = (path: string, value: unknown) => {
@@ -142,14 +157,14 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
   };
 
   // BootNotification fields (serial numbers are the station's own, not the model's).
-  const boots = callsFrom('cp-to-csms', 'BootNotification').map(payload);
+  // 2.0.1 keeps them in the chargingStation block.
+  const boots = callsFrom('cp-to-csms', 'BootNotification')
+    .map(payload)
+    .map((p) => (is201 ? ((p.chargingStation ?? {}) as Payload) : p));
   if (boots.length > 0) {
-    const fields = [
-      'chargePointVendor',
-      'chargePointModel',
-      'firmwareVersion',
-      'meterType',
-    ] as const;
+    const fields = is201
+      ? (['vendorName', 'model', 'firmwareVersion'] as const)
+      : (['chargePointVendor', 'chargePointModel', 'firmwareVersion', 'meterType'] as const);
     const boot: Payload = {};
     for (const field of fields) {
       const value = mostCommon(boots.map((b) => b[field]).filter((v) => v !== undefined));
@@ -161,9 +176,11 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
     derived.push({ name: 'boot', samples: 0, note: 'no BootNotification in the log' });
   }
 
-  // Connectors: the highest connectorId reported.
+  // Connectors: the highest connectorId reported (2.0.1: the highest EVSE).
   const statuses = callsFrom('cp-to-csms', 'StatusNotification');
-  const connectorIds = statuses.map((e) => Number(payload(e).connectorId)).filter((n) => n > 0);
+  const connectorIds = statuses
+    .map((e) => Number(is201 ? payload(e).evseId : payload(e).connectorId))
+    .filter((n) => n > 0);
   if (connectorIds.length > 0) {
     const connectors = Math.max(...connectorIds);
     derived.push({ name: 'connectors', value: connectors, samples: connectorIds.length });
@@ -202,17 +219,86 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
     });
   }
 
+  // 2.0.1: Device Model values from the station's latest full NotifyReport, where
+  // they differ from the standard variables' defaults and an operator can set them.
+  const deviceModel: Record<string, Record<string, string>> = {};
+  if (is201) {
+    const reports = callsFrom('cp-to-csms', 'NotifyReport');
+    const lastRequest =
+      reports.at(-1) === undefined ? undefined : payload(reports.at(-1)!).requestId;
+    const items = reports
+      .filter((e) => payload(e).requestId === lastRequest)
+      .flatMap((e) => (payload(e).reportData ?? []) as Payload[]);
+    const defaults = new Map(
+      standardVariables({
+        connectors: Number(persona.connectors ?? 1),
+        features: [
+          'Core',
+          'AdvancedSecurity',
+          'LocalAuthListManagement',
+          'SmartCharging',
+          'Reservation',
+        ],
+        offeredW: 0,
+      }).map((d) => [`${componentKey(d.component)}/${variableKey(d.variable)}`, d] as const),
+    );
+    let differing = 0;
+    for (const item of items) {
+      const component = componentKey(item.component as Parameters<typeof componentKey>[0]);
+      const variable = variableKey(item.variable as Parameters<typeof variableKey>[0]);
+      const actual = ((item.variableAttribute ?? []) as Payload[]).find(
+        (a) => (a.type ?? 'Actual') === 'Actual',
+      );
+      const known = defaults.get(`${component}/${variable}`);
+      if (
+        actual?.value === undefined ||
+        actual.mutability !== 'ReadWrite' ||
+        known === undefined ||
+        known.dynamic === true ||
+        known.attributes.Actual?.value === actual.value
+      ) {
+        continue;
+      }
+      (deviceModel[component] ??= {})[variable] = String(actual.value);
+      differing += 1;
+    }
+    if (items.length > 0) {
+      derived.push({
+        name: 'deviceModel',
+        value: structuredCloneJson(deviceModel),
+        samples: items.length,
+        note: `the latest NotifyReport: ${differing} writable values that differ from the defaults`,
+      });
+    }
+  }
+
   // Intervals: heartbeats, and periodic meter values within transactions.
-  fromSamples('config.HeartbeatInterval', gaps(callsFrom('cp-to-csms', 'Heartbeat')), (ms) =>
+  const heartbeatPath = is201
+    ? 'deviceModel.OCPPCommCtrlr.HeartbeatInterval'
+    : 'config.HeartbeatInterval';
+  const intervalPath = is201
+    ? 'deviceModel.SampledDataCtrlr.TxUpdatedInterval'
+    : 'config.MeterValueSampleInterval';
+  for (const [component, variables] of Object.entries(deviceModel)) {
+    for (const [variable, value] of Object.entries(variables)) {
+      set(`deviceModel.${component}.${variable}`, value);
+    }
+  }
+  fromSamples(heartbeatPath, gaps(callsFrom('cp-to-csms', 'Heartbeat')), (ms) =>
     Math.round(ms / 1000),
   );
-  const meterValues = callsFrom('cp-to-csms', 'MeterValues').filter((e) => {
-    const p = payload(e);
-    const values = (p.meterValue ?? []) as { sampledValue?: { context?: string }[] }[];
-    const context = values[0]?.sampledValue?.[0]?.context ?? 'Sample.Periodic';
-    return p.transactionId !== undefined && context === 'Sample.Periodic';
-  });
-  fromSamples('config.MeterValueSampleInterval', gaps(meterValues), (ms) => Math.round(ms / 1000));
+  const meterValues = is201
+    ? callsFrom('cp-to-csms', 'TransactionEvent').filter(
+        (e) =>
+          payload(e).eventType === 'Updated' && payload(e).triggerReason === 'MeterValuePeriodic',
+      )
+    : callsFrom('cp-to-csms', 'MeterValues').filter((e) => {
+        const p = payload(e);
+        const values = (p.meterValue ?? []) as { sampledValue?: { context?: string }[] }[];
+        const context = values[0]?.sampledValue?.[0]?.context ?? 'Sample.Periodic';
+        return p.transactionId !== undefined && context === 'Sample.Periodic';
+      });
+  fromSamples(intervalPath, gaps(meterValues), (ms) => Math.round(ms / 1000));
   for (const [key, value] of Object.entries(config)) {
     if (key === 'HeartbeatInterval' || key === 'MeterValueSampleInterval') continue;
     set(`config.${key}`, Number.isNaN(Number(value)) || value === '' ? value : value);
@@ -229,13 +315,19 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
   ].sort();
   if (measurands.length > 0) {
     const value = measurands.join(',');
-    derived.push({ name: 'config.MeterValuesSampledData', value, samples: sampled.length });
-    set('config.MeterValuesSampledData', value);
+    const name = is201
+      ? 'deviceModel.SampledDataCtrlr.TxUpdatedMeasurands'
+      : 'config.MeterValuesSampledData';
+    derived.push({ name, value, samples: sampled.length });
+    set(name, value);
   }
+  // 1.6 has the unit on the sampled value, 2.0.1 in unitOfMeasure.
+  const unitOf = (v: Payload) =>
+    String(v.unit ?? (v.unitOfMeasure as Payload | undefined)?.unit ?? 'W').toLowerCase();
   const watts = (measurand: string) =>
     sampled
       .filter((v) => v.measurand === measurand)
-      .map((v) => Number(v.value) * (String(v.unit ?? 'W').toLowerCase() === 'kw' ? 1000 : 1))
+      .map((v) => Number(v.value) * (unitOf(v) === 'kw' ? 1000 : 1))
       .filter((n) => Number.isFinite(n) && n > 0);
   const offered = watts('Power.Offered');
   const active = watts('Power.Active.Import');
@@ -269,11 +361,27 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
         e.frame[2] === action &&
         e.at > after.at,
     );
-  const followUps: Record<string, (call: Event) => Event | undefined> = {
-    TriggerMessage: (call) => nextCall(call, String(payload(call).requestedMessage)),
-    RemoteStopTransaction: (call) => nextCall(call, 'StopTransaction'),
-    ChangeAvailability: (call) => nextCall(call, 'StatusNotification'),
-  };
+  const endedAfter = (after: Event) =>
+    events.find(
+      (e) =>
+        e.station === after.station &&
+        e.direction === 'cp-to-csms' &&
+        e.frame[0] === 2 &&
+        e.frame[2] === 'TransactionEvent' &&
+        payload(e).eventType === 'Ended' &&
+        e.at > after.at,
+    );
+  const followUps: Record<string, (call: Event) => Event | undefined> = is201
+    ? {
+        TriggerMessage: (call) => nextCall(call, String(payload(call).requestedMessage)),
+        RequestStopTransaction: endedAfter,
+        ChangeAvailability: (call) => nextCall(call, 'StatusNotification'),
+      }
+    : {
+        TriggerMessage: (call) => nextCall(call, String(payload(call).requestedMessage)),
+        RemoteStopTransaction: (call) => nextCall(call, 'StopTransaction'),
+        ChangeAvailability: (call) => nextCall(call, 'StatusNotification'),
+      };
   const allDelays: number[] = [];
   for (const [command, next] of Object.entries(followUps)) {
     const delays = callsFrom('csms-to-cp', command)
@@ -296,9 +404,12 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
     'timing.actionDelay',
     allDelays,
     seconds,
-    'from TriggerMessage, RemoteStopTransaction and ChangeAvailability to what they ask for',
+    `from ${Object.keys(followUps).join(', ')} to what they ask for`,
   );
-  const starts = callsFrom('cp-to-csms', 'StartTransaction');
+  // 2.0.1 transactions start with TransactionEvent Started.
+  const starts = is201
+    ? callsFrom('cp-to-csms', 'TransactionEvent').filter((e) => payload(e).eventType === 'Started')
+    : callsFrom('cp-to-csms', 'StartTransaction');
   const startDelays = starts
     .map((start) => {
       const authorize = [...callsFrom('cp-to-csms', 'Authorize')]
@@ -309,10 +420,15 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
       return authorize === undefined ? undefined : start.at - authorize.at;
     })
     .filter((ms): ms is number => ms !== undefined);
-  fromSamples('timing.startTransactionDelay', startDelays, seconds, 'from the Authorize answer');
+  // A 2.0.1 station starts on its start points; the delay is a 1.6 setting.
+  if (!is201) {
+    fromSamples('timing.startTransactionDelay', startDelays, seconds, 'from the Authorize answer');
+  }
   for (const type of ['Soft', 'Hard'] as const) {
+    // 2.0.1: OnIdle restarts like a soft reset, Immediate like a hard one.
+    const resetType = is201 ? (type === 'Soft' ? 'OnIdle' : 'Immediate') : type;
     const downtimes = callsFrom('csms-to-cp', 'Reset')
-      .filter((call) => payload(call).type === type)
+      .filter((call) => payload(call).type === resetType && payload(call).evseId === undefined)
       .map((call) => {
         const boot = callsFrom('cp-to-csms', 'BootNotification').find(
           (b) => b.station === call.station && b.at > call.at,
@@ -323,15 +439,34 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
     fromSamples(`timing.resetDowntime.${type.toLowerCase()}`, downtimes, seconds);
   }
 
-  // Faults: every errorCode / info / vendorErrorCode reported with a fault.
-  const faults = statuses
-    .map(payload)
-    .filter((p) => p.errorCode !== undefined && p.errorCode !== 'NoError')
-    .map((p) => ({
-      errorCode: p.errorCode,
-      ...(p.info !== undefined && { info: p.info }),
-      ...(p.vendorErrorCode !== undefined && { vendorErrorCode: p.vendorErrorCode }),
-    }));
+  // Faults: every errorCode / info / vendorErrorCode reported with a fault. A
+  // 2.0.1 station reports them as a raised Problem variable in NotifyEvent:
+  // techCode is a 1.6 error code or the vendor's own, techInfo the info.
+  const faults = is201
+    ? callsFrom('cp-to-csms', 'NotifyEvent')
+        .flatMap((e) => (payload(e).eventData ?? []) as Payload[])
+        .filter(
+          (d) =>
+            (d.variable as Payload | undefined)?.name === 'Problem' &&
+            d.actualValue === 'true' &&
+            d.techCode !== undefined,
+        )
+        .map((d) => {
+          const code = String(d.techCode);
+          return {
+            errorCode: isErrorCode(code) ? code : 'OtherError',
+            ...(d.techInfo !== undefined && { info: d.techInfo }),
+            ...(!isErrorCode(code) && { vendorErrorCode: code }),
+          };
+        })
+    : statuses
+        .map(payload)
+        .filter((p) => p.errorCode !== undefined && p.errorCode !== 'NoError')
+        .map((p) => ({
+          errorCode: p.errorCode,
+          ...(p.info !== undefined && { info: p.info }),
+          ...(p.vendorErrorCode !== undefined && { vendorErrorCode: p.vendorErrorCode }),
+        }));
   const uniqueFaults = [...new Map(faults.map((f) => [JSON.stringify(f), f])).values()].map(
     (f) => ({
       name: [f.errorCode, f.info].filter((v) => v !== undefined).join(' '),
@@ -346,13 +481,25 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
   }
 
   // Sessions: how drivers use the station, for the usage model.
-  const stops = callsFrom('cp-to-csms', 'StopTransaction');
+  const transactionOf = (e: Event) =>
+    is201
+      ? (payload(e).transactionInfo as Payload | undefined)?.transactionId
+      : payload(e).transactionId;
+  const stops = is201
+    ? callsFrom('cp-to-csms', 'TransactionEvent').filter((e) => payload(e).eventType === 'Ended')
+    : callsFrom('cp-to-csms', 'StopTransaction');
   const sessions = starts
     .map((start) => {
-      const answer = answerTo(start);
-      const tx = answer === undefined ? undefined : payload(answer).transactionId;
+      // 1.6: the CSMS gives the transactionId; 2.0.1: the station's own.
+      const answer = is201 ? start : answerTo(start);
+      const tx =
+        answer === undefined
+          ? undefined
+          : is201
+            ? transactionOf(start)
+            : payload(answer).transactionId;
       const stop = stops.find(
-        (s) => s.station === start.station && payload(s).transactionId === tx && s.at > start.at,
+        (s) => s.station === start.station && transactionOf(s) === tx && s.at > start.at,
       );
       return stop === undefined ? undefined : { start, stop, ms: stop.at - start.at };
     })
@@ -377,10 +524,18 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
       value: stay,
       samples: durations.length,
       spread: [round(quantile(durations, 0.1) / 1000), round(quantile(durations, 0.9) / 1000)],
-      note: 'p10 to p90 of StartTransaction to StopTransaction',
+      note: is201
+        ? 'p10 to p90 of TransactionEvent Started to Ended'
+        : 'p10 to p90 of StartTransaction to StopTransaction',
     });
     set('usage.stay', stay);
-    const reasons = sessions.map((s) => String(payload(s.stop).reason ?? 'Local'));
+    const reasons = sessions.map((s) =>
+      String(
+        (is201
+          ? (payload(s.stop).transactionInfo as Payload | undefined)?.stoppedReason
+          : payload(s.stop).reason) ?? 'Local',
+      ),
+    );
     const card = reasons.filter((r) => r === 'Local').length;
     const unplug = reasons.filter((r) => r === 'EVDisconnected').length;
     if (card + unplug >= MIN_SAMPLES) {
@@ -399,7 +554,9 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
     .filter((a): a is Event => a !== undefined && a.frame[0] === 3);
   if (authorizations.length >= MIN_SAMPLES) {
     const refused = authorizations.filter(
-      (a) => (payload(a).idTagInfo as { status?: string } | undefined)?.status !== 'Accepted',
+      (a) =>
+        ((payload(a).idTagInfo ?? payload(a).idTokenInfo) as { status?: string } | undefined)
+          ?.status !== 'Accepted',
     ).length;
     const share = round(refused / authorizations.length, 2);
     derived.push({
@@ -410,12 +567,13 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
     if (persona.usage !== undefined) set('usage.idTags.unknownShare', share);
   }
 
-  const model = String((persona.boot as Payload | undefined)?.chargePointModel ?? 'station');
+  const bootBlock = persona.boot as Payload | undefined;
+  const model = String((is201 ? bootBlock?.model : bootBlock?.chargePointModel) ?? 'station');
   const id = options.name ?? `${model.toLowerCase().replace(/[^a-z0-9.-]+/g, '-')}-calibrated`;
   return {
     persona: {
       persona: id,
-      extends: options.extends ?? 'generic-1.6',
+      extends: options.extends ?? (is201 ? 'generic-2.0.1' : 'generic-1.6'),
       description: `Calibrated from ${events.length} frames of ${stations.length} station${stations.length === 1 ? '' : 's'}`,
       ...persona,
     },

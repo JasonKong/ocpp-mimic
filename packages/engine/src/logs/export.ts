@@ -6,6 +6,7 @@ export function recordToLine(record: FrameRecord): LogLine {
   return logLine(record.at, record.stationId, record.direction, record.text, {
     ...(record.injected !== undefined && { injected: record.injected }),
     ...(record.dropped === true && { dropped: true }),
+    ...(record.ocpp !== undefined && { ocpp: record.ocpp }),
   });
 }
 

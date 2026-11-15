@@ -87,6 +87,7 @@ export function createEngine(options: EngineOptions = {}): Engine {
   const recorder = createRecorder({
     check: (action, kind, payload, stationId) =>
       ocaFor(fleet?.get(stationId)?.chargePoint.ocpp ?? '1.6').check(action, kind, payload),
+    versionOf: (stationId) => fleet?.get(stationId)?.chargePoint.ocpp,
     ...(options.recordLimit !== undefined && { limit: options.recordLimit }),
   });
   let fleet: Fleet | undefined;

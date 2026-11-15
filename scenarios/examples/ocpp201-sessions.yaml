@@ -1,0 +1,40 @@
+# A card session, then a remote start and stop, on an OCPP 2.0.1 station
+# against the built-in CSMS. The sample log scenarios/logs/ocpp201-sessions.yaml-1.jsonl
+# is recorded from it.
+name: Card session and remote start on OCPP 2.0.1
+station:
+  id: SIM-201-CARD
+  persona: generic-2.0.1
+  deviceModel: { SampledDataCtrlr: { TxUpdatedInterval: 5 } }
+steps:
+  - presentCard: { idToken: TAG-001, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, idToken: { idToken: TAG-001 } }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Updated, triggerReason: MeterValuePeriodic }
+      within: 10s
+  - presentCard: { idToken: TAG-001, result: stopping }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Ended, transactionInfo: { stoppedReason: Local } }
+  - unplug: {}
+  - csmsCall:
+      action: RequestStartTransaction
+      payload: { idToken: { idToken: TAG-002, type: ISO14443 }, remoteStartId: 7, evseId: 1 }
+      answer: { status: Accepted }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, transactionInfo: { remoteStartId: 7 } }
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - csmsCall:
+      action: RequestStopTransaction
+      payload: { transactionId: '{{tx}}' }
+      answer: { status: Accepted }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Ended, triggerReason: RemoteStop }
+  - unplug: {}
