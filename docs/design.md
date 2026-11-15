@@ -1150,6 +1150,32 @@ The reference tariff is a 2.1 TariffType without conditions, so the same JSON ca
 
 T78 tracker, T79 estimates, T80 tariff, T81 EV communication (wave 2); T82 NotifyEVChargingNeeds, T83 store and API, T84 remote start through the built-in CSMS, T85 version table (wave 3); T86 Sessions view (wave 4); T87 energy, T88 vehicle, T89 price, T90 log, T91 scenarios (wave 5); T92 acceptance. The critical path is T77 → T78 → T83 → T86 → T87 → T92.
 
+**Accepted (T92)**
+
+M6's exit criterion is met on main (b317bbe):
+
+- **Start source and timeline.** `scenarios/regression/sessions.yaml` passes in CI: 1.6 card, 1.6 remote start from the engine API through the built-in CSMS, rejected 1.6 remote start, 2.0.1 RequestStartTransaction with its remoteStartId and a rejected one, NoAuthorization. The SteVe workflow ([43726086019](https://github.com/JasonKong/ocpp-mimic/actions/runs/43726086019)) and the CitrineOS workflow ([43726034214](https://github.com/JasonKong/ocpp-mimic/actions/runs/43726034214)) pass with a remote start from the CSMS's own API recorded as a finished remote session, with the CSMS's idToken (and remoteStartId) and the remote start first in its timeline.
+- **Estimates.** The core tests check every minute of simulated sessions (11 kW and 50 kW into 60 kWh, 7.4 kW into 10 kWh) after SoC rose 5 points. A live run on a local engine (a 1.6 card session and a 2.0.1 remote start, 40 kWh EVs at 7.4 kW, SoC sampled every 5 s, energy ×60) checked the estimate against the truth 69 times per session: never off, worst gap 17.4 minutes with about 300 minutes left (6 %). The estimated capacity was 41.2 kWh for a 40 kWh battery.
+- **Price.** For both finished live sessions, under a tariff with a session fee, energy with 15 % tax and charging time, the engine's reference price (12.41 NZD), a calculation written separately in Python from the exported JSONL frames, and, for the 2.0.1 session, the built-in CSMS's final totalCost were the same to the cent. `packages/engine/src/csms/pricing.test.ts` checks the CSMS's final cost against the reference price in CI.
+- **Suites.** CI (regression scenarios included) and the CitrineOS and SteVe workflows are green on main.
+- **Scale.** The reference bench with session tracking on (1,000 stations, 10 minutes, `--store`, 10 records per station) stays within the M4 thresholds:
+
+| | `load-ac-1.6` ([43726040081](https://github.com/JasonKong/ocpp-mimic/actions/runs/43726040081)) | `load-ac-2.0.1` ([43726043810](https://github.com/JasonKong/ocpp-mimic/actions/runs/43726043810)) |
+| --- | --- | --- |
+| Engine CPU after the ramp-up, mean / max (% of a core) | 3.4 / 6.1 | 4.7 / 10 |
+| Event-loop delay, worst 5-second p99 / max (ms) | 1.7 / 153 | 2.5 / 365 |
+| Heartbeats late, p99 / max (ms) | 1.9 / 147 | 67 / 311 |
+| Meter values late, p99 / max (ms) | 1.2 / 2 | 84 / 343 |
+| BootNotification accepted, p99 / max (ms) | 106 / 355 | 118 / 546 |
+| RSS peak (MB) | 298 | 370 |
+| Heap floor after the ramp-up, first quarter → last (MB) | 63 → 68.7 | 135 → 142.2 |
+
+Next to M5 the tail grew (the 30-second session saves are the likely cause) and the heap floor rises while sessions collect samples; both stay within the thresholds and are followed up in #217.
+
+Follow-ups, outside any milestone:
+- #216: show ETAs in wall-clock time when the energy multiplier is on.
+- #217: the event loop's tail and heap floor with session saves on the 1,000-station bench.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.

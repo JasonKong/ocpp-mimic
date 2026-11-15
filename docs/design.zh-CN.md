@@ -1149,6 +1149,32 @@ interface SessionRecord {
 
 T78 追踪器、T79 推算、T80 费率、T81 车桩通信能力（第 2 波）；T82 NotifyEVChargingNeeds、T83 存储和 API、T84 经内置 CSMS 远程启动、T85 版本能力表（第 3 波）；T86 会话视图（第 4 波）；T87 电量、T88 车辆、T89 计价、T90 日志、T91 场景（第 5 波）；T92 验收。关键路径是 T77 → T78 → T83 → T86 → T87 → T92。
 
+**已验收（T92）**
+
+M6 的出口标准在 main（b317bbe）上达成：
+
+- **启动来源和时间线。** `scenarios/regression/sessions.yaml` 在 CI 里通过：1.6 刷卡、由引擎 API 经内置 CSMS 发起的 1.6 远程启动、被拒绝的 1.6 远程启动、带 remoteStartId 的 2.0.1 RequestStartTransaction 和一个被拒绝的、NoAuthorization。SteVe 工作流（[43726086019](https://github.com/JasonKong/ocpp-mimic/actions/runs/43726086019)）和 CitrineOS 工作流（[43726034214](https://github.com/JasonKong/ocpp-mimic/actions/runs/43726034214)）都通过：从 CSMS 自己的 API 发起的远程启动被记成一个已结束的远程会话，带着 CSMS 给的 idToken（和 remoteStartId），时间线以远程启动开头。
+- **推算。** core 测试检查模拟会话（11 kW 和 50 kW 充 60 kWh，7.4 kW 充 10 kWh）在 SoC 上升 5 个点之后的每一分钟。本地引擎上的实测（一个 1.6 刷卡会话、一个 2.0.1 远程启动会话，40 kWh 的车、7.4 kW，每 5 秒采样 SoC，能量 ×60）每个会话把推算值和真值比较了 69 次：从未超限，最大偏差 17.4 分钟，当时还剩约 300 分钟（6 %）。推算出的容量是 41.2 kWh，电池实际 40 kWh。
+- **价格。** 两个实测会话结束后，在含服务费、15 % 税的电费和充电时长费的费率下，引擎的参考价（12.41 NZD）、另用 Python 从导出的 JSONL 报文独立算出的价格，以及 2.0.1 会话里内置 CSMS 的最终 totalCost，三者精确到分一致。`packages/engine/src/csms/pricing.test.ts` 在 CI 里检查 CSMS 的最终费用等于参考价。
+- **套件。** CI（含回归场景）、CitrineOS 和 SteVe 工作流在 main 上全绿。
+- **规模。** 开启会话跟踪的参考 bench（1,000 个站，10 分钟，`--store`，每站 10 条记录）在 M4 阈值内：
+
+| | `load-ac-1.6`（[43726040081](https://github.com/JasonKong/ocpp-mimic/actions/runs/43726040081)） | `load-ac-2.0.1`（[43726043810](https://github.com/JasonKong/ocpp-mimic/actions/runs/43726043810)） |
+| --- | --- | --- |
+| 爬坡后引擎 CPU，平均 / 最大（单核 %） | 3.4 / 6.1 | 4.7 / 10 |
+| 事件循环延迟，最差 5 秒 p99 / 最大（ms） | 1.7 / 153 | 2.5 / 365 |
+| 心跳迟到，p99 / 最大（ms） | 1.9 / 147 | 67 / 311 |
+| 电表值迟到，p99 / 最大（ms） | 1.2 / 2 | 84 / 343 |
+| BootNotification 接受，p99 / 最大（ms） | 106 / 355 | 118 / 546 |
+| RSS 峰值（MB） | 298 | 370 |
+| 爬坡后堆底，第一个四分之一 → 最后（MB） | 63 → 68.7 | 135 → 142.2 |
+
+和 M5 相比长尾变长了（最可能是每 30 秒一次的会话保存），堆底也随着会话积累采样而上升；两者都在阈值内，后续在 #217 跟进。
+
+后续事项，不归入任何 milestone：
+- #216：开启能量倍率时，ETA 按钟表时间显示。
+- #217：会话保存对 1,000 站 bench 的事件循环长尾和堆底的影响。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。
