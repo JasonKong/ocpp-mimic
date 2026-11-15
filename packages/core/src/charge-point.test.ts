@@ -8,6 +8,7 @@ import {
 import type { CertificateTools } from './certificates.js';
 import type { ChargePointOptions } from './charge-point.js';
 import { ManualClock } from './clock.js';
+import type { EvProfile } from './ev.js';
 import type { FileTransfer, FirmwareSettings } from './firmware.js';
 import { sequentialIds } from './ids.js';
 import { parseFrame, type CallFrame, type Frame, type JsonObject } from './ocppj.js';
@@ -814,7 +815,7 @@ describe('EV model', () => {
   const SMALL = { capacityKWh: 10, initialSoc: 20, maxPowerW: 7400, phases: 1 as const };
   const HOUR = 3_600_000;
   /** Boots without heartbeats (they would time out during long advances), card in, cable in with the EV. */
-  async function charging(config: Record<string, string> = {}) {
+  async function charging(config: Record<string, string> = {}, profile: EvProfile = SMALL) {
     const h = setup({
       config,
       csms: {
@@ -829,7 +830,7 @@ describe('EV model', () => {
     const card = h.cp.presentIdTag(1, 'TAG');
     await h.settle();
     expect(await card).toBe('authorized');
-    h.cp.plugIn(1, { name: 'small', profile: SMALL });
+    h.cp.plugIn(1, { name: 'small', profile });
     await h.advance(500);
     const connector = () => h.cp.snapshot().connectors[0];
     expect(connector()).toMatchObject({ status: 'Charging', powerW: 7360, ev: { name: 'small' } });
@@ -857,6 +858,20 @@ describe('EV model', () => {
     const last = JSON.stringify(samples.at(-1));
     expect(last).toContain('"measurand":"SoC"');
     expect(last).toContain('"unit":"Percent"');
+  });
+
+  it('reports no SoC for an EV that only has the PWM signal', async () => {
+    const { h, run } = await charging(
+      {
+        MeterValueSampleInterval: '600',
+        MeterValuesSampledData: 'Energy.Active.Import.Register,SoC',
+      },
+      { ...SMALL, communication: 'basic' },
+    );
+    await run(1_800_000);
+    const samples = JSON.stringify(h.calls('MeterValues').map((call) => call.payload.meterValue));
+    expect(samples).toContain('Energy.Active.Import.Register');
+    expect(samples).not.toContain('"measurand":"SoC"');
   });
 
   it('moves to SuspendedEV with 0 W when the battery is full, and a full EV does not resume', async () => {

@@ -43,6 +43,8 @@ export interface EvProfile {
   phases: number;
   taperSoc?: number;
   targetSoc?: number;
+  /** How the EV talks to the station; basic reports no SoC. */
+  communication?: 'basic' | 'dc' | 'iso15118';
 }
 
 /** Test switches; see ChargePointBehaviour in core. */

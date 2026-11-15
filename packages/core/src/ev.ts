@@ -11,6 +11,14 @@
  * advanced in one call and the moment the EV is full is known in advance.
  */
 
+/**
+ * How the EV talks to the station: `basic` is AC with the PWM signal only (the
+ * station never learns the SoC), `dc` is DIN 70121 or CHAdeMO (SoC is known),
+ * `iso15118` also tells the charging needs (capacity, target, departure).
+ */
+export const EV_COMMUNICATION = ['basic', 'dc', 'iso15118'] as const;
+export type EvCommunication = (typeof EV_COMMUNICATION)[number];
+
 export interface EvProfile {
   /** Usable battery capacity in kWh. */
   capacityKWh: number;
@@ -24,6 +32,16 @@ export interface EvProfile {
   taperSoc?: number;
   /** SoC (percent) at which the EV stops drawing power. Default 100. */
   targetSoc?: number;
+  /**
+   * How the EV talks to the station. Without it the station knows the SoC,
+   * as before the setting existed.
+   */
+  communication?: EvCommunication;
+}
+
+/** Whether the station learns the EV's SoC, and so can report it. */
+export function reportsSoc(profile: EvProfile): boolean {
+  return profile.communication !== 'basic';
 }
 
 export interface EvState {
@@ -57,6 +75,12 @@ export function evProfileProblems(profile: EvProfile): string[] {
   if (!(taper >= 0 && taper <= target)) problems.push('taperSoc must be between 0 and targetSoc');
   if (!(profile.initialSoc >= 0 && profile.initialSoc <= 100)) {
     problems.push('initialSoc must be between 0 and 100');
+  }
+  if (
+    profile.communication !== undefined &&
+    !(EV_COMMUNICATION as readonly string[]).includes(profile.communication)
+  ) {
+    problems.push(`communication must be one of ${EV_COMMUNICATION.join(', ')}`);
   }
   return problems;
 }
