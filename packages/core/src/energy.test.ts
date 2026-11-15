@@ -41,6 +41,17 @@ describe('energy', () => {
       profile: { capacityKWh: 10, initialSoc: 90, maxPowerW: 7_400, phases: 1 },
     });
     expect(energy.extras(1)).toEqual({ socPercent: 90, phases: 1 });
+    // An EV with the PWM signal only never tells its SoC.
+    energy.plugEv(2, {
+      profile: {
+        capacityKWh: 10,
+        initialSoc: 50,
+        maxPowerW: 7_400,
+        phases: 3,
+        communication: 'basic',
+      },
+    });
+    expect(energy.extras(2)).toEqual({ phases: 3 });
     expect(energy.conversion(1)).toEqual({ voltageV: 230, phases: 1 });
     energy.update(1, true, undefined);
     expect(energy.meter(1).powerW).toBeGreaterThan(0);

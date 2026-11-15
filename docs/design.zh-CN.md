@@ -1115,6 +1115,7 @@ interface SessionRecord {
 **车桩通信能力**
 
 - EV profile 新增可选的 `communication: basic | dc | iso15118`。`basic` 不报 SoC，`dc` 和 `iso15118` 报。不设置时保持现有行为：配置了 SoC measurand 就报 SoC，现有 persona 和场景不变（R-EV-2）。
+- 已实现（T81）：EV profile 的 `communication`（persona、API 和场景里的内联 profile 都可用），由 `evProfileProblems` 检查；`reportsSoc` 决定电表是否采样 SoC。
 - `departureMinutes`（可选）给 `iso15118` 车一个离开时间，从插枪起算。
 - 2.0.1 的桩接 `iso15118` 车时，每次会话在插着枪、交易得到授权后，立即发一次 NotifyEVChargingNeeds（R-EV-3）。EVSE 的连接器类型是直流（cCCS1、cCCS2、cG105、cChaoJi）时用 DC 参数，否则用 AC 参数：capacityKWh → evEnergyCapacity，targetSoc → fullSoC，taperSoc → bulkSoC，maxPowerW → evMaxPower，energyAmount 由 SoC 和容量算出，evMaxCurrent 和 evMaxVoltage 由功率和相数算出，requestedEnergyTransfer 由相数决定（AC_single_phase、AC_three_phase 或 DC）。
 

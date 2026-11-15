@@ -1116,6 +1116,7 @@ The reference tariff is a 2.1 TariffType without conditions, so the same JSON ca
 **EV communication**
 
 - EV profiles get `communication: basic | dc | iso15118`, optional. `basic` reports no SoC, `dc` and `iso15118` do. Without it the behaviour stays as it is: an EV reports SoC when the SoC measurand is configured, so existing personas and scenarios do not change (R-EV-2).
+- Implemented (T81): `communication` on EV profiles (personas, inline profiles in the API and scenarios), checked by `evProfileProblems`; `reportsSoc` decides whether the meter samples SoC.
 - `departureMinutes` (optional) gives an `iso15118` EV a departure time, counted from plugging in.
 - A 2.0.1 station with an `iso15118` EV sends NotifyEVChargingNeeds once per session, right after the transaction is authorized with the cable in (R-EV-3). DC parameters when the EVSE's connector type is a DC one (cCCS1, cCCS2, cG105, cChaoJi), AC otherwise: capacityKWh → evEnergyCapacity, targetSoc → fullSoC, taperSoc → bulkSoC, maxPowerW → evMaxPower, energyAmount from the SoC and capacity, evMaxCurrent and evMaxVoltage from the power and phases, and requestedEnergyTransfer from the phases (AC_single_phase, AC_three_phase or DC).
 

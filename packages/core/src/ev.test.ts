@@ -6,6 +6,7 @@ import {
   evPowerW,
   evProfileProblems,
   msUntilFull,
+  reportsSoc,
   TAPER_FLOOR,
   type EvProfile,
 } from './ev.js';
@@ -128,6 +129,16 @@ describe('EV model', () => {
       'taperSoc must be between 0 and targetSoc',
     ]);
     expect(() => createEv({ ...SMALL, capacityKWh: 0 })).toThrow(RangeError);
+    expect(evProfileProblems({ ...SMALL, communication: 'wifi' as 'dc' })).toEqual([
+      'communication must be one of basic, dc, iso15118',
+    ]);
+  });
+
+  it('tells whether the station learns the SoC from the EV communication', () => {
+    expect(reportsSoc(SMALL)).toBe(true);
+    expect(reportsSoc({ ...SMALL, communication: 'basic' })).toBe(false);
+    expect(reportsSoc({ ...SMALL, communication: 'dc' })).toBe(true);
+    expect(reportsSoc({ ...SMALL, communication: 'iso15118' })).toBe(true);
   });
 
   it('reports currents per phase for a three-phase EV', () => {

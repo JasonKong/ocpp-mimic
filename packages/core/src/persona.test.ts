@@ -158,6 +158,12 @@ describe('resolvePersonas', () => {
     expect(resolveOne({ ...BASE, evs: { broken: { ...ev, initialSoc: 150 } } }).errors).toEqual([
       'test.yaml: $.evs.broken: initialSoc must be between 0 and 100',
     ]);
+    expect(resolveOne({ ...BASE, evs: { pwm: { ...ev, communication: 'basic' } } }).errors).toEqual(
+      [],
+    );
+    expect(
+      resolveOne({ ...BASE, evs: { broken: { ...ev, communication: 'wifi' } } }).errors[0],
+    ).toMatch(/^test\.yaml: \$\.evs\.broken\.communication: /);
     expect(resolveOne({ ...BASE, evs: { broken: { capacityKWh: 40 } } }).errors[0]).toMatch(
       /^test\.yaml: \$\.evs\.broken\.initialSoc: /,
     );

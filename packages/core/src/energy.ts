@@ -13,6 +13,7 @@ import {
   createEv,
   evPowerW as evDrawW,
   msUntilFull,
+  reportsSoc,
   type EvProfile,
   type EvState,
 } from './ev.js';
@@ -159,7 +160,11 @@ export function createEnergy(options: EnergyOptions): Energy {
     sync,
     extras(connectorId) {
       const ev = evs.get(connectorId);
-      return ev === undefined ? {} : { socPercent: ev.state.soc, phases: ev.state.profile.phases };
+      if (ev === undefined) return {};
+      // An EV that only has the PWM signal never tells the station its SoC.
+      return reportsSoc(ev.state.profile)
+        ? { socPercent: ev.state.soc, phases: ev.state.profile.phases }
+        : { phases: ev.state.profile.phases };
     },
     conversion: (connectorId) => ({
       voltageV: meters.get(connectorId)?.voltageV ?? 230,

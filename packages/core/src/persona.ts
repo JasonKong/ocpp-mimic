@@ -97,7 +97,11 @@ const commonFields = {
   evs: record(
     object(
       { capacityKWh: number(), initialSoc: number(), maxPowerW: number(), phases: integer() },
-      { taperSoc: number(), targetSoc: number() },
+      {
+        taperSoc: number(),
+        targetSoc: number(),
+        communication: oneOf(['basic', 'dc', 'iso15118']),
+      },
     ),
   ),
   usage: UsageSchema,
