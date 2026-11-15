@@ -5,12 +5,17 @@ import {
   connectEvents,
   type DeviceModelEntry,
   type EventsConnection,
+  type FrameRecord,
   type NewStation,
   type PersonaInfo,
   type RecordEntry,
+  type SessionDetail,
+  type SessionSummary,
   type StationSnapshot,
   type StationSummary,
 } from './api.js';
+import { formatRoute, parseRoute } from './sessions.js';
+import SessionsView from './components/SessionsView.vue';
 import DeviceModelBrowser from './components/DeviceModelBrowser.vue';
 import FleetOverview from './components/FleetOverview.vue';
 import MessageLog from './components/MessageLog.vue';
@@ -30,6 +35,127 @@ const error = ref<string | undefined>();
 const live = ref(false);
 const MAX_RECORDS = 1000;
 let events: EventsConnection | undefined;
+
+/** The selected station's tab, its sessions and the open one (#/stations/<id>/sessions/<n>). */
+const tab = ref<'station' | 'sessions'>('station');
+const sessions = ref<SessionSummary[]>([]);
+const sessionN = ref<number | undefined>();
+const sessionDetail = ref<SessionDetail | undefined>();
+const sessionFrames = ref<FrameRecord[] | undefined>();
+const showTruth = ref(false);
+const now = ref(Date.now());
+let clock: ReturnType<typeof setInterval> | undefined;
+/** A newer change of the open session came while its detail was loading. */
+let detailLoading = false;
+let detailStale = false;
+
+function syncRoute() {
+  const id = selectedId.value;
+  if (id === undefined) return;
+  const hash = formatRoute({
+    stationId: id,
+    sessions: tab.value === 'sessions',
+    ...(tab.value === 'sessions' && sessionN.value !== undefined && { n: sessionN.value }),
+  });
+  if (location.hash !== hash) history.replaceState(null, '', hash);
+}
+
+async function loadSessions(id: string) {
+  await guard(async () => {
+    const list = (await api.sessions(id)).sessions;
+    if (selectedId.value !== id) return;
+    sessions.value = list;
+    if (sessionN.value === undefined && list[0] !== undefined) await openSession(list[0].n);
+  });
+}
+
+async function loadDetail() {
+  const id = selectedId.value;
+  const n = sessionN.value;
+  if (id === undefined || n === undefined) return;
+  if (detailLoading) {
+    detailStale = true;
+    return;
+  }
+  detailLoading = true;
+  try {
+    await guard(async () => {
+      const detail = await api.session(id, n);
+      if (selectedId.value === id && sessionN.value === n) sessionDetail.value = detail;
+    });
+  } finally {
+    detailLoading = false;
+  }
+  if (detailStale) {
+    detailStale = false;
+    await loadDetail();
+  }
+}
+
+async function openSession(n: number) {
+  sessionN.value = n;
+  sessionDetail.value = undefined;
+  sessionFrames.value = undefined;
+  syncRoute();
+  await loadDetail();
+}
+
+async function loadSessionFrames() {
+  const id = selectedId.value;
+  const n = sessionN.value;
+  if (id === undefined || n === undefined) return;
+  await guard(async () => {
+    const { frames } = await api.sessionFrames(id, n);
+    if (selectedId.value === id && sessionN.value === n) sessionFrames.value = frames;
+  });
+}
+
+async function openTab(next: 'station' | 'sessions') {
+  tab.value = next;
+  syncRoute();
+  if (next === 'sessions' && selectedId.value !== undefined) await loadSessions(selectedId.value);
+}
+
+/** A session changed on the engine: the list follows, and the open one reloads. */
+function sessionChanged(summary: SessionSummary) {
+  if (summary.stationId !== selectedId.value) return;
+  const index = sessions.value.findIndex((s) => s.n === summary.n);
+  if (index >= 0) sessions.value.splice(index, 1, summary);
+  else sessions.value = [summary, ...sessions.value].sort((a, b) => b.n - a.n);
+  if (summary.n === sessionN.value) {
+    sessionFrames.value = undefined;
+    void loadDetail();
+  } else if (sessionN.value === undefined && tab.value === 'sessions') {
+    void openSession(summary.n);
+  }
+}
+
+async function remoteStart(request: { idToken: string; type?: string; evseId?: number }) {
+  const id = selectedId.value;
+  if (id === undefined) return;
+  await guard(async () => {
+    const answer = await api.remoteStart(
+      id,
+      { idToken: request.idToken, ...(request.type !== undefined && { type: request.type }) },
+      request.evseId,
+    );
+    if (answer.status !== 'Accepted') error.value = `${answer.action}: ${answer.status}`;
+  });
+}
+
+/** Opens what the address names, when it names a known station. */
+async function applyRoute() {
+  const route = parseRoute(location.hash);
+  if (route === undefined) return;
+  // The tab first, so selecting the station keeps the address and loads its sessions.
+  tab.value = route.sessions ? 'sessions' : 'station';
+  if (route.stationId !== selectedId.value) await select(route.stationId);
+  else if (route.sessions) await loadSessions(route.stationId);
+  if (route.sessions && route.n !== undefined && route.n !== sessionN.value) {
+    await openSession(route.n);
+  }
+  syncRoute();
+}
 
 const stationList = computed(() =>
   [...summaries.values()].sort((a, b) => a.id.localeCompare(b.id)),
@@ -53,6 +179,13 @@ async function guard(work: () => Promise<unknown>) {
 async function select(id: string) {
   selectedId.value = id;
   selected.value = undefined;
+  sessions.value = [];
+  sessionN.value = undefined;
+  sessionDetail.value = undefined;
+  sessionFrames.value = undefined;
+  syncRoute();
+  // A session the address names is opened by applyRoute; it wins over the newest one.
+  if (tab.value === 'sessions') void loadSessions(id);
   // Only the selected station's records and snapshots come over the socket.
   events?.subscribe([id]);
   records.clear();
@@ -171,10 +304,14 @@ onMounted(async () => {
         for (const summary of event.stations) summaries.set(summary.id, summary);
         for (const id of event.removed) summaries.delete(id);
         if (selectedId.value === undefined && stationList.value[0] !== undefined) {
-          void select(stationList.value[0].id);
+          const route = parseRoute(location.hash);
+          if (route !== undefined && summaries.has(route.stationId)) void applyRoute();
+          else void select(stationList.value[0].id);
         }
       } else if (event.type === 'station') {
         if (event.station.id === selectedId.value) selected.value = event.station;
+      } else if (event.type === 'session') {
+        sessionChanged(event.session);
       } else {
         addRecord(event.entry);
       }
@@ -184,9 +321,15 @@ onMounted(async () => {
   await guard(async () => {
     personas.value = (await api.personas()).personas;
   });
+  clock = setInterval(() => (now.value = Date.now()), 1000);
+  window.addEventListener('hashchange', applyRoute);
 });
 
-onUnmounted(() => events?.close());
+onUnmounted(() => {
+  events?.close();
+  clearInterval(clock);
+  window.removeEventListener('hashchange', applyRoute);
+});
 </script>
 
 <template>
@@ -209,16 +352,49 @@ onUnmounted(() => events?.close());
       <div class="content">
         <FleetOverview :stations="stationList" />
         <template v-if="selected">
-          <StationDetail :station="selected" :persona="selectedPersona" @action="act" />
-          <template v-if="selected.ocpp === '2.0.1'">
-            <TransactionEvents :entries="selectedRecords" />
-            <DeviceModelBrowser
-              :variables="deviceModel"
-              @refresh="selectedId && loadDeviceModel(selectedId)"
-              @set="setVariable"
-            />
+          <nav class="tabs" role="tablist">
+            <button
+              role="tab"
+              :aria-selected="tab === 'station'"
+              :class="{ on: tab === 'station' }"
+              @click="openTab('station')"
+            >
+              Station
+            </button>
+            <button
+              role="tab"
+              :aria-selected="tab === 'sessions'"
+              :class="{ on: tab === 'sessions' }"
+              @click="openTab('sessions')"
+            >
+              Sessions
+            </button>
+          </nav>
+          <template v-if="tab === 'station'">
+            <StationDetail :station="selected" :persona="selectedPersona" @action="act" />
+            <template v-if="selected.ocpp === '2.0.1'">
+              <TransactionEvents :entries="selectedRecords" />
+              <DeviceModelBrowser
+                :variables="deviceModel"
+                @refresh="selectedId && loadDeviceModel(selectedId)"
+                @set="setVariable"
+              />
+            </template>
+            <MessageLog :entries="selectedRecords" :station-id="selectedId" />
           </template>
-          <MessageLog :entries="selectedRecords" :station-id="selectedId" />
+          <SessionsView
+            v-else
+            v-model:show-truth="showTruth"
+            :station="selected"
+            :sessions="sessions"
+            :detail="sessionDetail"
+            :selected-n="sessionN"
+            :frames="sessionFrames"
+            :now="now"
+            @select="openSession"
+            @load-frames="loadSessionFrames"
+            @remote-start="remoteStart"
+          />
         </template>
         <p v-else class="placeholder">Add a charge point, or pick one on the left.</p>
       </div>
@@ -261,6 +437,23 @@ main {
 }
 .placeholder {
   color: var(--muted);
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.tabs button {
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  padding: 6px 12px;
+  margin-bottom: -1px;
+}
+.tabs button.on {
+  border-bottom-color: var(--accent);
+  font-weight: 600;
 }
 .error {
   background: var(--bad-bg);
