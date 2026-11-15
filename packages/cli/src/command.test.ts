@@ -44,6 +44,10 @@ describe('parseCommand', () => {
       allowCsms: ['wss://csms.example.com'],
     });
     expect(parseCommand(['serve', '--record-limit', '0'])).toMatchObject({ recordLimit: 0 });
+    expect(parseCommand(['serve', '--sessions-per-station', '5'])).toMatchObject({
+      sessionsPerStation: 5,
+    });
+    expect(parseCommand(['serve', '--sessions-per-station', '0'])).toMatchObject({ kind: 'error' });
     expect(
       parseCommand([
         'serve',

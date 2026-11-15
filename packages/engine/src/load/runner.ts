@@ -122,6 +122,8 @@ export async function runLoadPlan(options: LoadRunOptions): Promise<LoadReport> 
     engine = createEngine({
       port: options.port ?? 0,
       recordLimit: options.recordLimit ?? 10,
+      // A load run keeps no store, so no sessions either.
+      sessions: false,
       ...(options.otlp !== undefined && {
         otlp: options.otlp,
         runId: `${plan.name} ${new Date().toISOString()}`,

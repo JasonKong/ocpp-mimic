@@ -10,6 +10,8 @@ export interface ServeCommand {
   store?: string;
   /** Records kept per station (default 1000). */
   recordLimit?: number;
+  /** Charging sessions kept per station (default 20). */
+  sessionsPerStation?: number;
   /** Push metrics over OTLP/HTTP here. */
   otlpEndpoint?: string;
   otlpHeaders?: Record<string, string>;
@@ -154,6 +156,9 @@ Options for serve:
                          (default: nothing is kept)
   --record-limit <n>     Messages and log lines kept per station for the
                          Web UI and API (default 1000; 0 keeps none)
+  --sessions-per-station <n>
+                         Charging sessions kept per station, with their
+                         frames (default 20)
   --otlp-endpoint <url>  Push metrics to an OpenTelemetry collector over
                          OTLP/HTTP (default: OTEL_EXPORTER_OTLP_ENDPOINT)
   --otlp-header <k=v>    Header for the OTLP export; repeat for more
@@ -259,6 +264,7 @@ const OPTIONS = {
   compare: { type: 'string' },
   write: { type: 'string' },
   'record-limit': { type: 'string' },
+  'sessions-per-station': { type: 'string' },
   'otlp-endpoint': { type: 'string' },
   'otlp-header': { type: 'string', multiple: true },
   map: { type: 'string' },
@@ -282,6 +288,7 @@ const COMMANDS = {
     'host',
     'store',
     'record-limit',
+    'sessions-per-station',
     'otlp-endpoint',
     'otlp-header',
     'personas',
@@ -378,12 +385,22 @@ export function parseCommand(argv: readonly string[]): Command {
     if (recordLimit !== undefined && !(Number.isInteger(recordLimit) && recordLimit >= 0)) {
       return error(`--record-limit needs a whole number, got ${values['record-limit']}`);
     }
+    const perStation =
+      values['sessions-per-station'] === undefined
+        ? undefined
+        : Number(values['sessions-per-station']);
+    if (perStation !== undefined && !(Number.isInteger(perStation) && perStation >= 1)) {
+      return error(
+        `--sessions-per-station needs a whole number from 1, got ${values['sessions-per-station']}`,
+      );
+    }
     return {
       kind: 'serve',
       port,
       host: values.host ?? '127.0.0.1',
       ...(values.store !== undefined && { store: values.store }),
       ...(recordLimit !== undefined && { recordLimit }),
+      ...(perStation !== undefined && { sessionsPerStation: perStation }),
       ...otlpOptions(values),
       personas: values.personas ?? [],
       allowCsms: values['allow-csms'] ?? [],

@@ -249,6 +249,8 @@ export async function runBench(
       personaDirs: options.personaDirs,
       ...(options.store !== undefined && { storePath: options.store }),
       ...(options.recordLimit !== undefined && { recordLimit: options.recordLimit }),
+      // Sessions are tracked when there is a store to keep them, so --store measures their cost.
+      sessions: options.store !== undefined,
     });
     await engine.start();
     const fleet = engine.fleet;
