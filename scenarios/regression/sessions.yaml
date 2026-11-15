@@ -1,0 +1,120 @@
+# Charging sessions through the engine's API (T91), against the built-in CSMS:
+# the start source, idTag / idToken, remoteStartId, start timeline and stop of
+# local, remote, rejected and no-authorization starts, for 1.6 and 2.0.1.
+# `{{engineUrl}}` is the engine the scenario runs on.
+name: A card starts a 1.6 session; the session records its source, timeline and stop
+station: { id: REG-SESS-CARD, persona: regression-1.6 }
+steps:
+  - presentCard: { idTag: TAG-SESS-1, result: authorized }
+  - plugIn: {}
+  - expect: { sent: StartTransaction }
+  - http:
+      url: '{{engineUrl}}/api/stations/REG-SESS-CARD/sessions/1'
+      within: 5s
+      expect:
+        json:
+          session:
+            state: running
+            source: local
+            evseId: 1
+            idToken: { idToken: TAG-SESS-1 }
+            timeline: { $contains: { action: StartTransaction, messageType: 3, status: Accepted } }
+  - presentCard: { idTag: TAG-SESS-1, result: stopping }
+  - expect: { sent: StopTransaction }
+  - http:
+      url: '{{engineUrl}}/api/stations/REG-SESS-CARD/sessions'
+      within: 5s
+      expect:
+        json:
+          sessions:
+            [
+              {
+                n: 1,
+                state: finished,
+                source: local,
+                energyWh: { $gte: 0 },
+                endedAt: { $exists: true },
+              },
+            ]
+---
+name: A remote start from the engine API, sent by the built-in CSMS, becomes a remote 1.6 session
+station: { id: REG-SESS-REMOTE, persona: regression-1.6 }
+steps:
+  # The engine checks the station's CSMS when the connection opens; it may still be at it.
+  - http:
+      method: POST
+      url: '{{engineUrl}}/api/stations/REG-SESS-REMOTE/remote-start'
+      json: { idToken: { idToken: APP-USER-1 }, evseId: 1 }
+      within: 5s
+      expect: { json: { action: RemoteStartTransaction, status: Accepted } }
+  - expect: { received: RemoteStartTransaction, payload: { idTag: APP-USER-1, connectorId: 1 } }
+  - plugIn: {}
+  - expect: { sent: StartTransaction, payload: { idTag: APP-USER-1 } }
+  - http:
+      url: '{{engineUrl}}/api/stations/REG-SESS-REMOTE/sessions/1'
+      within: 5s
+      expect:
+        json:
+          session:
+            state: running
+            source: remote
+            idToken: { idToken: APP-USER-1 }
+            timeline:
+              $contains: { action: RemoteStartTransaction, messageType: 2, direction: csms-to-cp }
+---
+name: A 1.6 remote start the station rejects is a session that never started
+station: { id: REG-SESS-REJECT, persona: regression-1.6 }
+steps:
+  - csmsCall:
+      action: RemoteStartTransaction
+      payload: { idTag: APP-USER-2, connectorId: 9 }
+      answer: { status: Rejected }
+  - http:
+      url: '{{engineUrl}}/api/stations/REG-SESS-REJECT/sessions/1'
+      within: 5s
+      expect:
+        json:
+          session: { state: not-started, source: remote, failure: { reason: Rejected } }
+---
+name: A RequestStartTransaction becomes a remote 2.0.1 session with its remoteStartId
+station: { id: REG-SESS-201, persona: regression-2.0.1 }
+steps:
+  - csmsCall:
+      action: RequestStartTransaction
+      payload: { idToken: { idToken: APP-USER-3, type: Central }, remoteStartId: 77, evseId: 1 }
+      answer: { status: Accepted }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started } }
+  - http:
+      url: '{{engineUrl}}/api/stations/REG-SESS-201/sessions/1'
+      within: 5s
+      expect:
+        json:
+          session:
+            state: running
+            source: remote
+            remoteStartId: 77
+            idToken: { idToken: APP-USER-3, type: Central }
+            transactionId: { $exists: true }
+  - csmsCall:
+      action: RequestStartTransaction
+      payload: { idToken: { idToken: APP-USER-4, type: Central }, remoteStartId: 78, evseId: 9 }
+      answer: { status: Rejected }
+  - http:
+      url: '{{engineUrl}}/api/stations/REG-SESS-201/sessions/2'
+      within: 5s
+      expect:
+        json:
+          session: { state: not-started, remoteStartId: 78, failure: { reason: Rejected } }
+---
+name: A NoAuthorization token starts a 2.0.1 session with no authorization
+station: { id: REG-SESS-FREE, persona: regression-2.0.1 }
+steps:
+  - presentCard: { idToken: FREE, type: NoAuthorization, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started } }
+  - http:
+      url: '{{engineUrl}}/api/stations/REG-SESS-FREE/sessions/1'
+      within: 5s
+      expect:
+        json: { session: { source: noAuth, idToken: { type: NoAuthorization } } }

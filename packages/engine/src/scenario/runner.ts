@@ -228,9 +228,11 @@ export async function runScenario(
     engine.recorder.subscribe((entry) => {
       if (entry.kind === 'frame') log.push(entry);
     });
-    await engine.start();
+    const { url: engineUrl } = await engine.start();
     const fleet = engine.fleet;
     if (fleet === undefined) throw new Error('the engine did not start');
+    // The engine's own API (sessions, tariff, remote starts), unless the scenario defines its own.
+    if (!Object.hasOwn(vars, 'engineUrl')) vars.engineUrl = engineUrl;
     // Actions are checked against each station's OCPP version, known from its persona.
     const versions = scenarioVersionProblems(
       scenario,
@@ -539,7 +541,21 @@ export async function runScenario(
       }
     };
 
+    /** An http step, repeated every 250 ms until it matches when it has `within`. */
     async function httpStep(step: Extract<ScenarioStep, { kind: 'http' }>): Promise<void> {
+      const deadline = Date.now() + Math.min(step.withinMs ?? 0, Math.max(0, timeLeft()));
+      for (;;) {
+        try {
+          await httpOnce(step);
+          return;
+        } catch (error) {
+          if (!(error instanceof StepFailure) || Date.now() >= deadline || aborted) throw error;
+          await sleepUnlessAborted(250);
+        }
+      }
+    }
+
+    async function httpOnce(step: Extract<ScenarioStep, { kind: 'http' }>): Promise<void> {
       const headers: Record<string, string> = {
         ...(step.json !== undefined && { 'content-type': 'application/json' }),
         ...(step.basicAuth !== undefined && {

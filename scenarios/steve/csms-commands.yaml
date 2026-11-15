@@ -28,6 +28,19 @@ steps:
       json: { chargeBoxIdList: [REG-STEVE-REMOTE], transactionId: '{{tx}}' }
       expect: { json: { successResponses: [{ response: Accepted }] } }
   - expect: { sent: StopTransaction, payload: { transactionId: '{{tx}}', reason: Remote } }
+  # The engine recorded it as a remote session, from SteVe's RemoteStartTransaction to the stop (T91).
+  - http:
+      url: '{{engineUrl}}/api/stations/REG-STEVE-REMOTE/sessions/1'
+      within: 5s
+      expect:
+        json:
+          session:
+            state: finished
+            source: remote
+            idToken: { idToken: TAG-REG }
+            transactionId: '{{tx}}'
+            stopReason: Remote
+            timeline: { $contains: { action: RemoteStartTransaction, direction: csms-to-cp } }
 ---
 name: SteVe triggers messages
 csms: ws://localhost:8180/steve/websocket/CentralSystemService

@@ -207,6 +207,8 @@ export type ScenarioStep =
       basicAuth?: { user: string; password: string };
       json?: JsonValue;
       expect?: { status?: number; json?: JsonValue };
+      /** Repeat the request until it matches `expect`, for at most this long. */
+      withinMs?: number;
       save?: SaveMap;
     });
 
@@ -484,6 +486,7 @@ const ARGUMENTS = {
       basicAuth: object({ user: nonEmpty, password: string() }),
       json: anyJson,
       expect: object({}, { status: integer({ minimum: 100 }), json: anyJson }),
+      within: durationSchema,
       save: saveSchema,
     },
   ),
@@ -868,6 +871,7 @@ function parseStep(
         method: (args.method as HttpMethod | undefined) ?? 'GET',
         url: args.url as string,
         ...pick(args, ['headers', 'basicAuth', 'json', 'expect', 'save'] as const),
+        ...(args.within !== undefined && { withinMs: durationMs(args.within, 0) }),
       } as ScenarioStep;
     }
   }
@@ -1055,7 +1059,7 @@ export function parseScenario(document: unknown, label?: string): ScenarioResult
 }
 
 /** Variables every scenario has: `csmsUrl` is the address its stations connect to. */
-export const BUILTIN_VARIABLES: readonly string[] = ['csmsUrl'];
+export const BUILTIN_VARIABLES: readonly string[] = ['csmsUrl', 'engineUrl'];
 
 /**
  * Template names a scenario uses before they are defined. `provided` are the
