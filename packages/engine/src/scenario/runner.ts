@@ -13,6 +13,7 @@ import {
   parseLog,
   readPath,
   renderTemplates,
+  scenarioVersionProblems,
   stepLabel,
   TemplateError,
   variableProblems,
@@ -230,6 +231,14 @@ export async function runScenario(
     await engine.start();
     const fleet = engine.fleet;
     if (fleet === undefined) throw new Error('the engine did not start');
+    // Actions are checked against each station's OCPP version, known from its persona.
+    const versions = scenarioVersionProblems(
+      scenario,
+      (stationId) =>
+        engine?.personas?.get(scenario.stations.find((s) => s.id === stationId)?.persona ?? '')
+          ?.ocpp ?? '1.6',
+    );
+    if (versions.length > 0) return result('error', versions.join('\n'));
     const csmsUrl = csms?.url ?? csmsTarget;
     for (const definition of scenario.stations) {
       const station = fleet.add({
@@ -239,6 +248,7 @@ export async function runScenario(
         ...(definition.password !== undefined && { password: definition.password }),
         ...(definition.security !== undefined && { security: definition.security }),
         ...(definition.config !== undefined && { config: definition.config }),
+        ...(definition.deviceModel !== undefined && { deviceModel: definition.deviceModel }),
         ...(definition.usage !== undefined && { usage: definition.usage }),
         ...(definition.seed !== undefined && { seed: definition.seed }),
         ...(definition.replay === true && { replay: true }),
@@ -339,7 +349,11 @@ export async function runScenario(
           const target = station!;
           connectorOf(target, step.connector);
           return refusal(async () => {
-            const outcome = await target.chargePoint.presentIdTag(step.connector, step.idTag);
+            const outcome = await target.chargePoint.presentIdTag(
+              step.connector,
+              step.idTag,
+              step.type,
+            );
             if (step.result !== undefined && outcome !== step.result) {
               throw new StepFailure(`the card was ${outcome}, expected ${step.result}`);
             }

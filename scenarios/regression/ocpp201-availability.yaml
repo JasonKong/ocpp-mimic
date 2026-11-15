@@ -1,0 +1,50 @@
+# OCPP 2.0.1 availability (functional block G) against the built-in CSMS.
+name: TC_G_01_CS Connector status, Available to Occupied and back
+station: { id: REG201-STATUS, persona: regression-2.0.1 }
+steps:
+  - plugIn: { evse: 2 }
+  - expect: { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Occupied } }
+  - expectConnector: { connector: 2, evseId: 2, status: Occupied }
+  - unplug: { evse: 2 }
+  - expect: { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Available } }
+---
+name: TC_G_03_CS and TC_G_04_CS Change availability of an EVSE
+station: { id: REG201-EVSE, persona: regression-2.0.1 }
+steps:
+  - csmsCall:
+      action: ChangeAvailability
+      payload: { operationalStatus: Inoperative, evse: { id: 1 } }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Unavailable } }
+  - expectNo: { sent: StatusNotification, payload: { evseId: 2 }, within: 1s }
+  - csmsCall:
+      action: ChangeAvailability
+      payload: { operationalStatus: Operative, evse: { id: 1 } }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Available } }
+  - csmsCall:
+      action: ChangeAvailability
+      payload: { operationalStatus: Operative, evse: { id: 9 } }
+      answer: { status: Rejected }
+---
+name: TC_G_05_CS Change availability of the charging station
+station: { id: REG201-STATION, persona: regression-2.0.1 }
+steps:
+  - csmsCall:
+      action: ChangeAvailability
+      payload: { operationalStatus: Inoperative }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Unavailable } }
+  - expect: { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Unavailable } }
+  - expectConnector: { connector: 2, status: Unavailable }
+---
+name: TC_G_07_CS Change availability of a connector
+station: { id: REG201-CONNECTOR, persona: regression-2.0.1 }
+steps:
+  - csmsCall:
+      action: ChangeAvailability
+      payload: { operationalStatus: Inoperative, evse: { id: 2, connectorId: 1 } }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Unavailable } }
+  - fault: { evse: 1, errorCode: GroundFailure }
+  - expect: { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Faulted } }

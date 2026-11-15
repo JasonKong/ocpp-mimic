@@ -253,7 +253,7 @@ steps:
 | `name` | 是 | 用例名 |
 | `description` | 否 | 说明，显示在报告里 |
 | `csms` | 否 | `builtin`（默认）或 CSMS 的 WebSocket 地址；和普通桩一样，地址后面会接上桩 id。命令行的 `--csms` 优先 |
-| `station` 或 `stations` | 是 | 一个桩或一组桩。字段：`id`、`persona`，可选 `password`（初始的 `AuthorizationKey`）、`config`（覆盖配置键）、`behaviour`（测试开关）、`energyMultiplier`、`security`（`profile` 和 PEM 文件 `ca`、`cert`、`key`、`manufacturerRoot`，路径相对场景文件；`test-pki:<文件>` 指仓库里的测试 PKI）、`waitForBoot` |
+| `station` 或 `stations` | 是 | 一个桩或一组桩。字段：`id`、`persona`，可选 `password`（初始的 `AuthorizationKey`）、`config`（覆盖配置键；1.6）、`deviceModel`（Device Model 的值，组件 → 变量 → 值；2.0.1）、`behaviour`（测试开关）、`energyMultiplier`、`security`（`profile` 和 PEM 文件 `ca`、`cert`、`key`、`manufacturerRoot`，路径相对场景文件；`test-pki:<文件>` 指仓库里的测试 PKI）、`waitForBoot` |
 | `vars` | 否 | 模板变量的默认值 |
 | `timeout` | 否 | 整个场景的时限，默认 5 分钟 |
 | `checkSchemas` | 否 | 默认 `true`：只要有一帧不符合 OCA 官方 schema，场景就失败 |
@@ -263,7 +263,7 @@ steps:
 
 **步骤**
 
-每个步骤是一个只有一个步骤键的 map，值是步骤参数。作用于桩的步骤接受 `station`（桩 id，默认第一个桩），作用于连接器的步骤接受 `connector`（默认 1）。任何步骤都可以在步骤键旁边写 `name`（`- name: 刷卡` 下一行写 `presentCard: ...`），报告里用它代替自动生成的标签。没有参数的步骤可以写成 `online:` 或 `online: {}`。
+每个步骤是一个只有一个步骤键的 map，值是步骤参数。作用于桩的步骤接受 `station`（桩 id，默认第一个桩），作用于连接器的步骤接受 `connector`（默认 1），2.0.1 桩上也可以写 `evse`：EVSE `n` 只有一个连接器，即连接器 `n`。任何步骤都可以在步骤键旁边写 `name`（`- name: 刷卡` 下一行写 `presentCard: ...`），报告里用它代替自动生成的标签。没有参数的步骤可以写成 `online:` 或 `online: {}`。
 
 桩侧动作，和 API 提供的操作一致：
 
@@ -271,7 +271,7 @@ steps:
 | --- | --- | --- |
 | `plugIn` | `connector`、`ev` | 插枪；`ev` 指定 EV 配置 |
 | `unplug` | `connector` | 拔枪 |
-| `presentCard` | `connector`、`idTag`、`result` | 在连接器上刷卡；`result` 可断言 `authorized`、`rejected`、`stopping` 或 `busy` |
+| `presentCard` | `connector`、`idTag`（或 `idToken`）、`type`、`result` | 在连接器上刷卡；`result` 可断言 `authorized`、`rejected`、`stopping` 或 `busy`。2.0.1 桩上卡是一个 `type` 类型的 IdToken（默认 ISO14443） |
 | `evSuspend`、`evResume` | `connector` | EV 暂停或恢复 |
 | `fault` | `connector`（0 表示整桩）、`errorCode`、`info`、`vendorErrorCode` | 触发故障 |
 | `clearFault` | `connector` | 清除故障 |
@@ -922,6 +922,7 @@ faults:
 
 - 两种子协议都接受，对 `ocpp2.0.1` 连接运行 2.0.1 会话：回答 BootNotification（Accepted 加心跳间隔）、Heartbeat、StatusNotification、Authorize 和 TransactionEvent（idTokenInfo 为 Accepted，未知前缀为 Invalid）、MeterValues、NotifyReport、NotifyEvent、SecurityEventNotification、各种状态通知、SignCertificate（用测试 CA 签名）、ReportChargingProfiles、ReservationStatusUpdate 和 NotifyCustomerInformation。
 - `csmsCall` 和 `csmsReply` 支持 2.0.1 action，按桩的消息集校验，合规报告检查 2.0.1 的回答。
+- 已实现（T63）：场景文件接受两种版本的 action 名和错误码，运行器在开始前按每个桩的 persona 版本检查每个 `expect`、`expectNo`、`csmsCall` 和 `csmsReply`；不匹配是场景错误，并指出是哪一步。场景里的桩接受 `deviceModel`（组件 → 变量 → 值），就像 1.6 的 `config`；`presentCard` 接受 `idToken`（`idTag` 的别名）和 `type`；连接器步骤接受 `evse`。`scenarios/personas/` 里有 `regression-2.0.1`（两个 EVSE、短的停机时间）；`scenarios/regression/ocpp201-provisioning.yaml` 和 `ocpp201-availability.yaml` 覆盖启动（Accepted、Pending）、GetVariables、SetVariables、基础报告和自定义报告、连接器状态，以及针对 EVSE、整桩和连接器的 ChangeAvailability；CI 把它们和其他回归场景一起运行。
 - 已实现（T61）：CSMS 选择桩提供的、它会说的第一个子协议，所以 `connection.ocpp` 是 `1.6` 或 `2.0.1`，并按该版本的默认值回答；自定义的 `handlers` 对两种版本都生效。2.0.1 桩发来 CSMS 认识但没有处理器的 action 时回 NotSupported，不认识的回 NotImplemented（1.6 两种情况都仍回 NotImplemented）。SignCertificate 之后的 CertificateSigned 带上请求里写的 `certificateType`。和 1.6 一样，CSMS 不校验 `csmsCall` 和 `csmsReply` 的负载：桩的 RPC 层校验它收到的内容，记录器按桩的版本用 schema 检查每一帧。
 
 **场景**
