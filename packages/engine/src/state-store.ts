@@ -3,7 +3,7 @@
  * (configuration, meters, authorization cache, running transactions, queued
  * messages) in SQLite, through Node's built-in node:sqlite.
  */
-import type { PersistedChargePoint, UsageOverride } from '@ocpp-mimic/core';
+import type { PersistedStation, UsageOverride } from '@ocpp-mimic/core';
 
 /**
  * node:sqlite, loaded on first use: it is still experimental and prints a
@@ -66,10 +66,10 @@ export interface StateStore {
   deleteStation(id: string): void;
   /** Deletes many stations in one transaction. */
   deleteStations(ids: readonly string[]): void;
-  loadState(id: string): PersistedChargePoint | undefined;
-  saveState(id: string, state: PersistedChargePoint): void;
+  loadState(id: string): PersistedStation | undefined;
+  saveState(id: string, state: PersistedStation): void;
   /** Saves many stations' states in one transaction. */
-  saveStates(states: Iterable<[id: string, state: PersistedChargePoint]>): void;
+  saveStates(states: Iterable<[id: string, state: PersistedStation]>): void;
   close(): void;
 }
 
@@ -138,9 +138,7 @@ export function openStateStore(path: string): StateStore {
     },
     loadState: (id) => {
       const row = loadState.get(id);
-      return row === undefined
-        ? undefined
-        : (JSON.parse(String(row.state)) as PersistedChargePoint);
+      return row === undefined ? undefined : (JSON.parse(String(row.state)) as PersistedStation);
     },
     saveState: (id, state) => {
       upsertState.run(id, JSON.stringify(state), state.savedAt);
