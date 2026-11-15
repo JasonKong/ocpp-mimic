@@ -948,6 +948,7 @@ Implemented (T64):
 - Scenarios drive CitrineOS through its REST API with `http` steps: a local-dev token from `POST /dev/token`, saved as a variable, then `POST /ocpp/2.0.1/<module>/<action>?identifier=<station>&tenantId=1`. The answer only says the CALL was sent, so the scenario then expects the CALL at the station and checks the station's answer.
 - `.github/workflows/citrineos.yml` starts the stack, waits until the server is healthy, runs `scenarios/citrineos/`, and keeps the JUnit report and the stack's logs. It runs on pull requests that touch 2.0.1 code or these scenarios, on main, and by hand.
 - Known CitrineOS deviations are recorded in `scenarios/citrineos/README.md` with how the scenarios handle them. Nothing is reported upstream without asking first.
+- Implemented (T65): `tools/citrineos/docker-compose.yml` pins the three images by digest and lets `CITRINE_HTTP_PORT` and `CITRINE_WS_PORT` move the ports on a busy machine. The first scenarios cover cold boot (TC_B_01_CSMS), the full and summary reports (TC_B_13, 14), get and set variables (TC_B_07, 10), availability of an EVSE and of the station (TC_G_03 to 06) and a transaction without a token (TC_E_09, 14). They set `csms: ws://localhost:8081` and `vars: { CITRINE: http://localhost:8080 }`, so `--csms` and `--var` point them elsewhere. No deviation found so far.
 
 **Fleet, load, logs and the Web UI**
 

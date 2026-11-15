@@ -946,6 +946,7 @@ faults:
 - 场景用 `http` 步骤通过 CitrineOS 的 REST API 驱动它：先从 `POST /dev/token` 取得本地开发 token 存为变量，再调用 `POST /ocpp/2.0.1/<module>/<action>?identifier=<station>&tenantId=1`。这个回答只表示 CALL 已发出，所以场景随后在桩这边 expect 这个 CALL，并检查桩的回答。
 - `.github/workflows/citrineos.yml` 启动整套服务，等服务端健康后运行 `scenarios/citrineos/`，保留 JUnit 报告和各服务的日志。触及 2.0.1 代码或这些场景的 PR、main 分支和手动触发时运行。
 - 已知的 CitrineOS 偏差记在 `scenarios/citrineos/README.md`，写明场景如何处理。未经询问不向上游报告。
+- 已实现（T65）：`tools/citrineos/docker-compose.yml` 按 digest 固定三个镜像，`CITRINE_HTTP_PORT` 和 `CITRINE_WS_PORT` 可以在端口被占用的机器上换端口。第一批场景覆盖冷启动（TC_B_01_CSMS）、完整报告和摘要报告（TC_B_13、14）、读取和设置变量（TC_B_07、10）、EVSE 和整桩的可用性（TC_G_03 至 06），以及一笔不带 token 的交易（TC_E_09、14）。场景写了 `csms: ws://localhost:8081` 和 `vars: { CITRINE: http://localhost:8080 }`，用 `--csms` 和 `--var` 可以指向别处。目前没有发现偏差。
 
 **车队、压测、日志和 Web UI**
 

@@ -1,0 +1,68 @@
+name: CitrineOS
+
+# Runs the OCPP 2.0.1 scenarios against CitrineOS v2.1.0, an independent
+# open-source 2.0.1 CSMS (tools/citrineos, scenarios/citrineos): on pull
+# requests touching 2.0.1 code or these scenarios, on main, and by hand.
+on:
+  pull_request:
+    paths:
+      - 'packages/core/src/ocpp201/**'
+      - 'packages/core/src/message-set.ts'
+      - 'packages/core/src/scenario.ts'
+      - 'packages/engine/src/**'
+      - 'scenarios/citrineos/**'
+      - 'scenarios/personas/*2.0.1*'
+      - 'tools/citrineos/**'
+      - '.github/workflows/citrineos.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  citrineos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Start CitrineOS
+        run: docker compose -f tools/citrineos/docker-compose.yml up -d
+      - name: Wait until CitrineOS answers
+        run: |
+          for _ in $(seq 1 120); do
+            if curl -sf -o /dev/null http://localhost:8080/docs/; then exit 0; fi
+            sleep 5
+          done
+          docker compose -f tools/citrineos/docker-compose.yml logs --tail 100 citrine
+          exit 1
+      - name: Run the scenarios against CitrineOS
+        run: |
+          set -o pipefail
+          mkdir -p reports
+          node packages/cli/dist/main.js run scenarios/citrineos \
+            --personas scenarios/personas \
+            --junit reports/citrineos.xml | tee reports/citrineos-console.txt
+      - name: Add the results to the job summary
+        if: always()
+        run: |
+          {
+            echo '### Scenarios against CitrineOS v2.1.0'
+            echo '```'
+            cat reports/citrineos-console.txt 2>/dev/null || echo 'no output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the CitrineOS logs
+        if: always()
+        run: docker compose -f tools/citrineos/docker-compose.yml logs --no-color > reports/citrineos-stack.log 2>&1 || true
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: citrineos-reports
+          path: reports/
