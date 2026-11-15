@@ -1111,6 +1111,7 @@ The reference tariff is a 2.1 TariffType without conditions, so the same JSON ca
 ```
 
 - `packages/core/src/tariff.ts` checks a tariff (one price per part, no conditions in M6) and prices a session from its reported values only: the fixed fee once the transaction started; energy from meterStop (or the last register) minus meterStart; charging and idle minutes from the states; minCost and maxCost on the total; tax per part. Each item lists the seqs of the frames it used (R-PRICE-3).
+- Implemented (T80): `tariffProblems`, `priceSession`, `taxOn` and `deliveredWh` in `packages/core/src/tariff.ts`. Idle time is SuspendedEV plus the idle states (Finishing, EVConnected, Idle); time the station suspends (SuspendedEVSE) is not billed. Each item is rounded to cents; taxes of a higher stack also tax the lower ones; when minCost or maxCost bounds the total, its tax follows in proportion. Session records now keep the frames behind meterStartWh / meterStopWh (`meterStartSeq`, `meterStopSeq`) and each state change (`seq`), so every item names its frames. Fields a reference tariff cannot have yet (conditions, reservationTime, reservationFixed, validFrom) are refused.
 - Time-of-use conditions (R-PRICE-4) and pricing on the station itself for 2.1 (R-PRICE-5) come later.
 - The built-in CSMS can take the same tariff (`ocpp-mimic csms --tariff <file>`); it then answers 2.0.1 TransactionEvents with totalCost and sends CostUpdated every minute, so the price card can be shown without an external CSMS.
 

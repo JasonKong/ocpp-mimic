@@ -67,6 +67,7 @@ export * from './injections.js';
 export * from './transaction.js';
 export * from './charge-point.js';
 export * from './session.js';
+export * from './tariff.js';
 export * from './persona.js';
 export * from './template.js';
 export * from './match.js';
