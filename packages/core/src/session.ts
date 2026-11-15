@@ -120,9 +120,13 @@ export interface SessionRecord {
   timeline: TimelineStep[];
   samples: ReportedSample[];
   truth: TrueSample[];
-  states: { at: string; state: ChargingStateLabel }[];
+  /** Charging state changes, each with the frame that reported it. */
+  states: { at: string; state: ChargingStateLabel; seq?: number }[];
   meterStartWh?: number;
   meterStopWh?: number;
+  /** The frames meterStartWh and meterStopWh came from. */
+  meterStartSeq?: number;
+  meterStopSeq?: number;
   /** The NotifyEVChargingNeeds payload's chargingNeeds (2.0.1). */
   chargingNeeds?: Record<string, unknown>;
   costs: SessionCost[];
@@ -441,8 +445,14 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
     for (const sample of samples) {
       session.samples.push(sample);
       if (sample.energyWh !== undefined) {
-        if (sample.context === 'Transaction.Begin') session.meterStartWh ??= sample.energyWh;
-        if (sample.context === 'Transaction.End') session.meterStopWh = sample.energyWh;
+        if (sample.context === 'Transaction.Begin' && session.meterStartWh === undefined) {
+          session.meterStartWh = sample.energyWh;
+          session.meterStartSeq = sample.seq;
+        }
+        if (sample.context === 'Transaction.End') {
+          session.meterStopWh = sample.energyWh;
+          session.meterStopSeq = sample.seq;
+        }
       }
     }
     if (session.samples.length > maxSamples) {
@@ -450,10 +460,15 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
     }
   }
 
-  function addState(session: SessionRecord, at: string, value: string | undefined) {
+  function addState(
+    session: SessionRecord,
+    frame: SessionFrame,
+    at: string,
+    value: string | undefined,
+  ) {
     const state = value === undefined ? undefined : chargingStateLabel(value);
     if (state === undefined || session.states.at(-1)?.state === state) return;
-    session.states.push({ at, state });
+    session.states.push({ at, state, seq: frame.seq });
   }
 
   const openOn = (evseId: number | undefined) =>
@@ -563,7 +578,10 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
         setEvse(session, connectorId);
         if (token !== undefined) session.idToken ??= token;
         const meterStart = num(payload.meterStart);
-        if (meterStart !== undefined) session.meterStartWh = meterStart;
+        if (meterStart !== undefined) {
+          session.meterStartWh = meterStart;
+          session.meterStartSeq = frame.seq;
+        }
         session.startedAt = str(payload.timestamp) ?? frame.at;
         addStep(session, frame);
         return [session];
@@ -581,7 +599,7 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
         if (session === undefined) return [];
         // 1.6 statuses carry the charging state; 2.0.1 has chargingState in TransactionEvent.
         if (ocpp === '1.6')
-          addState(session, str(payload.timestamp) ?? frame.at, str(payload.status));
+          addState(session, frame, str(payload.timestamp) ?? frame.at, str(payload.status));
         return [session];
       }
       case 'StopTransaction': {
@@ -590,7 +608,10 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
           open.find((s) => s.state === 'running' && s.transactionId === undefined);
         if (session === undefined) return [];
         const meterStop = num(payload.meterStop);
-        if (meterStop !== undefined) session.meterStopWh = meterStop;
+        if (meterStop !== undefined) {
+          session.meterStopWh = meterStop;
+          session.meterStopSeq = frame.seq;
+        }
         session.endedAt = str(payload.timestamp) ?? frame.at;
         session.stopReason = str(payload.reason) ?? 'Local';
         addSamples(session, meterSamples(payload.transactionData, frame.seq));
@@ -654,7 +675,7 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
       setSource(session, 'remote');
       if (remoteStartId !== undefined) session.remoteStartId = remoteStartId;
     }
-    addState(session, str(payload.timestamp) ?? frame.at, str(tx.chargingState));
+    addState(session, frame, str(payload.timestamp) ?? frame.at, str(tx.chargingState));
     addSamples(session, meterSamples(payload.meterValue, frame.seq));
     if (eventType === 'Ended') {
       session.endedAt = str(payload.timestamp) ?? frame.at;

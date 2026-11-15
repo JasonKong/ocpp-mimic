@@ -1110,6 +1110,7 @@ interface SessionRecord {
 ```
 
 - `packages/core/src/tariff.ts` 检查费率（M6 每项一个价格，不带 conditions），并只用上报值给会话定价：交易开始后收一次服务费；电量为 meterStop（或最后一个电表读数）减 meterStart；充电和空闲分钟数来自状态；minCost 和 maxCost 作用于总价；税按每项计算。每一项列出用到的报文 seq（R-PRICE-3）。
+- 已实现（T80）：`packages/core/src/tariff.ts` 的 `tariffProblems`、`priceSession`、`taxOn` 和 `deliveredWh`。空闲时间是 SuspendedEV 加上空闲状态（Finishing、EVConnected、Idle）；桩自己暂停的时间（SuspendedEVSE）不计费。每项四舍五入到分；高 stack 的税也对低 stack 的税计税；minCost 或 maxCost 限定总价时，税按比例跟着调整。会话记录现在保留 meterStartWh / meterStopWh 来自的报文（`meterStartSeq`、`meterStopSeq`）和每次状态变化的报文（`seq`），这样每一项都能指出它的报文。参考费率暂不支持的字段（conditions、reservationTime、reservationFixed、validFrom）会被拒绝。
 - 分时条件（R-PRICE-4）和 2.1 的桩端计费（R-PRICE-5）以后再做。
 - 内置 CSMS 可以加载同样的费率（`ocpp-mimic csms --tariff <file>`）：这时它在 2.0.1 TransactionEvent 的应答里带 totalCost，并每分钟发一次 CostUpdated。这样不接外部 CSMS 也能演示计价卡。
 
