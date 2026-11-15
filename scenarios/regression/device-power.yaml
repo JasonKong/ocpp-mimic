@@ -35,6 +35,9 @@ steps:
 name: 'clockDrift and badTimestamp: the station reports wrong times'
 station: { id: REG-FI-CLOCK, persona: regression-1.6 }
 steps:
+  # The boot's last message: once it is out, no boot message (they have
+  # timestamps too, and go one at a time) can take the injections below (#205).
+  - expect: { sent: SecurityEventNotification, payload: { type: StartupOfTheDevice } }
   # Ten years behind.
   - inject: { type: clockDrift, ms: -315569520000 }
   - csmsCall:
