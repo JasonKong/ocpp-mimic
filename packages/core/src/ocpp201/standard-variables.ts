@@ -82,6 +82,7 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
       ...dynamic,
     }),
     variable(station, 'Available', 'boolean', ro('true')),
+    variable(station, 'Problem', 'boolean', ro(), dynamic),
     variable(station, 'SupplyPhases', 'integer', ro('3')),
 
     variable(comm, 'HeartbeatInterval', 'integer', rw('300'), { unit: 's', minLimit: 0 }),
@@ -180,6 +181,7 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
         ...dynamic,
       }),
       variable(evse, 'Available', 'boolean', ro('true')),
+      variable(evse, 'Problem', 'boolean', ro(), dynamic),
       variable(evse, 'Power', 'decimal', ro(), {
         unit: 'W',
         maxLimit: input.offeredW,
@@ -191,6 +193,7 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
         ...dynamic,
       }),
       variable(connector, 'Available', 'boolean', ro('true')),
+      variable(connector, 'Problem', 'boolean', ro(), dynamic),
       variable(connector, 'ConnectorType', 'string', ro(input.connectorType ?? 'cType2', true)),
       variable(connector, 'SupplyPhases', 'integer', ro('3')),
     );

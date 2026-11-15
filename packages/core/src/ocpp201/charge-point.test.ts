@@ -32,6 +32,7 @@ function setup(
     NotifyReport: () => ({}),
     Authorize: () => ({ idTokenInfo: { status: 'Accepted' } }),
     TransactionEvent: () => ({}),
+    NotifyEvent: () => ({}),
     MeterValues: () => ({}),
     ...options.csms,
   };
@@ -675,5 +676,73 @@ describe('a 2.0.1 station: transactions', () => {
       transactionInfo: { transactionId: id },
     });
     expect(second.allValid()).toBe(true);
+  });
+});
+
+describe('a 2.0.1 station: faults', () => {
+  it('reports a fault and its end with NotifyEvent for the Problem variable', async () => {
+    const { cp, calls, boot, settle, csmsCall, allValid } = setup();
+    await boot();
+    cp.raiseFault(2, { errorCode: 'GroundFailure', info: 'GND_FAULT', vendorErrorCode: 'E101' });
+    cp.raiseFault(0, { errorCode: 'OtherError' });
+    await settle();
+    const events = () => calls('NotifyEvent').map((c) => (c.payload.eventData as unknown[])[0]);
+    expect(events()).toMatchObject([
+      {
+        eventId: 1,
+        trigger: 'Alerting',
+        actualValue: 'true',
+        techCode: 'E101',
+        techInfo: 'GND_FAULT',
+        eventNotificationType: 'HardWiredNotification',
+        component: { name: 'Connector', evse: { id: 2, connectorId: 1 } },
+        variable: { name: 'Problem' },
+      },
+      {
+        eventId: 2,
+        actualValue: 'true',
+        techCode: 'OtherError',
+        component: { name: 'ChargingStation' },
+      },
+    ]);
+    expect(
+      await csmsCall('GetVariables', {
+        getVariableData: [
+          {
+            component: { name: 'Connector', evse: { id: 2, connectorId: 1 } },
+            variable: { name: 'Problem' },
+          },
+          { component: { name: 'EVSE', evse: { id: 1 } }, variable: { name: 'Problem' } },
+        ],
+      }),
+    ).toMatchObject({
+      getVariableResult: [{ attributeValue: 'true' }, { attributeValue: 'false' }],
+    });
+    // A report of the components with a problem.
+    expect(await csmsCall('GetReport', { requestId: 9, componentCriteria: ['Problem'] })).toEqual({
+      status: 'Accepted',
+    });
+    cp.clearFault(2);
+    cp.clearFault(1); // no fault there: nothing to clear
+    await settle();
+    expect(events().at(-1)).toMatchObject({
+      eventId: 3,
+      actualValue: 'false',
+      cleared: true,
+      component: { name: 'Connector', evse: { id: 2 } },
+    });
+    expect(events()).toHaveLength(3);
+    expect(allValid()).toBe(true);
+  });
+
+  it('ends a running transaction with AbnormalCondition when its connector faults', async () => {
+    const { cp, boot, settle, present, events } = setup();
+    await boot();
+    await present(1, 'TAG-1');
+    cp.plugIn(1);
+    await settle();
+    cp.raiseFault(1, { errorCode: 'OverCurrentFailure' });
+    await settle();
+    expect(events()).toEqual(['Started CablePluggedIn', 'Ended AbnormalCondition Other']);
   });
 });
