@@ -57,6 +57,12 @@ export interface SessionDetail {
   durations: ReturnType<typeof stateDurations>;
   /** What the reference tariff makes of the session's reported values. */
   price: SessionPrice;
+  /**
+   * The station's energy multiplier now. Energy and SoC advance this many
+   * times faster than real time, so the estimate's and the truth's times to
+   * the target are simulated time: divide them by it for wall-clock time.
+   */
+  energyMultiplier: number;
 }
 
 /** The reference tariff until one is set: an example to edit, not a real price list. */
@@ -389,6 +395,7 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
         ...(gap !== undefined && { gap }),
         durations: stateDurations(record, new Date(now()).toISOString()),
         price: priceSession(record, tariff, new Date(now()).toISOString()),
+        energyMultiplier: options.station(stationId)?.snapshot().energyMultiplier ?? 1,
       };
     },
     frames(stationId, n) {

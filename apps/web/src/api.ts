@@ -356,6 +356,8 @@ export interface SessionDetail {
   gap?: { gapMs: number; off: boolean };
   durations: Record<'charging' | 'suspendedEV' | 'suspendedEVSE' | 'idle', number>;
   price: SessionPrice;
+  /** Energy and SoC advance this many times faster than real time; times to the target are simulated. */
+  energyMultiplier?: number;
 }
 
 const station = (id: string) => `/api/stations/${encodeURIComponent(id)}`;

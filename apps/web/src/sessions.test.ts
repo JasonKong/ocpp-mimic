@@ -145,6 +145,20 @@ describe('energy figures', () => {
     expect(f.reason).toBeUndefined();
   });
 
+  it('turns simulated times into wall-clock time under an energy multiplier', () => {
+    const fast = { ...detail(), energyMultiplier: 60 };
+    const f = energyFigures(fast, T0 + 2 * 60_000);
+    // 60 simulated minutes to go at ×60 is one real minute.
+    expect(f).toMatchObject({
+      multiplier: 60,
+      etaAt: at(3),
+      leftMs: 60_000,
+      trueLeftMs: 55_000,
+      gapMs: 5_000,
+    });
+    expect(energyFigures(detail(), T0).multiplier).toBe(1);
+  });
+
   it('says why there is no estimate', () => {
     const d = detail({ samples: [{ at: at(1), seq: 1, energyWh: 100 }], truth: [] });
     d.estimate = { targetSoc: 100, targetFrom: 'default', taperSoc: 80, reason: 'no SoC reported' };

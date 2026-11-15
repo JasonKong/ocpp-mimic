@@ -145,6 +145,7 @@ describe('session service', () => {
       powerW: 7000,
     });
     expect(detail?.truth?.msToTarget).toBeGreaterThan(0);
+    expect(detail?.energyMultiplier).toBe(1);
     expect(detail?.estimate).toMatchObject({ socPercent: 41, reason: 'SoC has not risen enough' });
     expect(service.frames('CP-1', 1).map((r) => r.action)).toEqual([
       'RemoteStartTransaction',

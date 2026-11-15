@@ -61,6 +61,13 @@ export function vehicleRows(
   const latestSample = [...session.samples].reverse().find((s) => s.socPercent !== undefined);
   const lastTruth = session.truth.at(-1);
   const profile = ev?.profile;
+  // Times to the target are simulated under an energy multiplier; shown in wall-clock time.
+  const multiplier =
+    detail.energyMultiplier !== undefined && detail.energyMultiplier > 0
+      ? detail.energyMultiplier
+      : 1;
+  const wall = (ms: number) =>
+    formatDuration(ms / multiplier) + (multiplier === 1 ? '' : ` (energy ×${multiplier})`);
   const reported = (text: string, seq?: number): VehicleValue => ({
     text,
     source: 'reported',
@@ -144,11 +151,8 @@ export function vehicleRows(
         ),
       },
       timeToTarget: {
-        values:
-          estimate.msToTarget !== undefined ? [estimated(formatDuration(estimate.msToTarget))] : [],
-        truth: truthOf(
-          truth?.msToTarget === undefined ? undefined : formatDuration(truth.msToTarget),
-        ),
+        values: estimate.msToTarget !== undefined ? [estimated(wall(estimate.msToTarget))] : [],
+        truth: truthOf(truth?.msToTarget === undefined ? undefined : wall(truth.msToTarget)),
       },
       departure: {
         values:
