@@ -50,6 +50,17 @@ or per group of related ones, as far as CitrineOS's REST API can start them:
 
 `transactions.yaml` also has a scenario beyond the five profiles: a station with an ISO 15118 EV sends NotifyEVChargingNeeds (T82); it only checks that CitrineOS takes the message.
 
+`ocpp21.yaml` is the OCPP 2.1 suite (M7, T111). A 2.1 station connects with `ocpp2.1`, and commands come through CitrineOS's 2.1 REST API (`/ocpp/2.1/<module>/<action>`). It covers:
+
+- boot and connector availability by NotifyEvent (B_01);
+- a local session (E_01);
+- a default tariff from CitrineOS, the station's own cost (costDetails) and CostUpdated (I07, I12, I03);
+- a remote start and stop through the 2.1 API (F_02);
+- a payment terminal session with its NotifySettlement (C18, C21);
+- a charging profile (K_01) and a 2.1 variable read (B_06).
+
+The rest of 2.1 is covered against the built-in CSMS in `scenarios/regression/ocpp21-*.yaml`.
+
 Not covered, and why:
 
 - **Security Profiles 1 to 3 and certificate renewal** (A_01 to A_04, A_06, A_07, A_09 to A_14, A_19): the test stack serves only security profile 0. The built-in CSMS covers them in `scenarios/regression/ocpp201-security.yaml`.
@@ -69,6 +80,11 @@ None of these is a deviation from OCPP 2.0.1; they are how CitrineOS works.
 
 ## Known CitrineOS deviations
 
-None found so far. When a scenario has to work around CitrineOS behaviour
-that differs from OCPP 2.0.1, it is listed here with the scenario and how it
-copes; nothing is reported upstream without asking first.
+None in OCPP 2.0.1. When a scenario has to work around CitrineOS behaviour
+that differs from OCPP, it is listed here with the scenario and how it copes;
+nothing is reported upstream without asking first.
+
+OCPP 2.1 (CitrineOS v2.1.0, `ocpp21.yaml`):
+
+- **No answer to VatNumberValidation.** Its 2.1 handler receives the request but sends no answer, so the station's check times out. The payment scenario leaves the VAT check out; the built-in CSMS covers it in `scenarios/regression/ocpp21-payment.yaml`.
+- **2.0.1 idToken types only in its 2.1 REST API.** `requestStartTransaction` refuses `type: DirectPayment` (HTTP 400, "must be equal to one of the allowed values"), although 2.1 idToken types are open. A web payment's remote start therefore cannot go through it. The remote start scenario uses an ISO14443 token, and the built-in CSMS covers web payments.

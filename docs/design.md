@@ -1228,6 +1228,7 @@ Every 2.1 scenario for the covered blocks passes against the built-in CSMS in CI
 
 - The built-in CSMS, for every covered block; it learns the 2.1 messages in T106.
 - CitrineOS v2.1.0, the version the 2.0.1 suite already pins. Its version number is CitrineOS's own, not OCPP's, and it speaks OCPP 2.1 as well: its WebSocket servers accept `ocpp2.1`, its REST API serves the 2.x actions under `/ocpp/2.1/<module>/<action>`, and it has 2.1 handlers for Authorize, GetCompositeSchedule, SetDefaultTariff, GetTariffs, NotifySettlement, VatNumberValidation and NotifyWebPaymentStarted. T111 finds out which 2.1 scenarios it can drive, and the 2.1 suite runs in the existing CitrineOS workflow.
+- Implemented (T111): `scenarios/citrineos/ocpp21.yaml` holds seven 2.1 scenarios against CitrineOS v2.1.0, driven through its 2.1 REST API: boot and NotifyEvent availability, a local session, a default tariff with the station's own cost and CostUpdated, a remote start and stop, a payment terminal session with its NotifySettlement, a charging profile, and a 2.1 variable. They run in the CitrineOS workflow with the 2.0.1 suite. Two CitrineOS v2.1.0 behaviours are recorded in `scenarios/citrineos/README.md` and left to the built-in CSMS: it does not answer VatNumberValidation, and its 2.1 REST API takes only 2.0.1's idToken types, so no web payment (DirectPayment) remote start.
 
 **Choosing the version**
 
