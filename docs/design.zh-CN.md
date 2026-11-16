@@ -1458,6 +1458,7 @@ M8 确定（#267）。M1 到 M7 做出了模拟器；M8 把它变成别人可以
 
 - `.github/workflows/release.yml` 在 `v*` tag 上运行：检查 tag 与版本号一致、变更日志里有对应章节；运行 CI 的各个 job；构建 tarball 和镜像；用变更日志的这一节创建 GitHub Release 并附上 tarball；把镜像推到 GHCR 并附带 provenance 证明；有令牌时发布到 npm。
 - 改动打包相关文件的 PR 上运行 `release-check` job：构建 tarball 和镜像，并用它们跑冒烟测试，让打包问题在打 tag 之前就暴露出来。
+- 已实现（T119）：`.github/workflows/release.yml` 先调用 `ci.yml`（现在也是可复用的工作流），再由 `tools/release-notes.mjs` 核对 tag 与 `VERSION`，并输出变更日志中对应的一节。package job 打包并对 tarball 跑冒烟测试。image job 用 Buildx 和 QEMU 构建 linux/amd64 和 linux/arm64（只有最终的安装阶段需要模拟），推送 `<版本>` 和 `latest` 标签，附带 BuildKit provenance 和 SBOM，并添加 GitHub 构建证明。`image-smoke` 在 `ubuntu-latest` 和 `ubuntu-24.04-arm` 上拉取推送的 digest 并运行 `tools/smoke-image.sh`。这些都通过后，`github-release` 才用发布说明、安装命令和 tarball 创建 Release；设置了 `NPM_TOKEN` 时 `npm` job 带 provenance 发布，否则只留一条提示。改动打包相关文件的 PR 和手动运行走 `release-check` 路径。`tools/prepare-release.mjs <版本>` 统一设置版本号并开出变更日志的一节；`CONTRIBUTING.md` 列出了发布步骤。
 
 **使用手册**
 

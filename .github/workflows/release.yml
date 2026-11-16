@@ -1,0 +1,211 @@
+name: release
+
+# Releases ocpp-mimic from a v* tag (docs/design.md, "M8 Release"):
+#  1. the CI checks, including the npm package's smoke test;
+#  2. the tag must match VERSION and CHANGELOG.md must have its section;
+#  3. the package tarball, and the image for linux/amd64 and linux/arm64,
+#     pushed to GHCR with provenance and smoke-tested on both architectures;
+#  4. the GitHub Release with the changelog section and the tarball;
+#  5. npm, with provenance, only when an NPM_TOKEN secret exists.
+# On pull requests that touch packaging it builds and smoke-tests the image
+# without pushing anything; by hand it does the same for any branch.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - tools/pack.mjs
+      - tools/smoke-*.sh
+      - tools/release-notes.mjs
+      - packages/cli/src/bin.ts
+      - packages/cli/src/paths.ts
+      - package.json
+      - pnpm-lock.yaml
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/jasonkong/ocpp-mimic
+
+jobs:
+  ci:
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/ci.yml
+
+  package:
+    if: github.event_name == 'push'
+    needs: ci
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Check the tag against VERSION and the changelog
+        id: version
+        run: |
+          node tools/release-notes.mjs "$GITHUB_REF_NAME" > release-notes.md
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - run: pnpm pack:release
+      - run: bash tools/smoke-package.sh release/ocpp-mimic-*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            release/ocpp-mimic-*.tgz
+            release-notes.md
+
+  image:
+    needs: package
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.package.outputs.version }}
+            ${{ env.IMAGE }}:latest
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  image-smoke:
+    needs: [package, image]
+    if: github.event_name == 'push'
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Smoke-test the pushed image on ${{ runner.arch }}
+        run: |
+          image="$IMAGE@${{ needs.image.outputs.digest }}"
+          docker pull "$image"
+          bash tools/smoke-image.sh "$image" "${{ needs.package.outputs.version }}"
+
+  github-release:
+    needs: [package, image-smoke]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          {
+            cat release-notes.md
+            echo
+            echo '## Install'
+            echo
+            echo "- npm: \`npm install --global https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/ocpp-mimic-$VERSION.tgz\`"
+            echo "- Docker: \`docker pull $IMAGE:$VERSION\` (linux/amd64, linux/arm64)"
+            echo
+            echo 'Node.js 24 or later. See the [user guide](https://github.com/'"$GITHUB_REPOSITORY"'/blob/main/docs/guide.md) to get started.'
+          } > notes.md
+          # Also without the version in its name, so releases/latest/download/ocpp-mimic.tgz
+          # always installs the newest release.
+          cp release/ocpp-mimic-*.tgz ocpp-mimic.tgz
+          gh release create "$GITHUB_REF_NAME" release/ocpp-mimic-*.tgz ocpp-mimic.tgz \
+            --repo "$GITHUB_REPOSITORY" --title "ocpp-mimic $VERSION" --notes-file notes.md --verify-tag
+
+  npm:
+    needs: [package, github-release]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Publish to npm when the owner has set NPM_TOKEN
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::notice::No NPM_TOKEN secret: the package is attached to the GitHub Release only."
+            exit 0
+          fi
+          npm publish release/ocpp-mimic-*.tgz --provenance --access public
+
+  # Pull requests that touch packaging, and runs by hand: build and smoke-test
+  # the package and the image without pushing or publishing anything.
+  release-check:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: The release notes script refuses a tag that is not VERSION
+        run: |
+          if node tools/release-notes.mjs v0.0.0-not-the-version; then exit 1; fi
+      - run: pnpm pack:release
+      - run: bash tools/smoke-package.sh release/ocpp-mimic-*.tgz
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image for this runner
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ocpp-mimic:check
+      - name: Smoke-test the image
+        run: bash tools/smoke-image.sh ocpp-mimic:check "$(node -p "require('./package.json').version")"
