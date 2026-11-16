@@ -754,7 +754,7 @@ Both are within the exit thresholds. The 2.0.1 run has one spike of 225 ms that 
 - Load plans are validated in core (`load-plan.ts`); the engine runs them (`engine/src/load/runner.ts`) and the CLI writes the reports. Groups run their usage model unless `usage: false`; all groups share one ramp-up in plan order; `selectStations` picks an event's share or count with the run's seeded generator, so the same seed hits the same stations.
 - The run measures what the metrics do not: BootNotification acceptance per station, recovery after each fleet event (from the event's end, so a power loss's dark time is not counted), a run-long event-loop delay histogram, memory every 5 s (heap floors after the warm-up, at most 10 minutes or a quarter of the run, and in the last window), and sessions per group against the expected number (each connector cycles through a wait of 1 / rate, the steps and the stay).
 - `ocpp-mimic load <plan> [--csms <url>] [--duration <d>] [--report-dir <dir>] [--junit <file>] [--port <n>] [--record-limit <n>] [--log-dir <dir>]`: `--log-dir` streams every frame to `frames.jsonl`; the recorder keeps 10 records per station by default. Exit code 0 when every threshold passes, 1 when one fails, 2 when the plan cannot run. `--port` serves the API, the Web UI and `/metrics` while it runs.
-- CI runs `scenarios/load/smoke-100.yaml` (100 stations for two minutes with a reconnect storm) against `ocpp-mimic csms` on every change and adds its report to the job summary.
+- CI runs `scenarios/load/smoke-100.yaml` (100 stations for two minutes with a reconnect storm; since M7 of all three versions) against `ocpp-mimic csms` on every change and adds its report to the job summary.
 
 **Implemented: replay (T52)**
 
@@ -1332,6 +1332,13 @@ The station simulates an integrated payment terminal (C18–C23) and a dynamic Q
   - Metrics already label 2.1 stations by their version.
   - `scenarios/logs/ocpp21-sessions.yaml-1.jsonl` is the synthetic 2.1 sample, recorded from `scenarios/examples/ocpp21-sessions.yaml`. It replays against the built-in CSMS without differences (strict mode lists only the CSMS's scripted limit and its own commands, as with the 2.0.1 sample), and calibrating it gives back `generic-2.1`'s values.
 - Load and bench: `load-ac-2.1` with tariffs on, and the bench workflow's persona choice.
+- Implemented (T109):
+  - `load-ac-2.1` keeps the generic features and adds TariffAndCost.
+  - `ocpp-mimic csms --tariff <file> --install-tariff` sends the reference tariff to 2.1 stations as their default tariff (SetDefaultTariff on EVSE 0) after each accepted boot, past any answer delay. 2.1 stations then price their sessions themselves; 1.6 and 2.0.1 stations are unaffected apart from the 2.0.1 costs `--tariff` already gave.
+  - `scenarios/load/tariff.json` is that tariff for load runs.
+  - CI's smoke plan is mixed: 34 1.6, 33 2.0.1 and 33 2.1 stations, against a CSMS that installs the tariff. Locally it passed every threshold: no CALLERRORs, no schema violations, event loop p99 6.5 ms, 217 MB.
+  - The bench takes `--tariff` (the workflow's `tariff` input), and its persona input names `load-ac-2.1`.
+  - `scenarios/load/m7-exit-21.yaml` is M4's exit plan with 1,000 `load-ac-2.1` stations. The soak workflow takes a `plan` input to run it, against a CSMS that installs the tariff. The M7 runs on the reference machine are recorded with the acceptance (T112).
 
 **Tests**
 

@@ -1,0 +1,43 @@
+{
+  "tariffId": "LOAD-REFERENCE",
+  "currency": "EUR",
+  "fixedFee": {
+    "prices": [
+      {
+        "priceFixed": 0.5
+      }
+    ],
+    "taxRates": [
+      {
+        "type": "VAT",
+        "tax": 20
+      }
+    ]
+  },
+  "energy": {
+    "prices": [
+      {
+        "priceKwh": 0.35
+      }
+    ],
+    "taxRates": [
+      {
+        "type": "VAT",
+        "tax": 20
+      }
+    ]
+  },
+  "idleTime": {
+    "prices": [
+      {
+        "priceMinute": 0.1
+      }
+    ],
+    "taxRates": [
+      {
+        "type": "VAT",
+        "tax": 20
+      }
+    ]
+  }
+}

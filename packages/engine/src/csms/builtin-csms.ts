@@ -157,6 +157,11 @@ export interface BuiltinCsmsOptions {
    */
   tariff?: ReferenceTariff;
   costUpdatedEveryMs?: number;
+  /**
+   * Send `tariff` to 2.1 stations as their default tariff (SetDefaultTariff
+   * on EVSE 0) after each accepted boot, so they price sessions themselves.
+   */
+  installTariff?: boolean;
 }
 
 /** What `GET /api/health` of the built-in CSMS answers with. */
@@ -744,6 +749,31 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     // 2.1 stations get the 2.0.1 answers and the 2.1 ones.
     '2.1': {
       ...base201,
+      // I07: with installTariff, the reference tariff becomes the station's default tariff
+      // once the boot answer (and any response delay) is through.
+      BootNotification: async (payload, connection) => {
+        const answer = (await base201.BootNotification?.(payload, connection)) as JsonObject;
+        const tariff = options.tariff;
+        if (
+          options.installTariff === true &&
+          tariff !== undefined &&
+          answer.status === 'Accepted'
+        ) {
+          setTimeout(
+            () => {
+              void connection
+                .call(
+                  'SetDefaultTariff',
+                  { evseId: 0, tariff: tariff as unknown as JsonObject },
+                  10_000,
+                )
+                .catch(() => {});
+            },
+            (options.responseDelay?.maxMs ?? 0) + 100,
+          ).unref();
+        }
+        return answer;
+      },
       // I08: a driver tariff set for the station goes with an accepted token.
       Authorize: async (payload, connection) => {
         const answer = (await base201.Authorize?.(payload, connection)) as JsonObject;

@@ -1,0 +1,36 @@
+# The M7 load criterion (docs/design.md, "M7 OCPP 2.1"): scenarios/load/m4-exit.yaml
+# with 1,000 OCPP 2.1 stations that price their sessions themselves, against
+# `ocpp-mimic csms --delay 20ms-100ms --tariff scenarios/load/tariff.json
+# --install-tariff`, with M4's thresholds. The soak workflow runs it with
+# `plan: scenarios/load/m7-exit-21.yaml`.
+name: M7 exit - 1,000 OCPP 2.1 stations for an hour
+csms: ws://127.0.0.1:9100/ocpp
+seed: 1
+duration: 60m
+rampUp: { rate: 10, jitter: 0.5 }
+groups:
+  - name: ac21
+    count: 1000
+    id: LOAD21-{0001}
+    persona: load-ac-2.1
+    usage:
+      sessionsPerHour: 1
+      stay: { min: 10m, max: 40m }
+      idTags: { prefix: LOAD-, count: 500, unknownShare: 0.05, unknownPrefix: UNKNOWN- }
+events:
+  - at: 30m
+    reconnectStorm: {}
+  - at: 45m
+    inject: { type: powerLoss, off: 30s }
+    stations: { share: 0.05 }
+thresholds:
+  bootAcceptedWithin: 60s
+  recoverWithin: 120s
+  unexpectedDisconnects: 0
+  lateWork: { p99: 1s, max: 5s }
+  eventLoopDelay: { p99: 100ms }
+  memory: { rss: 2GB, heapGrowth: 10% }
+  timeouts: 0
+  callErrors: 0
+  schemaViolations: 0
+  sessions: { min: 0.8 }

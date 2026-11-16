@@ -3,14 +3,18 @@ name: soak
 # The M4 exit criterion (docs/design.md, "M4 scale"): scenarios/load/m4-exit.yaml,
 # 1,000 stations for an hour, on a GitHub-hosted ubuntu-latest runner (2 vCPUs
 # and 8 GB for a private repository) against `ocpp-mimic csms` running beside
-# it. Weekly and by hand; the report, the JUnit file and the CSMS's summary are
-# uploaded.
+# it, which sends its tariff to 2.1 stations. Weekly and by hand; by hand it
+# can run another plan, such as M7's scenarios/load/m7-exit-21.yaml. The
+# report, the JUnit file and the CSMS's summary are uploaded.
 on:
   workflow_dispatch:
     inputs:
       duration:
         description: Duration (empty for the plan's hour)
         default: ''
+      plan:
+        description: Load plan (scenarios/load/m4-exit.yaml, or m7-exit-21.yaml for OCPP 2.1)
+        default: scenarios/load/m4-exit.yaml
   schedule:
     - cron: '0 18 * * 0'
 
@@ -31,19 +35,22 @@ jobs:
         run: |
           mkdir -p reports/soak
           { nproc; free -m; node --version; } | tee reports/soak/machine.txt
-      - name: Run the M4 exit plan against ocpp-mimic csms
+      - name: Run the load plan against ocpp-mimic csms
         env:
           DURATION: ${{ inputs.duration }}
+          # The weekly run has no inputs: the M4 plan.
+          PLAN: ${{ inputs.plan || 'scenarios/load/m4-exit.yaml' }}
         run: |
           set -o pipefail
           node packages/cli/dist/main.js csms --port 9100 --delay 20ms-100ms --status 5m \
+            --tariff scenarios/load/tariff.json --install-tariff \
             > reports/soak/csms.log 2>&1 &
           CSMS=$!
           sleep 1
           extra=()
           if [ -n "$DURATION" ]; then extra+=(--duration "$DURATION"); fi
           code=0
-          node packages/cli/dist/main.js load scenarios/load/m4-exit.yaml \
+          node packages/cli/dist/main.js load "$PLAN" \
             --personas scenarios/personas --report-dir reports/soak --junit reports/soak.xml \
             "${extra[@]}" | tee reports/soak/console.txt || code=$?
           # The CSMS prints its summary of requests by action when stopped.

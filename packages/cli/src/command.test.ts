@@ -194,6 +194,14 @@ describe('parseCommand', () => {
       tls: { cert: 'server.pem', key: 'server.key', ca: 'ca.pem', clientCertificates: 'required' },
       statusMs: 0,
     });
+    expect(parseCommand(['csms', '--tariff', 'tariff.json', '--install-tariff'])).toMatchObject({
+      tariff: 'tariff.json',
+      installTariff: true,
+    });
+    expect(parseCommand(['csms', '--install-tariff'])).toMatchObject({
+      kind: 'error',
+      message: '--install-tariff needs --tariff',
+    });
     expect(parseCommand(['csms', '--tariff', 'tariff.json'])).toMatchObject({
       tariff: 'tariff.json',
     });

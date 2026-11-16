@@ -46,6 +46,12 @@ export interface BenchOptions {
   store?: string;
   /** Records kept per station, as `serve --record-limit` (default 1000). */
   recordLimit?: number;
+  /**
+   * A reference tariff (JSON file) for the CSMS, as `csms --tariff
+   * --install-tariff`: 2.0.1 sessions get its costs and 2.1 stations price
+   * their own sessions with it ("tariffs on").
+   */
+  tariff?: string;
   heapSnapshot: boolean;
 }
 
@@ -148,6 +154,7 @@ async function startCsms(options: BenchOptions): Promise<{ url: string; child: C
       String(options.heartbeatInterval),
       '--status',
       '0',
+      ...(options.tariff === undefined ? [] : ['--tariff', options.tariff, '--install-tariff']),
     ],
     { stdio: ['ignore', 'pipe', 'inherit'] },
   );
