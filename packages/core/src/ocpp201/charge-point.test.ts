@@ -416,7 +416,7 @@ describe('a 2.1 station on the 2.x adapter', () => {
     await settle();
     const errors = frames.filter((f) => f.type === 4).map((f) => (f.type === 4 ? f.errorCode : ''));
     expect(errors).toEqual(['NotSupported', 'NotImplemented']);
-    // No TxCtrlr.ResumptionTimeout yet, so no resuming after a reset (B13.FR.01).
+    // TxCtrlr.ResumptionTimeout is 0 by default, so no resuming after a reset (B13.FR.01).
     expect(await csmsCall('Reset', { type: 'ImmediateAndResume' })).toEqual({ status: 'Rejected' });
   });
 
@@ -457,6 +457,260 @@ describe('a 2.1 station on the 2.x adapter', () => {
     const { cp, boot } = v21();
     await boot();
     expect(cp.persistentState().ocpp).toBe('2.1');
+  });
+});
+
+describe('a 2.1 station: transaction limits (E16, F07)', () => {
+  /** A CSMS that answers the Started event with `limit`, and a limit reached with `then`. */
+  const limiting = (limit: JsonObject, then?: JsonObject) => ({
+    TransactionEvent: (payload: JsonObject) => {
+      if (payload.eventType === 'Started') return { transactionLimit: limit };
+      return String(payload.triggerReason).endsWith('LimitReached') && then !== undefined
+        ? { transactionLimit: then }
+        : {};
+    },
+  });
+  const EV = { profile: { capacityKWh: 60, initialSoc: 30, maxPowerW: 7_360, phases: 1 as const } };
+  /** The events without the periodic meter values. */
+  const limitEvents = (h: { events: () => string[] }) =>
+    h.events().filter((e) => e !== 'Updated MeterValuePeriodic');
+  const limitSets = (h: { calls: (a: string) => CallFrame[] }) =>
+    h.calls('TransactionEvent').filter((c) => c.payload.triggerReason === 'LimitSet');
+  const limitsOf = (c: CallFrame) =>
+    (c.payload.transactionInfo as { transactionLimit?: JsonObject }).transactionLimit;
+
+  it('echoes a limit once with LimitSet, suspends at maxEnergy, and resumes when it is raised', async () => {
+    const h = setup({
+      csms: limiting({ maxEnergy: 1000 }, { maxEnergy: 2000 }),
+      extra: { ocpp: '2.1' },
+    });
+    await h.boot();
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1, EV);
+    await h.settle();
+    expect(limitEvents(h)).toEqual(['Started CablePluggedIn', 'Updated LimitSet']);
+    expect(limitsOf(limitSets(h)[0] as CallFrame)).toEqual({ maxEnergy: 1000 });
+    // 7360 W for 1000 Wh: 489.1 s. The CSMS answers the limit reached with a higher one:
+    // LimitSet again, and charging resumes (E16.FR.14).
+    await h.advance(489_000);
+    expect(limitEvents(h).at(-1)).toBe('Updated LimitSet');
+    await h.advance(1_000);
+    expect(limitEvents(h)).toEqual([
+      'Started CablePluggedIn',
+      'Updated LimitSet',
+      'Updated EnergyLimitReached',
+      'Updated LimitSet',
+    ]);
+    expect(limitsOf(limitSets(h)[1] as CallFrame)).toEqual({ maxEnergy: 2000 });
+    expect(h.cp.snapshot().connectors[0]).toMatchObject({
+      powerW: 7360,
+      chargingState: 'Charging',
+    });
+
+    // Without a higher limit the energy transfer stays suspended (E16.FR.05).
+    const kept = setup({ csms: limiting({ maxEnergy: 1000 }), extra: { ocpp: '2.1' } });
+    await kept.boot();
+    await kept.present(1, 'TAG-1');
+    kept.cp.plugIn(1, EV);
+    await kept.settle();
+    await kept.advance(490_000);
+    expect(limitEvents(kept).at(-1)).toBe('Updated EnergyLimitReached');
+    expect(kept.cp.snapshot().connectors[0]).toMatchObject({
+      powerW: 0,
+      chargingState: 'SuspendedEVSE',
+    });
+  });
+
+  it('ends the transaction at maxTime when TxStopPoint has EnergyTransfer (E16.FR.06)', async () => {
+    const h = setup({
+      csms: limiting({ maxTime: 600 }),
+      deviceModel: { TxCtrlr: { TxStopPoint: 'EnergyTransfer' } },
+      extra: { ocpp: '2.1' },
+    });
+    await h.boot();
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1, EV);
+    await h.settle();
+    await h.advance(599_000);
+    expect(limitEvents(h).at(-1)).toBe('Updated LimitSet');
+    await h.advance(1_000);
+    expect(limitEvents(h).at(-1)).toBe('Ended TimeLimitReached Local');
+  });
+
+  it('suspends at maxSoC, and counts the CSMS cost for maxCost', async () => {
+    const soc = setup({ csms: limiting({ maxSoC: 31 }), extra: { ocpp: '2.1' } });
+    await soc.boot();
+    await soc.present(1, 'TAG-1');
+    soc.cp.plugIn(1, EV);
+    await soc.settle();
+    await soc.advance(10 * 60_000);
+    expect(limitEvents(soc)).toContain('Updated SoCLimitReached');
+
+    const cost = setup({ csms: limiting({ maxCost: 2.5 }), extra: { ocpp: '2.1' } });
+    await cost.boot();
+    await cost.present(1, 'TAG-1');
+    cost.cp.plugIn(1, EV);
+    await cost.settle();
+    const transactionId = (
+      cost.calls('TransactionEvent')[0]?.payload.transactionInfo as { transactionId: string }
+    ).transactionId;
+    await cost.csmsCall('CostUpdated', { totalCost: 1.2, transactionId });
+    await cost.advance(2_000);
+    expect(limitEvents(cost).at(-1)).toBe('Updated LimitSet');
+    await cost.csmsCall('CostUpdated', { totalCost: 2.5, transactionId });
+    await cost.advance(2_000);
+    expect(limitEvents(cost).at(-1)).toBe('Updated CostLimitReached');
+  });
+
+  it('takes only the limits in TxCtrlr.SupportedLimits (E16.FR.13)', async () => {
+    const h = setup({
+      csms: limiting({ maxSoC: 80, maxEnergy: 5000 }),
+      deviceModel: { TxCtrlr: { SupportedLimits: 'maxEnergy' } },
+      extra: { ocpp: '2.1' },
+    });
+    await h.boot();
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1, EV);
+    await h.settle();
+    expect(limitsOf(limitSets(h)[0] as CallFrame)).toEqual({ maxEnergy: 5000 });
+  });
+});
+
+describe('a 2.1 station: resuming transactions (B13, E17)', () => {
+  const EV = { profile: { capacityKWh: 60, initialSoc: 30, maxPowerW: 7_360, phases: 1 as const } };
+  const resumeEvents = (h: { events: () => string[] }) =>
+    h.events().filter((e) => e !== 'Updated MeterValuePeriodic');
+  const ids = (h: { calls: (a: string) => CallFrame[] }) => [
+    ...new Set(
+      h
+        .calls('TransactionEvent')
+        .map((c) => (c.payload.transactionInfo as { transactionId: string }).transactionId),
+    ),
+  ];
+
+  it('keeps a transaction through Reset ImmediateAndResume and resumes it after the boot', async () => {
+    const h = setup({
+      deviceModel: { TxCtrlr: { ResumptionTimeout: 300, AllowEnergyTransferResumption: true } },
+      extra: { ocpp: '2.1' },
+    });
+    await h.boot();
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1, EV);
+    await h.settle();
+    expect(await h.csmsCall('Reset', { type: 'ImmediateAndResume' })).toEqual({
+      status: 'Accepted',
+    });
+    await h.settle();
+    // ResetCommand first (B13.FR.03), then the reboot without energy (B13.FR.20).
+    const reset = resumeEvents(h);
+    expect(reset.slice(reset.indexOf('Updated ResetCommand'))).toEqual([
+      'Updated ResetCommand',
+      'Updated ChargingStateChanged',
+    ]);
+    expect(h.restarts).toHaveLength(1);
+    expect(h.cp.snapshot().connectors[0]).toMatchObject({ powerW: 0 });
+    h.cp.disconnected();
+    await h.boot();
+    expect(h.calls('BootNotification').at(-1)?.payload).toMatchObject({ reason: 'RemoteReset' });
+    expect(resumeEvents(h).at(-1)).toBe('Updated TxResumed');
+    expect(ids(h)).toHaveLength(1);
+    expect(h.cp.snapshot().connectors[0]).toMatchObject({
+      powerW: 7360,
+      chargingState: 'Charging',
+    });
+  });
+
+  it('holds a Charging transaction in SuspendedEVSE without AllowEnergyTransferResumption (B13.FR.14)', async () => {
+    const h = setup({
+      deviceModel: { TxCtrlr: { ResumptionTimeout: 300 } },
+      extra: { ocpp: '2.1' },
+    });
+    await h.boot();
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1, EV);
+    await h.settle();
+    await h.csmsCall('Reset', { type: 'ImmediateAndResume' });
+    await h.settle();
+    h.cp.disconnected();
+    await h.boot();
+    const resumed = h.calls('TransactionEvent').at(-1)?.payload;
+    expect(resumed).toMatchObject({
+      triggerReason: 'TxResumed',
+      transactionInfo: { chargingState: 'SuspendedEVSE' },
+    });
+    expect(h.cp.snapshot().connectors[0]).toMatchObject({ powerW: 0 });
+  });
+
+  it('resets one EVSE without a reboot and resumes its transaction (B13.FR.10, .11)', async () => {
+    const h = setup({
+      deviceModel: { TxCtrlr: { ResumptionTimeout: 300, AllowEnergyTransferResumption: true } },
+      extra: { ocpp: '2.1' },
+    });
+    await h.boot();
+    await h.present(2, 'TAG-2');
+    h.cp.plugIn(2, EV);
+    await h.settle();
+    await h.csmsCall('Reset', { type: 'ImmediateAndResume', evseId: 2 });
+    await h.settle();
+    expect(h.cp.snapshot().connectors[1]).toMatchObject({ powerW: 0 });
+    await h.advance(60_000);
+    expect(resumeEvents(h).slice(-2)).toEqual(['Updated ResetCommand', 'Updated TxResumed']);
+    expect(h.restarts).toEqual([]);
+    expect(h.cp.snapshot().connectors[1]).toMatchObject({ powerW: 7360 });
+  });
+
+  it('resets as Immediate when nothing is charging, and refuses without ResumptionTimeout (B13.FR.01, .02)', async () => {
+    const h = setup({
+      deviceModel: { TxCtrlr: { ResumptionTimeout: 300 } },
+      extra: { ocpp: '2.1' },
+    });
+    await h.boot();
+    expect(await h.csmsCall('Reset', { type: 'ImmediateAndResume' })).toEqual({
+      status: 'Accepted',
+    });
+    await h.settle();
+    expect(h.restarts).toHaveLength(1);
+    const off = setup({ extra: { ocpp: '2.1' } });
+    await off.boot();
+    expect(await off.csmsCall('Reset', { type: 'ImmediateAndResume' })).toEqual({
+      status: 'Rejected',
+    });
+  });
+
+  it('resumes after a power loss within ResumptionTimeout, and ends it with PowerLoss after (E17)', async () => {
+    const deviceModel = {
+      TxCtrlr: { ResumptionTimeout: 300, AllowEnergyTransferResumption: true },
+    };
+    const first = setup({ deviceModel, extra: { ocpp: '2.1' } });
+    await first.boot();
+    await first.present(1, 'TAG-1');
+    first.cp.plugIn(1, EV);
+    await first.settle();
+    await first.advance(60_000);
+    const saved = first.cp.persistentState();
+    expect(saved.transactions[0]).toMatchObject({
+      chargingState: 'Charging',
+      ev: { profile: { capacityKWh: 60 } },
+    });
+
+    const soon = setup({ deviceModel, extra: { ocpp: '2.1' }, restore: saved });
+    expect(soon.cp.snapshot().connectors[0]).toMatchObject({ plugged: true, powerW: 0 });
+    await soon.boot();
+    expect(resumeEvents(soon)).toEqual(['Updated TxResumed']);
+    expect(ids(soon)).toEqual(ids(first));
+    expect(soon.cp.snapshot().connectors[0]).toMatchObject({
+      powerW: 7360,
+      chargingState: 'Charging',
+    });
+
+    // Saved more than ResumptionTimeout ago: it ends as of the save (E17.FR.21).
+    const late = setup({
+      deviceModel,
+      extra: { ocpp: '2.1' },
+      restore: { ...saved, savedAt: saved.savedAt - 400_000 },
+    });
+    await late.boot();
+    expect(resumeEvents(late)).toEqual(['Ended AbnormalCondition PowerLoss']);
   });
 });
 

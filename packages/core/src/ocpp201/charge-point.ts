@@ -238,6 +238,10 @@ export interface PersistedTransaction201 {
   remoteStartId?: number;
   /** Why it stops, when it was deauthorized but keeps running (TxStopPoint without Authorized). */
   stoppedReason?: ReasonEnumType;
+  /** 2.1, for resuming after a power loss (E17): the charging state, the limits, the EV. */
+  chargingState?: ChargingStateEnumType;
+  limits?: Record<string, number>;
+  ev?: PluggedEv;
 }
 
 /** A token authorized at a connector, with what the CSMS, list or cache said about it. */
@@ -273,7 +277,34 @@ interface Transaction201 {
   periodicTimer?: TimerHandle | undefined;
   endedTimer?: TimerHandle | undefined;
   limitTimer?: TimerHandle | undefined;
+  /** 2.1: the transaction's cost, energy, time and SoC limits (E16), the supported ones. */
+  limits?: TransactionLimit;
+  /** 2.1: the limit that stopped the energy transfer. */
+  limitHit?: LimitName | undefined;
+  /** 2.1: the latest cost the CSMS sent (totalCost, CostUpdated), for maxCost. */
+  csmsCost?: number;
+  transactionLimitTimer?: TimerHandle | undefined;
+  /** 2.1: the transaction was Charging before a reset or power loss it is resumed after. */
+  wasCharging?: boolean | undefined;
+  /** 2.1: resumed without AllowEnergyTransferResumption, so it stays SuspendedEVSE (B13.FR.14). */
+  resumeHold?: boolean;
 }
+
+type TransactionLimit = Omit<
+  Ocpp21RequestOf<'TransactionEvent'>['transactionInfo']['transactionLimit'] & {},
+  'customData'
+>;
+type LimitName = 'maxCost' | 'maxEnergy' | 'maxTime' | 'maxSoC';
+const LIMIT_NAMES: readonly LimitName[] = ['maxCost', 'maxEnergy', 'maxSoC', 'maxTime'];
+/** The trigger reason of the event that reports a limit reached (E16.FR.05, .06). */
+const LIMIT_TRIGGERS: Record<LimitName, TriggerReasonEnumType> = {
+  maxCost: 'CostLimitReached',
+  maxEnergy: 'EnergyLimitReached',
+  maxSoC: 'SoCLimitReached',
+  maxTime: 'TimeLimitReached',
+};
+/** How often limits on SoC and cost (which follow the EV and the CSMS) are checked, in ms. */
+const LIMIT_POLL_MS = 1000;
 
 /** The stoppedReason an ending trigger implies. */
 function reasonFor(trigger: TriggerReasonEnumType): ReasonEnumType {
@@ -374,6 +405,12 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   let bootTimer: TimerHandle | undefined;
   /** Why the next BootNotification is sent. */
   let bootReason: BootReasonEnumType = 'PowerUp';
+  /** 2.1: EVSEs whose transactions resume once the boot is accepted (B13, E17). */
+  let resuming = new Set<number>();
+  /** 2.1: the station is down for a reset whose transactions resume (B13.FR.20); no energy. */
+  let poweredDown = false;
+  /** 2.1: EVSEs being reset on their own with their transactions kept (B13.FR.10). */
+  const evsesDown = new Set<number>();
   /** A reset waiting for the transactions it concerns to end (OnIdle, B12.FR.01). */
   let scheduledReset: { evseId?: number } | undefined;
   const online = () => rpc !== undefined && registration === 'Accepted';
@@ -800,7 +837,11 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       station.fault === undefined &&
       connector.availability === 'Operative' &&
       station.availability === 'Operative' &&
-      transactions.get(connectorId)?.limitReached !== true
+      transactions.get(connectorId)?.limitReached !== true &&
+      transactions.get(connectorId)?.limitHit === undefined &&
+      transactions.get(connectorId)?.resumeHold !== true &&
+      !poweredDown &&
+      !evsesDown.has(connectorId)
     );
   }
 
@@ -956,6 +997,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       idToken?: IdTokenType;
       meterValue?: MeterValueType[];
       stoppedReason?: ReasonEnumType;
+      /** 2.1: the limits, sent with LimitSet (E16.FR.01, .03). */
+      transactionLimit?: TransactionLimit;
     } = {},
   ): void {
     tx.chargingState = eventType === 'Ended' ? tx.chargingState : currentChargingState(connectorId);
@@ -978,6 +1021,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         ...(extra.stoppedReason !== undefined && { stoppedReason: extra.stoppedReason }),
         ...(eventType === 'Started' &&
           tx.remoteStartId !== undefined && { remoteStartId: tx.remoteStartId }),
+        ...(extra.transactionLimit !== undefined && { transactionLimit: extra.transactionLimit }),
       },
       ...(!online() && { offline: true }),
       evse: { id: connectorId, connectorId: 1 },
@@ -987,7 +1031,18 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     };
     void outbox.enqueue('TransactionEvent', payload, tx.id).then((outcome) => {
       if (!outcome.ok || eventType === 'Ended') return;
-      const info = (outcome.payload as Ocpp21ResponseOf<'TransactionEvent'>).idTokenInfo;
+      const response = outcome.payload as Ocpp21ResponseOf<'TransactionEvent'>;
+      if (v21 && transactions.get(connectorId) === tx) {
+        if (response.totalCost !== undefined) {
+          tx.csmsCost = response.totalCost;
+          checkTxLimits(connectorId, tx);
+        }
+        // The CSMS sends a limit in an answer, the first one it can (E16.FR.02, F07).
+        if (response.transactionLimit !== undefined) {
+          applyLimits(connectorId, tx, response.transactionLimit);
+        }
+      }
+      const info = response.idTokenInfo;
       if (info !== undefined && extra.idToken !== undefined) rememberAnswer(extra.idToken, info);
       if (info === undefined || info.status === 'Accepted') return;
       if (transactions.get(connectorId) !== tx) return;
@@ -1022,6 +1077,93 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     const ms = ((tx.energyLimitWh - reading.energyWh) / reading.powerW) * 3_600_000;
     tx.limitTimer = later(Math.ceil(ms / energy.multiplier), () =>
       checkEnergyLimit(connectorId, tx),
+    );
+  }
+
+  // ---- Transaction limits (2.1, E16) ---------------------------------------
+
+  /**
+   * Takes the CSMS's limits: the supported ones (TxCtrlr.SupportedLimits)
+   * replace the transaction's and are echoed once with LimitSet (E16.FR.03,
+   * .13). A raised limit lets the energy flow again (E16.FR.14).
+   */
+  function applyLimits(connectorId: number, tx: Transaction201, limit: TransactionLimit): void {
+    const supported = dmValue('TxCtrlr', 'SupportedLimits').split(',');
+    const accepted = Object.fromEntries(
+      LIMIT_NAMES.filter((name) => supported.includes(name) && limit[name] !== undefined).map(
+        (name) => [name, limit[name]],
+      ),
+    ) as TransactionLimit;
+    if (Object.keys(accepted).length === 0) {
+      log(`connector ${connectorId}: no supported limit in ${JSON.stringify(limit)}`);
+      return;
+    }
+    tx.limits = { ...tx.limits, ...accepted };
+    sendEvent(connectorId, tx, 'Updated', 'LimitSet', { transactionLimit: tx.limits });
+    if (tx.limitHit !== undefined && reachedLimit(connectorId, tx) === undefined) {
+      tx.limitHit = undefined;
+      updatePower(connectorId);
+      log(`connector ${connectorId}: the limit was raised; charging resumes`);
+    }
+    checkTxLimits(connectorId, tx);
+  }
+
+  /** The first limit the transaction has reached, if any. */
+  function reachedLimit(connectorId: number, tx: Transaction201): LimitName | undefined {
+    const { limits } = tx;
+    if (limits === undefined) return undefined;
+    const reading = energy.sync(connectorId);
+    const soc = energy.ev(connectorId)?.state.soc;
+    const reached: Record<LimitName, boolean> = {
+      maxCost:
+        limits.maxCost !== undefined && tx.csmsCost !== undefined && tx.csmsCost >= limits.maxCost,
+      maxEnergy:
+        limits.maxEnergy !== undefined && reading.energyWh - tx.meterStartWh >= limits.maxEnergy,
+      maxSoC: limits.maxSoC !== undefined && soc !== undefined && soc >= limits.maxSoC,
+      maxTime: limits.maxTime !== undefined && now() - tx.startedAt >= limits.maxTime * 1000,
+    };
+    return LIMIT_NAMES.find((name) => reached[name]);
+  }
+
+  /**
+   * Stops the energy transfer once a limit is reached (E16.FR.05), or ends
+   * the transaction when TxStopPoint has EnergyTransfer (E16.FR.06; the
+   * reasons that named limits are deprecated in 2.1, so it ends as Local).
+   * Otherwise it looks again when a limit could be reached: at the time
+   * limit, at the energy limit at the present power, and every second for
+   * SoC and cost.
+   */
+  function checkTxLimits(connectorId: number, tx: Transaction201): void {
+    stopTimer(tx.transactionLimitTimer);
+    tx.transactionLimitTimer = undefined;
+    if (tx.limits === undefined || tx.limitHit !== undefined) return;
+    if (transactions.get(connectorId) !== tx) return;
+    const hit = reachedLimit(connectorId, tx);
+    if (hit !== undefined) {
+      tx.limitHit = hit;
+      log(`connector ${connectorId}: ${hit} ${String(tx.limits[hit])} reached`);
+      if (dmValue('TxCtrlr', 'TxStopPoint').split(',').includes('EnergyTransfer')) {
+        endTransaction(connectorId, LIMIT_TRIGGERS[hit], 'Local');
+      } else {
+        updatePower(connectorId);
+        sendEvent(connectorId, tx, 'Updated', LIMIT_TRIGGERS[hit]);
+      }
+      return;
+    }
+    const { maxTime, maxEnergy, maxSoC, maxCost } = tx.limits;
+    const waits: number[] = [];
+    if (maxTime !== undefined) waits.push(tx.startedAt + maxTime * 1000 - now());
+    if (maxEnergy !== undefined) {
+      const reading = energy.sync(connectorId);
+      const left = maxEnergy - (reading.energyWh - tx.meterStartWh);
+      if (reading.powerW > 0) waits.push(((left / reading.powerW) * 3_600_000) / energy.multiplier);
+      else waits.push(LIMIT_POLL_MS);
+    }
+    if (maxSoC !== undefined || maxCost !== undefined) waits.push(LIMIT_POLL_MS);
+    // Power changes on its own (taper, profiles); look again at least every few seconds.
+    const wait = Math.min(...waits, 5 * LIMIT_POLL_MS);
+    tx.transactionLimitTimer = later(Math.max(1, Math.ceil(wait)), () =>
+      checkTxLimits(connectorId, tx),
     );
   }
 
@@ -1165,7 +1307,14 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     const tx = transactions.get(connectorId);
     if (tx === undefined) return;
     transactions.delete(connectorId);
-    for (const timer of [tx.periodicTimer, tx.endedTimer, tx.limitTimer]) stopTimer(timer);
+    for (const timer of [
+      tx.periodicTimer,
+      tx.endedTimer,
+      tx.limitTimer,
+      tx.transactionLimitTimer,
+    ]) {
+      stopTimer(timer);
+    }
     const hadTxProfile = chargingProfiles.some(
       (p) => p.evseId === connectorId && p.profile.chargingProfilePurpose === 'TxProfile',
     );
@@ -1424,6 +1573,79 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     reportStatuses(true);
     security.bootAccepted();
     outbox.pump();
+    if (resuming.size > 0) {
+      const evses = [...resuming];
+      resuming = new Set();
+      poweredDown = false;
+      for (const connectorId of evses) resumeTransaction(connectorId);
+    }
+  }
+
+  // ---- Resuming transactions (2.1, B13, E17) --------------------------------
+
+  /** The EV on a connector as it is now, to plug it in again after a power loss. */
+  function evOf(connectorId: number): PluggedEv | undefined {
+    const ev = energy.ev(connectorId);
+    if (ev === undefined) return undefined;
+    return {
+      ...(ev.name !== undefined && { name: ev.name }),
+      profile: { ...ev.state.profile, initialSoc: ev.state.soc },
+    };
+  }
+
+  /**
+   * A transaction carries on after a reset or power loss: in its previous
+   * state, except that a Charging transaction without
+   * TxCtrlr.AllowEnergyTransferResumption stays SuspendedEVSE (B13.FR.14,
+   * E17.FR.12); the specification gives it no way back, so it stays so
+   * until it ends. Reported with TxResumed (B13.FR.30, E17.FR.14).
+   */
+  function resumeTransaction(connectorId: number): void {
+    const tx = transactions.get(connectorId);
+    if (tx === undefined) return;
+    if (tx.wasCharging === true && dmValue('TxCtrlr', 'AllowEnergyTransferResumption') !== 'true') {
+      tx.resumeHold = true;
+    }
+    tx.wasCharging = undefined;
+    updatePower(connectorId);
+    updateLock(connectorId);
+    sendEvent(connectorId, tx, 'Updated', 'TxResumed');
+    schedulePeriodic(connectorId, tx);
+    checkTxLimits(connectorId, tx);
+    log(`connector ${connectorId}: transaction ${tx.id} resumed`);
+  }
+
+  /**
+   * Reset ImmediateAndResume with transactions (B13): each reports
+   * ResetCommand, then an EVSE reset stops its energy for a moment and
+   * resumes (B13.FR.10, .11), and a station reset reboots and resumes them
+   * once the boot is accepted (B13.FR.20 to .23).
+   */
+  function resetAndResume(evseId: number | undefined): void {
+    const affected = evseId === undefined ? [...transactions.keys()] : [evseId];
+    for (const connectorId of affected) {
+      const tx = transactions.get(connectorId);
+      if (tx === undefined) continue;
+      tx.wasCharging = currentChargingState(connectorId) === 'Charging';
+      sendEvent(connectorId, tx, 'Updated', 'ResetCommand');
+    }
+    if (evseId !== undefined) {
+      evsesDown.add(evseId);
+      updatePower(evseId);
+      log(`EVSE ${evseId} reset; its transaction resumes`);
+      later(timing.resetDowntimeMs.Soft, () => {
+        evsesDown.delete(evseId);
+        resumeTransaction(evseId);
+      });
+      return;
+    }
+    poweredDown = true;
+    resuming = new Set(affected);
+    updateAllPowers();
+    bootReason = 'RemoteReset';
+    log('ImmediateAndResume reset');
+    security.rebooting();
+    void whenDelivered().then(() => options.restart?.(timing.resetDowntimeMs.Hard));
   }
 
   function startHeartbeat(): void {
@@ -1721,6 +1943,13 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     // A running cost to show the driver (I03); the station only logs it.
     CostUpdated(request) {
       log(`running cost of ${request.transactionId}: ${request.totalCost}`);
+      // 2.1: the CSMS's cost counts for maxCost when the station prices nothing itself (E16.FR.15).
+      const entry = [...transactions].find(([, tx]) => tx.id === request.transactionId);
+      if (v21 && entry !== undefined) {
+        const [connectorId, tx] = entry;
+        tx.csmsCost = request.totalCost;
+        later(0, () => checkTxLimits(connectorId, tx));
+      }
       return {};
     },
 
@@ -1811,14 +2040,21 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       }
       const busy =
         request.evseId === undefined ? transactions.size > 0 : transactions.has(request.evseId);
-      // Resuming transactions after a reset comes with T99; until then there is no
-      // TxCtrlr.ResumptionTimeout, so ImmediateAndResume is refused (B13.FR.01).
-      if (request.type === 'ImmediateAndResume') return { status: 'Rejected' };
+      if (request.type === 'ImmediateAndResume') {
+        // Resuming needs TxCtrlr.ResumptionTimeout (B13.FR.01); without transactions it is
+        // a plain immediate reset (B13.FR.02).
+        if (!v21 || dmInt('TxCtrlr', 'ResumptionTimeout') <= 0) return { status: 'Rejected' };
+        if (busy) {
+          const { evseId } = request;
+          later(commandDelay('Reset'), () => resetAndResume(evseId));
+          return { status: 'Accepted' };
+        }
+      }
       if (request.type === 'OnIdle' && busy) {
         scheduledReset = request.evseId === undefined ? {} : { evseId: request.evseId };
         return { status: 'Scheduled' };
       }
-      const { type } = request;
+      const type = request.type === 'OnIdle' ? 'OnIdle' : 'Immediate';
       later(commandDelay('Reset'), () =>
         request.evseId === undefined ? resetStation(type) : resetEvse(request.evseId),
       );
@@ -2047,11 +2283,51 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
   // ---- Restore after a restart --------------------------------------------
 
+  /**
+   * A transaction saved before a power loss, carried on (E17): the EV is
+   * still plugged in and authorized, with its state of charge and limits.
+   * TxResumed goes out once the boot is accepted.
+   */
+  function resumeSaved(saved: PersistedTransaction201): void {
+    const { connectorId } = saved;
+    if (saved.ev !== undefined) energy.plugEv(connectorId, saved.ev);
+    station = reduce(station, { type: 'Plug', connectorId }, now()).state;
+    if (saved.idToken !== undefined) authorizations.set(connectorId, { idToken: saved.idToken });
+    const tx: Transaction201 = {
+      id: saved.transactionId,
+      seqNo: saved.seqNo,
+      startedAt: saved.startedAt,
+      meterStartWh: saved.meterStartWh,
+      ...(saved.idToken !== undefined && { idToken: saved.idToken }),
+      ...(saved.remoteStartId !== undefined && { remoteStartId: saved.remoteStartId }),
+      ...(saved.stoppedReason !== undefined && { stoppedReason: saved.stoppedReason }),
+      ...(saved.limits !== undefined && { limits: saved.limits as TransactionLimit }),
+      chargingState: saved.chargingState ?? 'EVConnected',
+      wasCharging: saved.chargingState === 'Charging',
+      endedValues: [],
+    };
+    transactions.set(connectorId, tx);
+    station = reduce(
+      station,
+      { type: 'TransactionStarted', connectorId, transactionId: 1 },
+      now(),
+    ).state;
+    resuming.add(connectorId);
+    poweredDown = true;
+  }
+
   const restored = options.restore;
   if (restored !== undefined) {
     outbox.restore(restored.outbox);
-    // Transactions the power cut interrupted end now, as of the save (E06.FR.16).
+    // 2.1 resumes transactions interrupted for at most TxCtrlr.ResumptionTimeout (E17.FR.10);
+    // the others end now, as of the save (E06.FR.16, E17.FR.21).
+    const timeoutS = v21 ? dmInt('TxCtrlr', 'ResumptionTimeout') : 0;
+    const resumable = timeoutS > 0 && now() - restored.savedAt <= timeoutS * 1000;
     for (const saved of restored.transactions ?? []) {
+      if (resumable && findConnector(station, saved.connectorId) !== undefined) {
+        resumeSaved(saved);
+        continue;
+      }
       const final = sampleMeter201(
         energy.meter(saved.connectorId),
         restored.savedAt,
@@ -2432,6 +2708,11 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
           ...(tx.idToken !== undefined && { idToken: tx.idToken }),
           ...(tx.remoteStartId !== undefined && { remoteStartId: tx.remoteStartId }),
           ...(tx.stoppedReason !== undefined && { stoppedReason: tx.stoppedReason }),
+          ...(v21 && {
+            chargingState: currentChargingState(connectorId),
+            ...(tx.limits !== undefined && { limits: { ...tx.limits } as Record<string, number> }),
+          }),
+          ...(v21 && evOf(connectorId) !== undefined && { ev: evOf(connectorId) as PluggedEv }),
         })),
         authCache,
         localList,
