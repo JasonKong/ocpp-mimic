@@ -1,8 +1,8 @@
 # OCPP 2.1 stations on the 2.x adapter (T97) against the built-in CSMS: the
 # boot, connector availability reported with NotifyEvent (the method 2.1
 # prefers: G01, B01.FR.05, E02.FR.05) or StatusNotification, open idToken
-# types, and Reset ImmediateAndResume, refused while there is no
-# TxCtrlr.ResumptionTimeout (B13.FR.01). Every frame is checked against OCA's
+# types, and Reset ImmediateAndResume, refused while TxCtrlr.ResumptionTimeout
+# is 0 (B13.FR.01). Every frame is checked against OCA's
 # 2.1 schemas. 2.1 has no Part 6 test cases yet, so names cite Part 2 use cases.
 name: B01 A 2.1 station boots and reports every connector's AvailabilityState with NotifyEvent
 station: { id: REG21-BOOT, persona: regression-2.1 }
@@ -51,7 +51,7 @@ steps:
       sent: TransactionEvent
       payload: { eventType: Started, idToken: { type: VIN } }
 ---
-name: F02 A remote start with a 2.1 idToken type, and B13 ImmediateAndResume refused for now
+name: F02 A remote start with a 2.1 idToken type, and B13 ImmediateAndResume refused without ResumptionTimeout
 station: { id: REG21-REMOTE, persona: regression-2.1 }
 steps:
   - csmsCall:

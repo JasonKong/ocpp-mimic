@@ -74,6 +74,7 @@ export const CERTIFICATE_ENTRIES_MAX = 20;
 /** Charging profiles installed at most (SmartChargingCtrlr.Entries maxLimit). */
 export const CHARGING_PROFILES_MAX = 20;
 const TX_POINTS = 'EVConnected,Authorized,PowerPathClosed,EnergyTransfer';
+const TX_LIMITS = 'maxEnergy,maxTime,maxSoC,maxCost';
 const AVAILABILITY = 'Available,Occupied,Reserved,Unavailable,Faulted';
 
 export function standardVariables(input: StandardVariablesInput): VariableDefinition[] {
@@ -131,6 +132,15 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
     variable(tx, 'MaxEnergyOnInvalidId', 'integer', rw('0'), { unit: 'Wh', minLimit: 0 }),
     variable(tx, 'TxStartPoint', 'MemberList', rw('PowerPathClosed'), { valuesList: TX_POINTS }),
     variable(tx, 'TxStopPoint', 'MemberList', rw('PowerPathClosed'), { valuesList: TX_POINTS }),
+    // 2.1: the transaction limits the station takes (E16.FR.12) and transactions resumed
+    // after a reset or a power loss (B13, E17; 0 s means none).
+    ...(input.ocpp === '2.1'
+      ? [
+          variable(tx, 'SupportedLimits', 'MemberList', ro(TX_LIMITS), { valuesList: TX_LIMITS }),
+          variable(tx, 'ResumptionTimeout', 'integer', rw('0'), { unit: 's', minLimit: 0 }),
+          variable(tx, 'AllowEnergyTransferResumption', 'boolean', rw('false')),
+        ]
+      : []),
 
     variable(auth, 'Enabled', 'boolean', rw('true')),
     variable(auth, 'AuthorizeRemoteStart', 'boolean', rw('true')),

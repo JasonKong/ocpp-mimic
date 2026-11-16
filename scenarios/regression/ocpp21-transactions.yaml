@@ -1,0 +1,84 @@
+# OCPP 2.1 transactions (T99) against the built-in CSMS: limits the CSMS sets
+# in its TransactionEvent answers (E16, F07) and transactions that resume
+# after a reset (B13) or a power loss (E17). Every frame is checked against
+# OCA's 2.1 schemas.
+name: E16 A maxEnergy limit is echoed with LimitSet and suspends the energy transfer
+station: { id: REG21-LIMIT, persona: regression-2.1, energyMultiplier: 1000 }
+steps:
+  # F07: the limit comes in the answer to Started.
+  - csmsReply:
+      { action: TransactionEvent, payload: { transactionLimit: { maxEnergy: 2000 } }, times: 1 }
+  - presentCard: { idToken: TAG-LIMIT, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started } }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        { triggerReason: LimitSet, transactionInfo: { transactionLimit: { maxEnergy: 2000 } } }
+  - expect:
+      sent: TransactionEvent
+      within: 15s
+      payload:
+        { triggerReason: EnergyLimitReached, transactionInfo: { chargingState: SuspendedEVSE } }
+  - expectConnector: { connector: 1, powerW: 0 }
+---
+name: E16 A maxTime limit ends the transaction when TxStopPoint has EnergyTransfer
+station:
+  id: REG21-TIME
+  persona: regression-2.1
+  deviceModel: { TxCtrlr: { TxStopPoint: EnergyTransfer } }
+steps:
+  - csmsReply: { action: TransactionEvent, payload: { transactionLimit: { maxTime: 2 } }, times: 1 }
+  - presentCard: { idToken: TAG-TIME, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { triggerReason: LimitSet } }
+  - expect:
+      sent: TransactionEvent
+      within: 10s
+      payload: { eventType: Ended, triggerReason: TimeLimitReached }
+---
+name: B13 Reset ImmediateAndResume keeps the transaction through the reboot
+station:
+  id: REG21-RESET
+  persona: regression-2.1
+  deviceModel: { TxCtrlr: { ResumptionTimeout: 60, AllowEnergyTransferResumption: true } }
+steps:
+  - expect: { sent: BootNotification }
+  - presentCard: { idToken: TAG-RESET, result: authorized }
+  - plugIn: {}
+  - expect:
+      {
+        sent: TransactionEvent,
+        payload: { eventType: Started },
+        save: { tx: '$.payload.transactionInfo.transactionId' },
+      }
+  - csmsCall: { action: Reset, payload: { type: ImmediateAndResume }, answer: { status: Accepted } }
+  - expect: { sent: TransactionEvent, payload: { triggerReason: ResetCommand } }
+  - expect: { sent: BootNotification, within: 15s, payload: { reason: RemoteReset } }
+  - expect:
+      sent: TransactionEvent
+      within: 10s
+      payload: { triggerReason: TxResumed, transactionInfo: { transactionId: '{{tx}}' } }
+---
+name: E17 A transaction resumes after a power loss shorter than ResumptionTimeout
+station:
+  id: REG21-POWER
+  persona: regression-2.1
+  deviceModel: { TxCtrlr: { ResumptionTimeout: 60, AllowEnergyTransferResumption: true } }
+steps:
+  - expect: { sent: BootNotification }
+  - presentCard: { idToken: TAG-POWER, result: authorized }
+  - plugIn: {}
+  - expect:
+      {
+        sent: TransactionEvent,
+        payload: { eventType: Started },
+        save: { tx: '$.payload.transactionInfo.transactionId' },
+      }
+  - inject: { type: powerLoss, off: 1s }
+  - expect: { sent: BootNotification, within: 15s }
+  - expect:
+      sent: TransactionEvent
+      within: 10s
+      payload: { triggerReason: TxResumed, transactionInfo: { transactionId: '{{tx}}' } }
+  - expectNo: { sent: TransactionEvent, payload: { eventType: Ended }, within: 1s }
