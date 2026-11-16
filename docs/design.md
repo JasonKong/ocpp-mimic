@@ -1382,6 +1382,38 @@ The station simulates an integrated payment terminal (C18–C23) and a dynamic Q
 
 The critical path is T93 → T94 → T96 → T97 → T98 → T99 → T103 → T110 → T112.
 
+**Accepted (T112)**
+
+M7's exit criterion G7 is met on main (664cb3a):
+
+- **2.1 against the built-in CSMS.** The 2.1 suite passes in CI's regression job ([43862739852](https://github.com/JasonKong/ocpp-mimic/actions/runs/43862739852)): 91 scenarios in 15 files, one per covered block. It runs with the 1.6 and 2.0.1 suites, 218 scenarios in all, and every frame is checked against OCA's 2.1 schemas.
+- **2.1 against CitrineOS.** The seven 2.1 scenarios CitrineOS v2.1.0 can drive pass in the CitrineOS workflow ([43862739722](https://github.com/JasonKong/ocpp-mimic/actions/runs/43862739722)), with the 2.0.1 suite: 61 in all. Its two 2.1 gaps are recorded in `scenarios/citrineos/README.md` and [#265](https://github.com/JasonKong/ocpp-mimic/issues/265).
+- **1.6 and 2.0.1 stay green.** CI (796 unit tests), the CitrineOS workflow and the SteVe workflow ([43862777345](https://github.com/JasonKong/ocpp-mimic/actions/runs/43862777345), 18 scenarios) pass on main.
+- **Scale.** 1,000 `load-ac-2.1` stations stay within the M4 thresholds on the reference machine (a 2-vCPU GitHub-hosted runner). Tariffs are on: the CSMS installs `scenarios/load/tariff.json` and the stations price their sessions themselves.
+
+| | Soak: `scenarios/load/m7-exit-21.yaml`, 1 h ([43862882430](https://github.com/JasonKong/ocpp-mimic/actions/runs/43862882430)) | Bench: 10 min, `--store` (session tracking on) ([43862887288](https://github.com/JasonKong/ocpp-mimic/actions/runs/43862887288)) |
+| --- | --- | --- |
+| Stations accepted | 1,000, the last 0.7 s after the ramp-up | 1,000 |
+| Event-loop delay p99 | 1.5 ms (limit 100 ms) | worst 5-second p99 7.5 ms, max 68.6 ms |
+| Late work | p99 2 ms, max 499 ms | heartbeats p99 1.9 ms, meter values p99 44.6 ms |
+| Memory | RSS 476 MB (limit 2 GB), heap floor +1.7 % (limit 10 %) | RSS 463 MB, heap floor 188 → 210 MB |
+| Timeouts, CALLERRORs, schema violations, unexpected disconnects | 0 | — |
+| Sessions | 1,518, 110 % of the expected 1,383 | 30 % of the stations charging |
+| Reconnect storm, power loss of 5 % | slowest recovery 1 s | — |
+
+- **By hand.** The 2.1 views were checked against an engine and the built-in CSMS:
+  - the payment terminal (pay by card, stop payment), the Payment source, limit, settlement and receipt of the session;
+  - the station's own cost next to the CSMS cost and the reference price;
+  - the payment URL, and the virtual display after a CostUpdated;
+  - an off-peak price priced in the station's time zone;
+  - the vehicle card of an ISO 15118-20 EV, with its Display values and ETA as reported.
+- **Follow-ups** (no milestone):
+  - [#261](https://github.com/JasonKong/ocpp-mimic/issues/261): one cost calculation for the reference price and the station.
+  - [#262](https://github.com/JasonKong/ocpp-mimic/issues/262): ISO 15118-20 waiting for a profile, and the ISO15118Ctrlr 2.1 variables.
+  - [#263](https://github.com/JasonKong/ocpp-mimic/issues/263): NotifySettlement queued while offline, RoamingEvseId, and the prices of resumed transactions.
+  - [#264](https://github.com/JasonKong/ocpp-mimic/issues/264): a failing scenario against CitrineOS takes about 15 minutes to end.
+  - [#265](https://github.com/JasonKong/ocpp-mimic/issues/265): CitrineOS v2.1.0's 2.1 gaps.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.

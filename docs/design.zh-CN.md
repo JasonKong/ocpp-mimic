@@ -1381,6 +1381,38 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 
 关键路径是 T93 → T94 → T96 → T97 → T98 → T99 → T103 → T110 → T112。
 
+**已验收（T112）**
+
+M7 的出口标准 G7 在 main（664cb3a）上达成：
+
+- **2.1 对内置 CSMS。** 2.1 套件在 CI 的回归 job 里通过（[43862739852](https://github.com/JasonKong/ocpp-mimic/actions/runs/43862739852)）：15 个文件、91 个场景，每个覆盖的功能块一个文件。它和 1.6、2.0.1 套件一起运行，共 218 个场景，每一帧都按 OCA 的 2.1 schema 检查。
+- **2.1 对 CitrineOS。** CitrineOS v2.1.0 能驱动的七个 2.1 场景在 CitrineOS workflow 里通过（[43862739722](https://github.com/JasonKong/ocpp-mimic/actions/runs/43862739722)），和 2.0.1 套件一起共 61 个。它在 2.1 上的两个缺口记录在 `scenarios/citrineos/README.md` 和 [#265](https://github.com/JasonKong/ocpp-mimic/issues/265)。
+- **1.6 和 2.0.1 保持全绿。** CI（796 个单元测试）、CitrineOS workflow 和 SteVe workflow（[43862777345](https://github.com/JasonKong/ocpp-mimic/actions/runs/43862777345)，18 个场景）在 main 上全部通过。
+- **规模。** 1,000 个 `load-ac-2.1` 桩在参考机器（2 vCPU 的 GitHub 托管 runner）上保持在 M4 的阈值内。资费开启：CSMS 安装 `scenarios/load/tariff.json`，桩自己给会话计价。
+
+| | Soak：`scenarios/load/m7-exit-21.yaml`，1 小时（[43862882430](https://github.com/JasonKong/ocpp-mimic/actions/runs/43862882430)） | Bench：10 分钟，`--store`（开启会话跟踪）（[43862887288](https://github.com/JasonKong/ocpp-mimic/actions/runs/43862887288)） |
+| --- | --- | --- |
+| 被接受的桩 | 1,000，最后一个在爬坡结束后 0.7 秒 | 1,000 |
+| 事件循环延迟 p99 | 1.5 ms（上限 100 ms） | 最差的 5 秒 p99 为 7.5 ms，最大 68.6 ms |
+| 延迟的工作 | p99 2 ms，最大 499 ms | 心跳 p99 1.9 ms，计量值 p99 44.6 ms |
+| 内存 | RSS 476 MB（上限 2 GB），堆底 +1.7%（上限 10%） | RSS 463 MB，堆底 188 → 210 MB |
+| 超时、CALLERROR、schema 违规、意外断线 | 0 | — |
+| 会话 | 1,518，为预期 1,383 的 110% | 30% 的桩在充电 |
+| 重连风暴、5% 的桩断电 | 最慢恢复 1 秒 | — |
+
+- **手工检查。** 对着引擎和内置 CSMS 检查了 2.1 视图：
+  - 支付终端（刷卡支付、停止支付），会话的 Payment 来源、限额、结算和收据；
+  - 桩自己的费用，与 CSMS 费用、参考价格并排；
+  - 支付链接，以及收到 CostUpdated 后的虚拟屏幕；
+  - 按桩所在时区计价的谷时电价；
+  - ISO 15118-20 车辆的车辆卡片，Display 值和预计完成时间显示为上报值。
+- **后续工作**（不属于任何里程碑）：
+  - [#261](https://github.com/JasonKong/ocpp-mimic/issues/261)：参考价格和桩共用一套计费。
+  - [#262](https://github.com/JasonKong/ocpp-mimic/issues/262)：ISO 15118-20 等待充电曲线，以及 ISO15118Ctrlr 的 2.1 变量。
+  - [#263](https://github.com/JasonKong/ocpp-mimic/issues/263)：离线时把 NotifySettlement 放进队列、RoamingEvseId、恢复的事务的计价。
+  - [#264](https://github.com/JasonKong/ocpp-mimic/issues/264)：对 CitrineOS 失败的场景要约 15 分钟才结束。
+  - [#265](https://github.com/JasonKong/ocpp-mimic/issues/265)：CitrineOS v2.1.0 在 2.1 上的缺口。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。

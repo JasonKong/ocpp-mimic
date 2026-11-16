@@ -2,7 +2,13 @@
 
 An OCPP charge point simulator: a headless engine runs many virtual charge points against the CSMS under test. See the design in [docs/design.md](docs/design.md) ([Chinese version](docs/design.zh-CN.md)).
 
-> Status: M1 to M4 are done: OCPP 1.6J with every feature profile and the Security Whitepaper, scenarios and CI, fault injection, and scale (1,000 stations on one machine, load tests, metrics, log import, replay and calibration). M5 (OCPP 2.0.1) is next.
+> Status: M1 to M7 are done:
+>
+> - OCPP 1.6J with every feature profile and the Security Whitepaper; scenarios and CI; fault injection.
+> - Scale: 1,000 stations on one machine, load tests, metrics, log import, replay and calibration.
+> - OCPP 2.0.1 (M5), checked against CitrineOS.
+> - Charging sessions in the Web UI (M6).
+> - OCPP 2.1 (M7): tariffs and the station's own cost, ad hoc payment, ISO 15118-20 vehicle data and the 2.1 smart charging features, checked against the built-in CSMS and CitrineOS.
 
 ## Requirements
 
