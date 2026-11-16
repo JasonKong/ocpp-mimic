@@ -284,3 +284,23 @@ steps:
       payload:
         eventType: Ended
         meterValue: { $contains: { sampledValue: [{ context: Transaction.End }] } }
+---
+name: E16.FR.15 Without its own tariff, the station measures maxCost with the CSMS's CostUpdated
+station: { id: REG21-COSTUPDATED, persona: regression-2.1 }
+steps:
+  - csmsReply: { action: TransactionEvent, payload: { transactionLimit: { maxCost: 5 } }, times: 1 }
+  - presentCard: { idToken: TAG-COSTUPDATED, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { triggerReason: LimitSet, transactionInfo: { transactionLimit: { maxCost: 5 } } }
+      save: { tx: '$.payload.transactionInfo.transactionId' }
+  - csmsCall:
+      { action: CostUpdated, payload: { totalCost: 4.5, transactionId: '{{tx}}' }, answer: {} }
+  - expectNo:
+      sent: TransactionEvent
+      payload: { triggerReason: CostLimitReached }
+      within: 2s
+  - csmsCall:
+      { action: CostUpdated, payload: { totalCost: 5.2, transactionId: '{{tx}}' }, answer: {} }
+  - expect: { sent: TransactionEvent, payload: { triggerReason: CostLimitReached }, within: 5s }

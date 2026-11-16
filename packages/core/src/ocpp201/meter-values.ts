@@ -2,7 +2,7 @@
  * MeterValues in OCPP 2.0.1's shape, from the same meter as 1.6: numeric
  * values and a unitOfMeasure instead of strings and a unit.
  */
-import { sampleMeter, type MeterState, type SampleExtras } from '../meter.js';
+import { meterAt, sampleMeter, type MeterState, type SampleExtras } from '../meter.js';
 import { vehicleSampledValues, type VehicleReadings } from '../ocpp21/iso15118-20.js';
 import type {
   MeterValueType,
@@ -48,4 +48,39 @@ export function sampleMeter201(
     timestamp: sample?.timestamp ?? new Date(now).toISOString(),
     sampledValue: [first, ...rest],
   };
+}
+
+/**
+ * The station's simulated upstream meter (2.1, location Upstream): it sits on
+ * the grid side and also counts the conversion and cable losses, a fixed
+ * share of what the EVSEs deliver.
+ */
+export const UPSTREAM_LOSS = 0.02;
+
+/**
+ * One MeterValue of the upstream meter at `now` for the given outlet meters
+ * (one EVSE's for sampled data, all of them for clock-aligned data): energy,
+ * power and current with the losses on top, the same voltage; every value
+ * with location Upstream. SoC has no upstream reading.
+ */
+export function sampleUpstream(
+  meters: readonly MeterState[],
+  now: number,
+  measurands: string,
+  context: ReadingContextEnumType,
+): MeterValueType | undefined {
+  const current = meters.map((m) => meterAt(m, now));
+  const [first] = current;
+  if (first === undefined) return undefined;
+  const factor = 1 + UPSTREAM_LOSS;
+  const upstream: MeterState = {
+    ...first,
+    energyWh: current.reduce((sum, m) => sum + m.energyWh, 0) * factor,
+    powerW: current.reduce((sum, m) => sum + m.powerW, 0) * factor,
+    offeredW: current.reduce((sum, m) => sum + m.offeredW, 0),
+  };
+  const sample = sampleMeter201(upstream, now, measurands, context);
+  if (sample === undefined) return undefined;
+  const [head, ...rest] = sample.sampledValue.map((v) => ({ ...v, location: 'Upstream' as const }));
+  return head === undefined ? undefined : { ...sample, sampledValue: [head, ...rest] };
 }

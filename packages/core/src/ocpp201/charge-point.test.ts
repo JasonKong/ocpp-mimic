@@ -3813,3 +3813,63 @@ describe('a 2.1 station: ISO 15118-20 vehicle data (K18 to K20, R-EV-4)', () => 
     expect(old.cp.changeEvNeeds(1, { targetSoc: 90 })).toBe('changed');
   });
 });
+
+describe('a 2.1 station: upstream metering (J, 2.1)', () => {
+  type Sampled = { value: number; measurand?: string; location?: string; context?: string };
+  const valuesOf = (payload: JsonObject) =>
+    ((payload.meterValue as { sampledValue: Sampled[] }[] | undefined) ?? []).flatMap(
+      (m) => m.sampledValue,
+    );
+
+  it('samples the upstream meter for transactions and on the clock, with its losses', async () => {
+    const h = setup({
+      extra: { ocpp: '2.1' },
+      deviceModel: {
+        SampledDataCtrlr: {
+          UpstreamInterval: 60,
+          UpstreamMeasurands: 'Energy.Active.Import.Register,Power.Active.Import',
+        },
+        AlignedDataCtrlr: {
+          UpstreamInterval: 900,
+          UpstreamMeasurands: 'Energy.Active.Import.Register',
+        },
+      },
+    });
+    await h.boot();
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1);
+    await h.settle();
+    const started = h.calls('TransactionEvent')[0]?.payload ?? {};
+    expect(valuesOf(started).filter((v) => v.location === 'Upstream')).toEqual([
+      expect.objectContaining({
+        measurand: 'Energy.Active.Import.Register',
+        context: 'Transaction.Begin',
+      }),
+      expect.objectContaining({ measurand: 'Power.Active.Import' }),
+    ]);
+    await h.advance(60_000);
+    const periodic = h
+      .calls('TransactionEvent')
+      .map((c) => valuesOf(c.payload).filter((v) => v.location === 'Upstream'))
+      .filter((v) => v.length > 0)
+      .at(-1);
+    // 7360 W for 60 s = 122.7 Wh at the outlet; upstream 2 % more.
+    expect(periodic?.map((v) => v.value)).toEqual([125, 7507.2]);
+    // Clock-aligned: the whole station on EVSE 0, every 15 minutes.
+    await h.advance(900_000);
+    const aligned = h.calls('MeterValues').find((c) => c.payload.evseId === 0);
+    expect(valuesOf(aligned?.payload ?? {})).toEqual([
+      expect.objectContaining({
+        measurand: 'Energy.Active.Import.Register',
+        location: 'Upstream',
+        context: 'Sample.Clock',
+      }),
+    ]);
+    expect(h.calls().every((c) => OCPP21_MESSAGE_SET.validateRequest(c.action, c.payload).ok)).toBe(
+      true,
+    );
+    // A 2.0.1 station has no upstream meter.
+    const old = setup();
+    expect(old.cp.deviceModelView().some((v) => v.variable === 'UpstreamInterval')).toBe(false);
+  });
+});

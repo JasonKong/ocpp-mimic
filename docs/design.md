@@ -1344,6 +1344,11 @@ The station simulates an integrated payment terminal (C18–C23) and a dynamic Q
 
 - Core tests per module, with requirement ids in their names where a requirement drives them.
 - `scenarios/regression/ocpp21-*.yaml`, one file per block, named after Part 2 use cases and requirement ids, against the built-in CSMS with every frame checked against OCA's 2.1 schemas.
+- Implemented (T110): the 2.1 suite is 91 scenarios in 15 files, run in CI's regression job with the 1.6 and 2.0.1 suites (218 scenarios in all):
+  - core, availability, authorization (with the local list), transactions, remote control, reservation, provisioning, faults, security (with firmware, certificates and logs), smart charging, tariffs, payment, vehicle (ISO 15118-20), metering, and the built-in CSMS's 2.1 commands.
+  - The suite turned up gaps, filled here: the upstream meter of block J was not built. SampledDataCtrlr and AlignedDataCtrlr now have UpstreamInterval and UpstreamMeasurands, off by default. Transactions carry the upstream reading in Started and every UpstreamInterval. The whole station's goes in MeterValues on EVSE 0, clock-aligned. All with location Upstream, and the simulated upstream meter adds 2 % losses to energy, power and current.
+  - New scenarios also cover GetLog's DataCollectorLog, DataTransfer, and maxCost measured with the CSMS's CostUpdated (E16.FR.15).
+  - Display messages (block O) and I01–I06 stay out, as recorded under T107.
 - `scenarios/citrineos/ocpp21-*.yaml` for what CitrineOS v2.1.0 can drive, in the existing CitrineOS workflow.
 
 **Tasks**

@@ -368,3 +368,18 @@ steps:
   # Queued messages go out before the reboot.
   - expect: { sent: SecurityEventNotification, payload: { type: ResetOrReboot } }
   - expect: { sent: BootNotification, payload: { reason: RemoteReset }, within: 15s }
+---
+name: 2.1 N01 GetLog uploads a DataCollectorLog, the log type 2.1 adds
+station: { id: REG21S-COLLECTOR, persona: regression-2.1 }
+steps:
+  - csmsCall:
+      action: GetLog
+      payload:
+        {
+          logType: DataCollectorLog,
+          requestId: 9,
+          log: { remoteLocation: 'ftp://logs.example.com/' },
+        }
+      answer: { status: Accepted }
+  - expect: { sent: LogStatusNotification, payload: { status: Uploading, requestId: 9 } }
+  - expect: { sent: LogStatusNotification, payload: { status: Uploaded, requestId: 9 } }
