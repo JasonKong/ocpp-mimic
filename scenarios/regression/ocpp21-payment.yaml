@@ -1,0 +1,182 @@
+# OCPP 2.1 ad hoc payment (T104) against the built-in CSMS: the integrated
+# payment terminal (C18 to C23), VAT numbers (C18.FR.08) and web payments with
+# the dynamic QR code (C25). Every frame is checked against OCA's 2.1 schemas.
+# `{{engineUrl}}` is the engine the scenario runs on.
+name: C18 and C21 A card at the payment terminal pays for the session, and the terminal settles the station's cost
+station: { id: REG21-PAY, persona: payments-2.1, energyMultiplier: 100 }
+steps:
+  - csmsCall:
+      action: SetDefaultTariff
+      payload:
+        evseId: 0
+        tariff:
+          tariffId: ADHOC-1
+          currency: NZD
+          fixedFee:
+            prices: [{ priceFixed: 0.5, conditions: { paymentBrand: Visa } }, { priceFixed: 0 }]
+          energy: { prices: [{ priceKwh: 0.3 }] }
+      answer: { status: Accepted }
+  - presentPaymentCard: { brand: Visa, result: authorized }
+  # AuthorizeDirectPayment is false: the station authorizes the card itself (C18.FR.03).
+  - expectNo: { sent: Authorize, within: 500ms }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Started
+        idToken:
+          type: DirectPayment
+          additionalInfo: { $contains: { type: PaymentBrand, additionalIdToken: Visa } }
+        transactionInfo: { transactionLimit: { maxCost: 50 } }
+      save: { psp: '$.payload.idToken.idToken', tx: '$.payload.transactionInfo.transactionId' }
+  - charge: { duration: 2s }
+  - stopPayment: { result: stopping }
+  - expect: { sent: TransactionEvent, payload: { eventType: Ended, triggerReason: StopAuthorized } }
+  - expect:
+      sent: NotifySettlement
+      payload:
+        transactionId: '{{tx}}'
+        pspRef: '{{psp}}'
+        status: Settled
+        settlementAmount: { $gt: 0.5 }
+        receiptId: 'R-{{tx}}'
+        receiptUrl: { $regex: '^https://receipts\.example\.com/R-' }
+  - http:
+      url: '{{engineUrl}}/api/stations/REG21-PAY/sessions/1'
+      within: 5s
+      expect:
+        json:
+          session:
+            source: payment
+            state: finished
+            settlement: { status: Settled, pspRef: '{{psp}}', amount: { $gt: 0.5 } }
+---
+name: C18.FR.04 and C19 The CSMS approves the card; canceled before the start, it hears so
+station: { id: REG21-PAY-CANCEL, persona: payments-2.1 }
+steps:
+  - csmsCall:
+      action: SetVariables
+      payload:
+        setVariableData:
+          - component: { name: PaymentCtrlr }
+            variable: { name: AuthorizeDirectPayment }
+            attributeValue: 'true'
+      answer: { setVariableResult: [{ attributeStatus: Accepted }] }
+  - presentPaymentCard: { brand: Mastercard, recognition: Debit, result: authorized }
+  - expect:
+      sent: Authorize
+      payload: { idToken: { type: DirectPayment } }
+      answer: { idTokenInfo: { status: Accepted } }
+      save: { psp: '$.payload.idToken.idToken' }
+  - stopPayment: { result: canceled }
+  - expect:
+      sent: NotifySettlement
+      payload:
+        pspRef: '{{psp}}'
+        status: Canceled
+        settlementAmount: 0
+        transactionId: { $exists: false }
+  - expectNo: { sent: TransactionEvent, within: 500ms }
+---
+name: C18.FR.08 and C22 A VAT number the CSMS accepts goes on a settlement the PSP rejects
+station: { id: REG21-PAY-VAT, persona: payments-2.1, energyMultiplier: 100 }
+steps:
+  - csmsCall:
+      action: SetDefaultTariff
+      payload:
+        evseId: 0
+        tariff: { tariffId: ADHOC-2, currency: NZD, fixedFee: { prices: [{ priceFixed: 1 }] } }
+      answer: { status: Accepted }
+  - presentPaymentCard: { settlement: Rejected, result: authorized }
+  - validateVat: { vatNumber: not-a-number, evse: 1, result: Rejected }
+  - validateVat: { vatNumber: NZ123456789, evse: 1, result: Accepted }
+  - expect:
+      sent: VatNumberValidation
+      from: start
+      payload: { vatNumber: NZ123456789, evseId: 1 }
+      answer: { status: Accepted, evseId: 1, company: { name: Test Company Ltd, country: NZ } }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started } }
+  - unplug: {}
+  - expect:
+      sent: NotifySettlement
+      payload:
+        status: Rejected
+        settlementAmount: 1
+        statusInfo: { $exists: true }
+        receiptId: { $exists: false }
+        vatNumber: NZ123456789
+        vatCompany: { name: Test Company Ltd }
+---
+name: C23 The terminal raises the amount it holds as the cost nears it, and the CSMS hears the new maxCost
+station: { id: REG21-PAY-MORE, persona: payments-2.1, energyMultiplier: 100 }
+steps:
+  - csmsCall:
+      action: SetVariables
+      payload:
+        setVariableData:
+          - component: { name: PaymentCtrlr }
+            variable: { name: AuthorizationAmount }
+            attributeValue: '1'
+          - component: { name: PaymentCtrlr }
+            variable: { name: IncrementalAuthorizationAmount }
+            attributeValue: '5'
+          - component: { name: PaymentCtrlr }
+            variable: { name: IncrementalAuthorizationThreshold }
+            attributeValue: '0.5'
+      answer:
+        setVariableResult:
+          [
+            { attributeStatus: Accepted },
+            { attributeStatus: Accepted },
+            { attributeStatus: Accepted },
+          ]
+  - csmsCall:
+      action: SetDefaultTariff
+      payload:
+        evseId: 0
+        tariff: { tariffId: KWH, currency: NZD, energy: { prices: [{ priceKwh: 1 }] } }
+      answer: { status: Accepted }
+  - presentPaymentCard: { result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, transactionInfo: { transactionLimit: { maxCost: 1 } } }
+  - expect:
+      sent: TransactionEvent
+      within: 15s
+      payload: { triggerReason: LimitSet, transactionInfo: { transactionLimit: { maxCost: 6 } } }
+  - expectNo: { sent: TransactionEvent, payload: { triggerReason: CostLimitReached }, within: 1s }
+---
+name: C25 A web payment holds the EVSE, and the CSMS starts it with the limits of the payment URL
+station: { id: REG21-WEB, persona: payments-2.1 }
+steps:
+  - http:
+      url: '{{engineUrl}}/api/stations/REG21-WEB/connectors/1/payment-url?maxenergy=5000'
+      expect:
+        json:
+          url:
+            { $regex: '^https://pay\.example\.com/REG21-WEB/1/[0-9A-Za-z]{8}/v1\?maxenergy=5000$' }
+          totp: { $regex: '^[0-9A-Za-z]{8}$' }
+          validUntil: { $exists: true }
+  - csmsCall: { action: NotifyWebPaymentStarted, payload: { evseId: 1, timeout: 60 }, answer: {} }
+  # The driver pays on the web page: no local starts on the EVSE meanwhile (C25.FR.22).
+  - presentCard: { idToken: TAG-WEB, result: busy }
+  - csmsCall:
+      action: RequestStartTransaction
+      payload:
+        remoteStartId: 21
+        evseId: 1
+        idToken: { idToken: PSP-4444, type: DirectPayment }
+      answer: { status: Accepted }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Started
+        idToken: { idToken: PSP-4444, type: DirectPayment }
+        transactionInfo: { remoteStartId: 21, transactionLimit: { maxEnergy: 5000 } }
+  - http:
+      url: '{{engineUrl}}/api/stations/REG21-WEB/sessions/1'
+      within: 5s
+      expect: { json: { session: { source: payment, remoteStartId: 21, state: running } } }

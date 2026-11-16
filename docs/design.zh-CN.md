@@ -272,6 +272,9 @@ steps:
 | `plugIn` | `connector`、`ev` | 插枪；`ev` 指定 EV 配置 |
 | `unplug` | `connector` | 拔枪 |
 | `presentCard` | `connector`、`idTag`（或 `idToken`）、`type`、`result` | 在连接器上刷卡；`result` 可断言 `authorized`、`rejected`、`stopping` 或 `busy`。2.0.1 桩上卡是一个 `type` 类型的 IdToken（默认 ISO14443） |
+| `presentPaymentCard` | `connector`、`brand`、`recognition`、`readingMethod`、`cardBin`、`last4`、`expiry`、`decline`、`settlement`、`declineIncrement`、`result` | 2.1：在 EVSE 的支付终端上刷银行卡，并说明支付服务商怎么回应；`result` 可断言 `authorized`、`declined`、`rejected` 或 `busy` |
+| `stopPayment` | `connector`、`result` | 2.1：司机在终端上停止；事务开始前为 `canceled`，开始后为 `stopping` |
+| `validateVat` | `vatNumber`、`evse`、`result` | 2.1：交给 CSMS 校验的 VAT 号（`Accepted` 或 `Rejected`） |
 | `evSuspend`、`evResume` | `connector` | EV 暂停或恢复 |
 | `fault` | `connector`（0 表示整桩）、`errorCode`、`info`、`vendorErrorCode` | 触发故障 |
 | `clearFault` | `connector` | 清除故障 |
@@ -1284,10 +1287,11 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 
 桩模拟一个集成的支付终端（C18–C23）和动态二维码（C25）；独立终端和静态二维码（C24、C25）在桩这边只需要带限额的远程启动。
 
-- **终端。** `presentPaymentCard`（API、场景步骤和 Web UI）在某个 EVSE 的终端上刷卡：品牌和识别方式（例如 Visa、Contactless），变成一个 DirectPayment 类型的 idToken，id 是生成的 PspRef，additionalInfo 带上 persona 列出的 PaymentDetails。终端预授权 PaymentCtrlr.AuthorizationAmount；AuthorizeDirectPayment 为 true 时桩发 Authorize，否则本地授权。事务带上 maxCost = 预授权金额（E16），司机可以在开始前或开始后取消（C19、C20），结束时终端按桩算出的最终费用结算，除非 SettlementByCSMS，否则桩发送 NotifySettlement（C21）。行为开关可以让终端拒卡、结算失败（C22）或允许追加授权（C23）。
+- **终端。** `presentPaymentCard`（API、场景步骤和 Web UI）在某个 EVSE 的终端上刷卡：品牌和识别方式（例如 Visa、Contactless），变成一个 DirectPayment 类型的 idToken，id 是生成的 PspRef，additionalInfo 带上 persona 列出的 PaymentDetails。终端预授权 PaymentCtrlr.AuthorizationAmount；AuthorizeDirectPayment 为 true 时桩发 Authorize，否则本地授权。事务带上 maxCost = 预授权金额（E16），司机可以在开始前或开始后取消（C19、C20），结束时终端按桩算出的最终费用结算，除非 SettlementByCSMS，否则桩发送 NotifySettlement（C21）。卡本身说明支付服务商怎么回应：可以拒卡、结算被拒或失败（C22），也可以拒绝追加金额；PaymentCtrlr.IncrementalAuthorizationAmount 大于 0 时终端会追加授权（C23）。
 - **VAT 号。** 司机可以在结算前输入 VAT 号：桩发送 VatNumberValidation，并把号码和公司信息放进 NotifySettlement。
 - **网页支付（C25）。** 有 WebPaymentsCtrlr 时，每个 EVSE 的虚拟屏幕显示用 URLTemplate 生成的支付链接，带 TOTP 码（v1：对 ValidityTime 时间片做 HMAC-SHA256，base62，Length 个字符），每 ValidityTime 更新一次。NotifyWebPaymentStarted 在超时时间内禁止该 EVSE 本地启动；随后 CSMS 用 RequestStartTransaction 加限额启动事务。内置 CSMS 可以像支付后端一样校验 TOTP 码。
 - 会话跟踪器的 `payment` 启动来源（R-START-1）在终端支付和网页支付时设置，会话保存结算信息。
+- 已实现（T104）：`core/src/ocpp21/payment.ts` 提供 TOTP v1（与按规范伪代码独立实现的结果对照过）、CSMS 对动态码的校验（前后各一个时间片也算）、支付链接的生成与解析，以及 additionalInfo 用的卡信息。core 不含加密代码，所以 engine 像传 X.509 工具一样传入 node:crypto 的 HMAC-SHA256。带 Payment 功能的 2.1 桩有 PaymentCtrlr（测试默认值：AuthorizationAmount 50，PaymentDetails 为 PaymentBrand 和 PaymentRecognition，收据在 receipts.example.com），每个 EVSE 一个终端：`presentPaymentCard`（API `POST /api/stations/:id/connectors/:n/payment`、场景步骤）、`stopPayment`（`POST .../payment/stop`、步骤）和 `validateVatNumber`（`POST /api/stations/:id/vat-number`、步骤 `validateVat`）。第一个带这张卡令牌的事件附上 maxCost = 预授权金额；结束时终端按桩自己算的费用结算，没有就用 CSMS 的 totalCost，没花钱则为 Canceled；重启中断的事务按保存时的费用结算。带 WebPayments 的桩有 WebPaymentsCtrlr（首次启动生成随机 SharedSecret）和 `webPaymentUrl`（`GET .../payment-url?maxenergy=&maxtime=&maxcost=`）；链接里的限额用于网页支付在该 EVSE 上由 RequestStartTransaction 启动的事务，NotifyWebPaymentStarted 让刷卡等待（busy），直到超时或那条 RequestStartTransaction 到来。内置 CSMS 确认 NotifySettlement，并接受两个字母加 2 到 18 个字母或数字的 VAT 号，附带一个测试公司。暂未实现：RoamingEvseId 和 `{roamingevseid}` 占位符，虚拟屏幕上的二维码和 Web UI 里的终端（T107），内置 CSMS 自己的、校验 TOTP 的支付页面（T106）；NotifySettlement 只在在线时发送（不进队列）；恢复的事务（E17）只计重启前的费用。`scenarios/regression/ocpp21-payment.yaml`（persona `payments-2.1`）覆盖 C18 到 C23 和 C25。
 
 **智能充电（K 块）**
 

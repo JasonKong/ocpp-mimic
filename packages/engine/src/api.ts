@@ -24,6 +24,8 @@ import {
   type Fault,
   type PluggedEv,
   type ChargePoint201,
+  type TerminalCard,
+  type WebPaymentLimits,
   type ReferenceTariff,
 } from '@ocpp-mimic/core';
 import { probeCsms, remoteStartVia } from './csms/probe.js';
@@ -352,6 +354,27 @@ function select(fleet: Fleet, body: Record<string, unknown>): VirtualStation[] {
 }
 
 /** Runs `fn` on a connector, then answers with the station's snapshot. */
+/** A 2.1 station, or 404 for a feature only 2.1 has. */
+function station21(station: VirtualStation, what: string): ChargePoint201 {
+  if (station.chargePoint.ocpp !== '2.1') {
+    throw new HttpError(
+      404,
+      `station ${station.id} speaks OCPP ${station.chargePoint.ocpp}, without ${what}`,
+    );
+  }
+  return station.chargePoint as ChargePoint201;
+}
+
+const WEB_PAYMENT_ERRORS: Record<
+  'not-supported' | 'disabled' | 'no-hmac' | 'unknown-connector',
+  string
+> = {
+  'not-supported': "the station's persona has no WebPayments feature",
+  disabled: 'WebPaymentsCtrlr.Enabled is false',
+  'no-hmac': 'the station has no HMAC-SHA256 for the payment code',
+  'unknown-connector': 'no such EVSE',
+};
+
 function connectorAction(
   fn: (station: VirtualStation, connectorId: number, body: Record<string, unknown>) => unknown,
 ): Handler {
@@ -630,6 +653,88 @@ const routes: Route[] = [
       };
     }),
   ),
+  route(
+    'POST',
+    '/api/stations/:param/connectors/:param/payment',
+    connectorAction(async (s, c, body) => {
+      // A card at the EVSE's payment terminal on a 2.1 station (C18): how the PSP
+      // answers comes with the card (decline, the settlement, raising the amount).
+      const station = station21(s, 'a payment terminal');
+      const settlement = stringField(body, 'settlement');
+      if (settlement !== undefined && !['Settled', 'Rejected', 'Failed'].includes(settlement)) {
+        throw new HttpError(400, '"settlement" must be Settled, Rejected or Failed');
+      }
+      const card: TerminalCard = {};
+      for (const name of [
+        'brand',
+        'recognition',
+        'readingMethod',
+        'cardBin',
+        'last4',
+        'expiry',
+      ] as const) {
+        const value = stringField(body, name);
+        if (value !== undefined) card[name] = value;
+      }
+      for (const name of ['decline', 'declineIncrement'] as const) {
+        if (body[name] === undefined) continue;
+        if (typeof body[name] !== 'boolean')
+          throw new HttpError(400, `"${name}" must be true or false`);
+        card[name] = body[name];
+      }
+      if (settlement !== undefined)
+        card.settlement = settlement as 'Settled' | 'Rejected' | 'Failed';
+      return { result: await station.presentPaymentCard(c, card), station: s.snapshot() };
+    }),
+  ),
+  route(
+    'POST',
+    '/api/stations/:param/connectors/:param/payment/stop',
+    connectorAction((s, c) => ({
+      // The driver stops at the terminal: canceled before the start (C19), else it ends.
+      result: station21(s, 'a payment terminal').stopPayment(c),
+      station: s.snapshot(),
+    })),
+  ),
+  route('GET', '/api/stations/:param/connectors/:param/payment-url', async (request, context) => {
+    // The dynamic QR code's URL now (C25), with the limits a driver chose.
+    const s = stationOf(context, request.params[0]);
+    const connectorId = connectorIdOf(s, request.params[1]);
+    const limits: WebPaymentLimits = {};
+    for (const [parameter, key] of [
+      ['maxenergy', 'maxEnergy'],
+      ['maxtime', 'maxTime'],
+      ['maxcost', 'maxCost'],
+    ] as const) {
+      const text = request.query.get(parameter);
+      if (text === null) continue;
+      const value = Number(text);
+      if (text === '' || !Number.isFinite(value) || value <= 0) {
+        throw new HttpError(400, `"${parameter}" must be a positive number`);
+      }
+      limits[key] = value;
+    }
+    const result = station21(s, 'web payments').webPaymentUrl(connectorId, limits);
+    if ('error' in result) {
+      throw new HttpError(
+        result.error === 'unknown-connector' ? 404 : 409,
+        WEB_PAYMENT_ERRORS[result.error],
+      );
+    }
+    return result;
+  }),
+  route('POST', '/api/stations/:param/vat-number', async (request, context) => {
+    // A VAT number the driver entered, for the CSMS to check (C18.FR.08).
+    const s = stationOf(context, request.params[0]);
+    const body = await request.body();
+    const vatNumber = stringField(body, 'vatNumber', true);
+    if (vatNumber === '' || vatNumber.length > 20) {
+      throw new HttpError(400, '"vatNumber" must be 1 to 20 characters');
+    }
+    let evseId: number | undefined;
+    if (body.evseId !== undefined) evseId = connectorIdOf(s, String(body.evseId));
+    return station21(s, 'VAT number checks').validateVatNumber(evseId, vatNumber);
+  }),
   route(
     'POST',
     '/api/stations/:param/connectors/:param/ev-resume',

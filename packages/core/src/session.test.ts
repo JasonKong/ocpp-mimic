@@ -6,7 +6,7 @@ import {
 } from './charge-point.js';
 import { ManualClock } from './clock.js';
 import { sequentialIds } from './ids.js';
-import { createChargePoint201 } from './ocpp201/charge-point.js';
+import { createChargePoint201, type ChargePoint201 } from './ocpp201/charge-point.js';
 import { parseFrame, type JsonObject } from './ocppj.js';
 import {
   chargingStateLabel,
@@ -22,7 +22,9 @@ const T0 = Date.parse('2026-11-15T10:00:00Z');
 type Responder = (payload: JsonObject) => JsonObject | undefined;
 
 interface HarnessOptions {
-  ocpp: '1.6' | '2.0.1';
+  ocpp: '1.6' | '2.0.1' | '2.1';
+  /** 2.x: the persona's features. Default Core. */
+  features?: string[];
   csms?: Record<string, Responder>;
   config?: Record<string, string>;
   deviceModel?: Record<string, Record<string, string | number | boolean>>;
@@ -128,7 +130,8 @@ function harness(options: HarnessOptions) {
           timing: { actionDelayMs: 0 },
           send,
           onEvent,
-          features: ['Core'],
+          ocpp: options.ocpp === '2.1' ? '2.1' : '2.0.1',
+          features: options.features ?? ['Core'],
           ...(options.deviceModel !== undefined && { deviceModel: options.deviceModel }),
         });
   const receive = (text: string) => {
@@ -687,5 +690,79 @@ describe('session helpers', () => {
     });
     expect(after.open()).toEqual([]);
     expect(after.truth(1, { at: 'x', socPercent: 1, energyWh: 1, powerW: 1 })).toEqual([]);
+  });
+});
+
+describe('2.1 payment sessions', () => {
+  const terminal = (h: { cp: unknown }) => h.cp as ChargePoint201;
+
+  it('records a card at the payment terminal as a payment, with its settlement and receipt', async () => {
+    const h = harness({
+      ocpp: '2.1',
+      features: ['Core', 'Payment'],
+      deviceModel: { PaymentCtrlr: { ReceiptByCSMS: true } },
+      csms: {
+        TransactionEvent: (p) => (p.eventType === 'Ended' ? { totalCost: 3.5 } : {}),
+        NotifySettlement: () => ({ receiptUrl: 'https://csms.example.com/receipts/1' }),
+      },
+    });
+    await h.boot();
+    const result = terminal(h).presentPaymentCard(1, { brand: 'Mastercard' });
+    await h.settle();
+    expect(await result).toBe('authorized');
+    h.cp.plugIn(1);
+    await h.advance(2000);
+    h.cp.unplug(1);
+    await h.settle();
+    const [session] = h.list();
+    expect(session).toMatchObject({
+      source: 'payment',
+      state: 'finished',
+      idToken: { type: 'DirectPayment' },
+      settlement: {
+        status: 'Settled',
+        amount: 3.5,
+        receiptUrl: 'https://csms.example.com/receipts/1',
+      },
+    });
+    expect(session?.settlement?.pspRef).toBe(session?.idToken?.idToken);
+  });
+
+  it('records a payment canceled before the start, with its Canceled settlement', async () => {
+    const h = harness({
+      ocpp: '2.1',
+      features: ['Core', 'Payment'],
+      deviceModel: { PaymentCtrlr: { AuthorizeDirectPayment: true } },
+      csms: { NotifySettlement: () => ({}) },
+    });
+    await h.boot();
+    const result = terminal(h).presentPaymentCard(1);
+    await h.settle();
+    expect(await result).toBe('authorized');
+    expect(terminal(h).stopPayment(1)).toBe('canceled');
+    await h.settle();
+    expect(h.list()).toEqual([
+      expect.objectContaining({
+        source: 'payment',
+        state: 'not-started',
+        failure: { reason: 'StartFailed', detail: 'canceled at the payment terminal' },
+        settlement: expect.objectContaining({ status: 'Canceled', amount: 0 }),
+      }),
+    ]);
+  });
+
+  it('records a remote start with a DirectPayment token as a payment (web payment)', async () => {
+    const h = harness({ ocpp: '2.1', features: ['Core', 'WebPayments'] });
+    await h.boot();
+    await h.csmsCall('RequestStartTransaction', {
+      remoteStartId: 7,
+      evseId: 1,
+      idToken: { idToken: '4444', type: 'DirectPayment' },
+    });
+    h.cp.plugIn(1);
+    await h.advance(2000);
+    expect(h.list()).toEqual([
+      expect.objectContaining({ source: 'payment', remoteStartId: 7, state: 'running' }),
+    ]);
   });
 });

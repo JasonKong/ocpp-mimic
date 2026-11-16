@@ -63,6 +63,8 @@ export const IMPLEMENTED_201_PROFILES: readonly string[] = [
   'Reservation',
   // 2.1's feature groups, as they are built (M7).
   'TariffAndCost',
+  'Payment',
+  'WebPayments',
 ];
 
 /** Feature profiles this version of the charge point implements. */

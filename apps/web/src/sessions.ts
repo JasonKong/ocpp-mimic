@@ -15,6 +15,7 @@ export const SOURCE_LABELS: Record<SessionSource, string> = {
   local: 'Card',
   remote: 'Remote start',
   noAuth: 'No authorization',
+  payment: 'Payment',
 };
 
 export const SOURCE_HINTS: Record<SessionSource, string> = {
@@ -22,6 +23,8 @@ export const SOURCE_HINTS: Record<SessionSource, string> = {
   remote:
     'Started by the CSMS (RemoteStartTransaction / RequestStartTransaction): the path a third-party app takes',
   noAuth: 'Started without authorization (idToken type NoAuthorization)',
+  payment:
+    "Paid ad hoc (OCPP 2.1, idToken type DirectPayment): at the station's payment terminal or on a web page the CSMS started it from",
 };
 
 export const STATE_LABELS: Record<SessionState, string> = {

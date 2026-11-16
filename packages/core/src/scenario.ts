@@ -100,6 +100,19 @@ export interface ReplayFrame {
   frame: unknown[];
 }
 
+/** A payment card in a scenario: what the terminal reads, and the PSP's answers. */
+export interface PaymentCardStep {
+  brand?: string;
+  recognition?: string;
+  readingMethod?: string;
+  cardBin?: string;
+  last4?: string;
+  expiry?: string;
+  decline?: boolean;
+  settlement?: 'Settled' | 'Rejected' | 'Failed';
+  declineIncrement?: boolean;
+}
+
 export type ScenarioStep =
   | (ActionBase & { kind: 'plugIn'; connector: number; ev?: string })
   | (ActionBase & {
@@ -114,6 +127,25 @@ export type ScenarioStep =
       /** The IdToken type for a 2.0.1 station; default ISO14443. */
       type?: string;
       result?: CardResult;
+    })
+  | (ActionBase & {
+      kind: 'presentPaymentCard';
+      connector: number;
+      /** The card and how its PSP answers (2.1 payment terminal, C18 to C23). */
+      card: PaymentCardStep;
+      result?: 'authorized' | 'declined' | 'rejected' | 'busy';
+    })
+  | (ActionBase & {
+      kind: 'stopPayment';
+      connector: number;
+      result?: 'canceled' | 'stopping';
+    })
+  | (ActionBase & {
+      kind: 'validateVat';
+      vatNumber: string;
+      /** The EVSE whose payment the number is for; none for the station. */
+      evse?: number;
+      result?: 'Accepted' | 'Rejected';
     })
   | (ActionBase & {
       kind: 'fault';
@@ -432,6 +464,29 @@ const ARGUMENTS = {
       ...action,
     },
   ),
+  presentPaymentCard: object(
+    {},
+    {
+      connector,
+      evse,
+      brand: string({ maxLength: 50 }),
+      recognition: string({ maxLength: 50 }),
+      readingMethod: string({ maxLength: 50 }),
+      cardBin: string({ maxLength: 8 }),
+      last4: string({ maxLength: 4 }),
+      expiry: string({ maxLength: 7 }),
+      decline: boolean(),
+      settlement: oneOf(['Settled', 'Rejected', 'Failed']),
+      declineIncrement: boolean(),
+      result: oneOf(['authorized', 'declined', 'rejected', 'busy']),
+      ...action,
+    },
+  ),
+  stopPayment: object({}, { connector, evse, result: oneOf(['canceled', 'stopping']), ...action }),
+  validateVat: object(
+    { vatNumber: nonEmpty },
+    { evse, result: oneOf(['Accepted', 'Rejected']), ...action },
+  ),
   fault: object(
     { errorCode: ChargePointErrorCodeSchema },
     { connector, evse, info: string(), vendorErrorCode: string(), ...action },
@@ -742,6 +797,38 @@ function parseStep(
         ...pick(args, ['type', 'result'] as const),
       } as ScenarioStep;
     }
+    case 'presentPaymentCard':
+      return {
+        kind: argsKind,
+        ...base,
+        connector: connectorId,
+        card: pick(args, [
+          'brand',
+          'recognition',
+          'readingMethod',
+          'cardBin',
+          'last4',
+          'expiry',
+          'decline',
+          'settlement',
+          'declineIncrement',
+        ] as const),
+        ...pick(args, ['result'] as const),
+      } as ScenarioStep;
+    case 'stopPayment':
+      return {
+        kind: argsKind,
+        ...base,
+        connector: connectorId,
+        ...pick(args, ['result'] as const),
+      } as ScenarioStep;
+    case 'validateVat':
+      return {
+        kind: argsKind,
+        ...base,
+        vatNumber: args.vatNumber,
+        ...pick(args, ['evse', 'result'] as const),
+      } as ScenarioStep;
     case 'fault':
       if (args.errorCode === 'NoError') {
         issues.push({
@@ -1130,6 +1217,12 @@ export function stepLabel(step: ScenarioStep): string {
       return `${at}${step.kind} connector ${step.connector}`;
     case 'presentCard':
       return `${at}presentCard ${step.idTag} at connector ${step.connector}`;
+    case 'presentPaymentCard':
+      return `${at}presentPaymentCard ${step.card.brand ?? 'Visa'} at EVSE ${step.connector}`;
+    case 'stopPayment':
+      return `${at}stopPayment at EVSE ${step.connector}`;
+    case 'validateVat':
+      return `${at}validateVat ${step.vatNumber}${step.evse !== undefined ? ` for EVSE ${step.evse}` : ''}`;
     case 'fault':
       return `${at}fault ${step.errorCode} on connector ${step.connector}`;
     case 'offline':

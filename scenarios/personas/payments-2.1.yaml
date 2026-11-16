@@ -1,0 +1,19 @@
+# tariffs-2.1 with an integrated payment terminal (Payment) and the dynamic QR
+# code of web payments (WebPayments), for the 2.1 payment scenarios. Costs are
+# priced every second so a cost limit is noticed quickly.
+persona: payments-2.1
+extends: tariffs-2.1
+description: tariffs-2.1 with a payment terminal and web payments
+features:
+  [
+    Core,
+    AdvancedSecurity,
+    LocalAuthListManagement,
+    SmartCharging,
+    Reservation,
+    TariffAndCost,
+    Payment,
+    WebPayments,
+  ]
+deviceModel:
+  TariffCostCtrlr: { 'Interval:Tariff': 1 }

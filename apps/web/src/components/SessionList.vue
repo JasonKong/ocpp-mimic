@@ -122,4 +122,8 @@ li.empty {
   color: var(--accent);
   background: var(--selected);
 }
+.source.payment {
+  color: var(--good);
+  background: var(--good-bg);
+}
 </style>

@@ -3,6 +3,7 @@
  * its CSMS through a transport, starts and stops them, and keeps their state
  * in the State Store so they survive an engine restart.
  */
+import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
   configInt,
@@ -23,6 +24,7 @@ import {
   type ChargePointEvent,
   type ChargePointSnapshot,
   type Clock,
+  type HmacSha256,
   type ConnectionSecurity,
   type IdGenerator,
   type InjectionRequest,
@@ -44,6 +46,10 @@ import { probeCsms, type CsmsKind } from './csms/probe.js';
 import type { PersonaRegistry } from './personas.js';
 import type { StateStore, StationDefinition, StationSecurity } from './state-store.js';
 import { createSystemClock, randomIds } from './system-clock.js';
+
+/** HMAC-SHA256 for a 2.1 station's web payment code (C25); core has no crypto. */
+const hmacSha256: HmacSha256 = (key, message) =>
+  new Uint8Array(createHmac('sha256', key).update(message).digest());
 import {
   createTransport,
   type BackoffPolicy,
@@ -444,6 +450,8 @@ export function createFleet(options: FleetOptions): Fleet {
           }),
       },
       certificateTools,
+      // 2.1 web payments: the dynamic QR code's TOTP (C25).
+      hmacSha256,
       serialNumber: definition.id,
       ...(definition.energyMultiplier !== undefined && {
         energyMultiplier: definition.energyMultiplier,

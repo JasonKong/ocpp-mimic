@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { CertificateTools } from '../certificates.js';
 import { ManualClock } from '../clock.js';
@@ -5,6 +6,7 @@ import { sequentialIds } from '../ids.js';
 import { OCPP201_MESSAGE_SET, OCPP21_MESSAGE_SET } from '../message-set.js';
 import { parseFrame, type CallFrame, type Frame, type JsonObject } from '../ocppj.js';
 import { resolvePersonas } from '../persona.js';
+import { checkTotpV1, type HmacSha256 } from '../ocpp21/payment.js';
 import {
   createChargePoint201,
   type ChargePoint201Options,
@@ -3263,5 +3265,355 @@ describe('a 2.0.1 station: Reservation', () => {
         evseId: 1,
       }),
     ).toMatchObject({ errorCode: 'NotSupported' });
+  });
+});
+
+describe('a 2.1 station: ad hoc payment (C18 to C25)', () => {
+  /** Visa pays a 0.50 fixed fee, every card 0.30 per kWh. */
+  const ADHOC = {
+    tariffId: 'ADHOC',
+    currency: 'NZD',
+    fixedFee: {
+      prices: [{ priceFixed: 0.5, conditions: { paymentBrand: 'Visa' } }, { priceFixed: 0 }],
+    },
+    energy: { prices: [{ priceKwh: 0.3 }] },
+  };
+  const terminal = (
+    csms: Record<string, Responder> = {},
+    deviceModel: ChargePoint201Options['deviceModel'] = {},
+  ) =>
+    setup({
+      features: ['Core', 'TariffAndCost', 'Payment'],
+      csms: { NotifySettlement: () => ({}), ...csms },
+      deviceModel,
+      extra: { ocpp: '2.1' },
+    });
+  type Event = {
+    eventType: string;
+    triggerReason: string;
+    idToken?: JsonObject;
+    transactionInfo: { transactionId: string; transactionLimit?: JsonObject };
+    costDetails?: { totalCost: { total: { inclTax?: number } } };
+  };
+  const txEvents = (h: ReturnType<typeof setup>) =>
+    h.calls('TransactionEvent').map((c) => c.payload as unknown as Event);
+  const settlements = (h: ReturnType<typeof setup>) =>
+    h.calls('NotifySettlement').map((c) => c.payload);
+  const valid21 = (h: ReturnType<typeof setup>) =>
+    h.calls().every((c) => OCPP21_MESSAGE_SET.validateRequest(c.action, c.payload).ok);
+  async function pay(h: ReturnType<typeof setup>, evseId: number, card = {}) {
+    const result = h.cp.presentPaymentCard(evseId, card);
+    await h.settle();
+    return result;
+  }
+
+  it('authorizes a card itself, limits the cost to the amount held, and settles the final cost (C18, C21)', async () => {
+    const h = terminal();
+    await h.boot();
+    await h.csmsCall('SetDefaultTariff', { evseId: 0, tariff: ADHOC });
+    expect(await pay(h, 1, { brand: 'Visa' })).toBe('authorized');
+    // AuthorizeDirectPayment is false: no Authorize (C18.FR.03).
+    expect(h.calls('Authorize')).toHaveLength(0);
+    h.cp.plugIn(1);
+    await h.advance(0);
+    const [started] = txEvents(h);
+    expect(started).toMatchObject({
+      eventType: 'Started',
+      idToken: {
+        type: 'DirectPayment',
+        additionalInfo: [
+          { type: 'PaymentBrand', additionalIdToken: 'Visa' },
+          { type: 'PaymentRecognition', additionalIdToken: 'CC' },
+        ],
+      },
+      transactionInfo: { transactionLimit: { maxCost: 50 } },
+    });
+    const pspRef = String(started?.idToken?.idToken);
+    expect(pspRef).toMatch(/^psp-/);
+    await h.advance(5 * 60_000);
+    expect(h.cp.stopPayment(1)).toBe('stopping');
+    await h.settle();
+    const ended = txEvents(h).at(-1);
+    expect(ended).toMatchObject({ eventType: 'Ended', triggerReason: 'StopAuthorized' });
+    // 7360 W for 5 min = 613.3 Wh: 0.184 + the Visa fee 0.50 = 0.684, 0.68.
+    expect(ended?.costDetails?.totalCost.total.inclTax).toBe(0.68);
+    const transactionId = started?.transactionInfo.transactionId ?? '';
+    expect(settlements(h)).toEqual([
+      {
+        transactionId,
+        pspRef,
+        status: 'Settled',
+        settlementAmount: 0.68,
+        settlementTime: new Date(h.clock.now()).toISOString(),
+        receiptId: `R-${transactionId}`,
+        receiptUrl: `https://receipts.example.com/R-${transactionId}`,
+      },
+    ]);
+    expect(h.cp.persistentState().payments).toBeUndefined();
+    expect(valid21(h)).toBe(true);
+  });
+
+  it('asks the CSMS with AuthorizeDirectPayment, and cancels before and after the start (C18.FR.04, C19, C20)', async () => {
+    let refuse = false;
+    const h = terminal(
+      {
+        Authorize: () => ({ idTokenInfo: { status: refuse ? 'Invalid' : 'Accepted' } }),
+      },
+      { PaymentCtrlr: { AuthorizeDirectPayment: true } },
+    );
+    await h.boot();
+    expect(await pay(h, 1)).toBe('authorized');
+    expect(h.calls('Authorize')[0]?.payload).toMatchObject({
+      idToken: { type: 'DirectPayment' },
+    });
+    // The driver cancels before plugging in: released, and the CSMS hears it (C19.FR.02).
+    expect(h.cp.stopPayment(1)).toBe('canceled');
+    await h.settle();
+    expect(settlements(h)).toEqual([
+      {
+        pspRef: expect.stringMatching(/^psp-/),
+        status: 'Canceled',
+        settlementAmount: 0,
+        settlementTime: expect.any(String),
+      },
+    ]);
+    // No cable within EVConnectionTimeOut: canceled the same way (C19.FR.01).
+    expect(await pay(h, 1)).toBe('authorized');
+    await h.advance(60_000);
+    expect(settlements(h)).toHaveLength(2);
+    expect(h.cp.persistentState().payments).toBeUndefined();
+    // Stopped after the start, before any cost: Canceled with the transaction (C20).
+    expect(await pay(h, 2)).toBe('authorized');
+    h.cp.plugIn(2);
+    await h.advance(0);
+    expect(h.cp.stopPayment(2)).toBe('stopping');
+    await h.settle();
+    const transactionId = txEvents(h)[0]?.transactionInfo.transactionId;
+    expect(settlements(h).at(-1)).toMatchObject({
+      transactionId,
+      status: 'Canceled',
+      settlementAmount: 0,
+    });
+    // The CSMS refuses the payment: no session, nothing to settle (C18.FR.07).
+    refuse = true;
+    expect(await pay(h, 1)).toBe('rejected');
+    expect(h.cp.stopPayment(1)).toBe('no-payment');
+    expect(settlements(h)).toHaveLength(3);
+    expect(valid21(h)).toBe(true);
+  });
+
+  it('settles the CSMS cost, reports a rejected or failed settlement without a receipt, and leaves it to the CSMS when told (C21, C22)', async () => {
+    const h = setup({
+      features: ['Core', 'Payment'],
+      csms: {
+        NotifySettlement: () => ({}),
+        TransactionEvent: (p) => (p.eventType === 'Ended' ? { totalCost: 4.2 } : {}),
+      },
+      extra: { ocpp: '2.1' },
+    });
+    await h.boot();
+    expect(await pay(h, 1, { settlement: 'Rejected' })).toBe('authorized');
+    h.cp.plugIn(1);
+    await h.advance(0);
+    h.cp.unplug(1);
+    await h.settle();
+    expect(settlements(h)).toEqual([
+      expect.objectContaining({
+        status: 'Rejected',
+        settlementAmount: 4.2,
+        statusInfo: 'The payment service provider rejected the settlement',
+      }),
+    ]);
+    expect(settlements(h)[0]).not.toHaveProperty('receiptId');
+    expect(await pay(h, 2, { settlement: 'Failed' })).toBe('authorized');
+    h.cp.plugIn(2);
+    await h.advance(0);
+    h.cp.unplug(2);
+    await h.settle();
+    expect(settlements(h).at(-1)).toMatchObject({ status: 'Failed', settlementAmount: 4.2 });
+
+    const byCsms = setup({
+      features: ['Core', 'Payment'],
+      csms: { TransactionEvent: (p) => (p.eventType === 'Ended' ? { totalCost: 4.2 } : {}) },
+      deviceModel: { PaymentCtrlr: { SettlementByCSMS: true } },
+      extra: { ocpp: '2.1' },
+    });
+    await byCsms.boot();
+    await pay(byCsms, 1);
+    byCsms.cp.plugIn(1);
+    await byCsms.advance(0);
+    byCsms.cp.unplug(1);
+    await byCsms.settle();
+    expect(byCsms.calls('NotifySettlement')).toHaveLength(0);
+  });
+
+  it('raises the amount held as the cost nears it, unless the PSP refuses (C23)', async () => {
+    const PER_KWH = { tariffId: 'KWH', currency: 'NZD', energy: { prices: [{ priceKwh: 1 }] } };
+    const limitSets = (h: ReturnType<typeof setup>) =>
+      txEvents(h)
+        .filter((e) => e.triggerReason === 'LimitSet')
+        .map((e) => e.transactionInfo.transactionLimit);
+    const settings = {
+      PaymentCtrlr: {
+        AuthorizationAmount: 2,
+        IncrementalAuthorizationAmount: 5,
+        IncrementalAuthorizationThreshold: 0.5,
+      },
+    };
+    const h = terminal({}, settings);
+    await h.boot();
+    await h.csmsCall('SetDefaultTariff', { evseId: 0, tariff: PER_KWH });
+    await pay(h, 1);
+    h.cp.plugIn(1);
+    await h.advance(0);
+    // The cost is priced every 10 s: 1.472 at 720 s, 1.492 at 730 s, 1.513 at 740 s, past 2 - 0.5.
+    await h.advance(735_000);
+    expect(limitSets(h)).toEqual([]);
+    await h.advance(10_000);
+    expect(limitSets(h)).toEqual([{ maxCost: 7 }]);
+    expect(txEvents(h).some((e) => e.triggerReason === 'CostLimitReached')).toBe(false);
+
+    const refused = terminal({}, settings);
+    await refused.boot();
+    await refused.csmsCall('SetDefaultTariff', { evseId: 0, tariff: PER_KWH });
+    await pay(refused, 1, { declineIncrement: true });
+    refused.cp.plugIn(1);
+    await refused.advance(990_000);
+    expect(limitSets(refused)).toEqual([]);
+    expect(txEvents(refused).some((e) => e.triggerReason === 'CostLimitReached')).toBe(true);
+  });
+
+  it('has the CSMS check a VAT number and puts it on the settlement (C18.FR.08, C21.FR.02)', async () => {
+    const company = {
+      name: 'Test Ltd',
+      address1: '1 Test Street',
+      city: 'Testville',
+      country: 'NZ',
+    };
+    const h = terminal({
+      VatNumberValidation: (p) =>
+        p.vatNumber === 'NZ123456789'
+          ? { vatNumber: p.vatNumber, evseId: p.evseId, status: 'Accepted', company }
+          : { vatNumber: p.vatNumber, status: 'Rejected' },
+    });
+    await h.boot();
+    await h.csmsCall('SetDefaultTariff', { evseId: 0, tariff: ADHOC });
+    await pay(h, 1);
+    const vat = async (number: string) => {
+      const result = h.cp.validateVatNumber(1, number);
+      await h.settle();
+      return result;
+    };
+    expect(await vat('XX0')).toEqual({ status: 'Rejected' });
+    expect(await vat('NZ123456789')).toEqual({
+      status: 'Accepted',
+      company,
+    });
+    expect(h.calls('VatNumberValidation').at(-1)?.payload).toEqual({
+      vatNumber: 'NZ123456789',
+      evseId: 1,
+    });
+    h.cp.plugIn(1);
+    await h.advance(60_000);
+    h.cp.stopPayment(1);
+    await h.settle();
+    expect(settlements(h)[0]).toMatchObject({
+      status: 'Settled',
+      vatNumber: 'NZ123456789',
+      vatCompany: company,
+    });
+    // Without the Payment feature there is nothing to check.
+    const plain = setup({ extra: { ocpp: '2.1' } });
+    expect(await plain.cp.validateVatNumber(1, 'NZ123456789')).toEqual({
+      status: 'not-supported',
+    });
+    expect(await plain.cp.presentPaymentCard(1)).toBe('not-supported');
+  });
+
+  it('settles a card after a restart ended its transaction, with the cost at the save', async () => {
+    const h = terminal();
+    await h.boot();
+    await h.csmsCall('SetDefaultTariff', { evseId: 0, tariff: ADHOC });
+    await pay(h, 1);
+    h.cp.plugIn(1);
+    await h.advance(60_000);
+    const saved = h.cp.persistentState();
+    // 7360 W for 60 s = 122.7 Wh: 0.0368 + 0.50.
+    expect(saved.payments).toEqual([expect.objectContaining({ lastCost: 0.54 })]);
+    const restored = setup({
+      features: ['Core', 'TariffAndCost', 'Payment'],
+      csms: { NotifySettlement: () => ({}) },
+      restore: saved,
+      extra: { ocpp: '2.1' },
+    });
+    await restored.boot();
+    await restored.advance(0);
+    // The transaction ends after the restart (no resumption): the card settles what it cost.
+    expect(restored.events()).toEqual(['Ended AbnormalCondition PowerLoss']);
+    expect(settlements(restored)).toEqual([
+      expect.objectContaining({ status: 'Settled', settlementAmount: 0.54 }),
+    ]);
+    expect(restored.cp.persistentState().payments).toBeUndefined();
+  });
+
+  it('builds the dynamic QR code, waits for the web payment, and starts it with the URL limits (C25)', async () => {
+    const hmac: HmacSha256 = (key, message) =>
+      new Uint8Array(createHmac('sha256', key).update(message).digest());
+    const h = setup({
+      features: ['Core', 'WebPayments'],
+      extra: { ocpp: '2.1', hmacSha256: hmac, serialNumber: 'CS-1' },
+    });
+    await h.boot();
+    expect(
+      await h.csmsCall('SetVariables', {
+        setVariableData: [
+          {
+            component: { name: 'WebPaymentsCtrlr' },
+            variable: { name: 'SharedSecret' },
+            attributeValue: 'shared-secret-1',
+          },
+        ],
+      }),
+    ).toMatchObject({ setVariableResult: [{ attributeStatus: 'Accepted' }] });
+    const qr = h.cp.webPaymentUrl(1, { maxEnergy: 2000 });
+    if (!('url' in qr)) throw new Error(qr.error);
+    expect(qr.url).toBe(`https://pay.example.com/CS-1/1/${qr.totp}/v1?maxenergy=2000`);
+    expect(qr.totp).toHaveLength(8);
+    const settings = { sharedSecret: 'shared-secret-1', validityS: 30, length: 8 };
+    expect(checkTotpV1(qr.totp, settings, h.clock.now(), hmac)).toBe(true);
+    expect(Date.parse(qr.validUntil) - h.clock.now()).toBeLessThanOrEqual(30_000);
+    // The driver pays on the web: local starts wait (C25.FR.22).
+    expect(await h.csmsCall('NotifyWebPaymentStarted', { evseId: 1, timeout: 60 })).toEqual({});
+    expect(await h.present(1, 'TAG-1')).toBe('busy');
+    expect(
+      await h.csmsCall('RequestStartTransaction', {
+        idToken: { idToken: '4444', type: 'DirectPayment' },
+        remoteStartId: 7,
+        evseId: 1,
+      }),
+    ).toEqual({ status: 'Accepted' });
+    h.cp.plugIn(1);
+    await h.advance(0);
+    const started = h.calls('TransactionEvent')[0]?.payload;
+    expect(started).toMatchObject({
+      eventType: 'Started',
+      idToken: { idToken: '4444', type: 'DirectPayment' },
+      transactionInfo: { remoteStartId: 7, transactionLimit: { maxEnergy: 2000 } },
+    });
+    // A hold ends after its timeout.
+    await h.csmsCall('NotifyWebPaymentStarted', { evseId: 2, timeout: 10 });
+    expect(await h.present(2, 'TAG-2')).toBe('busy');
+    await h.advance(10_000);
+    expect(await h.present(2, 'TAG-2')).toBe('authorized');
+    expect(valid21(h)).toBe(true);
+    // Without WebPayments: NotSupported, and no URL.
+    const plain = setup({ extra: { ocpp: '2.1', hmacSha256: hmac } });
+    await plain.boot();
+    expect(
+      await plain.csmsCall('NotifyWebPaymentStarted', { evseId: 1, timeout: 60 }),
+    ).toMatchObject({ errorCode: 'NotSupported' });
+    expect(plain.cp.webPaymentUrl(1)).toEqual({ error: 'not-supported' });
+    const noHmac = setup({ features: ['Core', 'WebPayments'], extra: { ocpp: '2.1' } });
+    expect(noHmac.cp.webPaymentUrl(1)).toEqual({ error: 'no-hmac' });
   });
 });

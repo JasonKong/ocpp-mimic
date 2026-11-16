@@ -39,7 +39,7 @@ Starts added in OCPP 2.1 (checked against the 2.1 JSON schemas and appendices):
 
 Requirements:
 
-- **R-START-1 (P0)** The engine records the start source of every session. It knows the source when it handles RemoteStartTransaction / RequestStartTransaction, so nothing has to be inferred from frames. Sources: local, remote, noAuth; reserved: payment (2.1), vehicle (Autocharge / VIN), plugAndCharge.
+- **R-START-1 (P0)** The engine records the start source of every session. It knows the source when it handles RemoteStartTransaction / RequestStartTransaction, so nothing has to be inferred from frames. Sources: local, remote, noAuth, payment (2.1: a DirectPayment idToken, from the payment terminal or a web payment; M7 T104); reserved: vehicle (Autocharge / VIN), plugAndCharge.
 - **R-START-2 (P0)** Session cards and the session page show the start source as a badge, with the idTag / idToken and its type (2.0.1), and the remoteStartId for remote starts (2.0.1).
 - **R-START-3 (P0)** The top of the session page shows a start timeline: the start messages in order, for example for a 1.6 remote start RemoteStartTransaction → Accepted → Authorize → StartTransaction → transactionId. Each step opens its frame and shows how long it took.
 - **R-START-4 (P1)** Remote starts that are rejected or fail on the way are recorded too: Rejected, connector busy, authorization refused, cable not plugged in before the timeout. These are the cases most often looked into when integrating a third party.

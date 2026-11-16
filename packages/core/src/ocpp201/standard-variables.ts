@@ -7,6 +7,7 @@
  */
 import { SUPPORTED_MEASURANDS } from '../meter.js';
 import { OCPP21_ID_TOKEN_TYPES } from '../ocpp21/constants.js';
+import { PAYMENT_DETAILS, TOTP_VERSIONS, WEB_PAYMENT_PARAMETERS } from '../ocpp21/payment.js';
 import type { AttributeDefinition, VariableDataType, VariableDefinition } from './device-model.js';
 import type { ComponentType } from './messages.js';
 
@@ -253,6 +254,78 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
       variable(tariffCost, 'TariffFallbackMessage', 'string', rw(''), { maxLimit: 512 }),
       variable(tariffCost, 'TotalCostFallbackMessage', 'string', rw(''), { maxLimit: 512 }),
       variable(tariffCost, 'Problem', 'boolean', ro('false')),
+    );
+  }
+
+  if (input.ocpp === '2.1' && input.features.includes('Payment')) {
+    // An integrated payment terminal (C18 to C23); appendix v2.0 values, test defaults.
+    const payment: ComponentType = { name: 'PaymentCtrlr' };
+    out.push(
+      variable(payment, 'Enabled', 'boolean', rw('true')),
+      variable(payment, 'Problem', 'boolean', ro('false')),
+      variable(payment, 'AuthorizeDirectPayment', 'boolean', rw('false')),
+      variable(payment, 'AuthorizationAmount', 'decimal', rw('50'), { minLimit: 0 }),
+      // 0: no incremental authorization (C23.FR.01).
+      variable(payment, 'IncrementalAuthorizationAmount', 'decimal', rw('0'), { minLimit: 0 }),
+      variable(payment, 'IncrementalAuthorizationThreshold', 'decimal', rw('5'), { minLimit: 0 }),
+      variable(payment, 'PaymentDetails', 'MemberList', rw('PaymentBrand,PaymentRecognition'), {
+        valuesList: PAYMENT_DETAILS.join(','),
+      }),
+      variable(payment, 'SettlementByCSMS', 'boolean', rw('false')),
+      variable(payment, 'ReceiptServerUrl', 'string', rw('https://receipts.example.com'), {
+        maxLimit: 512,
+      }),
+      variable(payment, 'ReceiptByCSMS', 'boolean', rw('false')),
+      ...(
+        [
+          ['Id', 'M-0001'],
+          ['TaxId', ''],
+          ['Name', 'Test merchant'],
+          ['Address', '1 Test Street'],
+          ['City', 'Testville'],
+        ] as const
+      ).map(([instance, value]) =>
+        variable(payment, 'Merchant', 'string', rw(value), { instance, maxLimit: 100 }),
+      ),
+      variable(payment, 'TerminalID', 'string', ro('TERM-0001')),
+      variable(payment, 'PaymentServiceProvider', 'string', ro('Test PSP')),
+      variable(payment, 'VendorName', 'string', ro('ocpp-mimic')),
+      variable(payment, 'Model', 'string', ro('Simulated terminal')),
+      variable(payment, 'SerialNumber', 'string', ro('PT-0001')),
+      variable(payment, 'FirmwareVersion', 'string', ro('1.0.0')),
+      variable(payment, 'IMSI', 'string', ro('')),
+      variable(payment, 'ICCID', 'string', ro('')),
+      variable(payment, 'Connected', 'boolean', ro('true')),
+    );
+  }
+
+  if (input.ocpp === '2.1' && input.features.includes('WebPayments')) {
+    // The dynamic QR code (C25). The appendix has no Enabled, but C25.FR.01 relies on it.
+    // SharedSecret gets a random value at first boot (the station does it).
+    const web: ComponentType = { name: 'WebPaymentsCtrlr' };
+    out.push(
+      variable(web, 'Enabled', 'boolean', rw('true')),
+      variable(
+        web,
+        'URLTemplate',
+        'string',
+        rw('https://pay.example.com/{chargingstationid}/{evse}/{totp}/{version}'),
+        { maxLimit: 512 },
+      ),
+      variable(web, 'URLParameters', 'MemberList', ro(WEB_PAYMENT_PARAMETERS.join(',')), {
+        valuesList: WEB_PAYMENT_PARAMETERS.join(','),
+      }),
+      variable(web, 'TOTPVersion', 'OptionList', rw('v1'), { valuesList: TOTP_VERSIONS.join(',') }),
+      variable(web, 'ValidityTime', 'integer', rw('30'), {
+        unit: 's',
+        minLimit: 6,
+        maxLimit: 3600,
+      }),
+      variable(web, 'SharedSecret', 'string', wo(), { minLimit: 8, maxLimit: 64 }),
+      variable(web, 'Length', 'integer', rw('8'), { minLimit: 6, maxLimit: 32 }),
+      variable(web, 'QRCodeQuality', 'OptionList', rw('Medium'), {
+        valuesList: 'Low,Medium,Quartile,High',
+      }),
     );
   }
 
