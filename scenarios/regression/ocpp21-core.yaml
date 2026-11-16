@@ -68,3 +68,20 @@ steps:
       action: SetDefaultTariff
       payload: { evseId: 0, tariff: { tariffId: T-1, currency: NZD } }
       error: NotSupported
+---
+name: B07 A 2.1 station's base report holds the 2.1 variables, every page valid against the 2.1 schemas
+station: { id: REG21-REPORT, persona: regression-2.1 }
+steps:
+  - csmsCall:
+      action: GetBaseReport
+      payload: { requestId: 7, reportBase: FullInventory }
+      answer: { status: Accepted }
+  - expect:
+      sent: NotifyReport
+      payload:
+        requestId: 7
+        reportData:
+          $contains:
+            component: { name: AuthCtrlr }
+            variable: { name: SupportedIdTokenTypes }
+            variableCharacteristics: { dataType: MemberList }

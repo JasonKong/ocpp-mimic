@@ -1,10 +1,12 @@
 /**
- * The standard components and variables a 2.0.1 station of ocpp-mimic
- * implements, with the data types of the Part 2 appendix (v1.4) and
+ * The standard components and variables a 2.0.1 or 2.1 station of ocpp-mimic
+ * implements, with the data types of the Part 2 appendix (v1.4 for 2.0.1) and
  * spec-default values. Controllers for a certification profile appear only
- * when the persona supports the profile; later M5 tasks add theirs.
+ * when the persona supports the profile. A 2.1 station adds the 2.1 variables
+ * (appendix v2.0) whose behaviour exists; the M7 tasks add theirs.
  */
 import { SUPPORTED_MEASURANDS } from '../meter.js';
+import { OCPP21_ID_TOKEN_TYPES } from '../ocpp21/constants.js';
 import type { AttributeDefinition, VariableDataType, VariableDefinition } from './device-model.js';
 import type { ComponentType } from './messages.js';
 
@@ -17,6 +19,8 @@ export interface StandardVariablesInput {
   offeredW: number;
   /** The connector type every connector reports. Default cType2. */
   connectorType?: string;
+  /** The station's version; 2.1 adds its own variables. Default 2.0.1. */
+  ocpp?: '2.0.1' | '2.1';
 }
 
 const rw = (value?: string): AttributeDefinition => ({
@@ -60,6 +64,7 @@ function variable(
 }
 
 const MEASURANDS = SUPPORTED_MEASURANDS.join(',');
+const ID_TOKEN_TYPES_21 = OCPP21_ID_TOKEN_TYPES.join(',');
 /** Entries the Local Authorization List holds at most (LocalAuthListCtrlr.Entries maxLimit). */
 export const LOCAL_LIST_SIZE = 100;
 /** The network connection profile slots (B09.FR.06 asks for at least two). */
@@ -134,6 +139,14 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
     variable(auth, 'OfflineTxForUnknownIdEnabled', 'boolean', rw('false')),
     variable(auth, 'DisableRemoteAuthorization', 'boolean', rw('false')),
     variable(auth, 'MasterPassGroupId', 'string', rw(), { maxLimit: 36 }),
+    // 2.1's idToken type is an open string; the station names the types it takes.
+    ...(input.ocpp === '2.1'
+      ? [
+          variable(auth, 'SupportedIdTokenTypes', 'MemberList', ro(ID_TOKEN_TYPES_21, true), {
+            valuesList: ID_TOKEN_TYPES_21,
+          }),
+        ]
+      : []),
 
     variable(cache, 'Available', 'boolean', ro('true')),
     variable(cache, 'Enabled', 'boolean', rw('true')),

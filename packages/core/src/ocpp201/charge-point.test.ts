@@ -429,6 +429,30 @@ describe('a 2.1 station on the 2.x adapter', () => {
     });
   });
 
+  it('names the idToken types it takes in AuthCtrlr.SupportedIdTokenTypes, a 2.1 variable', async () => {
+    const getTypes = {
+      getVariableData: [
+        { component: { name: 'AuthCtrlr' }, variable: { name: 'SupportedIdTokenTypes' } },
+      ],
+    };
+    const station21 = v21();
+    await station21.boot();
+    expect(await station21.csmsCall('GetVariables', getTypes)).toEqual({
+      getVariableResult: [
+        expect.objectContaining({
+          attributeStatus: 'Accepted',
+          attributeValue:
+            'Central,DirectPayment,eMAID,EVCCID,ISO14443,ISO15693,KeyCode,Local,MacAddress,NoAuthorization,VIN',
+        }),
+      ],
+    });
+    const station201 = setup();
+    await station201.boot();
+    expect(await station201.csmsCall('GetVariables', getTypes)).toEqual({
+      getVariableResult: [expect.objectContaining({ attributeStatus: 'UnknownVariable' })],
+    });
+  });
+
   it('keeps its version in the saved state', async () => {
     const { cp, boot } = v21();
     await boot();
