@@ -306,6 +306,14 @@ function inject() {
             <dt>Limit</dt>
             <dd>{{ formatPower(connector.limitW) }}</dd>
           </div>
+          <div
+            v-if="connector.display"
+            class="display"
+            :title="`${connector.display.kind} at ${connector.display.at.slice(11, 19)}`"
+          >
+            <dt>Display</dt>
+            <dd>{{ connector.display.text }}</dd>
+          </div>
           <div v-if="connector.ev">
             <dt>EV</dt>
             <dd>

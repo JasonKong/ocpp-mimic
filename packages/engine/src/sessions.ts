@@ -432,6 +432,11 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
       const estimate = estimateSession(record);
       const truth = sessionTruth(record);
       const gap = estimateGap(estimate, truth);
+      const snapshot = options.station(stationId)?.snapshot();
+      // Time-of-day prices follow the station's clock (2.x ClockCtrlr.TimeZone), else UTC.
+      const timeZone = (snapshot?.config as Record<string, string> | undefined)?.[
+        'ClockCtrlr/TimeZone'
+      ];
       return {
         session: record,
         summary: summarize(record),
@@ -439,8 +444,10 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
         ...(truth !== undefined && { truth }),
         ...(gap !== undefined && { gap }),
         durations: stateDurations(record, new Date(now()).toISOString()),
-        price: priceSession(record, tariff, new Date(now()).toISOString()),
-        energyMultiplier: options.station(stationId)?.snapshot().energyMultiplier ?? 1,
+        price: priceSession(record, tariff, new Date(now()).toISOString(), {
+          ...(timeZone !== undefined && timeZone !== '' && { timeZone }),
+        }),
+        energyMultiplier: snapshot?.energyMultiplier ?? 1,
       };
     },
     frames(stationId, n) {

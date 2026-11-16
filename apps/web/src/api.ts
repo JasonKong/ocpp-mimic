@@ -41,6 +41,8 @@ export interface ConnectorSnapshot {
   powerW: number;
   ev?: { name?: string; soc: number; profile: EvProfile };
   limitW?: number;
+  /** 2.1: what the EVSE's display shows now (I01 to I06). */
+  display?: { at: string; kind: string; text: string };
 }
 export interface EvProfile {
   capacityKWh: number;
@@ -353,16 +355,28 @@ export interface SessionEstimate {
   reason?: string;
 }
 
-/** A reference tariff: an OCPP 2.1 TariffType without conditions (one price per part). */
+/** A reference tariff: an OCPP 2.1 TariffType, one price per part except time-of-day energy prices. */
 export interface ReferenceTariff {
   tariffId: string;
   currency: string;
   fixedFee?: { prices: { priceFixed: number }[]; taxRates?: TaxRate[] };
-  energy?: { prices: { priceKwh: number }[]; taxRates?: TaxRate[] };
+  energy?: {
+    prices: { priceKwh: number; conditions?: TimeConditions }[];
+    taxRates?: TaxRate[];
+  };
   chargingTime?: { prices: { priceMinute: number }[]; taxRates?: TaxRate[] };
   idleTime?: { prices: { priceMinute: number }[]; taxRates?: TaxRate[] };
   minCost?: { exclTax?: number; inclTax?: number };
   maxCost?: { exclTax?: number; inclTax?: number };
+}
+
+/** When an energy price applies (2.1 TariffConditions, local time). */
+export interface TimeConditions {
+  startTimeOfDay?: string;
+  endTimeOfDay?: string;
+  dayOfWeek?: string[];
+  validFromDate?: string;
+  validToDate?: string;
 }
 
 export interface TaxRate {
@@ -380,6 +394,8 @@ export interface PriceItem {
   tax: number;
   inclTax: number;
   frames: number[];
+  /** Energy at a price with conditions: when it applies. */
+  conditions?: TimeConditions;
 }
 
 export interface SessionPrice {

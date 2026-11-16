@@ -134,11 +134,91 @@ describe('reference tariff', () => {
       'currency must be an ISO 4217 code such as NZD',
       'reservationTime is not supported yet',
       'unknown field surcharge',
-      'energy must have exactly one price',
       'energy.prices: priceKwh must be a number of at least 0',
       'chargingTime.taxRates: each needs a type, a tax of at least 0 and an optional stack',
-      'idleTime.prices: conditions are not supported yet',
+      'idleTime.prices: conditions are not supported',
       'minCost must not be above maxCost',
+    ]);
+  });
+
+  it('takes energy prices by time of day before a last price without conditions', () => {
+    const offPeak = {
+      ...TARIFF,
+      energy: {
+        prices: [
+          { priceKwh: 0.2, conditions: { startTimeOfDay: '21:00', endTimeOfDay: '07:00' } },
+          { priceKwh: 0.35 },
+        ],
+      },
+    };
+    expect(tariffProblems(offPeak)).toEqual([]);
+    expect(
+      tariffProblems({
+        ...TARIFF,
+        energy: {
+          prices: [
+            {
+              priceKwh: 0.2,
+              conditions: { startTimeOfDay: '9pm', minPower: 1, dayOfWeek: ['Funday'] },
+            },
+            { priceKwh: 0.3, conditions: { dayOfWeek: ['Monday'] } },
+          ],
+        },
+      }),
+    ).toEqual([
+      'energy.prices: condition minPower is not supported (time of day, weekday, dates)',
+      'energy.prices: startTimeOfDay must be HH:MM',
+      'energy.prices: dayOfWeek must list days such as Monday',
+      'the last energy price must have no conditions',
+    ]);
+  });
+
+  it('prices energy by the time of each stretch between readings, in the station time zone', () => {
+    // 2026-11-16 08:00Z is 21:00 in Auckland: 3 kWh before, 2 kWh after.
+    const at = (h: number, m = 0) => new Date(Date.UTC(2026, 10, 16, h, m)).toISOString();
+    const record: SessionRecord = {
+      stationId: 'CP-1',
+      n: 1,
+      ocpp: '2.1',
+      state: 'finished',
+      source: 'local',
+      requestedAt: at(7),
+      startedAt: at(7),
+      endedAt: at(9),
+      meterStartWh: 0,
+      meterStartSeq: 1,
+      meterStopWh: 5000,
+      meterStopSeq: 9,
+      timeline: [],
+      samples: [
+        { at: at(7, 30), seq: 4, energyWh: 1500 },
+        { at: at(8), seq: 6, energyWh: 3000 },
+        { at: at(8, 30), seq: 8, energyWh: 4000 },
+      ],
+      truth: [],
+      states: [],
+      costs: [],
+    };
+    const tou: ReferenceTariff = {
+      tariffId: 'TOU',
+      currency: 'NZD',
+      energy: {
+        prices: [
+          { priceKwh: 0.2, conditions: { startTimeOfDay: '21:00', endTimeOfDay: '07:00' } },
+          { priceKwh: 0.4 },
+        ],
+      },
+    };
+    const price = priceSession(record, tou, at(9), { timeZone: 'Pacific/Auckland' });
+    expect(
+      price.items.map((i) => [i.quantity, i.unitPrice, i.exclTax, i.conditions?.startTimeOfDay]),
+    ).toEqual([
+      [2, 0.2, 0.4, '21:00'],
+      [3, 0.4, 1.2, undefined],
+    ]);
+    // In UTC (the default) it is all daytime.
+    expect(priceSession(record, tou, at(9)).items.map((i) => [i.quantity, i.unitPrice])).toEqual([
+      [5, 0.4],
     ]);
   });
 

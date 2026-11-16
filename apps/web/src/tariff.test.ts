@@ -18,6 +18,9 @@ describe('the tariff form', () => {
       currency: 'NZD',
       fixedFee: '1',
       priceKwh: '0.35',
+      offPeakKwh: '',
+      offPeakFrom: '',
+      offPeakTo: '',
       chargingMinute: '',
       idleMinute: '0.5',
       taxName: 'GST',
@@ -45,5 +48,38 @@ describe('the tariff form', () => {
       problem: 'The currency is an ISO 4217 code such as NZD',
     });
     expect(formatMoney(4.5, 'NZD')).toBe('4.50 NZD');
+  });
+
+  it('turns an off-peak price into a time-of-day condition and back', () => {
+    const form = {
+      ...tariffToForm(TARIFF),
+      offPeakKwh: '0.2',
+      offPeakFrom: '21:00',
+      offPeakTo: '07:00',
+    };
+    const result = formToTariff(form);
+    expect(result).toMatchObject({
+      tariff: {
+        energy: {
+          prices: [
+            { priceKwh: 0.2, conditions: { startTimeOfDay: '21:00', endTimeOfDay: '07:00' } },
+            { priceKwh: 0.35 },
+          ],
+        },
+      },
+    });
+    if (!('tariff' in result)) throw new Error(result.problem);
+    expect(tariffToForm(result.tariff)).toMatchObject({
+      priceKwh: '0.35',
+      offPeakKwh: '0.2',
+      offPeakFrom: '21:00',
+      offPeakTo: '07:00',
+    });
+    expect(formToTariff({ ...form, offPeakTo: '7am' })).toEqual({
+      problem: 'The off-peak hours are HH:MM to HH:MM',
+    });
+    expect(formToTariff({ ...form, priceKwh: '' })).toEqual({
+      problem: 'An off-peak price needs the price per kWh too',
+    });
   });
 });

@@ -234,7 +234,7 @@ Options for csms (stations connect to ws://<host>:<port>/ocpp/<id>):
                          Ask stations for a client certificate (default none)
   --status <duration>    Print a status line this often (default 60s; 0: never)
   --tariff <file>        Price 2.0.1 sessions with this reference tariff (a
-                         2.1 TariffType without conditions, JSON): totalCost
+                         2.1 TariffType, energy by time of day in UTC, JSON): totalCost
                          in TransactionEvent answers and CostUpdated each minute
   --install-tariff       Also send it to 2.1 stations as their default tariff
                          (SetDefaultTariff) after each accepted boot
