@@ -18,6 +18,7 @@ import FleetOverview from './FleetOverview.vue';
 import MessageLog from './MessageLog.vue';
 import EnergyPanel from './EnergyPanel.vue';
 import PriceCard from './PriceCard.vue';
+import SessionHeader from './SessionHeader.vue';
 import SessionLog from './SessionLog.vue';
 import SessionsView from './SessionsView.vue';
 import VehicleCard from './VehicleCard.vue';
@@ -708,5 +709,110 @@ describe('the session log', () => {
     expect(shown).toContain('connection open');
     expect(html).toContain('href="/api/stations/SIM/sessions/1/frames?format=jsonl"');
     expect(shown).toContain('This session Whole station');
+  });
+});
+
+describe('the 2.1 views', () => {
+  const station21: StationSnapshot = { ...station201, id: 'SIM-21', ocpp: '2.1' };
+  const persona21 = {
+    id: 'pay-2.1',
+    ocpp: '2.1' as const,
+    features: ['Core', 'TariffAndCost', 'Payment', 'WebPayments'],
+    connectors: 2,
+    faults: [],
+    evs: {},
+    warnings: [],
+  };
+
+  it('offers the payment terminal, priority charging and the payment URL on a 2.1 station', async () => {
+    const html = await render(StationDetail, { station: station21, persona: persona21 });
+    const shown = text(html);
+    expect(shown).toContain('OCPP 2.1');
+    expect(html).toContain('aria-label="Card brand"');
+    expect(shown).toContain('Pay by card');
+    expect(shown).toContain('Stop payment');
+    expect(shown).toContain('Priority on');
+    expect(shown).toContain('Payment URL');
+    // Without the feature groups only priority charging is left; 2.0.1 has none of it.
+    const plain = text(
+      await render(StationDetail, {
+        station: station21,
+        persona: { ...persona21, features: ['Core'] },
+      }),
+    );
+    expect(plain).not.toContain('Pay by card');
+    expect(plain).not.toContain('Payment URL');
+    expect(plain).toContain('Priority on');
+    expect(
+      text(await render(StationDetail, { station: station201, persona: undefined })),
+    ).not.toContain('Priority on');
+  });
+
+  it("puts the station's own cost next to the CSMS cost and the reference price", async () => {
+    const T0 = Date.parse('2026-11-16T10:00:00Z');
+    const at = (m: number) => new Date(T0 + m * 60_000).toISOString();
+    const detail: SessionDetail = {
+      session: {
+        stationId: 'SIM-21',
+        n: 1,
+        ocpp: '2.1',
+        state: 'finished',
+        source: 'payment',
+        requestedAt: at(0),
+        startedAt: at(0),
+        endedAt: at(30),
+        timeline: [],
+        samples: [],
+        truth: [],
+        states: [],
+        costs: [{ at: at(30), seq: 40, totalCost: 4.8, from: 'TransactionEventResponse' }],
+        stationCost: {
+          at: at(30),
+          seq: 39,
+          totalCost: 4.83,
+          currency: 'NZD',
+          typeOfCost: 'NormalCost',
+          final: true,
+        },
+        limits: { at: at(0), seq: 3, maxCost: 50, maxEnergy: 20_000 },
+        settlement: {
+          at: at(31),
+          seq: 41,
+          pspRef: 'psp-1',
+          status: 'Settled',
+          amount: 4.83,
+          receiptUrl: 'https://receipts.example.com/R-1',
+        },
+      },
+      summary: {
+        stationId: 'SIM-21',
+        n: 1,
+        ocpp: '2.1',
+        state: 'finished',
+        source: 'payment',
+        requestedAt: at(0),
+        energyWh: 12_000,
+      },
+      estimate: { targetSoc: 100, targetFrom: 'default', taperSoc: 80 },
+      durations: { charging: 1_800_000, suspendedEV: 0, suspendedEVSE: 0, idle: 0 },
+      price: {
+        tariffId: 'reference',
+        currency: 'NZD',
+        items: [],
+        exclTax: 4.2,
+        tax: 0.63,
+        inclTax: 4.83,
+      },
+    };
+    const price = text(await render(PriceCard, { detail, version: '2.1' }));
+    expect(price).toContain('CSMS cost reported 4.80 NZD');
+    expect(price).toContain('Station cost reported 4.83 NZD costDetails, final');
+    expect(price).toContain('Reference price estimate 4.83 NZD');
+    const header = text(
+      await render(SessionHeader, { detail, version: '2.1', now: T0 + 3_600_000 }),
+    );
+    expect(header).toContain('Payment');
+    expect(header).toContain('Limits 50.00 NZD, 20.0 kWh');
+    expect(header).toContain('Settlement Settled 4.83 receipt');
   });
 });

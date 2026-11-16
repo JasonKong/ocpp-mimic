@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue';
 import {
+  api,
   ID_TOKEN_TYPES,
   ID_TOKEN_TYPES_21,
   type Behaviour,
@@ -31,6 +32,27 @@ const typedTokens = computed(() => info.value.tokenType);
 const tokenTypeOptions = computed(() =>
   info.value.version === '2.1' ? ID_TOKEN_TYPES_21 : ID_TOKEN_TYPES,
 );
+
+/** 2.1 feature groups of the station's persona: a payment terminal, the dynamic QR code. */
+const v21 = computed(() => props.station.ocpp === '2.1');
+const hasFeature = (name: string) => props.persona?.features?.includes(name) === true;
+/** Card brands the payment terminal offers (appendix PaymentBrand values). */
+const CARD_BRANDS = ['Visa', 'Mastercard', 'AMEX', 'Maestro', 'UnionPay', 'JCB'];
+const brands = reactive<Record<number, string>>({});
+/** The latest payment URL fetched per EVSE (C25), or why there is none. */
+const paymentUrls = reactive<Record<number, { url?: string; validUntil?: string; error?: string }>>(
+  {},
+);
+async function showPaymentUrl(connector: ConnectorSnapshot) {
+  try {
+    const { url, validUntil } = await api.paymentUrl(props.station.id, connector.connectorId);
+    paymentUrls[connector.connectorId] = { url, validUntil };
+  } catch (error) {
+    paymentUrls[connector.connectorId] = {
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
 
 /** 2.0.1: EVSE n holds connector 1; 1.6: connector n. */
 function title(connector: ConnectorSnapshot): string {
@@ -337,6 +359,58 @@ function inject() {
             {{ connector.transactionId !== undefined ? 'Present card (stop)' : 'Present card' }}
           </button>
         </div>
+        <div v-if="v21" class="row">
+          <template v-if="hasFeature('Payment')">
+            <select
+              :value="brands[connector.connectorId] ?? 'Visa'"
+              title="Card brand"
+              aria-label="Card brand"
+              @change="brands[connector.connectorId] = ($event.target as HTMLSelectElement).value"
+            >
+              <option v-for="brand in CARD_BRANDS" :key="brand" :value="brand">{{ brand }}</option>
+            </select>
+            <button
+              @click="
+                emit('action', 'payment', connector.connectorId, {
+                  brand: brands[connector.connectorId] ?? 'Visa',
+                })
+              "
+            >
+              Pay by card
+            </button>
+            <button @click="emit('action', 'stopPayment', connector.connectorId)">
+              Stop payment
+            </button>
+          </template>
+          <button
+            :disabled="connector.transactionId === undefined"
+            title="The driver's priority charging button (K22)"
+            @click="emit('action', 'priority', connector.connectorId, true)"
+          >
+            Priority on
+          </button>
+          <button
+            :disabled="connector.transactionId === undefined"
+            @click="emit('action', 'priority', connector.connectorId, false)"
+          >
+            Priority off
+          </button>
+          <template v-if="hasFeature('WebPayments')">
+            <button @click="showPaymentUrl(connector)">Payment URL</button>
+            <span v-if="paymentUrls[connector.connectorId]?.url" class="payment-url">
+              <a :href="paymentUrls[connector.connectorId]?.url" target="_blank" rel="noopener">{{
+                paymentUrls[connector.connectorId]?.url
+              }}</a>
+              <span class="muted">
+                valid until
+                {{ paymentUrls[connector.connectorId]?.validUntil?.slice(11, 19) }}</span
+              >
+            </span>
+            <span v-else-if="paymentUrls[connector.connectorId]?.error" class="muted">{{
+              paymentUrls[connector.connectorId]?.error
+            }}</span>
+          </template>
+        </div>
         <div class="row">
           <button
             v-if="stateOf(connector) === 'SuspendedEV'"
@@ -376,6 +450,14 @@ function inject() {
 </template>
 
 <style scoped>
+.payment-url {
+  display: inline-flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
 .detail {
   display: grid;
   gap: 16px;

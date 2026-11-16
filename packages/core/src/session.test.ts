@@ -818,3 +818,30 @@ describe('2.1 vehicle readings', () => {
     });
   });
 });
+
+describe('2.1 station cost and limits', () => {
+  it("keeps the station's own cost and the transaction's limits as it reported them", async () => {
+    const h = harness({
+      ocpp: '2.1',
+      features: ['Core', 'TariffAndCost', 'Payment'],
+      csms: { NotifySettlement: () => ({}), SetDefaultTariff: () => ({ status: 'Accepted' }) },
+    });
+    await h.boot();
+    await h.csmsCall('SetDefaultTariff', {
+      evseId: 0,
+      tariff: { tariffId: 'T', currency: 'NZD', fixedFee: { prices: [{ priceFixed: 2 }] } },
+    });
+    const result = (h.cp as ChargePoint201).presentPaymentCard(1);
+    await h.settle();
+    expect(await result).toBe('authorized');
+    h.cp.plugIn(1);
+    await h.advance(2000);
+    expect(h.list()[0]).toMatchObject({
+      limits: { maxCost: 50 },
+      stationCost: { totalCost: 2, currency: 'NZD', typeOfCost: 'NormalCost', final: false },
+    });
+    h.cp.unplug(1);
+    await h.settle();
+    expect(h.list()[0]?.stationCost).toMatchObject({ totalCost: 2, final: true });
+  });
+});

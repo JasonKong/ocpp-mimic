@@ -30,6 +30,8 @@ const PART_LABELS = {
 
 const price = computed(() => props.detail.price);
 const costs = computed(() => props.detail.session.costs);
+/** 2.1: what the station worked out itself (costDetails). */
+const stationCost = computed(() => props.detail.session.stationCost);
 const latestCost = computed(() => costs.value.at(-1));
 /** Compared once the session is over: a running cost lags the CSMS's last message. */
 const finished = computed(() => props.detail.session.state === 'finished');
@@ -110,6 +112,23 @@ function save() {
         <span v-else class="note">{{
           info.totalCost ? 'the CSMS sent no cost' : `OCPP ${version} has no cost messages`
         }}</span>
+      </div>
+      <div v-if="stationCost" class="figure">
+        <span class="label">Station cost <span class="src reported">reported</span></span>
+        <span class="value">{{
+          formatMoney(stationCost.totalCost, stationCost.currency ?? price.currency)
+        }}</span>
+        <span class="note"
+          >costDetails, {{ stationCost.final ? 'final' : 'running' }}
+          {{
+            stationCost.typeOfCost === undefined || stationCost.typeOfCost === 'NormalCost'
+              ? ''
+              : `(${stationCost.typeOfCost})`
+          }}
+          at
+          {{ formatTime(stationCost.at).slice(0, 8) }}
+          <button class="link" @click="emit('open-frame', stationCost.seq)">frame</button></span
+        >
       </div>
       <div class="figure">
         <span class="label">Reference price <span class="src estimate">estimate</span></span>

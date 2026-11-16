@@ -5,6 +5,7 @@ import {
   failureText,
   formatDuration,
   formatRoute,
+  limitsText,
   parseRoute,
   sessionDuration,
   stateTone,
@@ -169,5 +170,14 @@ describe('energy figures', () => {
     expect(f.socPercent).toBeUndefined();
     expect(f.phases).toBeUndefined();
     expect(f.trueEtaAt).toBeUndefined();
+  });
+});
+
+describe('transaction limits', () => {
+  it('reads as cost, energy, time and SoC', () => {
+    expect(limitsText({ maxCost: 12.5, maxEnergy: 20_000, maxTime: 5400, maxSoC: 80 }, 'NZD')).toBe(
+      '12.50 NZD, 20.0 kWh, 1 h 30 min, 80 % SoC',
+    );
+    expect(limitsText({ maxEnergy: 500 })).toBe('0.5 kWh');
   });
 });

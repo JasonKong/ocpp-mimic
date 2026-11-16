@@ -305,6 +305,23 @@ async function act(name: string, connectorId?: number, value?: unknown) {
           error.value = `Card ${card.idTag}: ${result}`;
         return;
       }
+      case 'payment': {
+        const { result } = await api.payment(id, c, value as Record<string, unknown>);
+        if (result !== 'authorized') error.value = `Payment card: ${result}`;
+        return;
+      }
+      case 'stopPayment': {
+        const { result } = await api.stopPayment(id, c);
+        if (result === 'no-payment') error.value = 'No payment to stop';
+        return;
+      }
+      case 'priority': {
+        const { result } = await api.priority(id, c, value === true);
+        if (result !== 'activated' && result !== 'deactivated') {
+          error.value = `Priority charging: ${result}`;
+        }
+        return;
+      }
       case 'delete':
         if (!confirm(`Delete charge point ${id}? This stops it and forgets its state.`)) return;
         await api.deleteStation(id);

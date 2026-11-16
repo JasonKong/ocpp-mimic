@@ -5,6 +5,7 @@ import { formatTime } from '../format.js';
 import {
   failureText,
   formatDuration,
+  limitsText,
   SOURCE_HINTS,
   SOURCE_LABELS,
   STATE_LABELS,
@@ -75,6 +76,13 @@ const duration = computed(() => sessionDuration(session.value, props.now));
         <div v-if="session.stopReason">
           <dt>Stopped</dt>
           <dd>{{ session.stopReason }}</dd>
+        </div>
+        <div v-if="session.limits" title="The limits the station last reported (E16)">
+          <dt>Limits</dt>
+          <dd>
+            {{ limitsText(session.limits, session.stationCost?.currency) }}
+            <button class="link" @click="emit('open-frame', session.limits.seq)">frame</button>
+          </dd>
         </div>
         <div v-if="session.settlement" :title="session.settlement.statusInfo">
           <dt>Settlement</dt>
