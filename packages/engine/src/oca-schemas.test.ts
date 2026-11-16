@@ -4,16 +4,22 @@ import { join } from 'node:path';
 import {
   OCPP16_MESSAGES,
   OCPP201_MESSAGES,
+  OCPP21_MESSAGES,
+  OCPP21_UNCONFIRMED_ACTIONS,
   validate,
   validateOcpp201Request,
   validateOcpp201Response,
+  validateOcpp21Request,
+  validateOcpp21Response,
   type Ocpp16Action,
   type Ocpp201Action,
+  type Ocpp21Action,
 } from '@ocpp-mimic/core';
 import { describe, expect, it } from 'vitest';
 import {
   loadOcaSchemas,
   OCA_OCPP201_SCHEMAS_DIR,
+  OCA_OCPP21_SCHEMAS_DIR,
   OCA_SCHEMA_DIRS,
   OCA_SCHEMAS_DIR,
   OCA_SECURITY_SCHEMAS_DIR,
@@ -22,12 +28,14 @@ import {
 
 const oca = loadOcaSchemas();
 const oca201 = loadOcaSchemas(OCA_SCHEMA_DIRS['2.0.1']);
+const oca21 = loadOcaSchemas(OCA_SCHEMA_DIRS['2.1']);
 
 describe('OCA schema files', () => {
   it.each([
     [OCA_SCHEMAS_DIR, 'SHA256SUMS', 56],
     [OCA_SECURITY_SCHEMAS_DIR, 'SHA256SUMS-security', 22],
     [OCA_OCPP201_SCHEMAS_DIR, 'SHA256SUMS-ocpp201', 128],
+    [OCA_OCPP21_SCHEMAS_DIR, 'SHA256SUMS-ocpp21', 181],
   ])('in %s are the unchanged published files listed in %s', (dir, sums, count) => {
     const listed = readFileSync(join(dir, '..', sums), 'utf8')
       .trim()
@@ -100,6 +108,42 @@ describe('OCA schema files', () => {
     ]);
   });
 
+  it('give 2.1 its own set: all 91 actions, the unconfirmed one with a request schema only', () => {
+    expect(oca21.actions).toHaveLength(91);
+    const files = readdirSync(OCA_OCPP21_SCHEMAS_DIR);
+    for (const action of oca21.actions) {
+      if (action === 'NotifyPeriodicEventStream') {
+        expect(files).toContain('NotifyPeriodicEventStream.json');
+        expect(oca21.check(action, 'response', {})).toBeUndefined();
+      } else {
+        expect(files).toContain(`${action}Request.json`);
+        expect(files).toContain(`${action}Response.json`);
+      }
+    }
+    expect(oca21.actions).toContain('SetDefaultTariff');
+    expect(oca201.actions).not.toContain('SetDefaultTariff');
+  });
+
+  it('check 2.1 payloads against the 2.1 schemas (draft-06)', () => {
+    const limit = { transactionLimit: { maxEnergy: 20000, maxSoC: 80 } };
+    expect(oca21.check('TransactionEvent', 'response', limit)).toEqual([]);
+    // A 2.1 field fails the 2.0.1 schema of the same action.
+    expect(oca201.check('TransactionEvent', 'response', limit)).toEqual([
+      '$: must NOT have additional properties (transactionLimit)',
+    ]);
+    expect(
+      oca21.check('Authorize', 'request', {
+        idToken: { idToken: 'WVW00000000000001', type: 'VIN' },
+      }),
+    ).toEqual([]);
+    expect(
+      oca21.check('UpdateDynamicSchedule', 'request', {
+        chargingProfileId: 1,
+        scheduleUpdate: { dischargeLimit: 10 },
+      }),
+    ).toEqual(['$.scheduleUpdate.dischargeLimit: must be <= 0']);
+  });
+
   it('report problems as JSON paths, and nothing for unknown actions', () => {
     expect(oca.check('Heartbeat', 'request', {})).toEqual([]);
     expect(
@@ -145,15 +189,19 @@ interface Case {
 function readSchema(
   action: string,
   kind: PayloadKind,
-  version: '1.6' | '2.0.1' = '1.6',
+  version: '1.6' | '2.0.1' | '2.1' = '1.6',
 ): SchemaNode {
-  const v201 = version === '2.0.1';
-  const file = `${action}${kind === 'response' ? 'Response' : v201 ? 'Request' : ''}.json`;
-  const dir = v201
-    ? OCA_OCPP201_SCHEMAS_DIR
-    : readdirSync(OCA_SCHEMAS_DIR).includes(file)
-      ? OCA_SCHEMAS_DIR
-      : OCA_SECURITY_SCHEMAS_DIR;
+  const v2 = version !== '1.6';
+  const unconfirmed = action === 'NotifyPeriodicEventStream';
+  const file = `${action}${kind === 'response' ? 'Response' : v2 && !unconfirmed ? 'Request' : ''}.json`;
+  const dir =
+    version === '2.1'
+      ? OCA_OCPP21_SCHEMAS_DIR
+      : version === '2.0.1'
+        ? OCA_OCPP201_SCHEMAS_DIR
+        : readdirSync(OCA_SCHEMAS_DIR).includes(file)
+          ? OCA_SCHEMAS_DIR
+          : OCA_SECURITY_SCHEMAS_DIR;
   const root = JSON.parse(readFileSync(join(dir, file), 'utf8')) as SchemaNode;
   return inline(root, root);
 }
@@ -192,7 +240,12 @@ function sample(node: SchemaNode, full: boolean): Json {
     case 'integer':
       return 1;
     case 'number':
-      return 1.5;
+      // 1.5 unless the bounds forbid it (2.1's discharge limits are <= 0).
+      return node.maximum !== undefined && node.maximum < 1.5
+        ? node.maximum - 0.5
+        : node.minimum !== undefined && node.minimum > 1.5
+          ? node.minimum + 0.5
+          : 1.5;
     case 'boolean':
       return true;
     default:
@@ -282,6 +335,18 @@ function cases(node: SchemaNode, root: Json, path: Path = []): Case[] {
       break;
     case 'number':
       wrongType('1');
+      if (node.minimum !== undefined) {
+        out.push({
+          name: `${at} below minimum`,
+          payload: replaced(root, path, node.minimum - 0.5),
+        });
+      }
+      if (node.maximum !== undefined) {
+        out.push({
+          name: `${at} above maximum`,
+          payload: replaced(root, path, node.maximum + 0.5),
+        });
+      }
       break;
     case 'boolean':
       wrongType('true');
@@ -403,5 +468,50 @@ describe("core's 2.0.1 message definitions against the official schemas", () => 
     expect(
       validateOcpp201Request('Heartbeat', { customData: { vendorId: 'acme', anything: [1] } }).ok,
     ).toBe(true);
+  });
+});
+
+/** Where core's 2.1 definitions deliberately differ from the official schemas; none so far. */
+const KNOWN_DIFFERENCES_21: string[] = [];
+
+describe("core's 2.1 message definitions against the official schemas", () => {
+  it('cover the same 91 actions, and only the unconfirmed one has no response', () => {
+    expect(Object.keys(OCPP21_MESSAGES).sort()).toEqual(oca21.actions);
+    expect(OCPP21_UNCONFIRMED_ACTIONS).toEqual(['NotifyPeriodicEventStream']);
+  });
+
+  it('agree on every generated payload, apart from the documented differences', () => {
+    const disagreements: string[] = [];
+    let checked = 0;
+    for (const action of Object.keys(OCPP21_MESSAGES) as Ocpp21Action[]) {
+      const kinds = (OCPP21_UNCONFIRMED_ACTIONS as readonly string[]).includes(action)
+        ? (['request'] as const)
+        : (['request', 'response'] as const);
+      for (const kind of kinds) {
+        const node = readSchema(action, kind, '2.1');
+        const full = sample(node, true);
+        const all: Case[] = [
+          { name: 'minimal', payload: sample(node, false) },
+          { name: 'full', payload: full },
+          ...cases(node, full),
+        ];
+        for (const { name, payload } of all) {
+          const ocaOk = oca21.check(action, kind, payload)?.length === 0;
+          const coreOk = (
+            kind === 'request'
+              ? validateOcpp21Request(action, payload)
+              : validateOcpp21Response(action, payload)
+          ).ok;
+          checked++;
+          if (ocaOk !== coreOk) {
+            disagreements.push(
+              `${action} ${kind}: ${name} — OCA ${ocaOk ? 'accepts' : 'rejects'}, core ${coreOk ? 'accepts' : 'rejects'}`,
+            );
+          }
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(6000);
+    expect(disagreements).toEqual(KNOWN_DIFFERENCES_21);
   });
 });
