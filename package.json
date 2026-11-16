@@ -22,6 +22,7 @@
     "bench": "tsc -b && node packages/cli/dist/bench-main.js",
     "notices": "node tools/notices.mjs",
     "notices:check": "node tools/notices.mjs --check",
+    "pack:release": "pnpm build && node tools/pack.mjs",
     "dev:web": "pnpm --filter @ocpp-mimic/web dev"
   },
   "devDependencies": {
@@ -32,6 +33,7 @@
     "eslint-plugin-vue": "^10.12.0",
     "globals": "^17.14.0",
     "prettier": "^3.9.10",
+    "rolldown": "1.2.16",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.72.1",
     "vitest": "^5.1.0"

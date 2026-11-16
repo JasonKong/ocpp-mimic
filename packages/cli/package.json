@@ -6,7 +6,7 @@
   "description": "The ocpp-mimic command: starts the engine and, later, runs scenarios.",
   "type": "module",
   "bin": {
-    "ocpp-mimic": "./dist/main.js"
+    "ocpp-mimic": "./dist/bin.js"
   },
   "files": [
     "dist"

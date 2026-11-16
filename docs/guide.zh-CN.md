@@ -50,6 +50,17 @@ alias ocpp-mimic="node $PWD/packages/cli/dist/main.js"
 
 `ocpp-mimic --help` 列出所有命令和选项，`ocpp-mimic --version` 打印版本号。
 
+### 改用安装包
+
+`pnpm pack:release` 构建出 `release/ocpp-mimic-<版本>.tgz`，也就是发布时提供的包。它包含命令本身、Web UI、内置 persona 和示例，只用 npm 就能安装：
+
+```bash
+npm install --global ./release/ocpp-mimic-0.1.0.tgz
+ocpp-mimic samples ./samples
+```
+
+`ocpp-mimic samples <目录>` 把示例 persona、示例场景、压测计划、导入映射和日志复制到 `<目录>`，已有的文件保留不动。本手册里提到 `scenarios/personas` 或 `scenarios/examples` 的地方，改用 `<目录>/personas` 和 `<目录>/examples`。Node.js 低于 24 时，命令会说明需要哪个版本。
+
 ### 首次启动：一个桩连内置 CSMS
 
 需要两个进程：一个 CSMS 供桩连接，一个引擎运行桩并提供 Web UI。ocpp-mimic 自带一个小型 CSMS，正好用在这里。
@@ -875,6 +886,7 @@ curl -s $API/stations/SIM-100/sessions
 | `ocpp-mimic import <文件>...` | 转换并脱敏日志 |
 | `ocpp-mimic replay <日志>` | 对 CSMS 回放日志 |
 | `ocpp-mimic calibrate <日志>...` | 从日志推导 persona |
+| `ocpp-mimic samples <目录>` | 把示例复制到一个目录里修改 |
 
 `serve` 的选项：
 

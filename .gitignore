@@ -12,3 +12,4 @@ coverage/
 bench-results/
 *.cpuprofile
 *.heapsnapshot
+release/

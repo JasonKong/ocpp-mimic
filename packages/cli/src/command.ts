@@ -84,6 +84,12 @@ export interface CalibrateCommand {
   report?: string;
 }
 
+/** `ocpp-mimic samples <dir>`: copy the samples there. */
+export interface SamplesCommand {
+  kind: 'samples';
+  target: string;
+}
+
 export type ClientCertificateMode = 'none' | 'optional' | 'required';
 
 export interface CsmsCommand {
@@ -139,6 +145,7 @@ export type Command =
   | ImportCommand
   | ReplayCommand
   | CalibrateCommand
+  | SamplesCommand
   | LoadCommand
   | { kind: 'version' }
   | { kind: 'help' }
@@ -160,6 +167,8 @@ Commands:
                          its answers with the log's
   calibrate <log>...     Derive a persona from logs of stations of one model
   load <plan>            Run a load plan and judge its thresholds
+  samples <dir>          Copy the sample personas, scenarios, load plans,
+                         import mappings and logs into <dir> to edit
 
 Options for serve:
   --port <number>        Port for the HTTP API (default ${DEFAULT_PORT})
@@ -357,6 +366,7 @@ const COMMANDS = {
     'personas',
     'allow-csms',
   ],
+  samples: [],
   load: [
     'csms',
     'duration',
@@ -412,6 +422,11 @@ export function parseCommand(argv: readonly string[]): Command {
     if (command === 'replay') return parseReplay(rest, values);
     if (command === 'calibrate') return parseCalibrate(rest, values);
     if (command === 'load') return parseLoad(rest, values);
+    if (command === 'samples') {
+      if (rest.length !== 1)
+        return error('samples needs one directory, e.g. ocpp-mimic samples samples');
+      return { kind: 'samples', target: rest[0]! };
+    }
     if (rest.length > 0) return error(`Unexpected argument: ${rest[0]}`);
     if (command === 'csms') return parseCsms(values);
 

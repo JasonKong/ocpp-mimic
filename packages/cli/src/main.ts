@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { VERSION } from '@ocpp-mimic/core';
 import {
   API_TOKEN_ENV,
@@ -16,9 +15,11 @@ import { runLoadCommand } from './load.js';
 import { runReplayCommand } from './replay.js';
 import { runCalibrateCommand } from './calibrate.js';
 import { runCommand } from './run.js';
+import { webRoot } from './paths.js';
+import { runSamplesCommand } from './samples.js';
 
-/** The Web UI build in this monorepo (apps/web/dist), when it has been built. */
-const WEB_ROOT = fileURLToPath(new URL('../../../apps/web/dist/', import.meta.url));
+/** The Web UI build: the package's web/, or apps/web/dist in this monorepo once built. */
+const WEB_ROOT = webRoot();
 
 const command = parseCommand(process.argv.slice(2));
 
@@ -75,6 +76,9 @@ switch (command.kind) {
     break;
   case 'calibrate':
     process.exitCode = await runCalibrateCommand(command);
+    break;
+  case 'samples':
+    process.exitCode = await runSamplesCommand(command.target);
     break;
   case 'replay':
     process.exitCode = await runReplayCommand(command);

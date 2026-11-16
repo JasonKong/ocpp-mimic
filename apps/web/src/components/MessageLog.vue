@@ -48,13 +48,13 @@ function pretty(record: FrameRecord): string {
         class="export"
         :href="`/api/stations/${encodeURIComponent(stationId)}/messages?format=jsonl`"
         :download="`${stationId}.jsonl`"
+        title="The station's frames as a JSONL log, for import, replay and calibration"
         @click.prevent="
           downloadFile(
             `/api/stations/${encodeURIComponent(stationId)}/messages?format=jsonl`,
             `${stationId}.jsonl`,
           )
         "
-        title="The station's frames as a JSONL log, for import, replay and calibration"
         >Export JSONL</a
       >
     </header>

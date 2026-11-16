@@ -48,6 +48,17 @@ alias ocpp-mimic="node $PWD/packages/cli/dist/main.js"
 
 `ocpp-mimic --help` lists every command and option, and `ocpp-mimic --version` prints the version.
 
+### Installing the package instead
+
+`pnpm pack:release` builds `release/ocpp-mimic-<version>.tgz`, the package a release publishes. It holds the command, the Web UI, the built-in personas and the samples, and installs with npm alone:
+
+```bash
+npm install --global ./release/ocpp-mimic-0.1.0.tgz
+ocpp-mimic samples ./samples
+```
+
+`ocpp-mimic samples <dir>` copies the sample personas, example scenarios, load plans, import mappings and logs into `<dir>`; files already there are kept. Where this guide names `scenarios/personas` or `scenarios/examples`, use `<dir>/personas` and `<dir>/examples` instead. On a Node.js older than 24 the command says which version it needs.
+
 ### First start: a station against the built-in CSMS
 
 You need two processes: a CSMS for the stations to connect to, and the engine that runs the stations and serves the Web UI. ocpp-mimic brings a small CSMS of its own for this.
@@ -873,6 +884,7 @@ curl -s $API/stations/SIM-100/sessions
 | `ocpp-mimic import <file>...` | Convert and mask logs |
 | `ocpp-mimic replay <log>` | Replay a log against a CSMS |
 | `ocpp-mimic calibrate <log>...` | Derive a persona from logs |
+| `ocpp-mimic samples <dir>` | Copy the samples into a directory to edit |
 
 Options of `serve`:
 
