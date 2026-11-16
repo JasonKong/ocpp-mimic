@@ -73,6 +73,7 @@ export async function startCsmsCommand(
     ...(command.password !== undefined && { password: command.password }),
     ...(tls !== undefined && { tls }),
     ...(tariff !== undefined && { tariff }),
+    ...(command.installTariff === true && { installTariff: true }),
   });
   const started = Date.now();
   const timer =

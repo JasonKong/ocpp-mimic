@@ -100,6 +100,8 @@ export interface CsmsCommand {
   statusMs: number;
   /** A reference tariff (JSON file) to price 2.0.1 sessions with. */
   tariff?: string;
+  /** Send that tariff to 2.1 stations as their default tariff after each accepted boot. */
+  installTariff?: boolean;
 }
 
 export interface LoadCommand {
@@ -234,6 +236,8 @@ Options for csms (stations connect to ws://<host>:<port>/ocpp/<id>):
   --tariff <file>        Price 2.0.1 sessions with this reference tariff (a
                          2.1 TariffType without conditions, JSON): totalCost
                          in TransactionEvent answers and CostUpdated each minute
+  --install-tariff       Also send it to 2.1 stations as their default tariff
+                         (SetDefaultTariff) after each accepted boot
 
   -v, --version          Print the version
   -h, --help             Print this help`;
@@ -258,6 +262,7 @@ const OPTIONS = {
   'tls-ca': { type: 'string' },
   'client-certificates': { type: 'string' },
   tariff: { type: 'string' },
+  'install-tariff': { type: 'boolean' },
   status: { type: 'string' },
   'log-dir': { type: 'string' },
   station: { type: 'string', multiple: true },
@@ -314,6 +319,7 @@ const COMMANDS = {
     'client-certificates',
     'status',
     'tariff',
+    'install-tariff',
   ],
   import: ['map', 'mask', 'no-mask', 'salt', 'salt-file', 'out'],
   calibrate: ['station', 'name', 'extends', 'out', 'report'],
@@ -648,6 +654,9 @@ function parseCsms(values: Values): Command {
   if (cert === undefined && (values['tls-ca'] !== undefined || mode !== 'none')) {
     return error('--tls-ca and --client-certificates need --tls-cert and --tls-key');
   }
+  if (values['install-tariff'] === true && values.tariff === undefined) {
+    return error('--install-tariff needs --tariff');
+  }
 
   return {
     kind: 'csms',
@@ -668,5 +677,6 @@ function parseCsms(values: Values): Command {
       }),
     statusMs,
     ...(values.tariff !== undefined && { tariff: values.tariff }),
+    ...(values['install-tariff'] === true && { installTariff: true }),
   };
 }

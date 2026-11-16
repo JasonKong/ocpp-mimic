@@ -19,6 +19,8 @@ const USAGE = `Usage: pnpm bench [options]
   --out <dir>            Write samples.csv and summary.json there
   --store <file>         Keep station state in this SQLite file, as serve --store
   --record-limit <n>     Records kept per station, as serve --record-limit
+  --tariff <file>        Reference tariff for the CSMS, sent to 2.1 stations too
+                         (as csms --tariff --install-tariff)
   --heap-snapshot        Also write a heap snapshot at the end (needs --out)
 
 CPU profile: node --cpu-prof --cpu-prof-dir=<dir> packages/cli/dist/bench-main.js ...`;
@@ -40,6 +42,7 @@ const { values } = parseArgs({
     out: { type: 'string' },
     store: { type: 'string' },
     'record-limit': { type: 'string' },
+    tariff: { type: 'string' },
     'heap-snapshot': { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
   },
@@ -81,6 +84,7 @@ const options: BenchOptions = {
   ...(values.out !== undefined && { out: values.out }),
   ...(values.store !== undefined && { store: values.store }),
   ...(values['record-limit'] !== undefined && { recordLimit: recordLimit(values['record-limit']) }),
+  ...(values.tariff !== undefined && { tariff: values.tariff }),
   heapSnapshot: values['heap-snapshot'] ?? false,
 };
 

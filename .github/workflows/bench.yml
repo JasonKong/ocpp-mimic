@@ -20,7 +20,7 @@ on:
         description: Share of stations charging
         default: '0.3'
       persona:
-        description: Persona from scenarios/personas (load-ac-1.6 or load-ac-2.0.1)
+        description: Persona from scenarios/personas (load-ac-1.6, load-ac-2.0.1 or load-ac-2.1)
         default: load-ac-1.6
       store:
         description: Keep station state in SQLite, as serve --store
@@ -29,6 +29,10 @@ on:
       record_limit:
         description: Records kept per station (empty for the default, 1000)
         default: ''
+      tariff:
+        description: Tariffs on (scenarios/load/tariff.json for the CSMS and 2.1 stations)
+        type: boolean
+        default: false
 
 jobs:
   bench:
@@ -56,11 +60,13 @@ jobs:
           PERSONA: ${{ inputs.persona }}
           STORE: ${{ inputs.store }}
           RECORD_LIMIT: ${{ inputs.record_limit }}
+          TARIFF: ${{ inputs.tariff }}
         run: |
           set -o pipefail
           extra=()
           if [ "$STORE" = "true" ]; then extra+=(--store bench-results/state.db); fi
           if [ -n "$RECORD_LIMIT" ]; then extra+=(--record-limit "$RECORD_LIMIT"); fi
+          if [ "$TARIFF" = "true" ]; then extra+=(--tariff scenarios/load/tariff.json); fi
           node --cpu-prof --cpu-prof-dir=bench-results packages/cli/dist/bench-main.js \
             --stations "$STATIONS" --duration "$DURATION" --rate "$RATE" \
             --charging "$CHARGING" --persona "$PERSONA" --out bench-results "${extra[@]}" \

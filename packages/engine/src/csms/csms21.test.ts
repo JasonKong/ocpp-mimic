@@ -225,6 +225,40 @@ describe('the built-in CSMS with a 2.1 station', () => {
   });
 });
 
+describe('the built-in CSMS installing its tariff', () => {
+  it('sends its reference tariff to a 2.1 station as its default tariff after the boot', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mimic-csms21-'));
+    dirs.push(dir);
+    await writeFile(
+      join(dir, 'priced.yaml'),
+      ['persona: priced-2.1', 'extends: generic-2.1', 'features: [Core, TariffAndCost]'].join('\n'),
+    );
+    csms = await startBuiltinCsms({ tariff: REFERENCE, installTariff: true });
+    engine = createEngine({
+      port: 0,
+      personaDirs: [dir],
+      backoff: { initialDelayMs: 20, maxDelayMs: 100, jitter: 0 },
+    });
+    const { url } = await engine.start();
+    expect(
+      (
+        await request(url, 'POST', '/api/stations', {
+          id: 'P-21',
+          persona: 'priced-2.1',
+          csmsUrl: csms.url,
+        })
+      ).status,
+    ).toBe(201);
+    const connection = await csms.waitForConnection('P-21');
+    await until(async () => {
+      const answer = await connection.call('GetTariffs', { evseId: 0 }).catch(() => undefined);
+      return (
+        answer?.type === 3 && JSON.stringify(answer.payload).includes('"tariffId":"REFERENCE"')
+      );
+    });
+  });
+});
+
 describe('the built-in CSMS control API with other versions', () => {
   it('keeps 2.1 commands for 2.1 stations', async () => {
     csms = await startBuiltinCsms();

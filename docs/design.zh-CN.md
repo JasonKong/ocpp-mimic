@@ -752,7 +752,7 @@ thresholds:
 - 压测计划在 core 里校验（`load-plan.ts`），由 engine 运行（`engine/src/load/runner.ts`），CLI 写出报告。分组默认运行使用模型（`usage: false` 时不运行）；所有分组按计划顺序共用一个 ramp-up；`selectStations` 用运行的带种子生成器选出事件作用的比例或数量，所以同一个种子会选中同样的桩。
 - 运行时测量指标没有覆盖的部分：每个桩的 BootNotification 被接受的时间；每次批量事件后的恢复时间（从事件结束算起，所以断电的黑屏时间不计入）；贯穿整个运行的事件循环延迟直方图；每 5 秒的内存（预热后——最多 10 分钟或运行时长的四分之一——的堆底线，和最后一个窗口的堆底线）；以及每个分组的充电次数与预期次数的比较（每个连接器的周期为 1 / rate 的等待、各 step 和停留时长之和）。
 - `ocpp-mimic load <plan> [--csms <url>] [--duration <d>] [--report-dir <dir>] [--junit <file>] [--port <n>] [--record-limit <n>] [--log-dir <dir>]`：`--log-dir` 把每一帧流式写入 `frames.jsonl`；recorder 默认每个桩保留 10 条记录。所有阈值都满足时退出码为 0，有阈值不满足时为 1，计划无法运行时为 2。`--port` 在运行期间提供 API、Web UI 和 `/metrics`。
-- CI 每次改动都对 `ocpp-mimic csms` 运行 `scenarios/load/smoke-100.yaml`（100 个桩、两分钟、一次重连风暴），并把报告加到 job summary。
+- CI 每次改动都对 `ocpp-mimic csms` 运行 `scenarios/load/smoke-100.yaml`（100 个桩、两分钟、一次重连风暴；M7 起三个版本都有），并把报告加到 job summary。
 
 **已实现：回放（T52）**
 
@@ -1331,6 +1331,13 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
   - 指标已按版本标注 2.1 桩。
   - `scenarios/logs/ocpp21-sessions.yaml-1.jsonl` 是合成的 2.1 样例，由 `scenarios/examples/ocpp21-sessions.yaml` 录制。它对内置 CSMS 回放没有差异（严格模式只列出 CSMS 脚本里的限额和它自己的命令，和 2.0.1 样例一样），校准它得到的是 `generic-2.1` 的值。
 - 压测和基准：开启资费的 `load-ac-2.1`，基准 workflow 可选该 persona。
+- 已实现（T109）：
+  - `load-ac-2.1` 保留通用 persona 的功能，并加上 TariffAndCost。
+  - `ocpp-mimic csms --tariff <file> --install-tariff` 在每次启动被接受后（越过应答延迟），把参考资费作为默认资费发给 2.1 桩（SetDefaultTariff，EVSE 0）。这样 2.1 桩自己给会话计价；1.6 和 2.0.1 桩不受影响，2.0.1 只有 `--tariff` 原本就有的费用。
+  - `scenarios/load/tariff.json` 是压测用的这份资费。
+  - CI 的冒烟计划改为混合：1.6、2.0.1、2.1 各 34、33、33 个桩，对接会安装资费的 CSMS。本地运行通过全部阈值：没有 CALLERROR，没有 schema 违规，事件循环 p99 6.5 ms，内存 217 MB。
+  - 基准测试支持 `--tariff`（workflow 的 `tariff` 输入），persona 输入写明了 `load-ac-2.1`。
+  - `scenarios/load/m7-exit-21.yaml` 是 M4 的出口计划换成 1,000 个 `load-ac-2.1` 桩。soak workflow 新增 `plan` 输入来运行它，对接会安装资费的 CSMS。M7 在参考机器上的运行结果随验收（T112）记录。
 
 **测试**
 
