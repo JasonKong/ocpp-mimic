@@ -4,6 +4,7 @@ import {
   array,
   dateTime,
   integer,
+  number,
   object,
   oneOf,
   string,
@@ -47,6 +48,23 @@ describe('schema validation', () => {
     for (const result of [tooLong, notInEnum, negative, badDate]) {
       expect(result).toMatchObject({ ok: false, errorCode: 'PropertyConstraintViolation' });
     }
+  });
+
+  it('checks the bounds of decimals', () => {
+    const Bounded = object({
+      limit: number({ maximum: 0 }),
+      soc: number({ minimum: 0, maximum: 100 }),
+    });
+    expect(validate(Bounded, { limit: -11.5, soc: 99.5 }).ok).toBe(true);
+    expect(validate(Bounded, { limit: 0.5, soc: 50 })).toMatchObject({
+      ok: false,
+      errorCode: 'PropertyConstraintViolation',
+      issues: [{ path: '$.limit', message: 'more than 0' }],
+    });
+    expect(validate(Bounded, { limit: 0, soc: -1 })).toMatchObject({
+      ok: false,
+      issues: [{ path: '$.soc', message: 'less than 0' }],
+    });
   });
 
   it('reports unknown properties as FormationViolation', () => {

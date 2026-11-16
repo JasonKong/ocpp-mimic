@@ -1182,7 +1182,7 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 
 **对模拟器来说 2.1 是什么**
 
-- 2.1 保留 2.0.1 的应用逻辑并在其上扩展（Part 0 第 2 章）。对 2.0.1 已有的每个 action，2.1 在线上都是超集：对比 OCA 的 2.0.1 和 2.1 schema，没有删除字段，没有新增必填字段，也没有收窄枚举或长度；有三个枚举变成了开放字符串（IdTokenEnumType、ConnectorEnumType、ChargingLimitSourceEnumType）。新增 27 个 action，共 91 个。
+- 2.1 保留 2.0.1 的应用逻辑并在其上扩展（Part 0 第 2 章）。对 2.0.1 已有的每个 action，2.1 在线上都是超集，只有一个例外：对比 OCA 的 2.0.1 和 2.1 schema，没有删除字段，也没有收窄枚举或长度，新增的必填字段只有 NotifyMonitoringReport 里的 VariableMonitoringType.eventNotificationType（属于监控，M7 不做）。有三个枚举变成了开放字符串（IdTokenEnumType、ConnectorEnumType、ChargingLimitSourceEnumType）。新增 27 个 action，共 91 个。
 - 最大的新增是双向充放电（V2X）、DER 控制和 ISO 15118-20；其次是按资费本地计费、临时支付、带限额的事务、重启后恢复事务、动态和优先充电曲线，以及通过新的不确认消息 SEND 发送的周期事件流。
 - 2.1 目前没有 Part 5（认证 profile），也没有 Part 6（测试用例）。所以范围按功能块和用例来定，场景按 Part 2 的用例和需求编号命名。
 
@@ -1231,9 +1231,10 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 
 **协议接缝：2.1 作为 2.0.1 适配器上的增量**
 
-- **消息。** `core/src/ocpp21/messages.ts` 放 2.1 的定义，和 2.0.1 一样从 Part 2 的「Messages, Datatypes and Enumerations」誊写。没变的类直接再导出 2.0.1 的 schema；变了的类在 2.0.1 的结构上加新字段和新枚举值；27 个新 action 是新类。因为 2.1 在线上是超集，2.0.1 的载荷类型可以赋给对应的 2.1 类型。引擎里有测试把这些定义和 OCA 的 2.1 schema 交叉核对，同 2.0.1（T95）。
+- **消息。** `core/src/ocpp21/messages.ts` 放 2.1 的定义，和 2.0.1 一样从 Part 2 的「Messages, Datatypes and Enumerations」誊写。没变的类直接再导出 2.0.1 的 schema；变了的类在 2.0.1 的结构上加新字段和新枚举值；27 个新 action 是新类。因为 2.1 在线上是超集，2.0.1 的载荷类型可以赋给对应的 2.1 类型（NotifyMonitoringReport 除外）。引擎里有测试把这些定义和 OCA 的 2.1 schema 交叉核对，同 2.0.1（T95）。
 - **消息集。** `OCPP21_MESSAGE_SET`：子协议 `ocpp2.1`，按发送方列出 91 个 action，错误码同 2.0.1，另加两个属性：`sendsCallResultError`（true）和 `unconfirmedActions`（用 SEND 发送的 action，即 NotifyPeriodicEventStream）。
 - **2.0.1 和 2.1 共用一个适配器。** `createChargePoint201` 变成 2.x 的桩：从 persona 取 `ocpp: '2.0.1' | '2.1'`，用该版本的消息集，类型按 2.1 的消息类型。2.1 新增的东西放在 `core/src/ocpp21/` 下的新模块里（事务限额和恢复、资费和费用、支付、动态和优先充电），只在 2.1 桩上接入；2.0.1 桩永远不会发 2.1 才有的字段或 action。2.0.1 的回归套件和 CitrineOS 套件守住这一点，录制器对其中每一帧都做 schema 检查。
+- 已实现（T94）：`core/src/ocpp21/messages.ts` 完整定义了 2.1 的每个类，而不是再导出没变的 2.0.1 类，这样两个版本互不牵连。字段表是用脚本从 Part 2 的文本誊写的，借助 PDF 的单词坐标把单元格里折行的文字拼回去（`ChargingRateChang` + `ed`）；结果和 OCA 的 2.1 schema 在每个字段、必填标志、类型、长度、取值范围、基数和枚举值上都一致。一个类型层面的测试检查每个 2.0.1 请求和应答类型都能赋给对应的 2.1 类型，唯一的例外是 NotifyMonitoringReport 的请求。`number()` 加上了 2.1 给部分小数规定的取值范围（放电限值不能为正）。`core/src/ocpp21/constants.ts` 放子协议、OCPP-J 2.1 的消息类型号，以及三个开放枚举的预定义值。core 把它们导出为 `ocpp21` 命名空间，另外导出 action 列表和校验函数。
 - 否决的方案：从 2.0.1 适配器复制出一个单独的 2.1 适配器。那会重复大约 2,400 行 2.1 没改的代码，每个修复都得落两遍。
 - 设备 reducer 仍然是连接器事实的唯一来源，共享部件（定时器、outbox、能量、证书、文件传输）照原样使用。
 

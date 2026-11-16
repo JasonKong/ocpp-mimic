@@ -96,11 +96,15 @@ export function integer(options: { minimum?: number; maximum?: number } = {}): S
   };
 }
 
-export function number(): Schema<number> {
+export function number(options: { minimum?: number; maximum?: number } = {}): Schema<number> {
   return {
     check(value, path, issues) {
       if (typeof value !== 'number' || !Number.isFinite(value)) {
         issues.push(typeIssue(path, 'number', value));
+      } else if (options.minimum !== undefined && value < options.minimum) {
+        issues.push(propertyIssue(path, `less than ${options.minimum}`));
+      } else if (options.maximum !== undefined && value > options.maximum) {
+        issues.push(propertyIssue(path, `more than ${options.maximum}`));
       }
     },
   };

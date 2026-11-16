@@ -39,6 +39,27 @@ export {
   type Ocpp201RequestOf,
   type Ocpp201ResponseOf,
 } from './ocpp201/messages.js';
+/** OCPP 2.1 datatypes and enumerations, in a namespace like 2.0.1's. */
+export * as ocpp21 from './ocpp21/index.js';
+export {
+  OCPP21_CHARGING_LIMIT_SOURCES,
+  OCPP21_CONNECTOR_TYPES,
+  OCPP21_ID_TOKEN_TYPES,
+  OCPP21_MESSAGE_TYPES,
+  OCPP21_SUBPROTOCOL,
+} from './ocpp21/constants.js';
+export {
+  isOcpp21Action,
+  OCPP21_CHARGING_STATION_ACTIONS,
+  OCPP21_CSMS_ACTIONS,
+  OCPP21_MESSAGES,
+  OCPP21_UNCONFIRMED_ACTIONS,
+  validateOcpp21Request,
+  validateOcpp21Response,
+  type Ocpp21Action,
+  type Ocpp21RequestOf,
+  type Ocpp21ResponseOf,
+} from './ocpp21/messages.js';
 export * from './ocppj.js';
 export {
   validate,
