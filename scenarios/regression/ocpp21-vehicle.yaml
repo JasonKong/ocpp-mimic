@@ -1,0 +1,129 @@
+# OCPP 2.1 ISO 15118-20 vehicle data (T105), charging only, against the
+# built-in CSMS: -20 charging needs (K18, K19), changed needs (K20),
+# NotifyAllowedEnergyTransfer, and the Display.* and EnergyRequest.*
+# measurands. Every frame is checked against OCA's 2.1 schemas.
+# `{{engineUrl}}` is the engine the scenario runs on.
+name: K18 An ISO 15118-20 EV's needs and Display values reach the CSMS and the session estimate
+station: { id: REG21-ISO20, persona: iso15118-20-2.1, energyMultiplier: 10 }
+steps:
+  - presentCard: { idToken: TAG-ISO20, result: authorized }
+  - plugIn: { ev: iso20-ac }
+  - expect:
+      sent: NotifyEVChargingNeeds
+      payload:
+        evseId: 1
+        chargingNeeds:
+          requestedEnergyTransfer: AC_three_phase
+          controlMode: ScheduledControl
+          mobilityNeedsMode: EVCC
+          departureTime: { $exists: true }
+          v2xChargingParameters:
+            {
+              maxChargePower: 11000,
+              evTargetEnergyRequest: 30000,
+              evMinEnergyRequest: 6000,
+              targetSoC: 80,
+            }
+          acChargingParameters: { $exists: false }
+      answer: { status: Accepted }
+  - expect:
+      sent: TransactionEvent
+      within: 10s
+      payload:
+        triggerReason: MeterValuePeriodic
+        meterValue:
+          $contains:
+            sampledValue:
+              $contains: { measurand: Display.BatteryEnergyCapacity, value: 60000, location: EV }
+  - http:
+      url: '{{engineUrl}}/api/stations/REG21-ISO20/sessions/1'
+      within: 5s
+      expect:
+        json:
+          estimate:
+            capacityWh: 60000
+            capacityFrom: display
+            targetSoc: 80
+            targetFrom: display
+            etaFrom: display
+---
+name: K18.FR.23 The CSMS refuses the energy transfer, and the transaction ends
+station: { id: REG21-ISO20-REFUSED, persona: iso15118-20-2.1 }
+steps:
+  - csmsReply: { action: NotifyEVChargingNeeds, payload: { status: Rejected }, times: 1 }
+  - presentCard: { idToken: TAG-ISO20-R, result: authorized }
+  - plugIn: { ev: iso20-ac }
+  - expect: { sent: NotifyEVChargingNeeds, answer: { status: Rejected } }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Ended
+        triggerReason: AbnormalCondition
+        transactionInfo: { stoppedReason: ReqEnergyTransferRejected }
+---
+name: K19 and K20 A dynamic-control EV sends changed needs, and the CSMS's allowed transfer is taken
+station: { id: REG21-ISO20-DYN, persona: iso15118-20-2.1 }
+steps:
+  - presentCard: { idToken: TAG-ISO20-D, result: authorized }
+  - plugIn: { ev: iso20-dynamic }
+  - expect:
+      sent: NotifyEVChargingNeeds
+      payload:
+        chargingNeeds:
+          requestedEnergyTransfer: AC_single_phase
+          controlMode: DynamicControl
+          departureTime: { $exists: false }
+  - expect:
+      sent: TransactionEvent
+      from: start
+      payload: { eventType: Started }
+      save: { tx: '$.payload.transactionInfo.transactionId' }
+  - changeEvNeeds: { departureMinutes: 120, targetSoc: 90, result: reported }
+  - expect:
+      sent: NotifyEVChargingNeeds
+      payload:
+        chargingNeeds:
+          { departureTime: { $exists: true }, v2xChargingParameters: { targetSoC: 90 } }
+  - csmsCall:
+      action: NotifyAllowedEnergyTransfer
+      payload: { transactionId: '{{tx}}', allowedEnergyTransfer: [AC_single_phase] }
+      answer: { status: Accepted }
+---
+name: K18.FR.17 A TxProfile before the EV's needs is refused, and taken after them
+station: { id: REG21-ISO20-EARLY, persona: iso15118-20-2.1 }
+steps:
+  - csmsCall:
+      action: SetVariables
+      payload:
+        setVariableData:
+          - component: { name: TxCtrlr }
+            variable: { name: TxStartPoint }
+            attributeValue: EVConnected
+      answer: { setVariableResult: [{ attributeStatus: Accepted }] }
+  - plugIn: { ev: iso20-ac }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started }
+      save: { tx: '$.payload.transactionInfo.transactionId' }
+  - csmsCall:
+      action: SetChargingProfile
+      payload: &profile
+        evseId: 1
+        chargingProfile:
+          id: 20
+          stackLevel: 0
+          chargingProfilePurpose: TxProfile
+          chargingProfileKind: Relative
+          transactionId: '{{tx}}'
+          chargingSchedule:
+            [
+              {
+                id: 1,
+                chargingRateUnit: W,
+                chargingSchedulePeriod: [{ startPeriod: 0, limit: 7000 }],
+              },
+            ]
+      answer: { status: Rejected, statusInfo: { reasonCode: InvalidMessageSeq } }
+  - presentCard: { idToken: TAG-ISO20-E, result: authorized }
+  - expect: { sent: NotifyEVChargingNeeds }
+  - csmsCall: { action: SetChargingProfile, payload: *profile, answer: { status: Accepted } }

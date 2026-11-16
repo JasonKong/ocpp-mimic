@@ -145,7 +145,9 @@ export interface EnergyFigures {
   /** Why there is no estimate. */
   reason?: string;
   targetSoc: number;
-  targetFrom: 'chargingNeeds' | 'default';
+  targetFrom: 'chargingNeeds' | 'display' | 'default';
+  /** The ETA is the EV's own remaining time (ISO 15118-20), not an estimate. */
+  etaReported?: boolean;
   departureTime?: string;
   reachesTargetBeforeDeparture?: boolean;
   /** The estimate misses the truth by more than 5 minutes or 10 % (of simulated time). */
@@ -215,6 +217,7 @@ export function energyFigures(detail: SessionDetail, now: number): EnergyFigures
       estimate.reason !== 'target reached' && { reason: estimate.reason }),
     targetSoc: estimate.targetSoc,
     targetFrom: estimate.targetFrom,
+    ...(estimate.etaFrom === 'display' && { etaReported: true }),
     ...(estimate.departureTime !== undefined && { departureTime: estimate.departureTime }),
     ...(estimate.reachesTargetBeforeDeparture !== undefined && {
       reachesTargetBeforeDeparture: estimate.reachesTargetBeforeDeparture,

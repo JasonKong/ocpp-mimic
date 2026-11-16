@@ -274,6 +274,7 @@ steps:
 | `presentCard` | `connector`、`idTag`（或 `idToken`）、`type`、`result` | 在连接器上刷卡；`result` 可断言 `authorized`、`rejected`、`stopping` 或 `busy`。2.0.1 桩上卡是一个 `type` 类型的 IdToken（默认 ISO14443） |
 | `presentPaymentCard` | `connector`、`brand`、`recognition`、`readingMethod`、`cardBin`、`last4`、`expiry`、`decline`、`settlement`、`declineIncrement`、`result` | 2.1：在 EVSE 的支付终端上刷银行卡，并说明支付服务商怎么回应；`result` 可断言 `authorized`、`declined`、`rejected` 或 `busy` |
 | `stopPayment` | `connector`、`result` | 2.1：司机在终端上停止；事务开始前为 `canceled`，开始后为 `stopping` |
+| `changeEvNeeds` | `connector`、`targetSoc`、`departureMinutes`、`minimumSoc`、`result` | 2.x：插着的车需求变化；2.1 上的 ISO 15118-20 车重新上报（`reported`，K20），其他车只按新目标充电（`changed`） |
 | `validateVat` | `vatNumber`、`evse`、`result` | 2.1：交给 CSMS 校验的 VAT 号（`Accepted` 或 `Rejected`） |
 | `evSuspend`、`evResume` | `connector` | EV 暂停或恢复 |
 | `fault` | `connector`（0 表示整桩）、`errorCode`、`info`、`vendorErrorCode` | 触发故障 |
@@ -1123,6 +1124,7 @@ interface SessionRecord {
 - EV profile 新增可选的 `communication: basic | dc | iso15118`。`basic` 不报 SoC，`dc` 和 `iso15118` 报。不设置时保持现有行为：配置了 SoC measurand 就报 SoC，现有 persona 和场景不变（R-EV-2）。
 - 已实现（T81）：EV profile 的 `communication`（persona、API 和场景里的内联 profile 都可用），由 `evProfileProblems` 检查；`reportsSoc` 决定电表是否采样 SoC。
 - `departureMinutes`（可选）给 `iso15118` 车一个离开时间，从插枪起算。
+- M7：`communication: iso15118-20` 是 ISO 15118-20 的车，可设 `controlMode`（默认 ScheduledControl，或 DynamicControl）和 `minimumSoc`（可选）；见 M7 的“ISO 15118-20 车辆数据”。
 - 2.0.1 的桩接 `iso15118` 车时，每次会话在插着枪、交易得到授权后，立即发一次 NotifyEVChargingNeeds（R-EV-3）。EVSE 的连接器类型是直流（cCCS1、cCCS2、cG105、cChaoJi）时用 DC 参数，否则用 AC 参数：capacityKWh → evEnergyCapacity，targetSoc → fullSoC，taperSoc → bulkSoC，maxPowerW → evMaxPower，energyAmount 由 SoC 和容量算出，evMaxCurrent 和 evMaxVoltage 由功率和相数算出，requestedEnergyTransfer 由相数决定（AC_single_phase、AC_three_phase 或 DC）。
 - 已实现（T82）：`packages/core/src/ocpp201/charging-needs.ts` 的 `chargingNeeds` 生成报文内容；2.0.1 桩在每次插枪后、EV 插着且得到授权时（不论交易起点设成什么）发一次，并在日志里记下 CSMS 返回的状态。内置 CSMS 应答 Accepted。`regression-iso15118-2.0.1`（scenarios/personas）提供一辆 AC 和一辆 DC 的 ISO 15118 车，供 `scenarios/regression/ocpp201-charging-needs.yaml` 和一个 CitrineOS 场景使用；连接器类型取自站点的 Device Model（`Connector@1.1.ConnectorType`）。
 
@@ -1305,6 +1307,7 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 - 对 ISO 15118-20 的 EV，测量量变量里列出时，Display.\* 和 EnergyRequest.\* 从 EV 模型采样（R-EV-4）；有 Display.RemainingTimeToTargetSOC 和 Display.BatteryEnergyCapacity 时，会话估算直接用它们。
 - NotifyAllowedEnergyTransfer 接受并记录；只充不放时没有什么可切换的。
 - 不做：ISO 15118 证书和 Plug & Charge（同 M5）、NotifyEVChargingSchedule 和发给 EV 的价格表、放电。
+- 已实现（T105）：EV profile 支持 `communication: iso15118-20`、`controlMode`（ScheduledControl 或 DynamicControl）和 `minimumSoc`。`core/src/ocpp21/iso15118-20.ts` 生成 -20 的充电需求：availableEnergyTransfer、controlMode、mobilityNeedsMode EVCC，以及 v2xChargingParameters（最小/最大充电功率，DC 还有电流和电压；目标、最大、最小能量需求和 targetSoC）。它还生成 EV 的 Display.\* 和 EnergyRequest.\* 数值；因为模型里的车充到目标就停，最大 SoC 取目标值；剩余时间用 `msUntilSoc`，按仿真时间计算。2.1 桩在 EV 插着且得到授权后发送 -20 需求；离线时先存着，之后带上 EV 给出需求的时间发送。Rejected 结束事务（AbnormalCondition，ReqEnergyTransferRejected），NoChargingProfile 记日志。需求发出前针对该事务的 TxProfile 以 InvalidMessageSeq 拒绝；这是附录里的码，K18 正文写的 InvalidMessageSequence 超过 20 个字符的长度限制。NotifyAllowedEnergyTransfer 对已知事务回 Accepted（只充电的桩），否则回 Rejected 和 TxNotFound。`changeEvNeeds`（API `POST /api/stations/:id/connectors/:n/ev-needs`、场景步骤）修改目标、离开时间或最低 SoC，并重新发送需求（K20）。车辆 measurand 列在 2.1 的 measurand 变量里，只对 -20 的车采样。2.0.1 桩把 -20 的车当作 ISO 15118-2 上报。会话保存上报的数值；估算采用 Display.BatteryEnergyCapacity、Display.TargetSOC 和 Display.RemainingTimeToTargetSOC（`etaFrom: display`），车辆卡片把它们显示为上报值。暂未实现：ISO15118Ctrlr 的 2.1 变量；收到 Accepted 或 Processing 后桩不等待曲线。`scenarios/regression/ocpp21-vehicle.yaml`（persona `iso15118-20-2.1`）覆盖 K18、K19、K20 和这些 measurand。
 
 **安全、配置和诊断（A、B、L、N 块）**
 

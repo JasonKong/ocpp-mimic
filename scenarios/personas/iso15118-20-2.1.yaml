@@ -1,0 +1,28 @@
+# regression-2.1 with ISO 15118-20 EVs, whose charging needs and Display.*
+# values the station reports (T105). Meter values every 5 s carry the EV's
+# values. Load it with --personas scenarios/personas.
+persona: iso15118-20-2.1
+extends: regression-2.1
+description: regression-2.1 with ISO 15118-20 EVs for the 2.1 vehicle data scenarios
+deviceModel:
+  SampledDataCtrlr:
+    TxUpdatedInterval: 5
+    TxUpdatedMeasurands: >-
+      Energy.Active.Import.Register,Power.Active.Import,Display.PresentSOC,Display.TargetSOC,Display.RemainingTimeToTargetSOC,Display.BatteryEnergyCapacity,EnergyRequest.Target
+evs:
+  iso20-ac:
+    capacityKWh: 60
+    initialSoc: 30
+    maxPowerW: 11000
+    phases: 3
+    targetSoc: 80
+    minimumSoc: 40
+    communication: iso15118-20
+    departureMinutes: 90
+  iso20-dynamic:
+    capacityKWh: 77
+    initialSoc: 20
+    maxPowerW: 7400
+    phases: 1
+    communication: iso15118-20
+    controlMode: DynamicControl

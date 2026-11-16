@@ -766,3 +766,55 @@ describe('2.1 payment sessions', () => {
     ]);
   });
 });
+
+describe('2.1 vehicle readings', () => {
+  it('reads the Display and EnergyRequest measurands, and Display.PresentSOC as the SoC', () => {
+    const [sample] = meterSamples(
+      [
+        {
+          timestamp: '2026-11-16T08:00:00Z',
+          sampledValue: [
+            { value: 1200, measurand: 'Energy.Active.Import.Register' },
+            {
+              value: 42,
+              measurand: 'Display.PresentSOC',
+              location: 'EV',
+              unitOfMeasure: { unit: 'Percent' },
+            },
+            {
+              value: 77,
+              measurand: 'Display.BatteryEnergyCapacity',
+              location: 'EV',
+              unitOfMeasure: { unit: 'kWh' },
+            },
+            {
+              value: 600,
+              measurand: 'Display.RemainingTimeToTargetSOC',
+              location: 'EV',
+              unitOfMeasure: { unit: 's' },
+            },
+            {
+              value: 21_000,
+              measurand: 'EnergyRequest.Target',
+              location: 'EV',
+              unitOfMeasure: { unit: 'Wh' },
+            },
+          ],
+        },
+      ],
+      7,
+    );
+    expect(sample).toEqual({
+      at: '2026-11-16T08:00:00Z',
+      seq: 7,
+      energyWh: 1200,
+      socPercent: 42,
+      vehicle: {
+        'Display.PresentSOC': 42,
+        'Display.BatteryEnergyCapacity': 77_000,
+        'Display.RemainingTimeToTargetSOC': 600,
+        'EnergyRequest.Target': 21_000,
+      },
+    });
+  });
+});

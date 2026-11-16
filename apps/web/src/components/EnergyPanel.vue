@@ -55,10 +55,9 @@ const fmtTime = (iso: string) => formatTime(iso).slice(0, 5);
     <div v-if="!finished" class="eta" :class="{ off: showTruth && f.off }">
       <span class="label"
         >To {{ f.targetSoc }} %
-        <span class="muted"
-          >({{ f.targetFrom === 'chargingNeeds' ? 'the EV says' : 'assumed' }})</span
-        >
-        <span class="src estimate">estimate</span></span
+        <span class="muted">({{ f.targetFrom === 'default' ? 'assumed' : 'the EV says' }})</span>
+        <span v-if="f.etaReported" class="src reported">reported</span>
+        <span v-else class="src estimate">estimate</span></span
       >
       <span v-if="f.etaAt" class="value"
         >{{ fmtTime(f.etaAt) }} · in {{ formatDuration(f.leftMs ?? 0) }}</span

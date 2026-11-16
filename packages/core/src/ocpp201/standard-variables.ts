@@ -8,6 +8,7 @@
 import { SUPPORTED_MEASURANDS } from '../meter.js';
 import { OCPP21_ID_TOKEN_TYPES } from '../ocpp21/constants.js';
 import { PAYMENT_DETAILS, TOTP_VERSIONS, WEB_PAYMENT_PARAMETERS } from '../ocpp21/payment.js';
+import { VEHICLE_MEASURANDS } from '../ocpp21/iso15118-20.js';
 import type { AttributeDefinition, VariableDataType, VariableDefinition } from './device-model.js';
 import type { ComponentType } from './messages.js';
 
@@ -88,6 +89,9 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
   const sampled: ComponentType = { name: 'SampledDataCtrlr' };
   const aligned: ComponentType = { name: 'AlignedDataCtrlr' };
   const device: ComponentType = { name: 'DeviceDataCtrlr' };
+  // 2.1 adds an ISO 15118-20 EV's values (R-EV-4).
+  const measurands =
+    input.ocpp === '2.1' ? `${MEASURANDS},${VEHICLE_MEASURANDS.join(',')}` : MEASURANDS;
   const clock: ComponentType = { name: 'ClockCtrlr' };
   const security: ComponentType = { name: 'SecurityCtrlr' };
   const dynamic = { dynamic: true };
@@ -168,7 +172,7 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
 
     variable(sampled, 'Enabled', 'boolean', rw('true')),
     variable(sampled, 'TxStartedMeasurands', 'MemberList', rw('Energy.Active.Import.Register'), {
-      valuesList: MEASURANDS,
+      valuesList: measurands,
     }),
     variable(
       sampled,
@@ -176,12 +180,12 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
       'MemberList',
       rw('Energy.Active.Import.Register,Power.Active.Import'),
       {
-        valuesList: MEASURANDS,
+        valuesList: measurands,
       },
     ),
     variable(sampled, 'TxUpdatedInterval', 'integer', rw('60'), { unit: 's', minLimit: 0 }),
     variable(sampled, 'TxEndedMeasurands', 'MemberList', rw('Energy.Active.Import.Register'), {
-      valuesList: MEASURANDS,
+      valuesList: measurands,
     }),
     variable(sampled, 'TxEndedInterval', 'integer', rw('0'), { unit: 's', minLimit: 0 }),
     variable(sampled, 'RegisterValuesWithoutPhases', 'boolean', rw('true')),
@@ -189,12 +193,12 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
     variable(aligned, 'Enabled', 'boolean', rw('true')),
     variable(aligned, 'Interval', 'integer', rw('0'), { unit: 's', minLimit: 0 }),
     variable(aligned, 'Measurands', 'MemberList', rw('Energy.Active.Import.Register'), {
-      valuesList: MEASURANDS,
+      valuesList: measurands,
     }),
     variable(aligned, 'SendDuringIdle', 'boolean', rw('false')),
     variable(aligned, 'TxEndedInterval', 'integer', rw('0'), { unit: 's', minLimit: 0 }),
     variable(aligned, 'TxEndedMeasurands', 'MemberList', rw('Energy.Active.Import.Register'), {
-      valuesList: MEASURANDS,
+      valuesList: measurands,
     }),
 
     ...(['GetReport', 'GetVariables', 'SetVariables'] as const).flatMap((instance) => [

@@ -3281,12 +3281,13 @@ describe('a 2.1 station: ad hoc payment (C18 to C25)', () => {
   const terminal = (
     csms: Record<string, Responder> = {},
     deviceModel: ChargePoint201Options['deviceModel'] = {},
+    energyMultiplier = 1,
   ) =>
     setup({
       features: ['Core', 'TariffAndCost', 'Payment'],
       csms: { NotifySettlement: () => ({}), ...csms },
       deviceModel,
-      extra: { ocpp: '2.1' },
+      extra: { ocpp: '2.1', energyMultiplier },
     });
   type Event = {
     eventType: string;
@@ -3460,25 +3461,27 @@ describe('a 2.1 station: ad hoc payment (C18 to C25)', () => {
         IncrementalAuthorizationThreshold: 0.5,
       },
     };
-    const h = terminal({}, settings);
+    // Energy x10: 7360 W adds 0.0204 kWh (and NZD) a second. The cost is priced every 10 s:
+    // 1.431 at 70 s, 1.636 at 80 s, past 2 - 0.5.
+    const h = terminal({}, settings, 10);
     await h.boot();
     await h.csmsCall('SetDefaultTariff', { evseId: 0, tariff: PER_KWH });
     await pay(h, 1);
     h.cp.plugIn(1);
     await h.advance(0);
-    // The cost is priced every 10 s: 1.472 at 720 s, 1.492 at 730 s, 1.513 at 740 s, past 2 - 0.5.
-    await h.advance(735_000);
+    await h.advance(75_000);
     expect(limitSets(h)).toEqual([]);
     await h.advance(10_000);
     expect(limitSets(h)).toEqual([{ maxCost: 7 }]);
     expect(txEvents(h).some((e) => e.triggerReason === 'CostLimitReached')).toBe(false);
 
-    const refused = terminal({}, settings);
+    // Refused: 2.04 at 100 s reaches the amount held.
+    const refused = terminal({}, settings, 10);
     await refused.boot();
     await refused.csmsCall('SetDefaultTariff', { evseId: 0, tariff: PER_KWH });
     await pay(refused, 1, { declineIncrement: true });
     refused.cp.plugIn(1);
-    await refused.advance(990_000);
+    await refused.advance(105_000);
     expect(limitSets(refused)).toEqual([]);
     expect(txEvents(refused).some((e) => e.triggerReason === 'CostLimitReached')).toBe(true);
   });
@@ -3615,5 +3618,198 @@ describe('a 2.1 station: ad hoc payment (C18 to C25)', () => {
     expect(plain.cp.webPaymentUrl(1)).toEqual({ error: 'not-supported' });
     const noHmac = setup({ features: ['Core', 'WebPayments'], extra: { ocpp: '2.1' } });
     expect(noHmac.cp.webPaymentUrl(1)).toEqual({ error: 'no-hmac' });
+  });
+});
+
+describe('a 2.1 station: ISO 15118-20 vehicle data (K18 to K20, R-EV-4)', () => {
+  const ISO20 = {
+    capacityKWh: 60,
+    initialSoc: 30,
+    maxPowerW: 11_000,
+    phases: 3 as const,
+    targetSoc: 80,
+    communication: 'iso15118-20' as const,
+    departureMinutes: 90,
+  };
+  const valid21 = (h: ReturnType<typeof setup>) =>
+    h.calls().every((c) => OCPP21_MESSAGE_SET.validateRequest(c.action, c.payload).ok);
+  const needs = (h: ReturnType<typeof setup>) =>
+    h.calls('NotifyEVChargingNeeds').map((c) => c.payload);
+  const station = (
+    status = 'Accepted',
+    deviceModel: ChargePoint201Options['deviceModel'] = {},
+    features = ['Core'],
+  ) =>
+    setup({
+      features,
+      csms: {
+        NotifyEVChargingNeeds: () => ({ status }),
+        SetChargingProfile: () => ({ status: 'Accepted' }),
+      },
+      deviceModel,
+      extra: { ocpp: '2.1' },
+    });
+
+  it('reports -20 charging needs and the Display and EnergyRequest measurands', async () => {
+    const h = station('Accepted', {
+      SampledDataCtrlr: {
+        TxUpdatedMeasurands:
+          'Energy.Active.Import.Register,Display.PresentSOC,Display.RemainingTimeToTargetSOC,Display.BatteryEnergyCapacity,EnergyRequest.Target',
+      },
+    });
+    await h.boot();
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1, { profile: ISO20 });
+    await h.advance(2000);
+    expect(needs(h)).toEqual([
+      {
+        evseId: 1,
+        chargingNeeds: {
+          requestedEnergyTransfer: 'AC_three_phase',
+          availableEnergyTransfer: ['AC_three_phase'],
+          controlMode: 'ScheduledControl',
+          mobilityNeedsMode: 'EVCC',
+          departureTime: new Date(T0 + 90 * 60_000).toISOString(),
+          v2xChargingParameters: {
+            minChargePower: 4140,
+            maxChargePower: 11_000,
+            evTargetEnergyRequest: 30_000,
+            evMaxEnergyRequest: 30_000,
+            targetSoC: 80,
+          },
+        },
+      },
+    ]);
+    await h.advance(60_000);
+    const periodic = h
+      .calls('TransactionEvent')
+      .map((c) => c.payload as { triggerReason: string; meterValue?: JsonObject[] })
+      .find((p) => p.triggerReason === 'MeterValuePeriodic');
+    const values = (periodic?.meterValue?.[0]?.sampledValue ?? []) as JsonObject[];
+    expect(values.map((v) => v.measurand ?? 'Energy.Active.Import.Register')).toEqual([
+      'Energy.Active.Import.Register',
+      'Display.PresentSOC',
+      'Display.RemainingTimeToTargetSOC',
+      'Display.BatteryEnergyCapacity',
+      'EnergyRequest.Target',
+    ]);
+    expect(values[3]).toMatchObject({
+      value: 60_000,
+      location: 'EV',
+      unitOfMeasure: { unit: 'Wh' },
+    });
+    expect(values[1]?.value).toBe(30);
+    expect(valid21(h)).toBe(true);
+  });
+
+  it('ends the transaction when the CSMS refuses the transfer (K18.FR.23)', async () => {
+    const h = station('Rejected');
+    await h.boot();
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1, { profile: ISO20 });
+    await h.advance(2000);
+    expect(h.events().filter((e) => e.startsWith('Ended'))).toEqual([
+      'Ended AbnormalCondition ReqEnergyTransferRejected',
+    ]);
+    // NoChargingProfile: no profile is coming, and the transaction goes on (K18.FR.15).
+    const none = station('NoChargingProfile');
+    await none.boot();
+    await none.present(1, 'TAG-1');
+    none.cp.plugIn(1, { profile: ISO20 });
+    await none.advance(2000);
+    expect(none.events().filter((e) => e.startsWith('Ended'))).toEqual([]);
+    expect(valid21(h) && valid21(none)).toBe(true);
+  });
+
+  it('refuses a TxProfile before the needs, and stamps needs it sends late (K18.FR.17, .21)', async () => {
+    const h = station(
+      'Accepted',
+      {
+        TxCtrlr: { TxStartPoint: 'EVConnected' },
+        AuthCtrlr: { OfflineTxForUnknownIdEnabled: true },
+      },
+      ['Core', 'SmartCharging'],
+    );
+    await h.boot();
+    h.cp.plugIn(1, { profile: ISO20 });
+    await h.settle();
+    const transactionId = String(
+      (h.calls('TransactionEvent')[0]?.payload.transactionInfo as JsonObject).transactionId,
+    );
+    const profile = {
+      evseId: 1,
+      chargingProfile: {
+        id: 5,
+        stackLevel: 0,
+        chargingProfilePurpose: 'TxProfile',
+        chargingProfileKind: 'Absolute',
+        transactionId,
+        chargingSchedule: [
+          {
+            id: 1,
+            startSchedule: new Date(T0).toISOString(),
+            chargingRateUnit: 'W',
+            chargingSchedulePeriod: [{ startPeriod: 0, limit: 7000 }],
+          },
+        ],
+      },
+    };
+    expect(await h.csmsCall('SetChargingProfile', profile)).toEqual({
+      status: 'Rejected',
+      statusInfo: { reasonCode: 'InvalidMessageSeq' },
+    });
+    // Authorized offline: the needs wait, and go with the time the EV gave them.
+    h.cp.disconnected();
+    expect(await h.present(1, 'TAG-1')).toBe('authorized');
+    const gaveAt = new Date(h.clock.now()).toISOString();
+    await h.advance(30_000);
+    expect(needs(h)).toEqual([]);
+    h.cp.connected();
+    await h.settle();
+    expect(needs(h)).toEqual([expect.objectContaining({ timestamp: gaveAt })]);
+    expect(await h.csmsCall('SetChargingProfile', profile)).toEqual({ status: 'Accepted' });
+    expect(valid21(h)).toBe(true);
+  });
+
+  it('sends changed needs again (K20), takes NotifyAllowedEnergyTransfer, and speaks -2 on 2.0.1', async () => {
+    const h = station();
+    await h.boot();
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1, { profile: ISO20 });
+    await h.advance(2000);
+    expect(h.cp.changeEvNeeds(1, { departureMinutes: 120, targetSoc: 90 })).toBe('reported');
+    await h.settle();
+    expect(needs(h).at(-1)).toMatchObject({
+      chargingNeeds: {
+        departureTime: new Date(T0 + 120 * 60_000).toISOString(),
+        v2xChargingParameters: { targetSoC: 90 },
+      },
+    });
+    expect(needs(h)).toHaveLength(2);
+    expect(h.cp.changeEvNeeds(2, { targetSoc: 90 })).toBe('no-ev');
+    const transactionId = (h.calls('TransactionEvent')[0]?.payload.transactionInfo as JsonObject)
+      .transactionId;
+    expect(
+      await h.csmsCall('NotifyAllowedEnergyTransfer', {
+        transactionId,
+        allowedEnergyTransfer: ['AC_three_phase'],
+      }),
+    ).toEqual({ status: 'Accepted' });
+    expect(
+      await h.csmsCall('NotifyAllowedEnergyTransfer', {
+        transactionId: 'nope',
+        allowedEnergyTransfer: ['AC_three_phase'],
+      }),
+    ).toEqual({ status: 'Rejected', statusInfo: { reasonCode: 'TxNotFound' } });
+    expect(valid21(h)).toBe(true);
+
+    // A 2.0.1 station reports the same EV as ISO 15118-2.
+    const old = setup({ csms: { NotifyEVChargingNeeds: () => ({ status: 'Accepted' }) } });
+    await old.boot();
+    await old.present(1, 'TAG-1');
+    old.cp.plugIn(1, { profile: ISO20 });
+    await old.advance(2000);
+    expect(needs(old)[0]).toMatchObject({ chargingNeeds: { acChargingParameters: {} } });
+    expect(old.cp.changeEvNeeds(1, { targetSoc: 90 })).toBe('changed');
   });
 });

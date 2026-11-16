@@ -14,10 +14,16 @@
 /**
  * How the EV talks to the station: `basic` is AC with the PWM signal only (the
  * station never learns the SoC), `dc` is DIN 70121 or CHAdeMO (SoC is known),
- * `iso15118` also tells the charging needs (capacity, target, departure).
+ * `iso15118` (ISO 15118-2) also tells the charging needs (capacity, target,
+ * departure), and `iso15118-20` tells them in -20's terms (energy requests,
+ * control mode) and the values a 2.1 station reports as Display.* measurands.
+ * On a 2.0.1 station an `iso15118-20` EV is reported as ISO 15118-2.
  */
-export const EV_COMMUNICATION = ['basic', 'dc', 'iso15118'] as const;
+export const EV_COMMUNICATION = ['basic', 'dc', 'iso15118', 'iso15118-20'] as const;
 export type EvCommunication = (typeof EV_COMMUNICATION)[number];
+
+/** ISO 15118-20's control modes (K18 scheduled, K19 dynamic). */
+export const EV_CONTROL_MODES = ['ScheduledControl', 'DynamicControl'] as const;
 
 export interface EvProfile {
   /** Usable battery capacity in kWh. */
@@ -39,6 +45,15 @@ export interface EvProfile {
   communication?: EvCommunication;
   /** Minutes after plugging in an `iso15118` EV wants to leave; it says so in its charging needs. */
   departureMinutes?: number;
+  /** `iso15118-20`: how the charging is controlled (K18, K19). Default ScheduledControl. */
+  controlMode?: (typeof EV_CONTROL_MODES)[number];
+  /** `iso15118-20`: the SoC (percent) the EV needs at least; none when absent. */
+  minimumSoc?: number;
+}
+
+/** Whether the EV speaks ISO 15118 (-2 or -20) and so tells its charging needs. */
+export function speaksIso15118(profile: EvProfile): boolean {
+  return profile.communication === 'iso15118' || profile.communication === 'iso15118-20';
 }
 
 /** Whether the station learns the EV's SoC, and so can report it. */
@@ -89,6 +104,18 @@ export function evProfileProblems(profile: EvProfile): string[] {
     !(EV_COMMUNICATION as readonly string[]).includes(profile.communication)
   ) {
     problems.push(`communication must be one of ${EV_COMMUNICATION.join(', ')}`);
+  }
+  if (
+    profile.controlMode !== undefined &&
+    !(EV_CONTROL_MODES as readonly string[]).includes(profile.controlMode)
+  ) {
+    problems.push(`controlMode must be one of ${EV_CONTROL_MODES.join(', ')}`);
+  }
+  if (
+    profile.minimumSoc !== undefined &&
+    !(profile.minimumSoc >= 0 && profile.minimumSoc <= target)
+  ) {
+    problems.push('minimumSoc must be between 0 and targetSoc');
   }
   return problems;
 }
@@ -187,20 +214,31 @@ export function advanceEv(ev: EvState, offeredW: number, durationMs: number): Ev
  * or undefined when it never will (nothing offered). 0 when already full.
  */
 export function msUntilFull(ev: EvState, offeredW: number): number | undefined {
+  return msUntilSoc(ev, offeredW, curve(ev.profile).target);
+}
+
+/**
+ * Milliseconds until the EV reaches `goal` percent (at most its target), or
+ * undefined when it never will (nothing offered). 0 when it is there already.
+ */
+export function msUntilSoc(ev: EvState, offeredW: number, goal: number): number | undefined {
   const c = curve(ev.profile);
-  if (ev.soc >= c.target) return 0;
+  const end = Math.min(goal, c.target);
+  if (ev.soc >= end) return 0;
   const limitW = Math.min(Math.max(0, offeredW), c.maxW);
   if (limitW <= 0) return undefined;
   let soc = ev.soc;
   let hours = 0;
-  const switchSoc = limitedFrom(c, limitW);
+  const switchSoc = Math.min(limitedFrom(c, limitW), end);
   if (soc < switchSoc) {
     hours += ((switchSoc - soc) * c.capacityWh) / 100 / limitW;
     soc = switchSoc;
   }
-  if (soc < c.target) {
+  if (soc < end) {
+    // In the taper the power falls as e^(−λt); it reaches the power accepted at `end`.
     const lambda = (100 * c.slope) / c.capacityWh;
-    hours += Math.log(acceptedPowerW(ev.profile, soc) / c.floorW) / lambda;
+    const endW = end >= c.target ? c.floorW : acceptedPowerW(ev.profile, end);
+    hours += Math.log(acceptedPowerW(ev.profile, soc) / endW) / lambda;
   }
   return Math.ceil(hours * MS_PER_HOUR);
 }

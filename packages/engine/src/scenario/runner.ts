@@ -364,6 +364,22 @@ export async function runScenario(
             }
           });
         }
+        case 'changeEvNeeds': {
+          const target = station!;
+          connectorOf(target, step.connector);
+          return refusal(() => {
+            if (target.chargePoint.ocpp === '1.6') return 'changeEvNeeds needs an OCPP 2.x station';
+            const outcome = (target.chargePoint as ChargePoint201).changeEvNeeds(
+              step.connector,
+              step.changes,
+            );
+            if (outcome === 'no-ev') return `no EV on connector ${step.connector}`;
+            if (step.result !== undefined && outcome !== step.result) {
+              throw new StepFailure(`the needs were ${outcome}, expected ${step.result}`);
+            }
+            return undefined;
+          });
+        }
         case 'presentPaymentCard':
         case 'stopPayment':
         case 'validateVat': {

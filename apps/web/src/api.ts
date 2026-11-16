@@ -50,7 +50,9 @@ export interface EvProfile {
   taperSoc?: number;
   targetSoc?: number;
   /** How the EV talks to the station; basic reports no SoC. */
-  communication?: 'basic' | 'dc' | 'iso15118';
+  communication?: 'basic' | 'dc' | 'iso15118' | 'iso15118-20';
+  controlMode?: 'ScheduledControl' | 'DynamicControl';
+  minimumSoc?: number;
   /** Minutes after plugging in an ISO 15118 EV wants to leave. */
   departureMinutes?: number;
 }
@@ -268,6 +270,8 @@ export interface ReportedSample {
   socPercent?: number;
   currentA?: Partial<Record<'L1' | 'L2' | 'L3', number>>;
   voltageV?: Partial<Record<'L1' | 'L2' | 'L3', number>>;
+  /** 2.1: an ISO 15118-20 EV's Display.* and EnergyRequest.* values, by measurand (Wh, s, %). */
+  vehicle?: Partial<Record<string, number>>;
 }
 
 export interface TrueSample {
@@ -315,14 +319,16 @@ export interface SessionEstimate {
   at?: string;
   refinedSocPercent?: number;
   capacityWh?: number;
-  capacityFrom?: 'chargingNeeds' | 'readings';
+  capacityFrom?: 'chargingNeeds' | 'display' | 'readings';
   targetSoc: number;
-  targetFrom: 'chargingNeeds' | 'default';
+  targetFrom: 'chargingNeeds' | 'display' | 'default';
   taperSoc: number;
   powerW?: number;
   energyLeftWh?: number;
   msToTarget?: number;
   etaAt?: string;
+  /** The EV's own remaining time (ISO 15118-20 Display value), or worked out. */
+  etaFrom?: 'display' | 'estimate';
   departureTime?: string;
   reachesTargetBeforeDeparture?: boolean;
   reason?: string;

@@ -11,6 +11,7 @@ import {
   acceptedPowerW,
   advanceEv,
   createEv,
+  evProfileProblems,
   evPowerW as evDrawW,
   msUntilFull,
   reportsSoc,
@@ -61,6 +62,11 @@ export interface Energy {
   update(connectorId: number, running: boolean, limitW: number | undefined): void;
   /** Plugs in an EV; throws a RangeError for an unusable profile, before anything changes. */
   plugEv(connectorId: number, ev: PluggedEv): void;
+  /**
+   * The plugged-in EV's settings change (its target, its departure) and its SoC
+   * stays; throws a RangeError for an unusable profile. False without an EV.
+   */
+  changeEv(connectorId: number, profile: EvProfile): boolean;
   /** The EV leaves; false when none was plugged in. */
   removeEv(connectorId: number): boolean;
   ev(connectorId: number): { name?: string; state: EvState } | undefined;
@@ -191,6 +197,16 @@ export function createEnergy(options: EnergyOptions): Energy {
         state,
         drawing: false,
       });
+    },
+    changeEv(connectorId, profile) {
+      const ev = evs.get(connectorId);
+      if (ev === undefined) return false;
+      const problems = evProfileProblems(profile);
+      if (problems.length > 0) throw new RangeError(`invalid EV profile: ${problems.join('; ')}`);
+      sync(connectorId);
+      ev.state = { profile, soc: ev.state.soc };
+      scheduleFull(connectorId);
+      return true;
     },
     removeEv(connectorId) {
       if (!evs.has(connectorId)) return false;

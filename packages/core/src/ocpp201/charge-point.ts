@@ -90,6 +90,8 @@ import type {
   Ocpp21ResponseOf,
 } from '../ocpp21/messages.js';
 import { chargingNeeds } from './charging-needs.js';
+import { chargingNeeds21, vehicleReadings } from '../ocpp21/iso15118-20.js';
+import { speaksIso15118, type EvProfile } from '../ev.js';
 import {
   applyOverrides,
   componentKey,
@@ -461,6 +463,15 @@ export interface ChargePoint201 extends ChargePoint {
   validateVatNumber(evseId: number | undefined, vatNumber: string): Promise<VatResult>;
   /** 2.1 with WebPayments: the dynamic QR code's URL for an EVSE now, with the driver's limits (C25). */
   webPaymentUrl(evseId: number, limits?: WebPaymentLimits): WebPaymentUrlResult;
+  /**
+   * The driver or the EV changes the plugged-in EV's target SoC or departure.
+   * An ISO 15118-20 EV on a 2.1 station reports its new needs (K20); others
+   * only charge to the new target. Throws a RangeError for unusable values.
+   */
+  changeEvNeeds(
+    evseId: number,
+    changes: Pick<EvProfile, 'targetSoc' | 'departureMinutes' | 'minimumSoc'>,
+  ): 'reported' | 'changed' | 'no-ev';
   /** The Device Model: every variable with its characteristics and attribute values. */
   deviceModelView(): DeviceModelEntry[];
   /**
@@ -501,6 +512,13 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     idToken.type === 'DirectPayment' ? 'payment' : 'remote';
   /** connectorId → when the EV was plugged in; set while NotifyEVChargingNeeds is still due. */
   const needsDue = new Map<number, number>();
+  /** When the EV on each EVSE was plugged in, for the departure time of changed needs (K20). */
+  const pluggedAtOf = new Map<number, number>();
+  /** 2.1: an ISO 15118-20 EV's needs not sent yet, with when the EV gave them. */
+  const needsWaiting = new Map<
+    number,
+    { evseId: number; chargingNeeds: ReturnType<typeof chargingNeeds21>; timestamp: string }
+  >();
   const changed = () => emit({ type: 'changed' });
   const now = () => clock.now();
   const timestamp = () => new Date(now()).toISOString();
@@ -951,14 +969,21 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     const secret = `${ids()}${ids()}`.replace(/[^0-9A-Za-z]/g, '');
     deviceModel.set('WebPaymentsCtrlr', 'SharedSecret', secret.padEnd(16, '0').slice(0, 64));
   }
-  const sample = (connectorId: number, measurands: string, context: ReadingContextEnumType) =>
-    sampleMeter201(
-      energy.sync(connectorId),
-      now(),
-      measurands,
-      context,
-      energy.extras(connectorId),
-    );
+  /** 2.1: an ISO 15118-20 EV's Display.* and EnergyRequest.* values (R-EV-4). */
+  const vehicleOf = (connectorId: number) => {
+    const ev = v21 ? energy.ev(connectorId) : undefined;
+    return ev?.state.profile.communication === 'iso15118-20'
+      ? vehicleReadings(ev.state, energy.meter(connectorId).offeredW)
+      : undefined;
+  };
+  const sample = (connectorId: number, measurands: string, context: ReadingContextEnumType) => {
+    const meter = energy.sync(connectorId);
+    const vehicle = vehicleOf(connectorId);
+    return sampleMeter201(meter, now(), measurands, context, {
+      ...energy.extras(connectorId),
+      ...(vehicle !== undefined && { vehicle }),
+    });
+  };
 
   /**
    * Whether a connector may draw power: a cable, an authorized token, no
@@ -2192,19 +2217,64 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     const pluggedAt = needsDue.get(connectorId);
     if (pluggedAt === undefined || !conditions.evConnected || !conditions.authorized) return;
     const ev = energy.ev(connectorId);
-    if (ev?.state.profile.communication !== 'iso15118') return;
+    if (ev === undefined || !speaksIso15118(ev.state.profile)) return;
     needsDue.delete(connectorId);
+    sendChargingNeeds(connectorId, pluggedAt);
+  }
+
+  /**
+   * NotifyEVChargingNeeds with what the EV says now. An ISO 15118-20 EV on a
+   * 2.1 station gives -20's needs (K18.FR.06); offline they wait, stamped with
+   * when the EV gave them (K18.FR.21, K20.FR.05). Its CSMS may refuse the
+   * transfer, which ends the transaction (K18.FR.23).
+   */
+  function sendChargingNeeds(connectorId: number, pluggedAt: number): void {
+    const ev = energy.ev(connectorId);
+    if (ev === undefined) return;
+    const twenty = v21 && ev.state.profile.communication === 'iso15118-20';
     const connectorType = deviceModel.get(`Connector@${connectorId}.1`, 'ConnectorType');
-    void sendIfOnline('NotifyEVChargingNeeds', {
+    const input = {
+      profile: ev.state.profile,
+      soc: ev.state.soc,
+      ...(connectorType !== undefined && { connectorType }),
+      pluggedAt,
+    };
+    const request = {
       evseId: connectorId,
-      chargingNeeds: chargingNeeds({
-        profile: ev.state.profile,
-        soc: ev.state.soc,
-        ...(connectorType !== undefined && { connectorType }),
-        pluggedAt,
-      }),
+      chargingNeeds: twenty ? chargingNeeds21(input) : chargingNeeds(input),
+    };
+    if (!twenty) {
+      void sendIfOnline('NotifyEVChargingNeeds', request)?.then((outcome) => {
+        if (outcome.ok) log(`NotifyEVChargingNeeds: ${String(outcome.payload.status)}`);
+      });
+      return;
+    }
+    needsWaiting.set(connectorId, { ...request, timestamp: timestamp() });
+    if (online()) sendWaitingNeeds(connectorId);
+  }
+
+  /** Sends an ISO 15118-20 EV's waiting needs; the timestamp only when they waited. */
+  function sendWaitingNeeds(connectorId: number): void {
+    const waiting = needsWaiting.get(connectorId);
+    if (waiting === undefined) return;
+    needsWaiting.delete(connectorId);
+    const { timestamp: at, ...request } = waiting;
+    const late = now() - Date.parse(at) >= 1000;
+    void sendIfOnline('NotifyEVChargingNeeds', {
+      ...request,
+      ...(late && { timestamp: at }),
     })?.then((outcome) => {
-      if (outcome.ok) log(`NotifyEVChargingNeeds: ${String(outcome.payload.status)}`);
+      if (!outcome.ok) return;
+      const { status } = outcome.payload;
+      log(`NotifyEVChargingNeeds: ${status}`);
+      if (status === 'NoChargingProfile') {
+        // No profile is coming: the composite schedule applies (K18.FR.15, K19.FR.11).
+        log(`EVSE ${connectorId}: no charging profile; charging within the composite schedule`);
+      }
+      if (status === 'Rejected' && transactions.has(connectorId)) {
+        log(`EVSE ${connectorId}: the CSMS refused the energy transfer`);
+        endTransaction(connectorId, 'AbnormalCondition', 'ReqEnergyTransferRejected');
+      }
     });
   }
 
@@ -2376,6 +2446,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     reportStatuses(true);
     security.bootAccepted();
     outbox.pump();
+    for (const connectorId of [...needsWaiting.keys()]) sendWaitingNeeds(connectorId);
     if (resuming.size > 0) {
       const evses = [...resuming];
       resuming = new Set();
@@ -2750,6 +2821,17 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       };
     },
 
+    // 2.1: the transfers the CSMS allows for a transaction; a charging-only station takes them.
+    NotifyAllowedEnergyTransfer(request) {
+      if (![...transactions.values()].some((tx) => tx.id === request.transactionId)) {
+        return { status: 'Rejected', statusInfo: { reasonCode: 'TxNotFound' } };
+      }
+      log(
+        `transaction ${request.transactionId}: allowed energy transfer ${request.allowedEnergyTransfer.join(', ')}`,
+      );
+      return { status: 'Accepted' };
+    },
+
     // 2.1: a driver pays on the CSMS's web page; the EVSE waits for the remote start (C25.FR.22, .27).
     NotifyWebPaymentStarted(request) {
       log(`EVSE ${request.evseId}: a web payment started; local starts wait ${request.timeout} s`);
@@ -2942,6 +3024,18 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     },
 
     SetChargingProfile(request) {
+      // A TxProfile before an ISO 15118-20 EV's needs went out is too early (K18.FR.17, K19.FR.13);
+      // the appendix's reason code, as the spec's InvalidMessageSequence is over 20 characters.
+      if (
+        v21 &&
+        request.chargingProfile.chargingProfilePurpose === 'TxProfile' &&
+        energy.ev(request.evseId)?.state.profile.communication === 'iso15118-20' &&
+        transactions.has(request.evseId) &&
+        (needsDue.has(request.evseId) || needsWaiting.has(request.evseId))
+      ) {
+        log(`SetChargingProfile ${request.chargingProfile.id}: the EV's needs are not sent yet`);
+        return { status: 'Rejected', statusInfo: { reasonCode: 'InvalidMessageSeq' } };
+      }
       const result = installProfile201(
         chargingProfiles,
         request.evseId,
@@ -3431,6 +3525,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       if (ev !== undefined) energy.plugEv(connectorId, ev);
       if (applyDevice({ type: 'Plug', connectorId }).error !== undefined) return;
       needsDue.set(connectorId, now());
+      pluggedAtOf.set(connectorId, now());
       stopTimer(connectTimers.get(connectorId));
       connectTimers.delete(connectorId);
       evaluate(connectorId, 'CablePluggedIn');
@@ -3449,6 +3544,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       energy.sync(connectorId);
       applyDevice({ type: 'Unplug', connectorId });
       needsDue.delete(connectorId);
+      needsWaiting.delete(connectorId);
+      pluggedAtOf.delete(connectorId);
       if (
         transactions.has(connectorId) &&
         dmValue('TxCtrlr', 'StopTxOnEVSideDisconnect') !== 'false'
@@ -3684,6 +3781,24 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       }
       setPriority(evseId, activate);
       return activate ? 'activated' : 'deactivated';
+    },
+
+    changeEvNeeds(evseId, changes) {
+      const ev = energy.ev(evseId);
+      if (ev === undefined) return 'no-ev';
+      const profile: EvProfile = { ...ev.state.profile };
+      for (const key of ['targetSoc', 'departureMinutes', 'minimumSoc'] as const) {
+        if (changes[key] !== undefined) profile[key] = changes[key];
+      }
+      energy.changeEv(evseId, profile);
+      updatePower(evseId);
+      changed();
+      // ISO 15118-20 needs that went out already are sent again (K20.FR.01).
+      const reported = !needsDue.has(evseId) && !needsWaiting.has(evseId);
+      if (!v21 || profile.communication !== 'iso15118-20' || !reported) return 'changed';
+      if (!transactions.has(evseId) && !authorizations.has(evseId)) return 'changed';
+      sendChargingNeeds(evseId, pluggedAtOf.get(evseId) ?? now());
+      return 'reported';
     },
 
     presentPaymentCard: (evseId, card = {}) => presentPaymentCard(evseId, card),

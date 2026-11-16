@@ -59,6 +59,17 @@ export function vehicleRows(
   const dc = isObject(needs?.dcChargingParameters) ? needs.dcChargingParameters : undefined;
   const ac = isObject(needs?.acChargingParameters) ? needs.acChargingParameters : undefined;
   const latestSample = [...session.samples].reverse().find((s) => s.socPercent !== undefined);
+  const v2x = isObject(needs?.v2xChargingParameters) ? needs.v2xChargingParameters : undefined;
+  /** The latest value an ISO 15118-20 EV reported for a Display.* or EnergyRequest.* measurand. */
+  const shown = (measurand: string) => {
+    const sample = [...session.samples].reverse().find((s) => s.vehicle?.[measurand] !== undefined);
+    const value = sample?.vehicle?.[measurand];
+    return sample === undefined || value === undefined ? undefined : { value, seq: sample.seq };
+  };
+  const capacityShown = shown('Display.BatteryEnergyCapacity');
+  const targetShown = shown('Display.TargetSOC');
+  const remainingShown = shown('Display.RemainingTimeToTargetSOC');
+  const requestShown = shown('EnergyRequest.Target');
   const lastTruth = session.truth.at(-1);
   const profile = ev?.profile;
   // Times to the target are simulated under an energy multiplier; shown in wall-clock time.
@@ -110,6 +121,9 @@ export function vehicleRows(
           ...(num(dc?.evEnergyCapacity) !== undefined
             ? [reported(formatEnergy(num(dc?.evEnergyCapacity) ?? 0))]
             : []),
+          ...(capacityShown !== undefined
+            ? [reported(`${formatEnergy(capacityShown.value)} (Display)`, capacityShown.seq)]
+            : []),
           ...(estimate.capacityFrom === 'readings' && estimate.capacityWh !== undefined
             ? [estimated(`${formatEnergy(estimate.capacityWh)} from the readings`)]
             : []),
@@ -118,10 +132,18 @@ export function vehicleRows(
       },
       energyNeeded: {
         values: [
-          ...(num(dc?.energyAmount ?? ac?.energyAmount) !== undefined
+          ...(num(dc?.energyAmount ?? ac?.energyAmount ?? v2x?.evTargetEnergyRequest) !== undefined
             ? [
                 reported(
-                  `${formatEnergy(num(dc?.energyAmount ?? ac?.energyAmount) ?? 0)} at the start`,
+                  `${formatEnergy(num(dc?.energyAmount ?? ac?.energyAmount ?? v2x?.evTargetEnergyRequest) ?? 0)} at the start`,
+                ),
+              ]
+            : []),
+          ...(requestShown !== undefined
+            ? [
+                reported(
+                  `${formatEnergy(requestShown.value)} left (EnergyRequest)`,
+                  requestShown.seq,
                 ),
               ]
             : []),
@@ -143,7 +165,11 @@ export function vehicleRows(
                   `full ${String(dc?.fullSoC)} %${num(dc?.bulkSoC) === undefined ? '' : `, fast charging to ${String(dc?.bulkSoC)} %`}`,
                 ),
               ]
-            : [estimated(`${estimate.targetSoc} % assumed`)],
+            : targetShown !== undefined
+              ? [reported(`${targetShown.value} % (Display)`, targetShown.seq)]
+              : num(v2x?.targetSoC) !== undefined
+                ? [reported(`${String(v2x?.targetSoC)} % (ChargingNeeds)`)]
+                : [estimated(`${estimate.targetSoc} % assumed`)],
         truth: truthOf(
           profile === undefined
             ? undefined
@@ -151,7 +177,12 @@ export function vehicleRows(
         ),
       },
       timeToTarget: {
-        values: estimate.msToTarget !== undefined ? [estimated(wall(estimate.msToTarget))] : [],
+        values:
+          remainingShown !== undefined
+            ? [reported(`${wall(remainingShown.value * 1000)} (Display)`, remainingShown.seq)]
+            : estimate.msToTarget !== undefined
+              ? [estimated(wall(estimate.msToTarget))]
+              : [],
         truth: truthOf(truth?.msToTarget === undefined ? undefined : wall(truth.msToTarget)),
       },
       departure: {
@@ -179,7 +210,13 @@ export function vehicleRows(
                     `${String(ac.evMinCurrent)}–${String(ac.evMaxCurrent)} A, ${String(ac.evMaxVoltage)} V`,
                   ),
                 ]
-              : [],
+              : num(v2x?.maxChargePower) !== undefined
+                ? [
+                    reported(
+                      `${formatPower(num(v2x?.minChargePower) ?? 0)}–${formatPower(num(v2x?.maxChargePower) ?? 0)}`,
+                    ),
+                  ]
+                : [],
         truth: truthOf(profile === undefined ? undefined : `${formatPower(profile.maxPowerW)}`),
       },
       drawing: {
