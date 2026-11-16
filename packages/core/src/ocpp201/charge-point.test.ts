@@ -898,6 +898,233 @@ describe('a 2.1 station: security and network configuration (A02, A05, B09)', ()
   });
 });
 
+describe('a 2.1 station: smart charging (K21, K22, K27, K28)', () => {
+  const features = ['Core', 'SmartCharging'];
+  const profile = (
+    id: number,
+    purpose: string,
+    limit: number,
+    extra: JsonObject = {},
+    scheduleExtra: JsonObject = {},
+  ) => ({
+    id,
+    stackLevel: 0,
+    chargingProfilePurpose: purpose,
+    chargingProfileKind: 'Absolute',
+    chargingSchedule: [
+      {
+        id: 1,
+        startSchedule: new Date(T0).toISOString(),
+        chargingRateUnit: 'W',
+        chargingSchedulePeriod: [{ startPeriod: 0, limit }],
+        ...scheduleExtra,
+      },
+    ],
+    ...extra,
+  });
+  const station = (
+    csms: Record<string, Responder> = {},
+    deviceModel?: ChargePoint201Options['deviceModel'],
+  ) =>
+    setup({
+      features,
+      csms: { NotifyPriorityCharging: () => ({}), ...csms },
+      ...(deviceModel !== undefined && { deviceModel }),
+      extra: { ocpp: '2.1' },
+    });
+  const powerOf = (h: ReturnType<typeof setup>, evse = 1) =>
+    h.cp.snapshot().connectors[evse - 1]?.powerW;
+  const charge = async (h: ReturnType<typeof setup>) => {
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1);
+    await h.advance(0);
+    return (h.calls('TransactionEvent')[0]?.payload.transactionInfo as { transactionId: string })
+      .transactionId;
+  };
+
+  it('charges with the PriorityCharging profile while it is active, within the station maximum (K21)', async () => {
+    const h = station();
+    await h.boot();
+    await h.csmsCall('SetChargingProfile', {
+      evseId: 1,
+      chargingProfile: profile(1, 'TxDefaultProfile', 3680),
+    });
+    await h.csmsCall('SetChargingProfile', {
+      evseId: 0,
+      chargingProfile: profile(2, 'PriorityCharging', 11000),
+    });
+    const transactionId = await charge(h);
+    expect(powerOf(h)).toBe(3680);
+    expect(await h.csmsCall('UsePriorityCharging', { transactionId, activate: true })).toEqual({
+      status: 'Accepted',
+    });
+    await h.advance(0);
+    expect(powerOf(h)).toBe(7360);
+    expect(h.calls('NotifyPriorityCharging').at(-1)?.payload).toEqual({
+      transactionId,
+      activated: true,
+    });
+    // The ChargingStationMaxProfile still applies.
+    await h.csmsCall('SetChargingProfile', {
+      evseId: 0,
+      chargingProfile: profile(3, 'ChargingStationMaxProfile', 5000),
+    });
+    await h.advance(0);
+    expect(powerOf(h)).toBe(5000);
+    expect(await h.csmsCall('UsePriorityCharging', { transactionId, activate: false })).toEqual({
+      status: 'Accepted',
+    });
+    await h.advance(0);
+    expect(powerOf(h)).toBe(3680);
+    expect(h.calls('NotifyPriorityCharging').at(-1)?.payload).toEqual({
+      transactionId,
+      activated: false,
+    });
+    expect(
+      await h.csmsCall('UsePriorityCharging', { transactionId: 'nope', activate: true }),
+    ).toMatchObject({
+      status: 'Rejected',
+      statusInfo: { reasonCode: 'TxNotFound' },
+    });
+  });
+
+  it('has a priority button that needs a PriorityCharging profile (K22)', async () => {
+    const h = station();
+    await h.boot();
+    const transactionId = await charge(h);
+    expect(
+      await h.csmsCall('UsePriorityCharging', { transactionId, activate: true }),
+    ).toMatchObject({
+      status: 'NoProfile',
+    });
+    expect(h.cp.priorityCharging(1, true)).toBe('no-profile');
+    await h.csmsCall('SetChargingProfile', {
+      evseId: 1,
+      chargingProfile: profile(2, 'PriorityCharging', 11000),
+    });
+    expect(h.cp.priorityCharging(1, true)).toBe('activated');
+    await h.settle();
+    expect(h.calls('NotifyPriorityCharging').at(-1)?.payload).toEqual({
+      transactionId,
+      activated: true,
+    });
+    expect(h.cp.priorityCharging(2, true)).toBe('no-transaction');
+  });
+
+  it('adds LocalGeneration capacity to a limit (K27, K08.FR.04)', async () => {
+    const h = station();
+    await h.boot();
+    await h.csmsCall('SetChargingProfile', {
+      evseId: 1,
+      chargingProfile: profile(1, 'TxDefaultProfile', 3680),
+    });
+    await h.csmsCall('SetChargingProfile', {
+      evseId: 0,
+      chargingProfile: profile(2, 'LocalGeneration', 2000),
+    });
+    await charge(h);
+    expect(powerOf(h)).toBe(5680);
+  });
+
+  it('applies a Dynamic profile, its pushed and pulled updates, and drops it when stale (K28)', async () => {
+    let pulls = 0;
+    const h = station({
+      PullDynamicScheduleUpdate: () => {
+        pulls += 1;
+        return pulls === 1
+          ? { status: 'Accepted', scheduleUpdate: { limit: 4000 } }
+          : { status: 'Rejected' };
+      },
+    });
+    await h.boot();
+    const dynamic = profile(
+      5,
+      'TxDefaultProfile',
+      2000,
+      { chargingProfileKind: 'Dynamic', dynUpdateInterval: 60 },
+      { duration: 150 },
+    );
+    expect(await h.csmsCall('SetChargingProfile', { evseId: 1, chargingProfile: dynamic })).toEqual(
+      { status: 'Accepted' },
+    );
+    await charge(h);
+    expect(powerOf(h)).toBe(2000);
+    expect(
+      await h.csmsCall('UpdateDynamicSchedule', {
+        chargingProfileId: 5,
+        scheduleUpdate: { limit: 3000 },
+      }),
+    ).toEqual({ status: 'Accepted' });
+    await h.advance(0);
+    expect(powerOf(h)).toBe(3000);
+    // A minute after the last update it asks for one (K28.FR.10).
+    await h.advance(60_000);
+    expect(h.calls('PullDynamicScheduleUpdate')[0]?.payload).toEqual({ chargingProfileId: 5 });
+    expect(powerOf(h)).toBe(4000);
+    // No more updates: 150 s after the last one the profile no longer applies (K28.FR.13).
+    await h.advance(151_000);
+    expect(powerOf(h)).toBe(7360);
+    expect(
+      await h.csmsCall('UpdateDynamicSchedule', {
+        chargingProfileId: 9,
+        scheduleUpdate: { limit: 1 },
+      }),
+    ).toMatchObject({
+      status: 'Rejected',
+    });
+  });
+
+  it('refuses what it does not support, with the reasonCodes of K01.FR.120 to .126', async () => {
+    const h = station({}, { SmartChargingCtrlr: { SupportedAdditionalPurposes: '' } });
+    await h.boot();
+    const refused = async (chargingProfile: JsonObject) =>
+      (
+        (await h.csmsCall('SetChargingProfile', { evseId: 1, chargingProfile })) as {
+          statusInfo?: { reasonCode?: string };
+        }
+      ).statusInfo?.reasonCode;
+    expect(await refused(profile(1, 'PriorityCharging', 1000))).toBe('UnsupportedPurpose');
+    expect(await refused(profile(1, 'TxDefaultProfile', 1000, { dynUpdateInterval: 30 }))).toBe(
+      'InvalidProfile',
+    );
+    expect(await refused(profile(1, 'TxDefaultProfile', 1000, {}, { useLocalTime: true }))).toBe(
+      'InvalidSchedule',
+    );
+    expect(await refused(profile(1, 'TxDefaultProfile', 1000, {}, { randomizedDelay: 30 }))).toBe(
+      'InvalidSchedule',
+    );
+    expect(
+      await refused({
+        ...profile(1, 'TxDefaultProfile', 1000),
+        chargingSchedule: [
+          {
+            id: 1,
+            chargingRateUnit: 'W',
+            chargingSchedulePeriod: [
+              { startPeriod: 0, limit: 1000, operationMode: 'CentralSetpoint' },
+            ],
+          },
+        ],
+      }),
+    ).toBe('InvalidOperationMode');
+    expect(
+      await refused({
+        ...profile(1, 'TxDefaultProfile', 1000, { chargingProfileKind: 'Dynamic' }),
+        chargingSchedule: [
+          {
+            id: 1,
+            chargingRateUnit: 'W',
+            chargingSchedulePeriod: [
+              { startPeriod: 0, limit: 1000 },
+              { startPeriod: 60, limit: 2000 },
+            ],
+          },
+        ],
+      }),
+    ).toBe('InvalidSchedule');
+  });
+});
+
 describe('2.0.1 personas', () => {
   it('resolve with the 2.0.1 boot block and certification profiles', () => {
     const { personas, errors } = resolvePersonas([

@@ -100,6 +100,8 @@ import {
   installProfile201,
   limits201,
   profileProblem,
+  profileProblem21,
+  applyDynamicUpdate,
   selectProfiles201,
   clearProfiles201,
   type ChargingProfile201,
@@ -353,6 +355,14 @@ export interface DeviceModelEntry {
 
 export interface ChargePoint201 extends ChargePoint {
   persistentState(): PersistedChargePoint201;
+  /**
+   * 2.1: the driver's priority charging button on an EVSE (K22): on needs a
+   * PriorityCharging profile for it (K22.FR.01) and a transaction.
+   */
+  priorityCharging(
+    evseId: number,
+    activate: boolean,
+  ): 'activated' | 'deactivated' | 'no-profile' | 'no-transaction' | 'not-2.1';
   /** The Device Model: every variable with its characteristics and attribute values. */
   deviceModelView(): DeviceModelEntry[];
   /**
@@ -874,7 +884,100 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       evseIds: connectors(station).map((c) => c.connectorId),
       transactionOn: (evseId) => transactions.get(evseId)?.id,
       now: now(),
+      ...(v21 && {
+        v21: {
+          purposes: dmValue('SmartChargingCtrlr', 'SupportedAdditionalPurposes').split(','),
+          dynamic: dmValue('SmartChargingCtrlr', 'SupportsDynamicProfiles') === 'true',
+        },
+      }),
     };
+  }
+
+  // ---- 2.1 smart charging: priority charging (K21, K22), Dynamic profiles (K28) --
+
+  /** EVSEs whose transaction charges with the PriorityCharging profile. */
+  const priorityEvses = new Set<number>();
+  const hasPriorityProfile = (evseId: number) =>
+    chargingProfiles.some(
+      (p) =>
+        p.profile.chargingProfilePurpose === 'PriorityCharging' &&
+        (p.evseId === 0 || p.evseId === evseId),
+    );
+
+  /**
+   * Switches priority charging on or off for an EVSE's transaction and tells
+   * the CSMS (K21.FR.05, .08, K22.FR.02 to .05); queued while offline.
+   */
+  function setPriority(evseId: number, activate: boolean): void {
+    const tx = transactions.get(evseId);
+    if (tx === undefined || priorityEvses.has(evseId) === activate) return;
+    if (activate) priorityEvses.add(evseId);
+    else priorityEvses.delete(evseId);
+    log(`EVSE ${evseId}: priority charging ${activate ? 'on' : 'off'}`);
+    updateAllPowers();
+    void outbox.enqueue('NotifyPriorityCharging', { transactionId: tx.id, activated: activate });
+  }
+
+  const pullTimers = new Map<number, TimerHandle>();
+  /** When to ask again after a pull brought nothing; only an update renews a profile. */
+  const retryPullAt = new Map<number, number>();
+
+  /**
+   * Fetches an update of each Dynamic profile every dynUpdateInterval
+   * (K28.FR.10): due that long after its last update, and again an interval
+   * later when none came.
+   */
+  function scheduleDynamicPulls(): void {
+    for (const timer of pullTimers.values()) stopTimer(timer);
+    pullTimers.clear();
+    for (const { profile } of chargingProfiles) {
+      const interval = profile.dynUpdateInterval ?? 0;
+      if (profile.chargingProfileKind !== 'Dynamic' || interval <= 0) continue;
+      const due = Math.max(
+        now(),
+        retryPullAt.get(profile.id) ?? 0,
+        (Date.parse(profile.dynUpdateTime ?? '') || now()) + interval * 1000,
+      );
+      const { id } = profile;
+      pullTimers.set(
+        id,
+        later(due - now(), () => {
+          pullTimers.delete(id);
+          // Nothing new (or offline): ask again an interval from now.
+          const askLater = () => {
+            retryPullAt.set(id, now() + interval * 1000);
+            scheduleDynamicPulls();
+          };
+          const pending = sendIfOnline('PullDynamicScheduleUpdate', { chargingProfileId: id });
+          if (pending === undefined) {
+            askLater();
+            return;
+          }
+          void pending.then((outcome) => {
+            const update = outcome.ok ? outcome.payload : undefined;
+            if (update?.status === 'Accepted' && update.scheduleUpdate !== undefined) {
+              applyScheduleUpdate(id, update.scheduleUpdate);
+            } else {
+              askLater();
+            }
+          });
+        }),
+      );
+    }
+  }
+
+  /** Applies an UpdateDynamicSchedule or a pulled update to a Dynamic profile (K28.FR.06, .08). */
+  function applyScheduleUpdate(
+    id: number,
+    update: Ocpp21RequestOf<'UpdateDynamicSchedule'>['scheduleUpdate'],
+  ): void {
+    chargingProfiles = chargingProfiles.map((p) =>
+      p.profile.id === id ? applyDynamicUpdate(p, update, now()) : p,
+    );
+    retryPullAt.delete(id);
+    log(`Dynamic profile ${id} updated: ${JSON.stringify(update)}`);
+    updateAllPowers();
+    scheduleDynamicPulls();
   }
 
   /**
@@ -885,16 +988,19 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   function profileLimitW(connectorId: number): number | undefined {
     if (chargingProfiles.length === 0) return undefined;
     const conversion = energy.conversion(connectorId);
-    const { own, station: total } = limits201(
-      chargingProfiles,
-      connectorId,
-      now(),
-      txInfo(connectorId),
-    );
+    const {
+      own,
+      station: total,
+      localGeneration,
+    } = limits201(chargingProfiles, connectorId, now(), txInfo(connectorId), priorityEvses);
     let watts = own.limit === undefined ? undefined : toWatts(own.limit, conversion);
     if (total.limit !== undefined) {
       const share = toWatts(total.limit, conversion) / Math.max(1, transactions.size);
       watts = watts === undefined ? share : Math.min(watts, share);
+    }
+    // Local generation adds to a limit, never makes one (K08.FR.04, K04.FR.05).
+    if (watts !== undefined && localGeneration.limit !== undefined) {
+      watts += toWatts(localGeneration.limit, conversion);
     }
     return watts;
   }
@@ -906,13 +1012,13 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     const at = now();
     const changes = connectors(station)
       .flatMap((c) => {
-        const { own, station: total } = limits201(
-          chargingProfiles,
-          c.connectorId,
-          at,
-          txInfo(c.connectorId),
-        );
-        return [own.next, total.next];
+        const {
+          own,
+          station: total,
+          localGeneration,
+          staleAt,
+        } = limits201(chargingProfiles, c.connectorId, at, txInfo(c.connectorId), priorityEvses);
+        return [own.next, total.next, localGeneration.next, staleAt];
       })
       .filter((t): t is number => t !== undefined && t > at);
     if (changes.length === 0) return;
@@ -1320,6 +1426,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       (p) => p.evseId === connectorId && p.profile.chargingProfilePurpose === 'TxProfile',
     );
     chargingProfiles = endTransactionProfiles201(chargingProfiles, connectorId);
+    // Priority charging lasts as long as the transaction (K21).
+    priorityEvses.delete(connectorId);
     if (hadTxProfile) scheduleLimitChange();
     // The session is over: a new one needs a new authorization.
     authorizations.delete(connectorId);
@@ -1915,10 +2023,11 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
             ? 'not a TxProfile'
             : txProfile.transactionId !== undefined
               ? 'a transactionId is set'
-              : profileProblem({ ...txProfile, transactionId: 'remote' }, evseId, {
+              : (profileProblem21(txProfile, profileContext())?.reason ??
+                profileProblem({ ...txProfile, transactionId: 'remote' }, evseId, {
                   ...profileContext(),
                   transactionOn: () => 'remote',
-                });
+                }));
         if (problem !== undefined) {
           log(`RequestStartTransaction rejected: charging profile ${txProfile.id} ${problem}`);
           return { status: 'Rejected', statusInfo: { reasonCode: 'InvalidProfile' } };
@@ -2124,12 +2233,44 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         log(`SetChargingProfile ${request.chargingProfile.id} rejected: ${result.reason}`);
         return {
           status: 'Rejected',
-          statusInfo: { reasonCode: 'InvalidProfile', additionalInfo: result.reason.slice(0, 512) },
+          statusInfo: {
+            reasonCode: v21 ? result.reasonCode : 'InvalidProfile',
+            additionalInfo: result.reason.slice(0, 512),
+          },
         };
       }
       chargingProfiles = result.profiles;
       // The collection is evaluated again (K01.FR.07), after the answer.
-      later(0, updateAllPowers);
+      later(0, () => {
+        updateAllPowers();
+        scheduleDynamicPulls();
+      });
+      return { status: 'Accepted' };
+    },
+
+    UsePriorityCharging(request) {
+      if (!v21) return { status: 'Rejected' };
+      const entry = [...transactions].find(([, tx]) => tx.id === request.transactionId);
+      if (entry === undefined) {
+        return { status: 'Rejected', statusInfo: { reasonCode: 'TxNotFound' } };
+      }
+      const [evseId] = entry;
+      if (request.activate && !hasPriorityProfile(evseId)) {
+        return { status: 'NoProfile', statusInfo: { reasonCode: 'NotFound' } };
+      }
+      // Answered first, then switched and notified (K21.FR.03 to .08).
+      later(0, () => setPriority(evseId, request.activate));
+      return { status: 'Accepted' };
+    },
+
+    UpdateDynamicSchedule(request) {
+      const found = chargingProfiles.find((p) => p.profile.id === request.chargingProfileId);
+      if (found === undefined)
+        return { status: 'Rejected', statusInfo: { reasonCode: 'NotFound' } };
+      if (found.profile.chargingProfileKind !== 'Dynamic') {
+        return { status: 'Rejected', statusInfo: { reasonCode: 'InvalidProfile' } };
+      }
+      later(0, () => applyScheduleUpdate(request.chargingProfileId, request.scheduleUpdate));
       return { status: 'Accepted' };
     },
 
@@ -2170,6 +2311,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
           evseIds: ids,
           // An EVSE without a transaction is computed as if one started now (K08.FR.06).
           transaction: (id) => txInfo(id) ?? { startedAt: now() },
+          priorityEvses,
         }),
       };
     },
@@ -2678,6 +2820,17 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
           stackLevel: p.profile.stackLevel,
         })),
       };
+    },
+
+    priorityCharging(evseId, activate) {
+      if (!v21) return 'not-2.1';
+      if (!transactions.has(evseId)) return 'no-transaction';
+      if (activate && !hasPriorityProfile(evseId)) {
+        log(`EVSE ${evseId}: no PriorityCharging profile`);
+        return 'no-profile';
+      }
+      setPriority(evseId, activate);
+      return activate ? 'activated' : 'deactivated';
     },
 
     persistentState(): PersistedChargePoint201 {

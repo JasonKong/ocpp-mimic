@@ -16,7 +16,10 @@ describe('engine HTTP API', () => {
     const res = await fetch(`${url}/api/health`);
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ status: 'ok', ocpp: ['ocpp1.6', 'ocpp2.0.1'] });
+    expect(await res.json()).toMatchObject({
+      status: 'ok',
+      ocpp: ['ocpp1.6', 'ocpp2.0.1', 'ocpp2.1'],
+    });
   });
 
   it('answers 404 for unknown routes', async () => {
