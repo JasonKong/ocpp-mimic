@@ -1,0 +1,170 @@
+# The OCPP 2.0.1 remote control (F) scenarios (ocpp201-remote-control.yaml) on a 2.1 station (T102):
+# 2.1 keeps 2.0.1's behaviour here. The station reports availability with the
+# StatusNotification these scenarios expect (statusnotification-2.1), and every
+# frame is checked against OCA's 2.1 schemas.
+name: 2.1 TC_F_02_CS and TC_F_08_CS Remote start first with AuthorizeRemoteStart, remote stop
+station: { id: REG21X-REMOTE, persona: statusnotification-2.1 }
+steps:
+  - csmsCall:
+      action: RequestStartTransaction
+      payload: { idToken: { idToken: REMOTE-1, type: Central }, remoteStartId: 11, evseId: 1 }
+      answer: { status: Accepted }
+  - expect: { sent: Authorize, payload: { idToken: { idToken: REMOTE-1 } } }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Started
+        idToken: { idToken: REMOTE-1 }
+        transactionInfo: { remoteStartId: 11 }
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - csmsCall:
+      action: RequestStopTransaction
+      payload: { transactionId: '{{tx}}' }
+      answer: { status: Accepted }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        { eventType: Ended, triggerReason: RemoteStop, transactionInfo: { stoppedReason: Remote } }
+  - csmsCall:
+      action: RequestStopTransaction
+      payload: { transactionId: '{{tx}}' }
+      answer: { status: Rejected }
+---
+name: 2.1 TC_F_01_CS Remote start with the cable plugged in first
+station:
+  id: REG21X-REMOTE-CABLE
+  persona: statusnotification-2.1
+  deviceModel:
+    { TxCtrlr: { TxStartPoint: EVConnected }, AuthCtrlr: { AuthorizeRemoteStart: false } }
+steps:
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, triggerReason: CablePluggedIn }
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - csmsCall:
+      action: RequestStartTransaction
+      payload: { idToken: { idToken: REMOTE-2, type: Central }, remoteStartId: 12, evseId: 1 }
+      answer: { status: Accepted, transactionId: '{{tx}}' }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Updated, triggerReason: RemoteStart, idToken: { idToken: REMOTE-2 } }
+  - expectNo: { sent: Authorize, within: 500ms }
+---
+name: 2.1 TC_F_05_CS, TC_F_06_CS and TC_F_10_CS Unlock a connector
+station: { id: REG21X-UNLOCK, persona: statusnotification-2.1, behaviour: { cableLock: true } }
+steps:
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  - expectConnector: { locked: true }
+  - csmsCall:
+      action: UnlockConnector
+      payload: { evseId: 1, connectorId: 1 }
+      answer: { status: OngoingAuthorizedTransaction }
+  - csmsCall:
+      action: UnlockConnector
+      payload: { evseId: 2, connectorId: 1 }
+      answer: { status: Unlocked }
+  - csmsCall:
+      action: UnlockConnector
+      payload: { evseId: 7, connectorId: 1 }
+      answer: { status: UnknownConnector }
+---
+name: 2.1 TC_F_11_CS, TC_F_20_CS, TC_F_24_CS, TC_F_26_CS and TC_F_27_CS Trigger messages
+station: { id: REG21X-TRIGGER, persona: statusnotification-2.1 }
+steps:
+  - plugIn: { evse: 2 }
+  - csmsCall:
+      action: TriggerMessage
+      payload: { requestedMessage: MeterValues, evse: { id: 2 } }
+      answer: { status: Accepted }
+  - expect:
+      sent: MeterValues
+      payload: { evseId: 2, meterValue: [{ sampledValue: [{ context: Trigger }] }] }
+  - csmsCall:
+      action: TriggerMessage
+      payload: { requestedMessage: Heartbeat }
+      answer: { status: Accepted }
+  - expect: { sent: Heartbeat }
+  - csmsCall:
+      action: TriggerMessage
+      payload: { requestedMessage: StatusNotification, evse: { id: 2 } }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Occupied } }
+  - csmsCall:
+      action: TriggerMessage
+      payload: { requestedMessage: BootNotification }
+      answer: { status: NotImplemented }
+  - csmsCall:
+      action: TriggerMessage
+      payload: { requestedMessage: SignV2GCertificate }
+      answer: { status: NotImplemented }
+---
+name: 2.1 TC_B_20_CS and TC_B_21_CS Reset the station without and with a transaction
+station: { id: REG21X-RESET, persona: statusnotification-2.1 }
+steps:
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started } }
+  - csmsCall: { action: Reset, payload: { type: OnIdle }, answer: { status: Scheduled } }
+  - presentCard: { idToken: TAG-1, result: stopping }
+  - expect:
+      {
+        sent: TransactionEvent,
+        payload: { eventType: Ended, transactionInfo: { stoppedReason: Local } },
+      }
+  - expect: { sent: BootNotification, payload: { reason: RemoteReset }, within: 15s }
+  - csmsCall: { action: Reset, payload: { type: Immediate }, answer: { status: Accepted } }
+  - expect: { sent: BootNotification, payload: { reason: RemoteReset }, within: 15s }
+---
+name: 2.1 TC_B_25_CS and TC_B_27_CS Reset an EVSE, Immediate with a transaction
+station: { id: REG21X-RESET-EVSE, persona: statusnotification-2.1 }
+steps:
+  - presentCard: { idToken: TAG-1, evse: 2, result: authorized }
+  - plugIn: { evse: 2 }
+  - expect: { sent: TransactionEvent, payload: { eventType: Started, evse: { id: 2 } } }
+  - csmsCall:
+      { action: Reset, payload: { type: Immediate, evseId: 2 }, answer: { status: Accepted } }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Ended
+        triggerReason: ResetCommand
+        transactionInfo: { stoppedReason: ImmediateReset }
+  - expectNo: { sent: BootNotification, within: 1s }
+---
+name: 2.1 TC_N_27_CS, TC_N_28_CS, TC_N_30_CS and TC_N_33_CS Customer information
+station:
+  id: REG21X-CUSTOMER
+  persona: statusnotification-2.1
+  deviceModel: { AuthCtrlr: { LocalPreAuthorize: true } }
+steps:
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - csmsCall:
+      action: CustomerInformation
+      payload:
+        { requestId: 1, report: true, clear: false, idToken: { idToken: TAG-1, type: ISO14443 } }
+      answer: { status: Accepted }
+  - expect:
+      sent: NotifyCustomerInformation
+      payload:
+        { requestId: 1, seqNo: 0, data: { $regex: 'authorization cache: ISO14443 TAG-1 Accepted' } }
+  - csmsCall:
+      action: CustomerInformation
+      payload:
+        { requestId: 2, report: true, clear: true, idToken: { idToken: TAG-1, type: ISO14443 } }
+      answer: { status: Accepted }
+  - expect: { sent: NotifyCustomerInformation, payload: { requestId: 2 } }
+  - csmsCall:
+      action: CustomerInformation
+      payload:
+        { requestId: 3, report: true, clear: false, idToken: { idToken: TAG-1, type: ISO14443 } }
+      answer: { status: Accepted }
+  - expect:
+      sent: NotifyCustomerInformation
+      payload: { requestId: 3, data: { $regex: '^No information available' } }
+  - csmsCall:
+      action: CustomerInformation
+      payload: { requestId: 4, report: true, clear: false }
+      answer: { status: Invalid }

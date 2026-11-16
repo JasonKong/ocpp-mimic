@@ -1125,6 +1125,57 @@ describe('a 2.1 station: smart charging (K21, K22, K27, K28)', () => {
   });
 });
 
+describe('a 2.1 station: triggers and reservations carried over (F06, H03)', () => {
+  it('answers a custom trigger it lists with a DataTransfer, and others with NotImplemented (F06.FR.18, .19)', async () => {
+    const { calls, csmsCall, boot } = setup({
+      csms: { DataTransfer: () => ({ status: 'Accepted' }) },
+      deviceModel: { CustomizationCtrlr: { CustomTriggers: 'StatusReport' } },
+      extra: { ocpp: '2.1' },
+    });
+    await boot();
+    expect(
+      await csmsCall('TriggerMessage', {
+        requestedMessage: 'CustomTrigger',
+        customTrigger: 'StatusReport',
+      }),
+    ).toEqual({ status: 'Accepted' });
+    expect(calls('DataTransfer').at(-1)?.payload).toEqual({
+      vendorId: 'ocpp-mimic',
+      messageId: 'StatusReport',
+    });
+    expect(
+      await csmsCall('TriggerMessage', {
+        requestedMessage: 'CustomTrigger',
+        customTrigger: 'Other',
+      }),
+    ).toEqual({ status: 'NotImplemented' });
+  });
+
+  it('reports NoTransaction when a reservation was used but no cable came (H03.FR.11)', async () => {
+    const { calls, csmsCall, boot, present, advance } = setup({
+      features: ['Core', 'Reservation'],
+      csms: { ReservationStatusUpdate: () => ({}) },
+      deviceModel: { TxCtrlr: { EVConnectionTimeOut: 30 } },
+      extra: { ocpp: '2.1' },
+    });
+    await boot();
+    expect(
+      await csmsCall('ReserveNow', {
+        id: 12,
+        expiryDateTime: new Date(T0 + 3_600_000).toISOString(),
+        idToken: { idToken: 'TAG-R', type: 'ISO14443' },
+        evseId: 1,
+      }),
+    ).toEqual({ status: 'Accepted' });
+    await present(1, 'TAG-R');
+    await advance(30_000);
+    expect(calls('ReservationStatusUpdate').at(-1)?.payload).toEqual({
+      reservationId: 12,
+      reservationUpdateStatus: 'NoTransaction',
+    });
+  });
+});
+
 describe('2.0.1 personas', () => {
   it('resolve with the 2.0.1 boot block and certification profiles', () => {
     const { personas, errors } = resolvePersonas([

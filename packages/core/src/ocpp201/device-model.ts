@@ -129,7 +129,9 @@ export function valueProblem(definition: VariableDefinition, value: string): str
     case 'MemberList':
     case 'SequenceList': {
       const items = value === '' ? [] : value.split(',').map((v) => v.trim());
-      const unknown = items.filter((item) => !allowed.includes(item));
+      // A list without a valuesList is open: any items (CustomizationCtrlr.CustomTriggers).
+      const unknown =
+        definition.valuesList === undefined ? [] : items.filter((item) => !allowed.includes(item));
       if (unknown.length > 0) return `${unknown.join(', ')} not in ${allowed.join(', ')}`;
       return new Set(items).size === items.length ? undefined : 'repeats an item';
     }

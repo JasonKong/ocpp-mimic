@@ -1264,6 +1264,8 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 - 已实现（T99）：2.1 桩有 TxCtrlr.SupportedLimits（默认四种都支持）、ResumptionTimeout（0 表示不恢复）和 AllowEnergyTransferResumption（false）。TransactionEventResponse 里的限额先过滤成支持的那些，用 LimitSet 回显，然后持续检查：时间限额在到期时检查，maxEnergy 按当前功率估算，SoC 和 CSMS 的费用每秒检查一次，另外功率变化时至少每五秒检查一次。达到限额就暂停供电（SuspendedEVSE）；如果 TxStopPoint 含 EnergyTransfer，就以 stoppedReason Local 结束事务，因为按限额命名的停止原因在 2.1 里已弃用。有事务时的 Reset ImmediateAndResume 会发 ResetCommand、停止供电并重启（只复位一个 EVSE 时暂停一个软复位时长），开机被接受后发 TxResumed。2.1 桩保存时会带上每个事务的充电状态、限额和车辆；在 ResumptionTimeout 之内重新启动就把车辆插回去并恢复事务，超过就和以前一样以 PowerLoss 结束。没有 AllowEnergyTransferResumption 时，恢复的 Charging 事务保持 SuspendedEVSE 直到结束，因为 B13.FR.14 和 E17.FR.12 没有给它恢复供电的办法。E05.FR.09（被拒的 token 让事务回到 EVConnected）和 2.1 的缓存规则（C10、C17）无需改动。`scenarios/regression/ocpp21-transactions.yaml` 覆盖限额、复位和断电。
 - **其他变化。** TriggerMessage 的 CustomTrigger（persona 没在 CustomizationCtrlr.CustomTriggers 里列出的触发器回 NotImplemented，列出的就发送 persona 定义的 DataTransfer）；idToken 最长 255 个字符，类型任意；事务中被拒的 idToken 进入 EVConnected 而不是 SuspendedEVSE（E05.FR.09）；cacheExpiryDateTime 和 C10 的 2.1 缓存规则；不发 preconditioningStatus（没有需求用到它），不发 evseSleep（属于 V2X）。
 
+- 已实现（T102）：2.1 桩保留 2.0.1 的本地列表、授权缓存、预约、远程控制、配置、可用性和故障行为。这些功能块的 2.0.1 回归场景，连同事务和智能充电的，都在 `scenarios/regression/ocpp21-*.yaml` 里用 2.1 桩运行（用 `statusnotification-2.1`，因为这些场景期望 StatusNotification），每一帧都按 OCA 的 2.1 schema 检查。2.1 新增：TriggerMessage 的 CustomTrigger 对 CustomizationCtrlr.CustomTriggers 里列出的触发器（默认为空；没有取值列表的 MemberList 接受任意名称）回一个以它命名的 DataTransfer，其他的回 NotImplemented（F06.FR.18、.19）；token 用掉了预约，却在 EVConnectionTimeOut 内没有开始事务时，用 ReservationStatusUpdate NoTransaction 上报（H03.FR.11）。
+
 **资费和本地计费（I 块）**
 
 2.1 桩可以按 CSMS 下发的资费自己给会话计价（I07–I12），这是 M7 新建的最大一块行为。它也覆盖 `docs/session-ui.md` 的 R-PRICE-4 和 R-PRICE-5。

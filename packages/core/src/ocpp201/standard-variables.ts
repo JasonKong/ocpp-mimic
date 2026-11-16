@@ -220,6 +220,9 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
   ];
 
   if (input.ocpp === '2.1') {
+    // F06: the vendor triggers TriggerMessage CustomTrigger takes; none unless the persona
+    // names some, each answered with a DataTransfer named after it.
+    out.push(variable({ name: 'CustomizationCtrlr' }, 'CustomTriggers', 'MemberList', ro('')));
     // A05.FR.08: going from Security Profile 3 to 2 is allowed when this is true.
     out.push(
       variable(security, 'AllowSecurityProfileDowngrade', 'boolean', rw('false')),
