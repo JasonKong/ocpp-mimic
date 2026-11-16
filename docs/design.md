@@ -1433,6 +1433,7 @@ v0.1.0 is released from a tag by the release workflow. From the release's artifa
 - One version for the whole tool, starting at 0.1.0. `--version`, the engine's and the built-in CSMS's `/api/health`, and OTLP's `service.version` read it from one place.
 - Semantic versioning over what users write or call: CLI commands and options; the scenario, persona, load plan and log formats; the engine HTTP API and the built-in CSMS's control API. Internal TypeScript APIs are not part of it. While the major version is 0, a minor release may change these, and the changelog says how to migrate.
 - `CHANGELOG.md` in the Keep a Changelog layout; 0.1.0 summarises M1 to M7. A user-visible change adds a line under Unreleased in the same pull request as its guide update.
+- Implemented (T115): `VERSION` in `packages/core/src/version.ts` is 0.1.0, and a test fails when a package manifest (the root, core, engine, cli, web) says otherwise. The built-in CSMS's `/api/health` now reports the version too. `CHANGELOG.md` collects M1 to M8 under Unreleased, which becomes the 0.1.0 section when the release is tagged (T122). The guide's "Versions and compatibility" section states the policy, and `CLAUDE.md` adds the changelog to the workflow.
 
 **npm package**
 

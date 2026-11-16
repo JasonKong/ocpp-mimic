@@ -92,6 +92,18 @@ ocpp-mimic serve --allow-csms wss://csms.staging.example.com/
 
 只测试你自己运维或已获授权测试的 CSMS，压测尤其如此。
 
+### 版本与兼容性
+
+`ocpp-mimic --version` 打印版本号；引擎和内置 CSMS 的 `GET /api/health` 也会报告版本。[CHANGELOG.md](../CHANGELOG.md) 列出每一个用户可见的改动。
+
+版本号对你编写或调用的东西遵循语义化版本：
+
+- CLI 的命令和选项；
+- 场景、persona、压测计划和日志格式；
+- 引擎 HTTP API 和内置 CSMS 的控制 API。
+
+仓库内部的 TypeScript 包不在其中。主版本为 0 期间，次版本（0.1 → 0.2）可以改变上述内容，变更日志会说明改了什么、如何调整。补丁版本（0.1.0 → 0.1.1）只修 bug。
+
 ## 2. 基本概念
 
 | 术语 | 含义 |
