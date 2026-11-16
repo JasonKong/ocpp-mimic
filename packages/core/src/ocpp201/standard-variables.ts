@@ -334,6 +334,21 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
   }
 
   if (input.ocpp === '2.1') {
+    // J (2.1): the upstream meter's sampled and clock-aligned data, off until an interval is set.
+    for (const component of [{ name: 'SampledDataCtrlr' }, { name: 'AlignedDataCtrlr' }]) {
+      out.push(
+        variable(component, 'UpstreamInterval', 'integer', rw('0'), { unit: 's', minLimit: 0 }),
+        variable(
+          component,
+          'UpstreamMeasurands',
+          'MemberList',
+          rw('Energy.Active.Import.Register'),
+          {
+            valuesList: MEASURANDS,
+          },
+        ),
+      );
+    }
     // F06: the vendor triggers TriggerMessage CustomTrigger takes; none unless the persona
     // names some, each answered with a DataTransfer named after it.
     out.push(variable({ name: 'CustomizationCtrlr' }, 'CustomTriggers', 'MemberList', ro('')));

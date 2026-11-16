@@ -101,7 +101,7 @@ import {
   variableKey,
   type DeviceModelOverrides,
 } from './device-model.js';
-import { sampleMeter201 } from './meter-values.js';
+import { sampleMeter201, sampleUpstream } from './meter-values.js';
 import {
   applyLocalList,
   cachedToken,
@@ -371,6 +371,8 @@ interface Transaction201 {
   tariffIdPending?: boolean;
   costTimer?: TimerHandle | undefined;
   costReportTimer?: TimerHandle | undefined;
+  /** 2.1: the upstream meter's samples, every SampledDataCtrlr.UpstreamInterval. */
+  upstreamTimer?: TimerHandle | undefined;
 }
 
 /** A default tariff installed on an EVSE (I07). */
@@ -957,6 +959,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   const transactions = new Map<number, Transaction201>();
   let alignedTimer: TimerHandle | undefined;
   let alignedEndedTimer: TimerHandle | undefined;
+  let alignedUpstreamTimer: TimerHandle | undefined;
 
   const dmValue = (component: string, variable: string) =>
     deviceModel.get(component, variable) ?? '';
@@ -1962,6 +1965,39 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   function schedulePeriodic(connectorId: number, tx: Transaction201): void {
     scheduleUpdated(connectorId, tx);
     scheduleEnded(connectorId, tx);
+    scheduleUpstream(connectorId, tx);
+  }
+
+  /** 2.1: the upstream meter's reading for an EVSE's transaction, when measurands are set. */
+  const upstreamOf = (connectorId: number, context: ReadingContextEnumType) =>
+    v21
+      ? sampleUpstream(
+          [energy.sync(connectorId)],
+          now(),
+          dmValue('SampledDataCtrlr', 'UpstreamMeasurands'),
+          context,
+        )
+      : undefined;
+
+  /** 2.1: TransactionEvent Updated with the upstream meter every UpstreamInterval (J, 2.1). */
+  function scheduleUpstream(connectorId: number, tx: Transaction201): void {
+    stopTimer(tx.upstreamTimer);
+    tx.upstreamTimer = undefined;
+    if (!v21) return;
+    const due = nextPeriodicSample(
+      tx.startedAt,
+      dmInt('SampledDataCtrlr', 'UpstreamInterval'),
+      now(),
+    );
+    if (due === undefined) return;
+    tx.upstreamTimer = later(due - now(), () => {
+      if (transactions.get(connectorId) !== tx) return;
+      const value = upstreamOf(connectorId, 'Sample.Periodic');
+      if (value !== undefined) {
+        sendEvent(connectorId, tx, 'Updated', 'MeterValuePeriodic', { meterValue: [value] });
+      }
+      scheduleUpstream(connectorId, tx);
+    });
   }
 
   function scheduleUpdated(connectorId: number, tx: Transaction201): void {
@@ -2031,6 +2067,25 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         scheduleAligned();
       });
     }
+    // 2.1: the upstream meter of the whole station, clock-aligned, in MeterValues on EVSE 0.
+    stopTimer(alignedUpstreamTimer);
+    alignedUpstreamTimer = undefined;
+    const upstreamDue = v21
+      ? nextAlignedSample(dmInt('AlignedDataCtrlr', 'UpstreamInterval'), now())
+      : undefined;
+    if (upstreamDue !== undefined) {
+      alignedUpstreamTimer = later(upstreamDue - now(), () => {
+        const value = sampleUpstream(
+          connectors(station).map((c) => energy.sync(c.connectorId)),
+          now(),
+          dmValue('AlignedDataCtrlr', 'UpstreamMeasurands'),
+          'Sample.Clock',
+        );
+        if (value !== undefined)
+          void sendIfOnline('MeterValues', { evseId: 0, meterValue: [value] });
+        scheduleAligned();
+      });
+    }
     const endedDue = nextAlignedSample(dmInt('AlignedDataCtrlr', 'TxEndedInterval'), now());
     if (endedDue !== undefined) {
       alignedEndedTimer = later(endedDue - now(), () => {
@@ -2070,6 +2125,12 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       dmValue('SampledDataCtrlr', 'TxStartedMeasurands'),
       'Transaction.Begin',
     );
+    // 2.1: with upstream sampling on, Started carries the upstream reading too (J, 2.1).
+    const upstream =
+      dmInt('SampledDataCtrlr', 'UpstreamInterval') > 0
+        ? upstreamOf(connectorId, 'Transaction.Begin')
+        : undefined;
+    const startValues = [value, upstream].filter((v) => v !== undefined);
     sendEvent(
       connectorId,
       tx,
@@ -2077,7 +2138,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       auth?.remoteStartId !== undefined && trigger === 'Authorized' ? 'RemoteStart' : trigger,
       {
         ...(auth !== undefined && { idToken: auth.idToken }),
-        ...(value !== undefined && { meterValue: [value] }),
+        ...(startValues.length > 0 && { meterValue: startValues }),
       },
     );
     schedulePeriodic(connectorId, tx);
@@ -2099,6 +2160,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       tx.transactionLimitTimer,
       tx.costTimer,
       tx.costReportTimer,
+      tx.upstreamTimer,
     ]) {
       stopTimer(timer);
     }
@@ -2727,7 +2789,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     if (key.startsWith('AlignedDataCtrlr/')) scheduleAligned();
     if (
       key === 'SampledDataCtrlr/TxUpdatedInterval' ||
-      key === 'SampledDataCtrlr/TxEndedInterval'
+      key === 'SampledDataCtrlr/TxEndedInterval' ||
+      key === 'SampledDataCtrlr/UpstreamInterval'
     ) {
       for (const [id, tx] of transactions) schedulePeriodic(id, tx);
     }

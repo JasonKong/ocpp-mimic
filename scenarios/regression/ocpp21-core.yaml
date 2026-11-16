@@ -85,3 +85,11 @@ steps:
             component: { name: AuthCtrlr }
             variable: { name: SupportedIdTokenTypes }
             variableCharacteristics: { dataType: MemberList }
+---
+name: P01 A 2.1 station answers a DataTransfer for a vendor it does not know
+station: { id: REG21-DATA, persona: regression-2.1 }
+steps:
+  - csmsCall:
+      action: DataTransfer
+      payload: { vendorId: com.example.unknown, messageId: hello, data: { any: [1, 2] } }
+      answer: { status: UnknownVendorId }

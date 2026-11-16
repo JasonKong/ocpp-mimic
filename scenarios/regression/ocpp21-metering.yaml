@@ -1,0 +1,57 @@
+# OCPP 2.1 metering (block J) against the built-in CSMS: the upstream meter's
+# sampled data in TransactionEvent and its clock-aligned data in MeterValues,
+# with location Upstream (T110). The ISO 15118-20 measurands are in
+# ocpp21-vehicle.yaml. Every frame is checked against OCA's 2.1 schemas.
+name: J02 Upstream measurands go with the transaction every SampledDataCtrlr.UpstreamInterval
+station:
+  id: REG21-UPSTREAM
+  persona: regression-2.1
+  deviceModel:
+    SampledDataCtrlr:
+      UpstreamInterval: 2
+      UpstreamMeasurands: Energy.Active.Import.Register,Power.Active.Import
+steps:
+  - presentCard: { idToken: TAG-UPSTREAM, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Started
+        meterValue:
+          $contains:
+            sampledValue:
+              $contains: { measurand: Energy.Active.Import.Register, location: Upstream }
+  - expect:
+      sent: TransactionEvent
+      within: 5s
+      payload:
+        triggerReason: MeterValuePeriodic
+        meterValue:
+          $contains:
+            sampledValue:
+              $contains:
+                { measurand: Power.Active.Import, location: Upstream, value: { $gt: 7360 } }
+---
+name: J01 The upstream meter's clock-aligned data goes in MeterValues for the whole station
+station:
+  id: REG21-UPSTREAM-CLOCK
+  persona: regression-2.1
+  deviceModel:
+    AlignedDataCtrlr:
+      UpstreamInterval: 2
+      UpstreamMeasurands: Energy.Active.Import.Register
+steps:
+  - expect:
+      sent: MeterValues
+      within: 5s
+      payload:
+        evseId: 0
+        meterValue:
+          $contains:
+            sampledValue:
+              $contains:
+                {
+                  measurand: Energy.Active.Import.Register,
+                  location: Upstream,
+                  context: Sample.Clock,
+                }

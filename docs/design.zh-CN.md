@@ -1343,6 +1343,11 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 
 - 每个 core 模块有自己的测试；由某条需求驱动的测试，名字里带需求编号。
 - `scenarios/regression/ocpp21-*.yaml`，每个功能块一个文件，按 Part 2 的用例和需求编号命名，对内置 CSMS 运行，每一帧都按 OCA 的 2.1 schema 检查。
+- 已实现（T110）：2.1 套件共 15 个文件、91 个场景，和 1.6、2.0.1 套件一起在 CI 的回归 job 里运行（共 218 个场景）：
+  - 覆盖 core、可用性、授权（含本地列表）、事务、远程控制、预约、配置、故障、安全（含固件、证书和日志）、智能充电、资费、支付、车辆（ISO 15118-20）、计量，以及内置 CSMS 的 2.1 命令。
+  - 套件发现了缺口，在这里补上：J 块的上游电表原先没有实现。现在 SampledDataCtrlr 和 AlignedDataCtrlr 有 UpstreamInterval 和 UpstreamMeasurands，默认关闭。事务在 Started 里和每个 UpstreamInterval 带上上游读数；整站读数按时钟对齐，用 EVSE 0 的 MeterValues 发送。所有读数的 location 都是 Upstream；模拟的上游电表在电能、功率和电流上加 2% 的损耗。
+  - 新场景还覆盖 GetLog 的 DataCollectorLog、DataTransfer，以及用 CSMS 的 CostUpdated 衡量 maxCost（E16.FR.15）。
+  - 显示消息（O 块）和 I01–I06 仍不在范围内，见 T107 的记录。
 - `scenarios/citrineos/ocpp21-*.yaml` 放 CitrineOS v2.1.0 能驱动的部分，在现有的 CitrineOS workflow 里运行。
 
 **任务**
