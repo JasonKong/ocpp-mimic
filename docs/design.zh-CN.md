@@ -1432,6 +1432,7 @@ M8 确定（#267）。M1 到 M7 做出了模拟器；M8 把它变成别人可以
 - 整个工具一个版本号，从 0.1.0 开始。`--version`、引擎和内置 CSMS 的 `/api/health`、OTLP 的 `service.version` 都从同一处读取。
 - 对用户编写或调用的东西遵循语义化版本：CLI 命令和选项；场景、persona、压测计划和日志格式；引擎 HTTP API 和内置 CSMS 的控制 API。内部 TypeScript API 不算在内。主版本为 0 期间，次版本可以改变这些内容，变更日志会说明如何迁移。
 - `CHANGELOG.md` 采用 Keep a Changelog 格式；0.1.0 汇总 M1 到 M7。用户可见的改动在同一个 PR 里、和手册更新一起，在 Unreleased 下加一行。
+- 已实现（T115）：`packages/core/src/version.ts` 里的 `VERSION` 为 0.1.0，任何包清单（根目录、core、engine、cli、web）与之不符时测试失败。内置 CSMS 的 `/api/health` 现在也报告版本。`CHANGELOG.md` 在 Unreleased 下汇总 M1 到 M8，打发布 tag 时（T122）改为 0.1.0 一节。手册的“版本与兼容性”一节说明版本策略，`CLAUDE.md` 把变更日志加入工作流。
 
 **npm 包**
 

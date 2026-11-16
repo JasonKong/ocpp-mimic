@@ -48,7 +48,7 @@ CI runs the third-party notices check, lint, format check, typecheck, test and b
 3. The PR description has a summary and a verification section and ends with `Closes #<issue>`.
 4. Squash-merge once CI is green.
 5. A change to the design updates `docs/design.md` in the same PR.
-6. A change users can see (CLI, engine API, Web UI, scenario format, personas, the built-in CSMS, load tests, logs) updates the user guide in the same PR, once it is tested: `docs/guide.md` first, then `docs/guide.zh-CN.md`.
+6. A change users can see (CLI, engine API, Web UI, scenario format, personas, the built-in CSMS, load tests, logs) updates the user guide in the same PR, once it is tested: `docs/guide.md` first, then `docs/guide.zh-CN.md`. It also adds a line under Unreleased in `CHANGELOG.md`.
 7. A change to the shipped dependencies (the engine's `dependencies`, Vue) regenerates `THIRD_PARTY_NOTICES.md` with `pnpm notices`; only MIT, ISC, BSD, 0BSD and Apache-2.0 licenses are allowed.
 8. Commits use the repo-local git identity (a GitHub noreply address). Do not change it and never commit with a work email.
 

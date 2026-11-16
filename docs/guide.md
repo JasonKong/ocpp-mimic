@@ -90,6 +90,18 @@ ocpp-mimic serve --allow-csms wss://csms.staging.example.com/
 
 Only test a CSMS you operate or have permission to test, above all with load tests.
 
+### Versions and compatibility
+
+`ocpp-mimic --version` prints the version; the engine's and the built-in CSMS's `GET /api/health` report it too. [CHANGELOG.md](../CHANGELOG.md) lists every user-visible change.
+
+Versions follow semantic versioning over what you write or call:
+
+- the CLI's commands and options;
+- the scenario, persona, load plan and log formats;
+- the engine HTTP API and the built-in CSMS's control API.
+
+The TypeScript packages inside the repository are not part of it. While the major version is 0, a minor version (0.1 → 0.2) may change these; the changelog then says what changed and how to adapt. A patch version (0.1.0 → 0.1.1) only fixes bugs.
+
 ## 2. Concepts
 
 | Term | Meaning |

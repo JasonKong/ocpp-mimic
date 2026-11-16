@@ -24,6 +24,7 @@ import {
   serializeFrame,
   sequentialIds,
   createSessionTracker,
+  VERSION,
   priceSession,
   type ReferenceTariff,
   type SessionFrame,
@@ -1032,6 +1033,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     if (req.method === 'GET' && url.pathname === '/api/health') {
       json(200, {
         service: BUILTIN_CSMS_SERVICE,
+        version: VERSION,
         protocols: [OCPP16_SUBPROTOCOL, OCPP201_SUBPROTOCOL, OCPP21_SUBPROTOCOL],
       });
       return;
