@@ -1,0 +1,13 @@
+.git
+**/node_modules
+**/dist
+**/coverage
+release
+bench-results
+reports
+*.log
+*.db
+*.sqlite
+.env
+.env.*
+**/*.tsbuildinfo

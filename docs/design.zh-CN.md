@@ -1446,6 +1446,7 @@ M8 确定（#267）。M1 到 M7 做出了模拟器；M8 把它变成别人可以
 
 - `ghcr.io/jasonkong/ocpp-mimic:<版本>` 和 `:latest`，支持 linux/amd64 和 linux/arm64：从 `node:24-slim` 多阶段构建，安装的就是 npm tarball，所以镜像和包是同一份构建。非 root 用户，入口为 `ocpp-mimic`，默认命令 `serve --host 0.0.0.0`，`/data` 用于 `--store`。
 - CSMS 很少在容器的环回地址上，但镜像不会自行放宽白名单：用户自己传 `--allow-csms`。手册演示宿主机上的 CSMS（`host.docker.internal`），以及把引擎和内置 CSMS 作为两个服务的 `docs/examples/docker-compose.yml`。
+- 已实现（T117）：`Dockerfile` 在构建平台上打包（`--platform=$BUILDPLATFORM`），因为包是纯 JavaScript；每个目标平台的最终 `node:24-slim` 阶段只安装 tarball，所以 arm64 不需要模拟构建。镜像 256 MB，以 `node` 用户运行，`/data` 作为卷。compose 示例里 CSMS 共享引擎的网络命名空间（`network_mode: service:engine`），并在其中监听 127.0.0.1：引擎通过环回地址访问它，桩不需要白名单条目，引擎对 CSMS 的探测（只探测环回地址）也仍能找到内置 CSMS 用于远程启动；只对外发布 Web UI 的端口，且只在宿主机的 127.0.0.1 上；没有 `OCPP_MIMIC_API_TOKEN` 时 compose 拒绝启动。`tools/smoke-image.sh` 按这种方式运行镜像，检查版本、Web UI、无令牌时的 401、经 CSMS 的远程启动和会话，以及重启后桩仍在。`.dockerignore` 把本地构建产物排除在上下文之外，包括会让 `tsc -b` 跳过构建的 `*.tsbuildinfo`。
 
 **引擎 API 的访问控制**
 
