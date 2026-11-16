@@ -10,19 +10,20 @@ ocpp-mimic is an OCPP charge point simulator. Read [docs/design.md](docs/design.
 
 ## Commands
 
-| Command               | What it does                                                   |
-| --------------------- | -------------------------------------------------------------- |
-| `pnpm install`        | Install dependencies                                           |
-| `pnpm build`          | `tsc -b` for the packages, then the Web UI build               |
-| `pnpm typecheck`      | Packages, test files (`tsconfig.test.json`) and Vue components |
-| `pnpm test`           | Vitest over `packages/*/src/**/*.test.ts`, against sources     |
-| `pnpm test:scenarios` | Build, then run `scenarios/regression` with the CLI            |
-| `pnpm lint`           | ESLint                                                         |
-| `pnpm format`         | Prettier (`docs/` is excluded on purpose)                      |
-| `pnpm serve`          | Build and start the engine on `http://127.0.0.1:7300`          |
-| `pnpm dev:web`        | Vite dev server; `/api` is proxied to the engine               |
+| Command               | What it does                                                    |
+| --------------------- | --------------------------------------------------------------- |
+| `pnpm install`        | Install dependencies                                            |
+| `pnpm build`          | `tsc -b` for the packages, then the Web UI build                |
+| `pnpm typecheck`      | Packages, test files (`tsconfig.test.json`) and Vue components  |
+| `pnpm test`           | Vitest over `packages/*/src/**/*.test.ts`, against sources      |
+| `pnpm test:scenarios` | Build, then run `scenarios/regression` with the CLI             |
+| `pnpm lint`           | ESLint                                                          |
+| `pnpm format`         | Prettier (`docs/` is excluded on purpose)                       |
+| `pnpm serve`          | Build and start the engine on `http://127.0.0.1:7300`           |
+| `pnpm dev:web`        | Vite dev server; `/api` is proxied to the engine                |
+| `pnpm notices`        | Regenerate `THIRD_PARTY_NOTICES.md` from the installed packages |
 
-CI runs lint, format check, typecheck, test and build, and in a second job the regression scenarios. Run the same before pushing.
+CI runs the third-party notices check, lint, format check, typecheck, test and build, and in a second job the regression scenarios. Run the same before pushing.
 
 ## Layout and rules
 
@@ -48,7 +49,8 @@ CI runs lint, format check, typecheck, test and build, and in a second job the r
 4. Squash-merge once CI is green.
 5. A change to the design updates `docs/design.md` in the same PR.
 6. A change users can see (CLI, engine API, Web UI, scenario format, personas, the built-in CSMS, load tests, logs) updates the user guide in the same PR, once it is tested: `docs/guide.md` first, then `docs/guide.zh-CN.md`.
-7. Commits use the repo-local git identity (a GitHub noreply address). Do not change it and never commit with a work email.
+7. A change to the shipped dependencies (the engine's `dependencies`, Vue) regenerates `THIRD_PARTY_NOTICES.md` with `pnpm notices`; only MIT, ISC, BSD, 0BSD and Apache-2.0 licenses are allowed.
+8. Commits use the repo-local git identity (a GitHub noreply address). Do not change it and never commit with a work email.
 
 ## OCPP notes
 

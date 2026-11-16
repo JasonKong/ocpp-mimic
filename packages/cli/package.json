@@ -1,6 +1,7 @@
 {
   "name": "@ocpp-mimic/cli",
   "version": "0.0.0",
+  "license": "BUSL-1.1",
   "private": true,
   "description": "The ocpp-mimic command: starts the engine and, later, runs scenarios.",
   "type": "module",

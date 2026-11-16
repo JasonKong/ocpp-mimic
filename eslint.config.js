@@ -27,6 +27,7 @@ export default defineConfig([
     files: [
       'packages/engine/**',
       'packages/cli/**',
+      'tools/**',
       '*.{js,ts}',
       'apps/web/vite.config.ts',
       'apps/web/vitest.config.ts',

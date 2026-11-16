@@ -4,6 +4,8 @@ ocpp-mimic simulates OCPP charge points. One engine runs from one to thousands o
 
 This guide covers how to use it. For how it works inside and why, read the [design](design.md). [中文版](guide.zh-CN.md)
 
+ocpp-mimic is source-available under the [Business Source License 1.1](../LICENSE): trying it, evaluating it and non-commercial use are free, and commercial production use needs a commercial license. The README's [License](../README.md#license) section explains it.
+
 ## Contents
 
 1. [Install and first start](#1-install-and-first-start)

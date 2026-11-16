@@ -97,6 +97,19 @@ Options: `--stations`, `--duration`, `--rate` (stations started a second), `--pe
 | `docs`            | User guide and design                                                                                                                                                                     |
 | `scenarios`       | Scenario files for `ocpp-mimic run` (examples, the regression suite, SteVe variants), personas, and the M4 load plans and import mappings                                                 |
 
+## License
+
+ocpp-mimic is source-available under the [Business Source License 1.1](LICENSE). It is not an open source license:
+
+- **Free**: any non-production use, such as trying ocpp-mimic, evaluating it, learning and personal projects, and production use for personal, educational, research and other non-commercial purposes.
+- **Commercial production use** needs a commercial license from the licensor. If you are not sure whether your use is covered, ask through [GitHub](https://github.com/JasonKong).
+- **Each version becomes open source**: four years after it is published, it is also available under the Apache License 2.0.
+
+Contributions are welcome under the terms in [CONTRIBUTING.md](CONTRIBUTING.md); report security problems as [SECURITY.md](SECURITY.md) describes.
+
 ## Third-party material
 
-`packages/engine/oca-schemas/ocpp16/` contains the Open Charge Alliance's official OCPP 1.6 JSON Schema files, © 2010 – 2025 Open Charge Alliance, shipped unchanged under the [Creative Commons Attribution-NoDerivatives 4.0 International licence](https://creativecommons.org/licenses/by-nd/4.0/legalcode). See [its README](packages/engine/oca-schemas/README.md) for the source and the rules for keeping them unchanged.
+ocpp-mimic ships third-party material under its own licenses, listed with their texts in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md):
+
+- The Open Charge Alliance's official JSON Schema files for OCPP 1.6, its Security Whitepaper, 2.0.1 and 2.1 (`packages/engine/oca-schemas/`), shipped unchanged under the [Creative Commons Attribution-NoDerivatives 4.0 International licence](https://creativecommons.org/licenses/by-nd/4.0/legalcode). See [their README](packages/engine/oca-schemas/README.md) for the sources and the rules for keeping them unchanged.
+- The npm packages the engine depends on, and Vue in the Web UI (MIT, ISC and BSD licenses). `pnpm notices:check` fails when a shipped package's license is not on the allow list.

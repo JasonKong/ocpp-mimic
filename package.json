@@ -1,5 +1,6 @@
 {
   "name": "ocpp-mimic",
+  "license": "BUSL-1.1",
   "private": true,
   "type": "module",
   "description": "OCPP charge point simulator: a headless engine running many virtual charge points against a CSMS.",
@@ -18,6 +19,8 @@
     "format:check": "prettier --check .",
     "serve": "pnpm build && node packages/cli/dist/main.js serve",
     "bench": "tsc -b && node packages/cli/dist/bench-main.js",
+    "notices": "node tools/notices.mjs",
+    "notices:check": "node tools/notices.mjs --check",
     "dev:web": "pnpm --filter @ocpp-mimic/web dev"
   },
   "devDependencies": {

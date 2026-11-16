@@ -19,6 +19,8 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Check the third-party notices and licenses
+        run: pnpm notices:check
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
