@@ -1466,6 +1466,7 @@ M8 确定（#267）。M1 到 M7 做出了模拟器；M8 把它变成别人可以
 - 许可证采用 Business Source License 1.1（2026-11-17 决定，见“待决问题”）。参数：Additional Use Grant 允许个人、教育及其他非商业用途的生产使用；Change Date 为每个版本发布后四年；Change License 为 Apache License 2.0。BUSL 本身就允许任何非生产使用，所以评估 ocpp-mimic 是免费的；商业性的生产使用需要向许可方购买商业授权。T114 负责落实：`LICENSE`、发布包的 `license` 字段（`BUSL-1.1`），以及 README 里的说明。
 - `THIRD_PARTY_NOTICES.md` 列出包和镜像里附带的东西：运行时依赖及其许可证（目前是 MIT、ISC、BSD），以及 OCA 的 OCPP JSON schema（CC BY-ND 4.0，原样保留，和现在一样）。附带的依赖许可证不在白名单里时，构建失败。
 - `CONTRIBUTING.md`（构建、测试、工作流、在所选许可证下贡献的条款）和 `SECURITY.md`（如何私下报告漏洞）。
+- 已实现（T114）：`LICENSE` 是带上述参数的 BUSL 1.1 文本；许可方是仓库所有者，OCA schema 不属于 Licensed Work。每个包的 `license` 都是 `BUSL-1.1`。`tools/notices.mjs`（`pnpm notices`）根据已安装的包生成 `THIRD_PARTY_NOTICES.md`：引擎的 npm 依赖及其依赖（9 个包）和 Web UI 打包进去的 Vue 运行时（5 个），每个附许可证全文，另加 OCA schema。CI 第一步运行 `pnpm notices:check`，文件过期或附带的许可证不是 MIT、ISC、BSD-2-Clause、BSD-3-Clause、0BSD、Apache-2.0 时失败。贡献按 Apache License 2.0 接收，这样许可方可以在 BUSL、商业授权和 Change License 下发布它们。README 和两份手册都说明了许可证。
 
 **同样放进 M8 的**
 

@@ -1,6 +1,7 @@
 {
   "name": "@ocpp-mimic/web",
   "version": "0.0.0",
+  "license": "BUSL-1.1",
   "private": true,
   "description": "Web UI for the engine. A pure API client: no simulation logic lives here.",
   "type": "module",

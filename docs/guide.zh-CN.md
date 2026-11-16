@@ -6,6 +6,8 @@ ocpp-mimic 模拟 OCPP 充电桩。一个引擎可以同时运行一个到几千
 
 本手册讲怎么用。内部怎么实现、为什么这样设计，见[设计方案](design.zh-CN.md)。
 
+ocpp-mimic 以 [Business Source License 1.1](../LICENSE) 公开源码：试用、评估和非商业用途免费，商业性的生产使用需要商业授权。详见 README 的 [License](../README.md#license) 一节。
+
 ## 目录
 
 1. [安装和首次启动](#1-安装和首次启动)
