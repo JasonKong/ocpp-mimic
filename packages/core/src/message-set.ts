@@ -25,10 +25,27 @@ import {
   type Ocpp201RequestOf,
   type Ocpp201ResponseOf,
 } from './ocpp201/messages.js';
+import { OCPP21_SUBPROTOCOL } from './ocpp21/constants.js';
+import {
+  isOcpp21Action,
+  OCPP21_CHARGING_STATION_ACTIONS,
+  OCPP21_CSMS_ACTIONS,
+  OCPP21_UNCONFIRMED_ACTIONS,
+  validateOcpp21Request,
+  validateOcpp21Response,
+  type Ocpp21Action,
+  type Ocpp21RequestOf,
+  type Ocpp21ResponseOf,
+} from './ocpp21/messages.js';
 import { validate, type Schema, type ValidationResult } from './schema.js';
 
-export type OcppVersion = '1.6' | '2.0.1';
-export const OCPP_VERSIONS = ['1.6', '2.0.1'] as const satisfies readonly OcppVersion[];
+export type OcppVersion = '1.6' | '2.0.1' | '2.1';
+export const OCPP_VERSIONS = ['1.6', '2.0.1', '2.1'] as const satisfies readonly OcppVersion[];
+
+/** Whether a version is 2.0.1 or 2.1, which share the 2.x station model. */
+export function isOcpp2(version: OcppVersion): version is '2.0.1' | '2.1' {
+  return version !== '1.6';
+}
 
 /**
  * The error codes the RPC layer itself raises, in their 1.6 spelling; a set
@@ -56,6 +73,13 @@ export interface MessageSet {
    * MessageTypeNotSupported (2.0.1) or ignored (1.6).
    */
   readonly answersUnknownMessageType: boolean;
+  /**
+   * OCPP-J 2.1's extra message types (Part 4): an invalid CALLRESULT is
+   * answered with a CALLRESULTERROR, and SEND carries unconfirmed messages.
+   */
+  readonly ocppj21: boolean;
+  /** Actions carried by SEND and never answered (2.1: NotifyPeriodicEventStream). */
+  readonly unconfirmedActions: readonly string[];
 }
 
 /** OCPP 1.6J, with the Security Whitepaper's messages. */
@@ -73,6 +97,8 @@ export const OCPP16_MESSAGE_SET: MessageSet = {
   // 1.6 has no MessageTypeNotSupported; unknown message types are not answered.
   errorCode: (code) => code,
   answersUnknownMessageType: false,
+  ocppj21: false,
+  unconfirmedActions: [],
 };
 
 const RENAMED_201: Partial<Record<RpcErrorName, string>> = {
@@ -92,11 +118,30 @@ export const OCPP201_MESSAGE_SET: MessageSet = {
   validateResponse: (action, payload) => validateOcpp201Response(action as Ocpp201Action, payload),
   errorCode: (code) => RENAMED_201[code] ?? code,
   answersUnknownMessageType: true,
+  ocppj21: false,
+  unconfirmedActions: [],
+};
+
+/** OCPP 2.1: 2.0.1's error codes, plus CALLRESULTERROR and SEND. */
+export const OCPP21_MESSAGE_SET: MessageSet = {
+  version: '2.1',
+  subprotocol: OCPP21_SUBPROTOCOL,
+  isAction: isOcpp21Action,
+  chargingStationActions: OCPP21_CHARGING_STATION_ACTIONS,
+  csmsActions: OCPP21_CSMS_ACTIONS,
+  errorCodes: OCPP201_RPC_ERROR_CODES,
+  validateRequest: (action, payload) => validateOcpp21Request(action as Ocpp21Action, payload),
+  validateResponse: (action, payload) => validateOcpp21Response(action as Ocpp21Action, payload),
+  errorCode: (code) => RENAMED_201[code] ?? code,
+  answersUnknownMessageType: true,
+  ocppj21: true,
+  unconfirmedActions: OCPP21_UNCONFIRMED_ACTIONS,
 };
 
 export const MESSAGE_SETS: Readonly<Record<OcppVersion, MessageSet>> = {
   '1.6': OCPP16_MESSAGE_SET,
   '2.0.1': OCPP201_MESSAGE_SET,
+  '2.1': OCPP21_MESSAGE_SET,
 };
 
 /** The message set of a WebSocket subprotocol, if it is one ocpp-mimic speaks. */
@@ -128,4 +173,11 @@ export interface Ocpp201RpcTypes extends RpcTypes {
   in: (typeof OCPP201_CSMS_ACTIONS)[number];
   requests: { [A in Ocpp201Action]: Ocpp201RequestOf<A> };
   responses: { [A in Ocpp201Action]: Ocpp201ResponseOf<A> };
+}
+
+export interface Ocpp21RpcTypes extends RpcTypes {
+  out: (typeof OCPP21_CHARGING_STATION_ACTIONS)[number];
+  in: (typeof OCPP21_CSMS_ACTIONS)[number];
+  requests: { [A in Ocpp21Action]: Ocpp21RequestOf<A> };
+  responses: { [A in Ocpp21Action]: Ocpp21ResponseOf<A> };
 }

@@ -70,6 +70,8 @@ describe('message summaries', () => {
       ),
     ).toBe('NotSupported no');
     expect(messageTypeLabel(frame({ messageType: 4 }))).toBe('ERROR');
+    expect(messageTypeLabel(frame({ messageType: 5 }))).toBe('RES.ERR');
+    expect(messageTypeLabel(frame({ messageType: 6 }))).toBe('SEND');
     expect(messageTypeLabel(frame({}))).toBe('INVALID');
   });
 });

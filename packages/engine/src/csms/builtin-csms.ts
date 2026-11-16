@@ -1,6 +1,6 @@
 /**
  * The built-in test CSMS, used by scenarios (`csms: builtin`) and the
- * integration tests. It accepts OCPP 1.6J and OCPP 2.0.1 connections on
+ * integration tests. It accepts OCPP 1.6J, 2.0.1 and 2.1 connections on
  * `/ocpp/<chargeBoxId>` (the subprotocol the station offers), answers every
  * charge point request with a sensible default for its version (or a custom
  * handler, or a reply set per station with setReply), records all frames,
@@ -16,6 +16,8 @@ import {
   messageSetForSubprotocol,
   OCPP16_SUBPROTOCOL,
   OCPP201_SUBPROTOCOL,
+  OCPP21_SUBPROTOCOL,
+  isOcpp2,
   parseFrame,
   type MessageSet,
   type OcppVersion,
@@ -26,7 +28,9 @@ import {
   type ReferenceTariff,
   type SessionFrame,
   type CallFrame,
+  type CallResultErrorFrame,
   type Frame,
+  type SendFrame,
   type JsonObject,
 } from '@ocpp-mimic/core';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -165,6 +169,11 @@ export interface BuiltinCsmsConnection {
   readonly pings: number;
   /** Every frame received from the charge point, in order. */
   readonly received: readonly Frame[];
+  /**
+   * OCPP-J 2.1 frames received from a 2.1 station: SENDs (never answered) and
+   * CALLRESULTERRORs (the station could not process an answer of the CSMS).
+   */
+  readonly unconfirmed: readonly (SendFrame | CallResultErrorFrame)[];
   /** Resolves with the next CALL of `action` not yet returned by an earlier wait. */
   waitForCall(action: string, timeoutMs?: number): Promise<CallFrame>;
   /** Sends a CALL and resolves with the CALLRESULT or CALLERROR frame. */
@@ -312,6 +321,7 @@ function createConnection(
 ): BuiltinCsmsConnection {
   const { handlers, takeOverride, stats } = context;
   const received: Frame[] = [];
+  const unconfirmed: (SendFrame | CallResultErrorFrame)[] = [];
   let pings = 0;
   socket.on('ping', () => {
     pings += 1;
@@ -325,7 +335,7 @@ function createConnection(
     return () => listeners.delete(listener);
   };
   // With a tariff, the CSMS follows each session as a CSMS would, from the frames it sees.
-  const pricing = context.messages.version === '2.0.1' ? context.pricing : undefined;
+  const pricing = isOcpp2(context.messages.version) ? context.pricing : undefined;
   const tracker =
     pricing === undefined
       ? undefined
@@ -377,6 +387,7 @@ function createConnection(
     },
     closed,
     received,
+    unconfirmed,
     waitForCall(action, timeoutMs = 2000) {
       return waitUntil(
         () => {
@@ -401,6 +412,21 @@ function createConnection(
         timeoutMs,
         `the answer to ${action} (${id})`,
       );
+      // 2.1: an answer that breaks its definition gets a CALLRESULTERROR (Part 4, 4.2.3).
+      if (answer.type === MessageTypeId.CallResult && context.messages.ocppj21) {
+        const checked = context.messages.validateResponse(action, answer.payload);
+        if (!checked.ok) {
+          socket.send(
+            serializeFrame({
+              type: 5,
+              id,
+              errorCode: checked.errorCode,
+              errorDescription: checked.issues[0]?.message ?? 'invalid payload',
+              errorDetails: {},
+            }),
+          );
+        }
+      }
       // Like a real CSMS, take an accepted AuthorizationKey as the new password (A01.FR.03).
       if (
         action === 'ChangeConfiguration' &&
@@ -460,9 +486,15 @@ function createConnection(
   }
 
   socket.on('message', async (data) => {
-    const parsed = parseFrame(data.toString());
+    const parsed = parseFrame(data.toString(), { ocppj21: context.messages.ocppj21 });
     if (!parsed.ok) return;
     const { frame } = parsed;
+    if (frame.type === 5 || frame.type === 6) {
+      // A SEND is never answered; a CALLRESULTERROR needs no answer either.
+      unconfirmed.push(frame);
+      listeners.forEach((listener) => listener());
+      return;
+    }
     follow('cp-to-csms', frame);
     if (context.keepFrames || frame.type !== MessageTypeId.Call) received.push(frame);
     listeners.forEach((listener) => listener());
@@ -497,8 +529,8 @@ function createConnection(
 
     const handler = handlers[frame.action];
     if (handler === undefined) {
-      // 2.0.1 tells an action it knows but does not handle from one it does not know.
-      const known = context.messages.version === '2.0.1' && context.messages.isAction(frame.action);
+      // 2.x tells an action it knows but does not handle from one it does not know.
+      const known = isOcpp2(context.messages.version) && context.messages.isAction(frame.action);
       answer({
         type: MessageTypeId.CallError,
         id: frame.id,
@@ -562,7 +594,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
           {
             certificateChain: certificate,
             // 2.0.1 names the certificate it signs when the request did (A02.FR.06).
-            ...(connection.ocpp === '2.0.1' &&
+            ...(isOcpp2(connection.ocpp) &&
               payload.certificateType !== undefined && {
                 certificateType: payload.certificateType,
               }),
@@ -576,6 +608,12 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
   const handlersFor: Record<OcppVersion, Record<string, CsmsHandler>> = {
     '1.6': { ...defaultHandlers(options), SignCertificate: signCertificate, ...options.handlers },
     '2.0.1': {
+      ...defaultHandlers201(options),
+      SignCertificate: signCertificate,
+      ...options.handlers,
+    },
+    // 2.1 stations get the 2.0.1 answers until T106 adds the 2.1 ones.
+    '2.1': {
       ...defaultHandlers201(options),
       SignCertificate: signCertificate,
       ...options.handlers,
@@ -625,7 +663,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     if (req.method === 'GET' && url.pathname === '/api/health') {
       json(200, {
         service: BUILTIN_CSMS_SERVICE,
-        protocols: [OCPP16_SUBPROTOCOL, OCPP201_SUBPROTOCOL],
+        protocols: [OCPP16_SUBPROTOCOL, OCPP201_SUBPROTOCOL, OCPP21_SUBPROTOCOL],
       });
       return;
     }
@@ -780,7 +818,10 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       const messages = messageSetForSubprotocol(ws.protocol);
       if (messages === undefined) {
         stats.refused += 1;
-        ws.close(1002, `${OCPP16_SUBPROTOCOL} or ocpp2.0.1 subprotocol required`);
+        ws.close(
+          1002,
+          `${OCPP16_SUBPROTOCOL}, ${OCPP201_SUBPROTOCOL} or ${OCPP21_SUBPROTOCOL} subprotocol required`,
+        );
         return;
       }
       const connection = createConnection(ws, chargeBoxId, req.headers, clientCertificate, {

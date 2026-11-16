@@ -158,7 +158,7 @@ describe('built-in CSMS', () => {
 
   it('refuses connections without a subprotocol it speaks or outside /ocpp/<id>', async () => {
     csms = await startBuiltinCsms();
-    await expect(open(`${csms.url}/CP-1`, ['ocpp2.1'])).rejects.toThrow();
+    await expect(open(`${csms.url}/CP-1`, ['ocpp2.0'])).rejects.toThrow();
     await expect(open(csms.url.replace('/ocpp', '/other/CP-1'))).rejects.toThrow();
     expect(csms.stats()).toMatchObject({ refused: 2, opened: 0 });
   });
@@ -360,9 +360,59 @@ describe('built-in CSMS with OCPP 2.0.1 stations', () => {
     csms = await startBuiltinCsms();
     const v16 = await open(`${csms.url}/CP-16`, ['ocpp1.6']);
     const v201 = await open(`${csms.url}/CP-201`, ['ocpp2.0.1', 'ocpp1.6']);
-    expect([v16.protocol, v201.protocol]).toEqual(['ocpp1.6', 'ocpp2.0.1']);
-    await expect(open(`${csms.url}/CP-X`, ['ocpp2.1'])).rejects.toThrow();
+    const v21 = await open(`${csms.url}/CP-21`, ['ocpp2.1', 'ocpp2.0.1']);
+    expect([v16.protocol, v201.protocol, v21.protocol]).toEqual([
+      'ocpp1.6',
+      'ocpp2.0.1',
+      'ocpp2.1',
+    ]);
+    await expect(open(`${csms.url}/CP-X`, ['ocpp2.0'])).rejects.toThrow();
     expect((await csms.waitForConnection('CP-16')).ocpp).toBe('1.6');
+    expect((await csms.waitForConnection('CP-21')).ocpp).toBe('2.1');
+  });
+
+  it('speaks OCPP-J 2.1 with a 2.1 station: SEND unanswered, CALLRESULTERROR for a bad answer', async () => {
+    csms = await startBuiltinCsms();
+    const received: unknown[] = [];
+    const socket = await open(`${csms.url}/CP-21`, ['ocpp2.1']);
+    socket.on('message', (data) => received.push(JSON.parse(data.toString())));
+    const connection = await csms.waitForConnection('CP-21');
+    // Answered like a 2.0.1 station until the 2.1 answers arrive (T106).
+    socket.send(
+      JSON.stringify([
+        2,
+        'b1',
+        'BootNotification',
+        { reason: 'PowerUp', chargingStation: { model: 'M', vendorName: 'V' } },
+      ]),
+    );
+    const stream = {
+      id: 1,
+      pending: 0,
+      basetime: '2026-11-16T10:00:00Z',
+      data: [{ t: 0, v: '1' }],
+    };
+    socket.send(JSON.stringify([6, 's1', 'NotifyPeriodicEventStream', stream]));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received).toEqual([[3, 'b1', expect.objectContaining({ status: 'Accepted' })]]);
+    expect(connection.unconfirmed).toEqual([
+      { type: 6, id: 's1', action: 'NotifyPeriodicEventStream', payload: stream },
+    ]);
+    // The station answers the CSMS's CALL with a payload 2.1 does not allow.
+    socket.on('message', (data) => {
+      const [type, id] = JSON.parse(data.toString()) as [number, string];
+      if (type === 2) socket.send(JSON.stringify([3, id, { status: 'Maybe' }]));
+    });
+    const answer = await connection.call('ClearCache', {});
+    expect(answer).toMatchObject({ type: 3, payload: { status: 'Maybe' } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received.at(-1)).toEqual([
+      5,
+      answer.id,
+      'PropertyConstraintViolation',
+      expect.any(String),
+      {},
+    ]);
   });
 
   it('sends CertificateSigned with the certificate type the request named', async () => {

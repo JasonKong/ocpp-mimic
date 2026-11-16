@@ -204,6 +204,7 @@ li.log {
   color: var(--good);
 }
 .type.t4,
+.type.t5,
 .type.t0 {
   color: var(--bad);
 }

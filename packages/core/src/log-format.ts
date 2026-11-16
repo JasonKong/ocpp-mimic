@@ -13,7 +13,7 @@ export const LOG_VERSION = 1;
 export type LogDirection = 'cp-to-csms' | 'csms-to-cp';
 
 /** The OCPP version a log line's station speaks. */
-export type LogOcppVersion = '1.6' | '2.0.1';
+export type LogOcppVersion = '1.6' | '2.0.1' | '2.1';
 
 export interface LogHeader {
   format: typeof LOG_FORMAT;
@@ -66,9 +66,10 @@ export function logLine(
   };
 }
 
-/** The version a subprotocol names (`ocpp1.6`, `ocpp2.0.1`), if any. */
+/** The version a subprotocol names (`ocpp1.6`, `ocpp2.0.1`, `ocpp2.1`), if any. */
 export function versionOfSubprotocol(subprotocol: string): LogOcppVersion | undefined {
   if (subprotocol.includes('2.0.1')) return '2.0.1';
+  if (subprotocol.includes('2.1')) return '2.1';
   if (subprotocol.includes('1.6')) return '1.6';
   return undefined;
 }
@@ -171,8 +172,8 @@ export function parseLog(text: string): ParsedLog {
       return;
     }
     const { at, station, direction, frame, text: kept, ocpp } = value;
-    if (ocpp !== undefined && ocpp !== '1.6' && ocpp !== '2.0.1') {
-      result.problems.push(`line ${n}: "ocpp" must be 1.6 or 2.0.1`);
+    if (ocpp !== undefined && ocpp !== '1.6' && ocpp !== '2.0.1' && ocpp !== '2.1') {
+      result.problems.push(`line ${n}: "ocpp" must be 1.6, 2.0.1 or 2.1`);
     } else if (typeof at !== 'string' || Number.isNaN(Date.parse(at))) {
       result.problems.push(`line ${n}: "at" must be an ISO 8601 time`);
     } else if (typeof station !== 'string' || station === '') {
