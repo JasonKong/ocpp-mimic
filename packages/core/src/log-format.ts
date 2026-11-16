@@ -5,6 +5,7 @@
  */
 import { isOcpp16Action } from './ocpp16-messages.js';
 import { isOcpp201Action } from './ocpp201/messages.js';
+import { isOcpp21Action } from './ocpp21/messages.js';
 import { parseFrame, type Frame } from './ocppj.js';
 
 export const LOG_FORMAT = 'ocpp-mimic-log';
@@ -77,17 +78,33 @@ export function versionOfSubprotocol(subprotocol: string): LogOcppVersion | unde
 /**
  * Each station's OCPP version: the one its lines carry, else what their
  * actions tell (an action only one version has, such as TransactionEvent or
- * StartTransaction). Stations whose actions both versions share are left out.
+ * StartTransaction). Anything only 2.1 has (a 2.1 action, or an OCPP-J 2.1
+ * SEND or CALLRESULTERROR) makes the station 2.1, since 2.1 also uses 2.0.1's
+ * actions. Stations whose actions both versions share are left out.
  */
 export function logVersions(lines: readonly LogLine[]): Map<string, LogOcppVersion> {
   const versions = new Map<string, LogOcppVersion>();
   const votes = new Map<string, { '1.6': number; '2.0.1': number }>();
+  const only21 = new Set<string>();
+  /** Stations whose lines name their version. */
+  const explicit = new Set<string>();
   for (const line of lines) {
     if (line.ocpp !== undefined) {
       versions.set(line.station, line.ocpp);
+      explicit.add(line.station);
       continue;
     }
     const frame = line.frame;
+    if (frame !== undefined && (frame[0] === 5 || frame[0] === 6)) only21.add(line.station);
+    if (
+      frame !== undefined &&
+      frame[0] === 2 &&
+      typeof frame[2] === 'string' &&
+      isOcpp21Action(frame[2]) &&
+      !isOcpp201Action(frame[2])
+    ) {
+      only21.add(line.station);
+    }
     if (frame === undefined || frame[0] !== 2 || typeof frame[2] !== 'string') continue;
     const action = frame[2];
     const only16 = isOcpp16Action(action) && !isOcpp201Action(action);
@@ -101,6 +118,7 @@ export function logVersions(lines: readonly LogLine[]): Map<string, LogOcppVersi
     if (versions.has(station)) continue;
     versions.set(station, count['2.0.1'] > count['1.6'] ? '2.0.1' : '1.6');
   }
+  for (const station of only21) if (!explicit.has(station)) versions.set(station, '2.1');
   return versions;
 }
 

@@ -671,7 +671,7 @@ thresholds:
 - `ocpp-mimic import <file>... [--map <mapping.yaml>] [--mask | --no-mask] [--salt <s> | --salt-file <f>] [-o <out>]` 按时间顺序把 ocpp-mimic 格式写到标准输出或文件。不带 `--map` 时输入是 ocpp-mimic 自己的格式。有无法读取的行时退出码为 1（列出这些行，其余照常写出），文件或映射无法读取时为 2。
 - 映射（`engine/src/logs/import.ts`）：`format: jsonl | csv | lines`；`fields.at | station | direction | frame` 分别指定 `column`（CSV，按表头名或序号）、`path`（JSONL，点分路径）或 `group`（日志行；默认是字段自己的名字）；`fields.at.time` 为 `iso`、`epoch-s` 或 `epoch-ms`，`timeZone`（IANA，默认 UTC）用于没有偏移的 ISO 时间，考虑夏令时；`fields.direction.values` 映射日志里的取值。`frame` 可以是 OCPP-J 文本或数组。CSV 字段可以加引号，支持双写引号和换行。
 - 脱敏（`core/src/mask.ts`，engine 里用 HMAC-SHA-256）：假名由前缀加 10 个 base-32 字符组成：桩用 `CP-`，`idTag` 和 `parentIdTag`（出现在任何位置，包括本地列表）用 `T`，序列号用 `S`，`iccid` 和 `imsi` 用 `SIM`，映射文件追加的路径用 `X`。回答与其 CALL 对应，所以 DataTransfer 回答里的 `data` 也会删除。不是消息的文本整体删除，因为其中可能有任何内容。盐来自 `--salt`、`--salt-file` 或 `OCPP_MIMIC_MASK_SALT`；没有时使用随机盐并输出警告。已标记为脱敏的日志不会再次脱敏。
-- `scenarios/logs/` 有三份从仓库场景录下的合成样本日志。
+- `scenarios/logs/` 有从仓库场景录下的合成样本日志（1.6、2.0.1，以及 M7 起的 2.1）。
 
 **已实现：1,000 个桩下的 engine（T45）**
 
@@ -1323,6 +1323,13 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 - Web UI 加上版本表的 2.1 行（徽标、术语、能力），2.1 桩上的支付终端和优先充电按钮，桩自己算的费用（costDetails）和 CSMS 的费用、参考价格并排显示，会话的限额，虚拟屏幕，以及车辆卡片里的 Display.\* 值。
 - 已实现（T107）：会话保存桩自己算的费用（最新的 costDetails：总额、币种、typeOfCost、是否最终）以及桩最后上报的事务限额。计价卡把桩的费用和 CSMS 的费用、参考价格并排显示；会话头显示限额、结算（带收据链接）和 Payment 来源。2.1 桩的每个 EVSE 有司机的优先充电按钮（开、关）；有 Payment 时有支付终端（卡品牌、Pay by card、Stop payment）；有 WebPayments 时显示支付链接及其有效期（是链接，不是二维码图片）。车辆卡片显示 Display.\* 值（T105）。组件测试渲染 2.1 的桩、计价卡和会话头；这些视图已对着引擎和内置 CSMS 手工检查过。未做：参考资费编辑器里的资费条件。M6 的参考价格不含条件，要按时间片计价才能支持；这和把它与桩的计费统一一起做，作为后续工作。桩的虚拟屏幕显示 I01–I06（资费和费用消息）也未做。
 - 日志、导出导入、回放、标定和指标带上 `ocpp: 2.1`；回放像处理事务 id 一样映射 tariffId 和 pspRef；用 ocpp-mimic 录制一份合成的 2.1 样例日志。
+- 已实现（T108）：
+  - 日志行和导出已带 `ocpp: 2.1`（T96）。
+  - 不带版本的日志里，某个桩只要发过 2.1 独有的 action，或 OCPP-J 2.1 的 SEND 或 CALLRESULTERROR，就认作 2.1，因为 2.1 桩也用 2.0.1 的 action。
+  - 回放像映射 remoteStartId 一样，映射 CSMS 安装的资费的 tariffId（SetDefaultTariff、ChangeTransactionTariff）和 CSMS 启动网页支付用的 DirectPayment 令牌；桩自己的终端生成的 pspRef 保持录制时的值。严格比较不比较 tariffId。
+  - 校准取日志里最多的版本：2.1 日志继承 `generic-2.1`。EVSE 数取自 StatusNotification 和 Connector.AvailabilityState 的 NotifyEvent；桩只用 StatusNotification 时给出 `connectorStatus: StatusNotification`。NotifyReport 的值和 2.1 的标准变量比较。
+  - 指标已按版本标注 2.1 桩。
+  - `scenarios/logs/ocpp21-sessions.yaml-1.jsonl` 是合成的 2.1 样例，由 `scenarios/examples/ocpp21-sessions.yaml` 录制。它对内置 CSMS 回放没有差异（严格模式只列出 CSMS 脚本里的限额和它自己的命令，和 2.0.1 样例一样），校准它得到的是 `generic-2.1` 的值。
 - 压测和基准：开启资费的 `load-ac-2.1`，基准 workflow 可选该 persona。
 
 **测试**

@@ -1,0 +1,54 @@
+# A card session with a transaction limit from the CSMS, then a web payment
+# the CSMS starts and stops, on an OCPP 2.1 station against the built-in CSMS.
+# Connector availability goes out as NotifyEvent, as 2.1 prefers. The sample
+# log scenarios/logs/ocpp21-sessions.yaml-1.jsonl is recorded from it.
+name: Card session and web payment on OCPP 2.1
+station:
+  id: SIM-21-CARD
+  persona: generic-2.1
+  deviceModel: { SampledDataCtrlr: { TxUpdatedInterval: 5 } }
+steps:
+  # The CSMS answers the Started event with a limit, which the station echoes (E16).
+  - csmsReply:
+      action: TransactionEvent
+      payload: { transactionLimit: { maxEnergy: 50000 } }
+      times: 1
+  - presentCard: { idToken: TAG-001, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, idToken: { idToken: TAG-001 } }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        { triggerReason: LimitSet, transactionInfo: { transactionLimit: { maxEnergy: 50000 } } }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Updated, triggerReason: MeterValuePeriodic }
+      within: 10s
+  - presentCard: { idToken: TAG-001, result: stopping }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Ended, transactionInfo: { stoppedReason: Local } }
+  - unplug: {}
+  # A driver paid on the CSMS's web page: it starts the session with the payment's token (C25).
+  - csmsCall:
+      action: RequestStartTransaction
+      payload: { idToken: { idToken: PSP-WEB-1, type: DirectPayment }, remoteStartId: 7, evseId: 1 }
+      answer: { status: Accepted }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Started
+        idToken: { type: DirectPayment }
+        transactionInfo: { remoteStartId: 7 }
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - csmsCall:
+      action: RequestStopTransaction
+      payload: { transactionId: '{{tx}}' }
+      answer: { status: Accepted }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Ended, triggerReason: RemoteStop }
+  - unplug: {}

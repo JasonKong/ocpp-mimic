@@ -71,7 +71,7 @@ interface Event {
 export interface CalibrateOptions {
   /** The persona's id. Default: the model with `-calibrated`. */
   name?: string;
-  /** The persona it extends. Default generic-1.6, or generic-2.0.1 for a 2.0.1 log. */
+  /** The persona it extends. Default generic-1.6, generic-2.0.1 or generic-2.1, by the log's version. */
   extends?: string;
 }
 
@@ -89,11 +89,15 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
     }))
     .sort((a, b) => a.at - b.at);
   const stations = [...new Set(events.map((e) => e.station))].sort();
-  // The log's version: what most of its stations speak.
+  // The log's version: what most of its stations speak (ties go to the newer version).
   const versionCounts = [...logVersions(lines).values()];
-  const version: LogOcppVersion =
-    versionCounts.filter((v) => v === '2.0.1').length > versionCounts.length / 2 ? '2.0.1' : '1.6';
-  const is201 = version === '2.0.1';
+  const count = (v: LogOcppVersion) => versionCounts.filter((c) => c === v).length;
+  const version: LogOcppVersion = (['2.1', '2.0.1', '1.6'] as const).reduce((best, v) =>
+    count(v) > count(best) ? v : best,
+  );
+  // 2.1 builds on 2.0.1: a 2.x log is read the same way, with 2.1's additions.
+  const is201 = version !== '1.6';
+  const is21 = version === '2.1';
   const derived: Derived[] = [];
   const persona: Record<string, unknown> = {};
   const set = (path: string, value: unknown) => {
@@ -176,17 +180,53 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
     derived.push({ name: 'boot', samples: 0, note: 'no BootNotification in the log' });
   }
 
-  // Connectors: the highest connectorId reported (2.0.1: the highest EVSE).
+  // Connectors: the highest connectorId reported (2.x: the highest EVSE). A 2.1 station
+  // may report availability with NotifyEvent on Connector.AvailabilityState instead.
   const statuses = callsFrom('cp-to-csms', 'StatusNotification');
-  const connectorIds = statuses
-    .map((e) => Number(is201 ? payload(e).evseId : payload(e).connectorId))
-    .filter((n) => n > 0);
+  const availabilityEvents = is21
+    ? callsFrom('cp-to-csms', 'NotifyEvent')
+        .flatMap((e) => (payload(e).eventData ?? []) as Payload[])
+        .filter(
+          (d) =>
+            (d.component as Payload | undefined)?.name === 'Connector' &&
+            (d.variable as Payload | undefined)?.name === 'AvailabilityState',
+        )
+    : [];
+  const connectorIds = [
+    ...statuses.map((e) => Number(is201 ? payload(e).evseId : payload(e).connectorId)),
+    ...availabilityEvents.map((d) =>
+      Number(((d.component as Payload).evse as Payload | undefined)?.id),
+    ),
+  ].filter((n) => n > 0);
+  if (is21) {
+    // generic-2.1 reports with NotifyEvent; a station that sends StatusNotification says so.
+    const method =
+      statuses.length > 0 && availabilityEvents.length === 0
+        ? 'StatusNotification'
+        : availabilityEvents.length > 0
+          ? 'NotifyEvent'
+          : undefined;
+    if (method !== undefined) {
+      derived.push({
+        name: 'connectorStatus',
+        value: method,
+        samples: statuses.length + availabilityEvents.length,
+      });
+      if (method === 'StatusNotification') set('connectorStatus', method);
+    } else {
+      derived.push({ name: 'connectorStatus', samples: 0, note: 'no connector availability' });
+    }
+  }
   if (connectorIds.length > 0) {
     const connectors = Math.max(...connectorIds);
     derived.push({ name: 'connectors', value: connectors, samples: connectorIds.length });
     set('connectors', connectors);
   } else {
-    derived.push({ name: 'connectors', samples: 0, note: 'no StatusNotification for a connector' });
+    derived.push({
+      name: 'connectors',
+      samples: 0,
+      note: is21 ? 'no connector availability reported' : 'no StatusNotification for a connector',
+    });
   }
 
   // Configuration from the latest GetConfiguration answer, known and valid keys only.
@@ -231,6 +271,7 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
       .flatMap((e) => (payload(e).reportData ?? []) as Payload[]);
     const defaults = new Map(
       standardVariables({
+        ocpp: is21 ? '2.1' : '2.0.1',
         connectors: Number(persona.connectors ?? 1),
         features: [
           'Core',
@@ -573,7 +614,7 @@ export function calibrate(lines: readonly LogLine[], options: CalibrateOptions =
   return {
     persona: {
       persona: id,
-      extends: options.extends ?? (is201 ? 'generic-2.0.1' : 'generic-1.6'),
+      extends: options.extends ?? `generic-${version}`,
       description: `Calibrated from ${events.length} frames of ${stations.length} station${stations.length === 1 ? '' : 's'}`,
       ...persona,
     },

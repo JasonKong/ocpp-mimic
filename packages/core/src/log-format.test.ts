@@ -86,6 +86,30 @@ describe('log versions', () => {
       },
     );
 
+  it('tells a 2.1 station from a 2.1 action or an OCPP-J 2.1 frame, not from 2.0.1 ones', () => {
+    // A recorded SEND keeps its OCPP-J array.
+    const send = {
+      at: '2026-11-15T10:00:00.000Z',
+      station: 'F',
+      direction: 'cp-to-csms' as const,
+      frame: [6, 'y', 'NotifyPeriodicEventStream', {}],
+    };
+    const lines = [
+      call('E', 'TransactionEvent'),
+      call('E', 'NotifySettlement'),
+      call('F', 'Heartbeat'),
+      send,
+      call('G', 'TransactionEvent'),
+      call('H', 'NotifySettlement', '2.0.1'),
+    ];
+    expect(Object.fromEntries(logVersions(lines))).toEqual({
+      E: '2.1',
+      F: '2.1',
+      G: '2.0.1',
+      H: '2.0.1',
+    });
+  });
+
   it('keeps a line version, else tells it from actions only one version has', () => {
     const lines = [
       call('A', 'Heartbeat'),

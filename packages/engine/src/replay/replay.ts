@@ -5,7 +5,9 @@
  * recorded ones. uniqueIds are fresh and timestamps move to the present. 1.6
  * transactionIds follow the CSMS's new ones; 2.0.1 transactionIds, which the
  * station makes, are fresh, seqNo stays, and remoteStartIds follow the ones
- * the CSMS sends in RequestStartTransaction.
+ * the CSMS sends in RequestStartTransaction. 2.1 tariffIds follow the tariffs
+ * the CSMS installs, and the DirectPayment tokens (pspRefs) of web payments
+ * the ones it starts them with.
  */
 import { randomUUID } from 'node:crypto';
 import { lineFrame, type LogLine } from '@ocpp-mimic/core';
@@ -49,6 +51,7 @@ const VOLATILE = new Set([
   'expiryDateTime',
   'cacheExpiryDateTime',
   'remoteStartId',
+  'tariffId',
 ]);
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -69,14 +72,31 @@ function shiftTimestamps(value: Json, offsetMs: number): Json {
 
 /**
  * Ids that differ between the recording and the replay: 1.6 transactionIds
- * (numbers, the CSMS's), 2.0.1 transactionIds (strings, the station's own,
- * fresh for the replay) and 2.0.1 remoteStartIds (the CSMS's).
+ * (numbers, the CSMS's), 2.x transactionIds (strings, the station's own,
+ * fresh for the replay), 2.x remoteStartIds (the CSMS's), and 2.1 tariffIds
+ * and DirectPayment tokens of web payments (the CSMS's).
  */
 interface IdMaps {
   transactionIds: Map<number, number>;
   stationTransactionIds: Map<string, string>;
   remoteStartIds: Map<number, number>;
+  tariffIds: Map<string, string>;
+  pspRefs: Map<string, string>;
 }
+
+/** A tariff's id in a CSMS command (SetDefaultTariff, ChangeTransactionTariff). */
+const tariffIdOf = (payload: unknown): string | undefined => {
+  const tariff = (payload as { tariff?: { tariffId?: unknown } } | undefined)?.tariff;
+  return typeof tariff?.tariffId === 'string' ? tariff.tariffId : undefined;
+};
+/** The DirectPayment token a CSMS starts a web payment with (C25). */
+const pspRefOf = (payload: unknown): string | undefined => {
+  const token = (payload as { idToken?: { idToken?: unknown; type?: unknown } } | undefined)
+    ?.idToken;
+  return token?.type === 'DirectPayment' && typeof token.idToken === 'string'
+    ? token.idToken
+    : undefined;
+};
 
 /** A copy of `value` with recorded ids replaced by the replay's. */
 function mapIds(value: Json, ids: IdMaps): Json {
@@ -97,6 +117,24 @@ function mapIds(value: Json, ids: IdMaps): Json {
       }
       if (key === 'remoteStartId' && typeof child === 'number') {
         return [key, ids.remoteStartIds.get(child) ?? child];
+      }
+      if (key === 'tariffId' && typeof child === 'string') {
+        return [key, ids.tariffIds.get(child) ?? child];
+      }
+      if (key === 'pspRef' && typeof child === 'string') {
+        return [key, ids.pspRefs.get(child) ?? child];
+      }
+      if (
+        key === 'idToken' &&
+        child !== null &&
+        typeof child === 'object' &&
+        !Array.isArray(child)
+      ) {
+        const token = child as { [key: string]: Json };
+        if (token.type === 'DirectPayment' && typeof token.idToken === 'string') {
+          const mapped = ids.pspRefs.get(token.idToken);
+          if (mapped !== undefined) return [key, { ...token, idToken: mapped }];
+        }
       }
       return [key, mapIds(child, ids)];
     }),
@@ -215,6 +253,8 @@ export async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
     transactionIds: new Map(),
     stationTransactionIds: new Map(),
     remoteStartIds: new Map(),
+    tariffIds: new Map(),
+    pspRefs: new Map(),
   };
   const pending = new Map<string, (frame: unknown[]) => void>();
   let nextId = 0;
@@ -266,6 +306,15 @@ export async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
     if (typeof recordedRemote === 'number' && typeof newRemote === 'number') {
       ids.remoteStartIds.set(recordedRemote, newRemote);
     }
+    // 2.1: a tariff the CSMS installs, a web payment it starts: their new ids.
+    const recordedTariff = tariffIdOf(recorded.payload);
+    const newTariff = tariffIdOf(frame[3]);
+    if (recordedTariff !== undefined && newTariff !== undefined) {
+      ids.tariffIds.set(recordedTariff, newTariff);
+    }
+    const recordedPsp = pspRefOf(recorded.payload);
+    const newPsp = pspRefOf(frame[3]);
+    if (recordedPsp !== undefined && newPsp !== undefined) ids.pspRefs.set(recordedPsp, newPsp);
     const reply = [...answer];
     reply[1] = frame[1];
     if (reply[0] === 3) reply[2] = mapIds(reply[2] as Json, ids);

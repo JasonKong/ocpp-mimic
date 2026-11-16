@@ -41,6 +41,15 @@ describe('ocpp-mimic replay', () => {
     expect(out[0]).toMatch(/^PASS {2}Replay of SIM-201-CARD/);
   });
 
+  it('replays a recorded 2.1 session as a 2.1 station', { timeout: 30_000 }, async () => {
+    const log = fileURLToPath(
+      new URL('../../../scenarios/logs/ocpp21-sessions.yaml-1.jsonl', import.meta.url),
+    );
+    const { code, out } = await replay({ log });
+    expect(code, out.join('\n')).toBe(0);
+    expect(out[0]).toMatch(/^PASS {2}Replay of SIM-21-CARD/);
+  });
+
   it(
     'fails with the differences when the CSMS answers otherwise than the log',
     { timeout: 30_000 },

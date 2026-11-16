@@ -219,6 +219,27 @@ describe('calibration', () => {
     });
   });
 
+  it('gives back the generic 2.1 persona from the 2.1 sample log', async () => {
+    const log = parseLog(await readFile(join(LOGS, 'ocpp21-sessions.yaml-1.jsonl'), 'utf8'));
+    const calibration = calibrate(log.lines);
+    expect(calibration.persona).toMatchObject({
+      persona: 'generic-ac-2.1-calibrated',
+      extends: 'generic-2.1',
+      boot: { vendorName: 'ocpp-mimic', model: 'Generic-AC-2.1', firmwareVersion: '0.0.0' },
+      connectors: 1,
+    });
+    // The EVSE count comes from NotifyEvent availability; NotifyEvent is generic-2.1's way.
+    expect(calibration.persona).not.toHaveProperty('connectorStatus');
+    expect(calibration.derived).toContainEqual(
+      expect.objectContaining({ name: 'connectorStatus', value: 'NotifyEvent' }),
+    );
+    expect(calibration.persona.deviceModel).toEqual({
+      SampledDataCtrlr: {
+        TxUpdatedMeasurands: 'Energy.Active.Import.Register,Power.Active.Import',
+      },
+    });
+  });
+
   it(
     'gives back the values of the 2.0.1 persona a log was recorded from',
     { timeout: 90_000 },
