@@ -7,6 +7,8 @@ on:
   # Lets maintainers rerun everything on main, e.g. to check that the
   # regression scenarios pass reliably.
   workflow_dispatch:
+  # The release workflow runs these checks before it builds a release.
+  workflow_call:
 
 jobs:
   check:

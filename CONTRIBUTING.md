@@ -24,6 +24,16 @@ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm test:scena
 - Tests use synthetic data only. Do not add logs, identifiers or other data from real charging stations, CSMSs or other projects.
 - CI must be green before a pull request is merged.
 
+## Releasing
+
+Releases are cut from `main` by the owner:
+
+1. `node tools/prepare-release.mjs <version>` sets the version everywhere and turns the changelog's Unreleased section into the version's section; edit the section into release notes if needed.
+2. Merge that change through a pull request as usual.
+3. Tag the merge commit on `main` with `v<version>` and push the tag.
+
+The `release` workflow then runs the CI checks, checks the tag against the version and the changelog, packs and smoke-tests the npm package, builds the image for linux/amd64 and linux/arm64, pushes it to `ghcr.io/jasonkong/ocpp-mimic` with provenance and smoke-tests it on both architectures, and creates the GitHub Release with the changelog section and the tarball. It publishes to npm only when the repository has an `NPM_TOKEN` secret. Pull requests that touch packaging run the same package and image checks without publishing anything.
+
 ## Terms for contributions
 
 ocpp-mimic is licensed under the Business Source License 1.1 ([LICENSE](LICENSE)), and its licensor also offers commercial licenses. So that every contribution can be released under both, by submitting a contribution you confirm that:
