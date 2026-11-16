@@ -248,3 +248,73 @@ describe('stationLines', () => {
     expect(stationLines([], undefined)).toEqual({ ok: false, problem: 'the log has no frames' });
   });
 });
+
+describe('replaying a 2.1 log', () => {
+  it("follows the CSMS's tariffIds and the DirectPayment tokens it starts web payments with", async () => {
+    const lines = [
+      cp(0, [2, 'h', 'Heartbeat', {}]),
+      csms(0.01, [3, 'h', { currentTime: at(0) }]),
+      csms(1, [
+        2,
+        't',
+        'SetDefaultTariff',
+        { evseId: 0, tariff: { tariffId: 'RECORDED-T', currency: 'NZD' } },
+      ]),
+      cp(1.1, [3, 't', { status: 'Accepted' }]),
+      csms(2, [
+        2,
+        'r',
+        'RequestStartTransaction',
+        { idToken: { idToken: 'PSP-OLD', type: 'DirectPayment' }, remoteStartId: 5 },
+      ]),
+      cp(2.1, [3, 'r', { status: 'Accepted' }]),
+      cp(3, [
+        2,
+        's',
+        'TransactionEvent',
+        {
+          eventType: 'Started',
+          timestamp: at(3),
+          triggerReason: 'RemoteStart',
+          seqNo: 0,
+          transactionInfo: { transactionId: 'tx', remoteStartId: 5, tariffId: 'RECORDED-T' },
+          idToken: { idToken: 'PSP-OLD', type: 'DirectPayment' },
+          evse: { id: 1, connectorId: 1 },
+        },
+      ]),
+      csms(3.01, [3, 's', {}]),
+    ];
+    const csmsSide: { deliver?: (frame: unknown[]) => void } = {};
+    const fake = fakeWire((frame) => {
+      if (frame[2] === 'Heartbeat') {
+        // The CSMS installs its own tariff and starts a web payment with its own token.
+        queueMicrotask(() => {
+          csmsSide.deliver?.([
+            2,
+            'c1',
+            'SetDefaultTariff',
+            { evseId: 0, tariff: { tariffId: 'NEW-T', currency: 'NZD' } },
+          ]);
+          csmsSide.deliver?.([
+            2,
+            'c2',
+            'RequestStartTransaction',
+            { idToken: { idToken: 'PSP-NEW', type: 'DirectPayment' }, remoteStartId: 9 },
+          ]);
+        });
+        return [3, frame[1], { currentTime: 'x' }];
+      }
+      return [3, frame[1], {}];
+    });
+    csmsSide.deliver = fake.deliver;
+    const result = await runReplay({ wire: fake.wire, lines, sleep: async () => {} });
+    const started = fake.sent.find((f) => f[0] === 2 && f[2] === 'TransactionEvent')?.[3] as {
+      transactionInfo: { tariffId: string; remoteStartId: number };
+      idToken: { idToken: string; type: string };
+    };
+    expect(started.transactionInfo).toMatchObject({ tariffId: 'NEW-T', remoteStartId: 9 });
+    expect(started.idToken).toEqual({ idToken: 'PSP-NEW', type: 'DirectPayment' });
+    expect(result.csmsCalls.matched).toBe(2);
+    expect(result.differences).toEqual([]);
+  });
+});

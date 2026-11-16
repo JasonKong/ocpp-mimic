@@ -27,6 +27,7 @@ describe('scenario files', () => {
       'fault.yaml',
       'local-card-session.yaml',
       'ocpp201-sessions.yaml',
+      'ocpp21-sessions.yaml',
       'outage-resend.yaml',
       'remote-start-stop.yaml',
     ]);
@@ -44,7 +45,7 @@ describe('scenario files', () => {
         scenarios++;
       }
     }
-    expect(scenarios).toBe(7);
+    expect(scenarios).toBe(8);
   });
 
   it('validates every scenario file in the repository', async () => {
