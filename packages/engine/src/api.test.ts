@@ -308,7 +308,7 @@ describe('engine API', () => {
     const { api } = await start();
     expect((await api('GET', '/api/health')).body).toMatchObject({
       status: 'ok',
-      ocpp: ['ocpp1.6', 'ocpp2.0.1'],
+      ocpp: ['ocpp1.6', 'ocpp2.0.1', 'ocpp2.1'],
     });
     const personas = await api('GET', '/api/personas');
     expect(personas.body?.personas).toContainEqual(
@@ -669,7 +669,11 @@ describe('engine API: OCPP 2.0.1 stations', () => {
         (p) => p.id === 'generic-2.0.1',
       ),
     ).toMatchObject({ ocpp: '2.0.1', features: expect.arrayContaining(['Core', 'SmartCharging']) });
-    expect((await api('GET', '/api/health')).body?.ocpp).toEqual(['ocpp1.6', 'ocpp2.0.1']);
+    expect((await api('GET', '/api/health')).body?.ocpp).toEqual([
+      'ocpp1.6',
+      'ocpp2.0.1',
+      'ocpp2.1',
+    ]);
 
     expect(
       (await api('POST', '/api/stations', { id: 'SIM-201', persona: 'generic-2.0.1', csmsUrl }))

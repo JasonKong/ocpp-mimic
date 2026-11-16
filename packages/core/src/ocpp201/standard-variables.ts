@@ -75,6 +75,7 @@ export const CERTIFICATE_ENTRIES_MAX = 20;
 export const CHARGING_PROFILES_MAX = 20;
 const TX_POINTS = 'EVConnected,Authorized,PowerPathClosed,EnergyTransfer';
 const TX_LIMITS = 'maxEnergy,maxTime,maxSoC,maxCost';
+const PURPOSES_21 = 'PriorityCharging,LocalGeneration';
 const AVAILABILITY = 'Available,Occupied,Reserved,Unavailable,Faulted';
 
 export function standardVariables(input: StandardVariablesInput): VariableDefinition[] {
@@ -290,6 +291,21 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
       variable(smart, 'ProfileStackLevel', 'integer', ro('10')),
       variable(smart, 'RateUnit', 'MemberList', ro('A,W'), { valuesList: 'A,W' }),
       variable(smart, 'Phases3to1', 'boolean', ro('false')),
+      // 2.1: priority charging, local generation and Dynamic profiles are supported (K21,
+      // K27, K28); the other optional schedule features are not (K01.FR.123 to .126).
+      ...(input.ocpp === '2.1'
+        ? [
+            variable(smart, 'SupportedAdditionalPurposes', 'MemberList', ro(PURPOSES_21), {
+              valuesList: PURPOSES_21,
+            }),
+            variable(smart, 'SupportsDynamicProfiles', 'boolean', ro('true')),
+            variable(smart, 'SupportsUseLocalTime', 'boolean', ro('false')),
+            variable(smart, 'SupportsRandomizedDelay', 'boolean', ro('false')),
+            variable(smart, 'SupportsLimitAtSoC', 'boolean', ro('false')),
+            variable(smart, 'SupportsEvseSleep', 'boolean', ro('false')),
+            variable(smart, 'SupportsMaxOfflineDuration', 'boolean', ro('false')),
+          ]
+        : []),
     );
   }
 

@@ -615,9 +615,12 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       SignCertificate: signCertificate,
       ...options.handlers,
     },
-    // 2.1 stations get the 2.0.1 answers until T106 adds the 2.1 ones.
+    // 2.1 stations get the 2.0.1 answers and the first 2.1 ones; T106 adds the rest.
     '2.1': {
       ...defaultHandlers201(options),
+      // K21: acknowledged. K28: no newer values for a Dynamic profile.
+      NotifyPriorityCharging: () => ({}),
+      PullDynamicScheduleUpdate: () => ({ status: 'Rejected' }),
       SignCertificate: signCertificate,
       ...options.handlers,
     },

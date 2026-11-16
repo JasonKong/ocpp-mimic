@@ -10,6 +10,7 @@ import {
   nameProblem,
   OCPP16_SUBPROTOCOL,
   OCPP201_SUBPROTOCOL,
+  OCPP21_SUBPROTOCOL,
   parseInjection,
   parseRampUp,
   tagsProblem,
@@ -366,7 +367,7 @@ const routes: Route[] = [
   route('GET', '/api/health', () => ({
     status: 'ok',
     version: VERSION,
-    ocpp: [OCPP16_SUBPROTOCOL, OCPP201_SUBPROTOCOL],
+    ocpp: [OCPP16_SUBPROTOCOL, OCPP201_SUBPROTOCOL, OCPP21_SUBPROTOCOL],
   })),
 
   route('GET', '/api/metrics', (_request, { metrics }) => {
@@ -609,6 +610,25 @@ const routes: Route[] = [
     'POST',
     '/api/stations/:param/connectors/:param/ev-suspend',
     connectorAction((s, c) => s.chargePoint.evSuspend(c)),
+  ),
+  route(
+    'POST',
+    '/api/stations/:param/connectors/:param/priority',
+    connectorAction((s, c, body) => {
+      // The driver's priority charging button on a 2.1 station (K22).
+      if (s.chargePoint.ocpp !== '2.1') {
+        throw new HttpError(
+          404,
+          `station ${s.id} speaks OCPP ${s.chargePoint.ocpp}, without priority charging`,
+        );
+      }
+      if (typeof body.activate !== 'boolean')
+        throw new HttpError(400, '"activate" must be true or false');
+      return {
+        result: (s.chargePoint as ChargePoint201).priorityCharging(c, body.activate),
+        station: s.snapshot(),
+      };
+    }),
   ),
   route(
     'POST',

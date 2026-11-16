@@ -1,0 +1,128 @@
+# OCPP 2.1 smart charging (T101) against the built-in CSMS: priority charging
+# from the CSMS (K21) and the driver's button (K22), Dynamic profiles updated
+# by the CSMS (K28), and the reasonCodes for what the station does not
+# support (K01.FR.120 to .126). Every frame is checked against OCA's 2.1 schemas.
+name: K21 UsePriorityCharging switches to the PriorityCharging profile and back
+station: { id: REG21-PRIORITY, persona: regression-2.1 }
+steps:
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 1
+        chargingProfile:
+          id: 1
+          stackLevel: 0
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Absolute
+          chargingSchedule:
+            [
+              {
+                id: 1,
+                chargingRateUnit: W,
+                chargingSchedulePeriod: [{ startPeriod: 0, limit: 3680 }],
+              },
+            ]
+      answer: { status: Accepted }
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 0
+        chargingProfile:
+          id: 2
+          stackLevel: 0
+          chargingProfilePurpose: PriorityCharging
+          chargingProfileKind: Absolute
+          chargingSchedule:
+            [
+              {
+                id: 1,
+                chargingRateUnit: W,
+                chargingSchedulePeriod: [{ startPeriod: 0, limit: 11000 }],
+              },
+            ]
+      answer: { status: Accepted }
+  - presentCard: { idToken: TAG-PRIO, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started }
+      save: { tx: '$.payload.transactionInfo.transactionId' }
+  - expectConnector: { connector: 1, powerW: 3680 }
+  - csmsCall:
+      action: UsePriorityCharging
+      payload: { transactionId: '{{tx}}', activate: true }
+      answer: { status: Accepted }
+  - expect: { sent: NotifyPriorityCharging, payload: { transactionId: '{{tx}}', activated: true } }
+  - expectConnector: { connector: 1, powerW: 7360 }
+  - csmsCall:
+      action: UsePriorityCharging
+      payload: { transactionId: '{{tx}}', activate: false }
+      answer: { status: Accepted }
+  - expect: { sent: NotifyPriorityCharging, payload: { activated: false } }
+  - expectConnector: { connector: 1, powerW: 3680 }
+---
+name: K22 The driver's priority button without a PriorityCharging profile does nothing
+station: { id: REG21-BUTTON, persona: regression-2.1 }
+steps:
+  - presentCard: { idToken: TAG-BUTTON, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started } }
+  - http:
+      method: POST
+      url: '{{engineUrl}}/api/stations/REG21-BUTTON/connectors/1/priority'
+      json: { activate: true }
+      expect: { json: { result: no-profile } }
+  - expectNo: { sent: NotifyPriorityCharging, within: 1s }
+---
+name: K28 A Dynamic profile follows UpdateDynamicSchedule
+station: { id: REG21-DYNAMIC, persona: regression-2.1 }
+steps:
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 1
+        chargingProfile:
+          id: 7
+          stackLevel: 0
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Dynamic
+          chargingSchedule:
+            [
+              {
+                id: 1,
+                chargingRateUnit: W,
+                chargingSchedulePeriod: [{ startPeriod: 0, limit: 2000 }],
+              },
+            ]
+      answer: { status: Accepted }
+  - presentCard: { idToken: TAG-DYN, result: authorized }
+  - plugIn: {}
+  - expectConnector: { connector: 1, powerW: 2000 }
+  - csmsCall:
+      action: UpdateDynamicSchedule
+      payload: { chargingProfileId: 7, scheduleUpdate: { limit: 5000 } }
+      answer: { status: Accepted }
+  - expectConnector: { connector: 1, powerW: 5000 }
+  - csmsCall:
+      action: UpdateDynamicSchedule
+      payload: { chargingProfileId: 99, scheduleUpdate: { limit: 1 } }
+      answer: { status: Rejected }
+---
+name: K01.FR.123 to .126 Unsupported schedule features are refused with InvalidSchedule
+station: { id: REG21-REFUSE, persona: regression-2.1 }
+steps:
+  - csmsCall:
+      action: SetChargingProfile
+      payload:
+        evseId: 1
+        chargingProfile:
+          id: 3
+          stackLevel: 0
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Absolute
+          chargingSchedule:
+            - id: 1
+              chargingRateUnit: W
+              randomizedDelay: 60
+              chargingSchedulePeriod: [{ startPeriod: 0, limit: 2000 }]
+      answer: { status: Rejected, statusInfo: { reasonCode: InvalidSchedule } }
