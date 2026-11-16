@@ -86,6 +86,9 @@ export interface NetworkSlot {
   securityProfile: number;
   /** The CSMS address without the station identity; the station's own address when missing. */
   csmsUrl?: string;
+  /** 2.1 (B09): the station identity and Basic Auth password to use with this slot. */
+  identity?: string;
+  basicAuthPassword?: string;
 }
 
 /** What the security part keeps across restarts. */
@@ -98,6 +101,8 @@ export interface PersistedSecurity201 {
   firmwareVersion?: string;
   /** requestId of an update whose Installed is reported after the reboot. */
   installedPendingReport?: number;
+  /** 2.1: the requestId of the last CSR, so the next one gets a new one. */
+  csrRequestId?: number;
 }
 
 type Sent =
@@ -147,6 +152,8 @@ export interface Security201Options {
   noTransactions(): Promise<void>;
   /** The station's state as text, for a diagnostics log. */
   diagnostics(): string;
+  /** OCPP 2.1: CSR requestIds, the downgrade to profile 2 and per-slot credentials (A02, A05, B09). */
+  v21?: boolean;
 }
 
 export interface ConnectionSecurity201 {
@@ -260,7 +267,9 @@ export function createSecurity201(options: Security201Options): Security201 {
   let previousOwn: ChargePointCertificate | undefined;
   /** The CSMS root an AdditionalRootCertificateCheck install replaced, until a connection (M05.FR.12, .13). */
   let fallbackRoot: string | undefined;
-  let pendingCsr: { csr: string; privateKey: string } | undefined;
+  let pendingCsr: { csr: string; privateKey: string; requestId?: number } | undefined;
+  /** 2.1: the requestId of the last CSR (A02.FR.24); persisted with the other security state. */
+  let csrRequestId = restored?.csrRequestId ?? 0;
   let csrTimer: ReturnType<StationTimers['later']> | undefined;
 
   const rootsOf = (type: RootCertificateType) =>
@@ -287,15 +296,24 @@ export function createSecurity201(options: Security201Options): Security201 {
     if (tools === undefined) return;
     if (pendingCsr === undefined) {
       const organization = get('SecurityCtrlr', 'OrganizationName') ?? '';
-      pendingCsr = tools.createCsr({
-        commonName: options.commonName,
-        ...(organization !== '' && { organization }),
-      });
+      pendingCsr = {
+        ...tools.createCsr({
+          commonName: options.commonName,
+          ...(organization !== '' && { organization }),
+        }),
+        // 2.1: the CSMS echoes it in CertificateSigned (A02.FR.24, .25); resends keep it.
+        ...(options.v21 === true && { requestId: ++csrRequestId }),
+      };
       log('new key pair generated for a ChargingStationCertificate');
     }
     const csr = pendingCsr.csr;
+    const { requestId } = pendingCsr;
     void options
-      .send('SignCertificate', { csr, certificateType: 'ChargingStationCertificate' })
+      .send('SignCertificate', {
+        csr,
+        certificateType: 'ChargingStationCertificate',
+        ...(requestId !== undefined && { requestId }),
+      })
       ?.then((outcome) => {
         if (!outcome.ok || outcome.payload.status !== 'Accepted') return;
         if (pendingCsr?.csr !== csr) return;
@@ -330,14 +348,30 @@ export function createSecurity201(options: Security201Options): Security201 {
   const slotOf = (slot: string): NetworkSlot =>
     slots[slot] ?? { securityProfile: securityProfile() };
 
+  /**
+   * Whether a slot's Security Profile is too low: lower than the station's,
+   * except that 2.1 allows 3 to 2 with SecurityCtrlr.AllowSecurityProfileDowngrade
+   * (A05.FR.08 to .10); never down to 1.
+   */
+  function tooLow(profile: number): boolean {
+    const current = securityProfile();
+    if (profile >= current) return false;
+    return !(
+      options.v21 === true &&
+      current === 3 &&
+      profile === 2 &&
+      get('SecurityCtrlr', 'AllowSecurityProfileDowngrade') === 'true'
+    );
+  }
+
   /** Why a slot cannot be used now (A05.FR.02, .03), or undefined. */
   function slotProblem(slot: string): string | undefined {
     const profile = slots[slot]?.securityProfile;
     if (profile === undefined) return `network profile ${slot} is not set`;
-    if (profile < securityProfile()) return `network profile ${slot} has a lower Security Profile`;
+    if (tooLow(profile)) return `network profile ${slot} has a lower Security Profile`;
     if (
       (profile === 1 || profile === 2) &&
-      (get('SecurityCtrlr', 'BasicAuthPassword') ?? '') === ''
+      (slots[slot]?.basicAuthPassword ?? get('SecurityCtrlr', 'BasicAuthPassword') ?? '') === ''
     ) {
       return `Security Profile ${profile} needs a BasicAuthPassword`;
     }
@@ -580,6 +614,10 @@ export function createSecurity201(options: Security201Options): Security201 {
         return reject(`certificate chain longer than ${limit}`);
       }
       if (pendingCsr === undefined) return reject('no CSR pending');
+      // 2.1: a certificate for another request is refused (A02.FR.26, A03.FR.22).
+      if (request.requestId !== undefined && request.requestId !== pendingCsr.requestId) {
+        return reject(`unknown requestId ${request.requestId}`);
+      }
       if (!tools.verifyChain(request.certificateChain, rootsOf('CSMSRootCertificate'), now())) {
         return reject('not a valid certificate of the CSMS hierarchy');
       }
@@ -610,16 +648,28 @@ export function createSecurity201(options: Security201Options): Security201 {
         return reject('not a configuration slot (B09.FR.05)');
       }
       const profile = connectionData.securityProfile;
-      if (profile < securityProfile()) return reject('lower Security Profile (B09.FR.04)');
+      if (tooLow(profile)) return reject('lower Security Profile (B09.FR.04, A05.FR.10)');
       if (profile < 0 || profile > 3) return reject('no such Security Profile');
-      if (connectionData.ocppVersion !== 'OCPP20') return reject('not OCPP 2.0');
+      // 2.1 makes ocppVersion optional and ignores it (B09).
+      if (options.v21 !== true && connectionData.ocppVersion !== 'OCPP20') {
+        return reject('not OCPP 2.0');
+      }
       if (connectionData.ocppTransport !== 'JSON') return reject('not JSON');
       const url = connectionData.ocppCsmsUrl;
       if (!/^wss?:\/\//i.test(url)) return reject('not a ws:// or wss:// address');
       if (profile >= 2 && !/^wss:\/\//i.test(url)) {
         return reject(`Security Profile ${profile} needs wss://`);
       }
-      slots = { ...slots, [slot]: { securityProfile: profile, csmsUrl: url } };
+      const { identity, basicAuthPassword } = connectionData;
+      slots = {
+        ...slots,
+        [slot]: {
+          securityProfile: profile,
+          csmsUrl: url,
+          ...(options.v21 === true && identity !== undefined && { identity }),
+          ...(options.v21 === true && basicAuthPassword !== undefined && { basicAuthPassword }),
+        },
+      };
       log(`network profile ${slot} set: ${url}, Security Profile ${profile}`);
       changed();
       return { status: 'Accepted' };
@@ -649,7 +699,12 @@ export function createSecurity201(options: Security201Options): Security201 {
     },
 
     GetLog(request) {
-      const kind = request.logType === 'SecurityLog' ? 'security' : 'diagnostics';
+      const kind =
+        request.logType === 'SecurityLog'
+          ? 'security'
+          : request.logType === 'DataCollectorLog'
+            ? 'datacollector'
+            : 'diagnostics';
       const stamp = new Date(now()).toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
       const fileName = `${kind}-${stamp}.log`;
       // A new request cancels the upload in progress (N01.FR.12).
@@ -666,8 +721,9 @@ export function createSecurity201(options: Security201Options): Security201 {
     connectionSecurity() {
       const slot = currentSlot();
       attemptedSlot = slot;
-      const { securityProfile: profile, csmsUrl } = slotOf(slot);
-      const key = get('SecurityCtrlr', 'BasicAuthPassword') ?? '';
+      const { securityProfile: profile, csmsUrl, basicAuthPassword } = slotOf(slot);
+      // 2.1: a slot's own password goes with it (B09.FR.28).
+      const key = basicAuthPassword ?? get('SecurityCtrlr', 'BasicAuthPassword') ?? '';
       const roots = rootsOf('CSMSRootCertificate');
       return {
         profile,
@@ -687,6 +743,19 @@ export function createSecurity201(options: Security201Options): Security201 {
       lastGood = slot;
       const profile = slotOf(slot).securityProfile;
       const before = securityProfile();
+      // 2.1: a slot with its own credentials sets them as the station's (B09.FR.28, errata).
+      const { identity, basicAuthPassword } = slotOf(slot);
+      if (basicAuthPassword !== undefined)
+        set('SecurityCtrlr', 'BasicAuthPassword', basicAuthPassword);
+      if (identity !== undefined) set('SecurityCtrlr', 'Identity', identity);
+      if (profile < before) {
+        // An allowed downgrade (A05.FR.08) worked: it is the profile now.
+        set('SecurityCtrlr', 'SecurityProfile', String(profile));
+        securityEvent(
+          'ReconfigurationOfSecurityParameters',
+          `Security Profile ${before} to ${profile}`,
+        );
+      }
       if (profile > before) {
         // The higher profile worked: it is the profile now, and lower slots go (A05.FR.06).
         set('SecurityCtrlr', 'SecurityProfile', String(profile));
@@ -765,6 +834,25 @@ export function createSecurity201(options: Security201Options): Security201 {
 
     read(key) {
       if (key === 'OCPPCommCtrlr/ActiveNetworkProfile') return currentSlot();
+      // 2.1: the NetworkConfiguration component of each slot (B09.FR.08), ReadOnly (B09.FR.10).
+      const network = /^NetworkConfiguration:(\d+)\/(\w+)$/.exec(key);
+      if (network !== null) {
+        const [, slot = '', variable] = network;
+        const config = slots[slot];
+        if (config === undefined) return '';
+        const values: Record<string, string> = {
+          OcppCsmsUrl: config.csmsUrl ?? '',
+          OcppInterface: 'Wired0',
+          OcppTransport: 'JSON',
+          OcppVersion: 'OCPP21',
+          MessageTimeout: get('OCPPCommCtrlr', 'MessageTimeout') ?? '',
+          SecurityProfile: String(config.securityProfile),
+          Identity: config.identity ?? '',
+          VpnEnabled: 'false',
+          ApnEnabled: 'false',
+        };
+        return values[variable ?? ''];
+      }
       if (key === 'SecurityCtrlr/CertificateEntries') return String(certificateCount());
       return undefined;
     },
@@ -815,6 +903,7 @@ export function createSecurity201(options: Security201Options): Security201 {
       ...(firmwareVersion !== undefined &&
         firmwareVersion !== options.firmwareVersion && { firmwareVersion }),
       ...(installedPendingReport !== undefined && { installedPendingReport }),
+      ...(csrRequestId > 0 && { csrRequestId }),
     }),
   };
 }

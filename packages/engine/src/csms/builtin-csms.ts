@@ -598,6 +598,9 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
               payload.certificateType !== undefined && {
                 certificateType: payload.certificateType,
               }),
+            // 2.1 echoes the CSR's requestId (A02.FR.25).
+            ...(connection.ocpp === '2.1' &&
+              payload.requestId !== undefined && { requestId: payload.requestId }),
           },
           5000,
         )

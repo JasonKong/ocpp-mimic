@@ -714,6 +714,190 @@ describe('a 2.1 station: resuming transactions (B13, E17)', () => {
   });
 });
 
+describe('a 2.1 station: security and network configuration (A02, A05, B09)', () => {
+  const setValue = (
+    csmsCall: (action: string, payload: JsonObject) => Promise<unknown>,
+    component: string,
+    name: string,
+    value: string,
+  ) =>
+    csmsCall('SetVariables', {
+      setVariableData: [
+        { component: { name: component }, variable: { name }, attributeValue: value },
+      ],
+    });
+  const getValue = async (
+    csmsCall: (action: string, payload: JsonObject) => Promise<unknown>,
+    component: string,
+    name: string,
+  ) => {
+    const answer = (await csmsCall('GetVariables', {
+      getVariableData: [{ component: { name: component }, variable: { name } }],
+    })) as { getVariableResult: { attributeValue?: string }[] };
+    return answer.getVariableResult[0]?.attributeValue;
+  };
+
+  it('sends a requestId with its CSR and refuses a certificate for another one (A02.FR.24, .26)', async () => {
+    const tools = fakeTools();
+    const { calls, csmsCall, boot } = setup({
+      features: ['Core', 'AdvancedSecurity'],
+      extra: {
+        ocpp: '2.1',
+        certificateTools: tools,
+        serialNumber: 'SN-1',
+        certificates: { centralSystemRoots: [cert('csms')] },
+      },
+    });
+    await boot();
+    await csmsCall('TriggerMessage', { requestedMessage: 'SignChargingStationCertificate' });
+    expect(calls('SignCertificate')[0]?.payload).toEqual({
+      csr: 'CSR CN=SN-1 O=ocpp-mimic',
+      certificateType: 'ChargingStationCertificate',
+      requestId: 1,
+    });
+    const chain = cert('cs', 'csms', 'cp-key-1');
+    expect(await csmsCall('CertificateSigned', { certificateChain: chain, requestId: 9 })).toEqual({
+      status: 'Rejected',
+    });
+    await csmsCall('TriggerMessage', { requestedMessage: 'SignChargingStationCertificate' });
+    expect(calls('SignCertificate').at(-1)?.payload).toMatchObject({ requestId: 2 });
+    expect(
+      await csmsCall('CertificateSigned', {
+        certificateChain: cert('cs', 'csms', 'cp-key-2'),
+        requestId: 2,
+      }),
+    ).toEqual({ status: 'Accepted' });
+  });
+
+  const slotProfile = (
+    slot: number,
+    securityProfile: number,
+    url: string,
+    extra: JsonObject = {},
+  ) => ({
+    configurationSlot: slot,
+    connectionData: {
+      ocppTransport: 'JSON',
+      ocppCsmsUrl: url,
+      messageTimeout: 30,
+      securityProfile,
+      ocppInterface: 'Wired0',
+      ...extra,
+    },
+  });
+
+  it('takes a profile without ocppVersion, with its own identity and password, and reports it (B09)', async () => {
+    const tools = fakeTools();
+    const { cp, csmsCall, boot, advance } = setup({
+      extra: {
+        ocpp: '2.1',
+        certificateTools: tools,
+        certificates: { centralSystemRoots: [cert('csms')] },
+      },
+    });
+    await boot();
+    expect(
+      await csmsCall(
+        'SetNetworkProfile',
+        slotProfile(1, 2, 'wss://csms.test/ocpp', {
+          identity: 'CS-1',
+          basicAuthPassword: 'slot-secret-0123',
+        }),
+      ),
+    ).toEqual({ status: 'Accepted' });
+    expect(
+      await setValue(csmsCall, 'OCPPCommCtrlr', 'NetworkConfigurationPriority', '1,0'),
+    ).toMatchObject({ setVariableResult: [{ attributeStatus: 'RebootRequired' }] });
+    expect(await csmsCall('Reset', { type: 'Immediate' })).toEqual({ status: 'Accepted' });
+    await advance(0);
+    cp.disconnected();
+    // The slot's own password is used without SecurityCtrlr.BasicAuthPassword (B09.FR.28).
+    expect(cp.connectionSecurity()).toMatchObject({
+      profile: 2,
+      authorizationKey: 'slot-secret-0123',
+    });
+    await boot();
+    expect(await getValue(csmsCall, 'SecurityCtrlr', 'Identity')).toBe('CS-1');
+    const report = await csmsCall('GetVariables', {
+      getVariableData: [
+        {
+          component: { name: 'NetworkConfiguration', instance: '1' },
+          variable: { name: 'OcppCsmsUrl' },
+        },
+        {
+          component: { name: 'NetworkConfiguration', instance: '1' },
+          variable: { name: 'SecurityProfile' },
+        },
+      ],
+    });
+    expect(report).toEqual({
+      getVariableResult: [
+        expect.objectContaining({
+          attributeStatus: 'Accepted',
+          attributeValue: 'wss://csms.test/ocpp',
+        }),
+        expect.objectContaining({ attributeStatus: 'Accepted', attributeValue: '2' }),
+      ],
+    });
+  });
+
+  it('goes from Security Profile 3 to 2 only with AllowSecurityProfileDowngrade, never to 1 (A05.FR.08 to .10)', async () => {
+    const tools = fakeTools();
+    const station = (allow: boolean) =>
+      setup({
+        deviceModel: {
+          SecurityCtrlr: {
+            SecurityProfile: 3,
+            AllowSecurityProfileDowngrade: allow,
+            BasicAuthPassword: 'secret-0123456789',
+          },
+        },
+        extra: {
+          ocpp: '2.1',
+          certificateTools: tools,
+          certificates: {
+            centralSystemRoots: [cert('csms')],
+            chargePoint: { certificate: cert('cs', 'csms', 'k'), privateKey: 'k' },
+          },
+        },
+      });
+    const allowed = station(true);
+    await allowed.boot();
+    expect(
+      await allowed.csmsCall('SetNetworkProfile', slotProfile(1, 2, 'wss://csms.test/ocpp')),
+    ).toEqual({
+      status: 'Accepted',
+    });
+    expect(
+      await allowed.csmsCall('SetNetworkProfile', slotProfile(2, 1, 'ws://csms.test/ocpp')),
+    ).toEqual({
+      status: 'Rejected',
+    });
+    const refused = station(false);
+    await refused.boot();
+    expect(
+      await refused.csmsCall('SetNetworkProfile', slotProfile(1, 2, 'wss://csms.test/ocpp')),
+    ).toEqual({
+      status: 'Rejected',
+    });
+  });
+
+  it('uploads a DataCollectorLog', async () => {
+    const { csmsCall, boot } = setup({
+      features: ['Core', 'AdvancedSecurity'],
+      extra: { ocpp: '2.1' },
+    });
+    await boot();
+    expect(
+      await csmsCall('GetLog', {
+        logType: 'DataCollectorLog',
+        requestId: 3,
+        log: { remoteLocation: 'https://logs.test/up' },
+      }),
+    ).toMatchObject({ status: 'Accepted', filename: expect.stringMatching(/^datacollector-/) });
+  });
+});
+
 describe('2.0.1 personas', () => {
   it('resolve with the 2.0.1 boot block and certification profiles', () => {
     const { personas, errors } = resolvePersonas([

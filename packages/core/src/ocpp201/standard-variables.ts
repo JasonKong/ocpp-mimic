@@ -218,6 +218,40 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
     variable(security, 'CertSigningRepeatTimes', 'integer', rw('3'), { minLimit: 0 }),
   ];
 
+  if (input.ocpp === '2.1') {
+    // A05.FR.08: going from Security Profile 3 to 2 is allowed when this is true.
+    out.push(
+      variable(security, 'AllowSecurityProfileDowngrade', 'boolean', rw('false')),
+      variable(security, 'Identity', 'string', rw(), { maxLimit: 48 }),
+    );
+    // B09.FR.08, .10: each network slot as a NetworkConfiguration component, ReadOnly (the
+    // CSMS sets slots with SetNetworkProfile). Its BasicAuthPassword is left out: a ReadOnly
+    // copy would report the password.
+    for (const slot of NETWORK_SLOTS) {
+      const network: ComponentType = { name: 'NetworkConfiguration', instance: slot };
+      out.push(
+        variable(network, 'OcppCsmsUrl', 'string', ro(), dynamic),
+        variable(network, 'OcppInterface', 'OptionList', ro(), {
+          ...dynamic,
+          valuesList: 'Wired0,Wired1,Wired2,Wired3,Wireless0,Wireless1,Wireless2,Wireless3,Any',
+        }),
+        variable(network, 'OcppTransport', 'OptionList', ro(), {
+          ...dynamic,
+          valuesList: 'SOAP,JSON',
+        }),
+        variable(network, 'OcppVersion', 'OptionList', ro(), {
+          ...dynamic,
+          valuesList: 'OCPP12,OCPP15,OCPP16,OCPP20,OCPP201,OCPP21',
+        }),
+        variable(network, 'MessageTimeout', 'integer', ro(), { ...dynamic, unit: 's' }),
+        variable(network, 'SecurityProfile', 'integer', ro(), dynamic),
+        variable(network, 'Identity', 'string', ro(), dynamic),
+        variable(network, 'VpnEnabled', 'boolean', ro(), dynamic),
+        variable(network, 'ApnEnabled', 'boolean', ro(), dynamic),
+      );
+    }
+  }
+
   if (input.features.includes('LocalAuthListManagement')) {
     const list: ComponentType = { name: 'LocalAuthListCtrlr' };
     out.push(
