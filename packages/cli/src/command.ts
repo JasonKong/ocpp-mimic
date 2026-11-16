@@ -199,7 +199,8 @@ Options for load:
 Options for replay:
   --station <id>         The log's station, when it has several
   --csms <url>           The CSMS to replay against (default builtin)
-  --persona <id>         Persona of the replay station (default generic-1.6)
+  --persona <id>         Persona of the replay station (default
+                         generic-<the log's OCPP version>)
   --speed <n>            Divide the recorded gaps by <n> (default 1)
   --max-gap <d>          Longest wait between two frames (default 30s)
   --compare <mode>       status (default), strict or none
@@ -208,7 +209,8 @@ Options for replay:
 Options for calibrate:
   --station <id>         Only this station; repeat for more
   --name <id>            The persona's id (default: <model>-calibrated)
-  --extends <id>         The persona it extends (default generic-1.6)
+  --extends <id>         The persona it extends (default
+                         generic-<the logs' OCPP version>)
   -o, --out <file>       Write the persona there (default: standard output)
   --report <file>        Write what was derived, with samples, as Markdown
 
@@ -234,8 +236,9 @@ Options for csms (stations connect to ws://<host>:<port>/ocpp/<id>):
                          Ask stations for a client certificate (default none)
   --status <duration>    Print a status line this often (default 60s; 0: never)
   --tariff <file>        Price 2.0.1 sessions with this reference tariff (a
-                         2.1 TariffType, energy by time of day in UTC, JSON): totalCost
-                         in TransactionEvent answers and CostUpdated each minute
+                         2.1 TariffType as JSON; energy prices by time of day
+                         in UTC): totalCost in TransactionEvent answers and
+                         CostUpdated each minute
   --install-tariff       Also send it to 2.1 stations as their default tariff
                          (SetDefaultTariff) after each accepted boot
 

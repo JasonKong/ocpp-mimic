@@ -1,10 +1,10 @@
 # ocpp-mimic design
 
-Updated 2026-11-16 · Chinese version: [design.zh-CN.md](design.zh-CN.md). This English version is the source of truth.
+Updated 2026-11-17 · Chinese version: [design.zh-CN.md](design.zh-CN.md). This English version is the source of truth.
 
 ## Overview
 
-ocpp-mimic is a standalone OCPP charge point simulation platform: an engine runs many virtual charge points in one server process. Each charge point implements the OCPP specification, and persona files reproduce the timing and quirks of real hardware. OCPP 1.6J came first (M1 to M4); M5 adds OCPP 2.0.1 on the same engine, whose data model was shaped after 2.0.1 from the start.
+ocpp-mimic is a standalone OCPP charge point simulation platform: an engine runs many virtual charge points in one server process. Each charge point implements the OCPP specification, and persona files reproduce the timing and quirks of real hardware. OCPP 1.6J came first (M1 to M4); M5 added OCPP 2.0.1 and M7 OCPP 2.1 on the same engine, whose data model was shaped after 2.0.1 from the start. M8 makes it a release others can install. How to use it is in the [user guide](guide.md).
 
 **Positioning**: the engine is built to the standard of automated regression and load testing. The Web UI, the CLI and CI scripts are all remote controls for the engine. Manual QA is one way to use the UI layer, not the starting point of the design.
 
@@ -1414,6 +1414,85 @@ M7's exit criterion G7 is met on main (664cb3a):
   - [#264](https://github.com/JasonKong/ocpp-mimic/issues/264): a failing scenario against CitrineOS takes about 15 minutes to end.
   - [#265](https://github.com/JasonKong/ocpp-mimic/issues/265): CitrineOS v2.1.0's 2.1 gaps.
 
+## M8 Release
+
+Decided for M8 (#267). M1 to M7 built the simulator; M8 turns it into a release that others can install and evaluate: a version, a changelog, one npm package and a Docker image built by a release workflow, an access token for engines that listen beyond loopback, a license with third-party notices, and a user guide whose examples are checked. M8 adds no OCPP behaviour.
+
+**Who it is for**
+
+- A CSMS team that wants to point ocpp-mimic at its own CSMS without cloning and building the monorepo.
+- A CI pipeline that runs scenarios against a CSMS under test from a pinned version.
+- Someone deciding whether a company may use it: the license, the notices and the guide must answer that without reading code.
+
+**Exit criterion G8**
+
+v0.1.0 is released from a tag by the release workflow. From the release's artifacts alone, on clean GitHub-hosted runners, the npm package (ubuntu-latest and macos-latest) and the Docker image (linux/amd64 and linux/arm64) each run the guide's quick start (the built-in CSMS, `serve`, a station charging through the API), `scenarios/examples` and the 100-station smoke plan, and pass. Every runnable example in the user guide is checked in CI. The repository has a license, third-party notices and a changelog.
+
+**Versioning**
+
+- One version for the whole tool, starting at 0.1.0. `--version`, the engine's and the built-in CSMS's `/api/health`, and OTLP's `service.version` read it from one place.
+- Semantic versioning over what users write or call: CLI commands and options; the scenario, persona, load plan and log formats; the engine HTTP API and the built-in CSMS's control API. Internal TypeScript APIs are not part of it. While the major version is 0, a minor release may change these, and the changelog says how to migrate.
+- `CHANGELOG.md` in the Keep a Changelog layout; 0.1.0 summarises M1 to M7. A user-visible change adds a line under Unreleased in the same pull request as its guide update.
+
+**npm package**
+
+- One package, `ocpp-mimic` (the name is free on npm), with the `ocpp-mimic` command. It bundles core, engine and cli into one ESM entry and ships the built Web UI, the built-in personas, the OCA schemas and the samples (personas, example scenarios, load plans, import mappings). The runtime dependencies (ws, yaml, ajv) stay npm dependencies; there are no native modules, since SQLite is `node:sqlite`. The workspace packages stay private.
+- `engines.node` is `>=24`, and the command checks the Node version before anything else and names the version it needs, instead of failing on a missing export.
+- Built-in files resolve from the package, never from the working directory. `ocpp-mimic samples <dir>` copies the samples into a directory to read, edit and pass to `--personas`, `run` and `load`.
+- The release workflow publishes it with npm provenance when an `NPM_TOKEN` secret exists; the npm account is the owner's. Until then, every release attaches the tarball, which `npm install -g <url>` installs.
+
+**Docker image**
+
+- `ghcr.io/jasonkong/ocpp-mimic:<version>` and `:latest`, for linux/amd64 and linux/arm64: a multi-stage build from `node:24-slim` that installs the npm tarball, so the image and the package are the same build. A non-root user, entrypoint `ocpp-mimic`, default command `serve --host 0.0.0.0`, and `/data` for `--store`.
+- A CSMS is rarely on a container's loopback, but the image does not widen the allow list by itself: users pass `--allow-csms`. The guide shows a CSMS on the host (`host.docker.internal`) and `docs/examples/docker-compose.yml` with the engine and the built-in CSMS as two services.
+
+**Access to the engine API**
+
+- The engine API and the built-in CSMS's control API have no authentication, which is fine on 127.0.0.1 but not once a container publishes the port. `--api-token <token>` (or `OCPP_MIMIC_API_TOKEN`) on `serve`, `load --port` and `csms` requires `Authorization: Bearer <token>` on `/api/*`, `/metrics` and the events WebSocket; the Web UI asks for the token once and keeps it for the browser session. The comparison is constant-time, and the token never appears in logs, errors or snapshots.
+- Binding to an address other than loopback without a token prints a warning. Without a token, nothing changes on loopback.
+
+**Release workflow**
+
+- `.github/workflows/release.yml` runs on `v*` tags. It checks that the tag matches the version and that the changelog has its section; runs the CI jobs; builds the tarball and the images; creates the GitHub Release with the changelog section and the tarball; pushes the images to GHCR with provenance attestations; and publishes to npm when the token exists.
+- A `release-check` job on pull requests that touch packaging builds the tarball and the image and runs the smoke test from them, so packaging breaks before a tag does.
+
+**User guide**
+
+- `docs/guide.md` and `docs/guide.zh-CN.md` are kept with every user-visible change (the workflow rule in `CLAUDE.md`).
+- A test reads the English guide: its YAML and JSON blocks that are personas, scenarios, load plans, usage models or tariffs are validated with core's validators, and every `--option` it names exists for its command.
+- The install section leads with the npm package and the image; building from source moves to a section for contributors. Screenshots of the station list, the station view and the Sessions view come from a demo with synthetic stations.
+
+**License and notices**
+
+- The license is the Business Source License 1.1 (decided 2026-11-17, see "Open questions"). Its parameters: the Additional Use Grant allows production use for personal, educational and other non-commercial purposes; the Change Date is four years after each version is published; the Change License is the Apache License 2.0. BUSL already allows any non-production use, so evaluating ocpp-mimic is free; commercial production use needs a commercial license from the licensor. T114 applies it: `LICENSE`, the `license` field of the published package (`BUSL-1.1`), and a README section.
+- `THIRD_PARTY_NOTICES.md` lists what the package and the image ship: the runtime dependencies with their licenses (MIT, ISC, BSD at present) and OCA's OCPP JSON schemas (CC BY-ND 4.0, unchanged, as today). A check fails the build when a shipped dependency's license is not on an allow list.
+- `CONTRIBUTING.md` (building, testing, the workflow, the terms for contributions under the chosen license) and `SECURITY.md` (reporting a vulnerability privately).
+
+**Also in M8**
+
+- #264: a scenario that fails against CitrineOS waits about 15 minutes before it ends. Bound what the runner waits for after a failure, so a failing run ends in seconds.
+
+**Out of M8**
+
+- A hosted service, accounts and multi-tenancy; Windows packaging beyond Docker and WSL; new OCPP features. The M7 follow-ups (#261–#263, #265) and the older open issues stay without a milestone.
+
+**Tasks**
+
+| Task | Issue | Wave | Depends on |
+| --- | --- | --- | --- |
+| T113 Design (this section) | #267 | 1 | |
+| T114 License, notices, CONTRIBUTING, SECURITY | #268 | 2 | T113 |
+| T115 Version 0.1.0, changelog, versioning policy | #269 | 2 | T113 |
+| T116 npm package | #270 | 3 | T115 |
+| T117 Docker image and compose example | #271 | 3 | T116 |
+| T118 API token for the engine and the CSMS | #272 | 3 | T113 |
+| T119 Release workflow and release check | #273 | 4 | T116, T117 |
+| T120 Guide: checked examples, install from a release, screenshots | #274 | 4 | T116, T117, T118 |
+| T121 Failing CitrineOS scenarios end fast | #264 | 2 | |
+| T122 Acceptance | #275 | 5 | all |
+
+The critical path is T113 → T115 → T116 → T117 → T119 → T122. The release cannot be tagged without T114.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
@@ -1715,16 +1794,18 @@ flowchart TB
   G6{{"Exit: sessions show the right source and timeline on 1.6 and 2.0.1 against the built-in CSMS, SteVe and CitrineOS; estimates and prices check out"}}
   M7["<b>M7 · OCPP 2.1</b><br/>2.1 on the 2.0.1 adapter: SEND, CALLRESULTERROR, Device Model 2.1<br/>Tariffs and local cost, payment, transaction limits and resumption, dynamic and priority charging, ISO 15118-20 needs"]
   G7{{"Exit: every 2.1 scenario for the covered blocks passes against the built-in CSMS and CitrineOS in CI"}}
-  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7
+  M8["<b>M8 · Release</b><br/>Version 0.1.0 and a changelog; one npm package and a Docker image from a release workflow<br/>API token; license and third-party notices; a user guide with checked examples"]
+  G8{{"Exit: v0.1.0 from a tag; the package and the image run the quick start, the examples and the smoke plan on clean runners"}}
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7 --> M8 --> G8
 ```
 
 Each phase ends with an exit criterion; the next phase starts once it is met. The M4 thresholds are set in "M4 scale" and can be adjusted to real needs.
 
 ## Open questions
 
-- [ ] Deployment: a local tool (CLI / desktop) or a hosted SaaS? A SaaS connects to other people's CSMSs over the internet, which brings multi-tenancy and abuse prevention.
+- [x] Deployment: a local tool. M8 ships an npm package and a Docker image; a hosted SaaS, which would connect to other people's CSMSs over the internet and bring multi-tenancy and abuse prevention, is not planned.
 - [x] When to start OCPP 2.0.1: right after M4, with the Core, Advanced Security, Local Authorization List Management, Smart Charging and Reservation profiles (#135).
-- [ ] Open source or commercial: decides how much load testing, UI and documentation to build, and which license to use.
+- [x] Open source or commercial: source-available under the Business Source License 1.1, keeping commercial use for the licensor; each version becomes Apache-2.0 four years after it is published (M8, T114).
 - [x] Ship OCA's OCPP 1.6 JSON Schema files: yes, unchanged and with attribution, as a second check next to core's own definitions (#18).
 - [ ] Whether the energy multiplier is on by default, and how reports mark it.
 - [ ] Which real charge point the first persona is modelled on. Sample logs for tests are synthetic, recorded from ocpp-mimic itself (M4); real logs must be masked and must not use client project data.

@@ -1,6 +1,9 @@
 # ocpp-mimic
 
-An OCPP charge point simulator: a headless engine runs many virtual charge points against the CSMS under test. See the design in [docs/design.md](docs/design.md) ([Chinese version](docs/design.zh-CN.md)).
+An OCPP charge point simulator: a headless engine runs many virtual charge points against the CSMS under test.
+
+- **[User guide](docs/guide.md)** ([中文版](docs/guide.zh-CN.md)): installing, the Web UI, personas, scenarios, the built-in CSMS, OCPP 2.1 features, load tests, logs and the API.
+- **[Design](docs/design.md)** ([中文版](docs/design.zh-CN.md)): how it works and why, milestone by milestone.
 
 > Status: M1 to M7 are done:
 >
@@ -9,6 +12,8 @@ An OCPP charge point simulator: a headless engine runs many virtual charge point
 > - OCPP 2.0.1 (M5), checked against CitrineOS.
 > - Charging sessions in the Web UI (M6).
 > - OCPP 2.1 (M7): tariffs and the station's own cost, ad hoc payment, ISO 15118-20 vehicle data and the 2.1 smart charging features, checked against the built-in CSMS and CitrineOS.
+>
+> Next is M8, a first release (version 0.1.0, an npm package and a Docker image); see "M8 Release" in the design.
 
 ## Requirements
 
@@ -89,7 +94,7 @@ Options: `--stations`, `--duration`, `--rate` (stations started a second), `--pe
 | `packages/engine` | Runtime: HTTP / WebSocket API, charge point scheduling, persistence                                                                                                                       |
 | `packages/cli`    | The `ocpp-mimic` command: starts the engine, runs scenarios, runs the test CSMS on its own                                                                                                |
 | `apps/web`        | Vue 3 Web UI; calls only the engine API and holds no simulation logic                                                                                                                     |
-| `docs`            | Design documents                                                                                                                                                                          |
+| `docs`            | User guide and design                                                                                                                                                                     |
 | `scenarios`       | Scenario files for `ocpp-mimic run` (examples, the regression suite, SteVe variants), personas, and the M4 load plans and import mappings                                                 |
 
 ## Third-party material

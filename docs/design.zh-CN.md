@@ -1,10 +1,10 @@
 # ocpp-mimic 设计方案
 
-更新于 2026-11-16 · 英文版：[design.md](design.md)（两版不一致时以英文版为准）
+更新于 2026-11-17 · 英文版：[design.md](design.md)（两版不一致时以英文版为准）
 
 ## 概述
 
-ocpp-mimic 是一个独立的 OCPP 充电桩模拟平台：引擎在服务端进程里同时运行多个虚拟充电桩，每个桩按 OCPP 规范实现，再用 persona 文件复现真实桩的时序和怪癖。先做 OCPP 1.6J（M1 至 M4），M5 在同一个引擎里加上 OCPP 2.0.1；数据模型一开始就是按 2.0.1 设计的。
+ocpp-mimic 是一个独立的 OCPP 充电桩模拟平台：引擎在服务端进程里同时运行多个虚拟充电桩，每个桩按 OCPP 规范实现，再用 persona 文件复现真实桩的时序和怪癖。先做 OCPP 1.6J（M1 至 M4），M5 和 M7 在同一个引擎里加上了 OCPP 2.0.1 和 2.1；数据模型一开始就是按 2.0.1 设计的。M8 把它做成别人可以安装的发布版本。用法见[使用手册](guide.zh-CN.md)。
 
 **定位**：引擎按“自动化回归 + 压测”的标准设计；Web UI、CLI 和 CI 脚本都只是引擎的遥控器。手动 QA 是 UI 层的一种用法，不是设计的出发点。
 
@@ -1413,6 +1413,85 @@ M7 的出口标准 G7 在 main（664cb3a）上达成：
   - [#264](https://github.com/JasonKong/ocpp-mimic/issues/264)：对 CitrineOS 失败的场景要约 15 分钟才结束。
   - [#265](https://github.com/JasonKong/ocpp-mimic/issues/265)：CitrineOS v2.1.0 在 2.1 上的缺口。
 
+## M8 发布
+
+M8 确定（#267）。M1 到 M7 做出了模拟器；M8 把它变成别人可以安装和评估的发布版本：版本号、变更日志、由发布工作流构建的一个 npm 包和一个 Docker 镜像、监听在环回地址以外时使用的访问令牌、许可证和第三方声明，以及示例经过检查的使用手册。M8 不增加 OCPP 行为。
+
+**面向谁**
+
+- 想把 ocpp-mimic 指向自家 CSMS、但不想克隆和构建 monorepo 的 CSMS 团队。
+- 用固定版本对被测 CSMS 跑场景的 CI 流水线。
+- 要判断公司能不能用它的人：许可证、声明和手册要能回答这个问题，不需要读代码。
+
+**出口标准 G8**
+
+由发布工作流从 tag 发布 v0.1.0。只用发布产物，在干净的 GitHub 托管 runner 上，npm 包（ubuntu-latest 和 macos-latest）和 Docker 镜像（linux/amd64 和 linux/arm64）各自跑通手册的快速开始（内置 CSMS、`serve`、通过 API 让一个桩充电）、`scenarios/examples` 和 100 个桩的冒烟压测计划。使用手册里每个可运行的示例都在 CI 里检查。仓库有许可证、第三方声明和变更日志。
+
+**版本**
+
+- 整个工具一个版本号，从 0.1.0 开始。`--version`、引擎和内置 CSMS 的 `/api/health`、OTLP 的 `service.version` 都从同一处读取。
+- 对用户编写或调用的东西遵循语义化版本：CLI 命令和选项；场景、persona、压测计划和日志格式；引擎 HTTP API 和内置 CSMS 的控制 API。内部 TypeScript API 不算在内。主版本为 0 期间，次版本可以改变这些内容，变更日志会说明如何迁移。
+- `CHANGELOG.md` 采用 Keep a Changelog 格式；0.1.0 汇总 M1 到 M7。用户可见的改动在同一个 PR 里、和手册更新一起，在 Unreleased 下加一行。
+
+**npm 包**
+
+- 一个包 `ocpp-mimic`（npm 上这个名字还没人用），提供 `ocpp-mimic` 命令。它把 core、engine 和 cli 打包成一个 ESM 入口，并带上构建好的 Web UI、内置 persona、OCA schema 和示例（persona、示例场景、压测计划、导入映射）。运行时依赖（ws、yaml、ajv）仍是 npm 依赖；没有原生模块，因为 SQLite 用的是 `node:sqlite`。workspace 里的包继续保持私有。
+- `engines.node` 为 `>=24`，命令启动时先检查 Node 版本并说出需要的版本，而不是因为缺少某个导出而报错。
+- 内置文件从包里解析，绝不从工作目录解析。`ocpp-mimic samples <目录>` 把示例复制到一个目录里，供阅读、修改，以及传给 `--personas`、`run` 和 `load`。
+- 存在 `NPM_TOKEN` secret 时，发布工作流带 npm provenance 发布这个包；npm 账号归仓库所有者。在那之前，每次发布都附上 tarball，可以用 `npm install -g <url>` 安装。
+
+**Docker 镜像**
+
+- `ghcr.io/jasonkong/ocpp-mimic:<版本>` 和 `:latest`，支持 linux/amd64 和 linux/arm64：从 `node:24-slim` 多阶段构建，安装的就是 npm tarball，所以镜像和包是同一份构建。非 root 用户，入口为 `ocpp-mimic`，默认命令 `serve --host 0.0.0.0`，`/data` 用于 `--store`。
+- CSMS 很少在容器的环回地址上，但镜像不会自行放宽白名单：用户自己传 `--allow-csms`。手册演示宿主机上的 CSMS（`host.docker.internal`），以及把引擎和内置 CSMS 作为两个服务的 `docs/examples/docker-compose.yml`。
+
+**引擎 API 的访问控制**
+
+- 引擎 API 和内置 CSMS 的控制 API 没有鉴权，在 127.0.0.1 上没问题，但容器一旦对外发布端口就不行了。`serve`、`load --port` 和 `csms` 加上 `--api-token <令牌>`（或 `OCPP_MIMIC_API_TOKEN`）后，`/api/*`、`/metrics` 和事件 WebSocket 都要求 `Authorization: Bearer <令牌>`；Web UI 只询问一次令牌，并在本次浏览器会话里保留。比较采用常量时间，令牌不会出现在日志、错误信息或快照里。
+- 在环回以外的地址上监听却没有设令牌时，启动时打印警告。不设令牌时，环回地址上的行为不变。
+
+**发布工作流**
+
+- `.github/workflows/release.yml` 在 `v*` tag 上运行：检查 tag 与版本号一致、变更日志里有对应章节；运行 CI 的各个 job；构建 tarball 和镜像；用变更日志的这一节创建 GitHub Release 并附上 tarball；把镜像推到 GHCR 并附带 provenance 证明；有令牌时发布到 npm。
+- 改动打包相关文件的 PR 上运行 `release-check` job：构建 tarball 和镜像，并用它们跑冒烟测试，让打包问题在打 tag 之前就暴露出来。
+
+**使用手册**
+
+- `docs/guide.md` 和 `docs/guide.zh-CN.md` 随每个用户可见的改动一起更新（`CLAUDE.md` 里的工作流规则）。
+- 一个测试读取英文手册：其中属于 persona、场景、压测计划、使用模型或资费的 YAML 和 JSON 代码块用 core 的校验器检查，提到的每个 `--option` 都必须是对应命令真实存在的选项。
+- 安装一节改为先讲 npm 包和镜像；从源码构建移到面向贡献者的一节。桩列表、桩视图和 Sessions 视图的截图取自一个只有合成桩的演示环境。
+
+**许可证和声明**
+
+- 许可证采用 Business Source License 1.1（2026-11-17 决定，见“待决问题”）。参数：Additional Use Grant 允许个人、教育及其他非商业用途的生产使用；Change Date 为每个版本发布后四年；Change License 为 Apache License 2.0。BUSL 本身就允许任何非生产使用，所以评估 ocpp-mimic 是免费的；商业性的生产使用需要向许可方购买商业授权。T114 负责落实：`LICENSE`、发布包的 `license` 字段（`BUSL-1.1`），以及 README 里的说明。
+- `THIRD_PARTY_NOTICES.md` 列出包和镜像里附带的东西：运行时依赖及其许可证（目前是 MIT、ISC、BSD），以及 OCA 的 OCPP JSON schema（CC BY-ND 4.0，原样保留，和现在一样）。附带的依赖许可证不在白名单里时，构建失败。
+- `CONTRIBUTING.md`（构建、测试、工作流、在所选许可证下贡献的条款）和 `SECURITY.md`（如何私下报告漏洞）。
+
+**同样放进 M8 的**
+
+- #264：对 CitrineOS 失败的场景要等约 15 分钟才结束。给失败后运行器等待的东西设上限，让失败的运行几秒内结束。
+
+**不在 M8 范围内**
+
+- 托管服务、账号和多租户；Docker 和 WSL 之外的 Windows 打包；新的 OCPP 功能。M7 的后续问题（#261–#263、#265）和更早的未关闭 issue 继续不挂里程碑。
+
+**任务**
+
+| 任务 | Issue | 波次 | 依赖 |
+| --- | --- | --- | --- |
+| T113 设计（本节） | #267 | 1 | |
+| T114 许可证、声明、CONTRIBUTING、SECURITY | #268 | 2 | T113 |
+| T115 版本 0.1.0、变更日志、版本策略 | #269 | 2 | T113 |
+| T116 npm 包 | #270 | 3 | T115 |
+| T117 Docker 镜像和 compose 示例 | #271 | 3 | T116 |
+| T118 引擎和 CSMS 的 API 令牌 | #272 | 3 | T113 |
+| T119 发布工作流和发布检查 | #273 | 4 | T116、T117 |
+| T120 手册：检查示例、从发布版本安装、截图 | #274 | 4 | T116、T117、T118 |
+| T121 对 CitrineOS 失败的场景尽快结束 | #264 | 2 | |
+| T122 验收 | #275 | 5 | 全部 |
+
+关键路径是 T113 → T115 → T116 → T117 → T119 → T122。没有 T114 就不能打发布 tag。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。
@@ -1714,15 +1793,17 @@ flowchart TB
   G6{{"出口：1.6 和 2.0.1 的会话对内置 CSMS、SteVe 和 CitrineOS 显示正确的来源和时间线；推算值和价格经得起核对"}}
   M7["<b>M7 · OCPP 2.1</b><br/>在 2.0.1 适配层上做 2.1：SEND、CALLRESULTERROR、Device Model 2.1<br/>资费和本地计费、支付、事务限额和恢复、动态和优先充电、ISO 15118-20 充电需求"]
   G7{{"出口：覆盖的功能块的每个 2.1 场景在 CI 里对内置 CSMS 和 CitrineOS 通过"}}
-  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7
+  M8["<b>M8 · 发布</b><br/>版本 0.1.0 和变更日志；发布工作流构建的 npm 包和 Docker 镜像<br/>API 令牌；许可证和第三方声明；示例经过检查的使用手册"]
+  G8{{"出口：从 tag 发布 v0.1.0；包和镜像在干净的 runner 上跑通快速开始、示例场景和冒烟压测"}}
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7 --> M8 --> G8
 ```
 
 每个阶段以一条出口标准收尾，达标后再进入下一阶段。M4 的具体阈值见「M4 规模」，可以按实际需求调整。
 
 ## 待决问题
 
-- [ ] 部署形态：本地工具（CLI / 桌面），还是托管 SaaS？SaaS 要从公网连别人的 CSMS，涉及多租户和防滥用。
+- [x] 部署形态：本地工具。M8 提供 npm 包和 Docker 镜像；托管 SaaS 要从公网连别人的 CSMS，涉及多租户和防滥用，不在计划内。
 - [x] OCPP 2.0.1 何时开始：M4 之后立即开始，覆盖 Core、Advanced Security、Local Authorization List Management、Smart Charging 和 Reservation 这几个 profile（#135）。
-- [ ] 开源还是商用：决定压测、UI、文档要做多重，以及用什么许可证。
+- [x] 开源还是商用：以 Business Source License 1.1 公开源码，商业使用的权利保留给许可方；每个版本发布四年后转为 Apache-2.0（M8，T114）。
 - [ ] 能量倍率是否默认开启，在报告里如何标注。
 - [ ] 首个 persona 参照哪一款真实桩。测试用的样本日志是 ocpp-mimic 自己录下的合成日志（M4）；真实日志必须脱敏，且不使用客户项目的数据。
