@@ -32,4 +32,8 @@ const info = computed(() => versionInfo(props.version));
   color: var(--v201);
   background: var(--v201-bg);
 }
+.v21 {
+  color: var(--v21);
+  background: var(--v21-bg);
+}
 </style>

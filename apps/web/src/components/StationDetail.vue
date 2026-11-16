@@ -2,6 +2,7 @@
 import { computed, reactive, ref } from 'vue';
 import {
   ID_TOKEN_TYPES,
+  ID_TOKEN_TYPES_21,
   type Behaviour,
   type ConnectorSnapshot,
   type FaultInfo,
@@ -26,6 +27,10 @@ const tokenTypes = reactive<Record<number, string>>({});
 const info = computed(() => versionInfo(props.station.ocpp));
 /** Tokens of this version have a type (2.0.1). */
 const typedTokens = computed(() => info.value.tokenType);
+/** 2.1 takes any IdToken type; the list offers its predefined ones. */
+const tokenTypeOptions = computed(() =>
+  info.value.version === '2.1' ? ID_TOKEN_TYPES_21 : ID_TOKEN_TYPES,
+);
 
 /** 2.0.1: EVSE n holds connector 1; 1.6: connector n. */
 function title(connector: ConnectorSnapshot): string {
@@ -326,7 +331,7 @@ function inject() {
             aria-label="IdToken type"
             @change="tokenTypes[connector.connectorId] = ($event.target as HTMLSelectElement).value"
           >
-            <option v-for="type in ID_TOKEN_TYPES" :key="type" :value="type">{{ type }}</option>
+            <option v-for="type in tokenTypeOptions" :key="type" :value="type">{{ type }}</option>
           </select>
           <button @click="presentCard(connector)">
             {{ connector.transactionId !== undefined ? 'Present card (stop)' : 'Present card' }}

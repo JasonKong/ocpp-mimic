@@ -30,10 +30,10 @@ import type {
   CertificateHashDataType,
   FirmwareStatusEnumType,
   InstallCertificateUseEnumType,
-  Ocpp201RequestOf,
-  Ocpp201ResponseOf,
+  Ocpp21RequestOf,
+  Ocpp21ResponseOf,
   UploadLogStatusEnumType,
-} from './messages.js';
+} from '../ocpp21/messages.js';
 import { NETWORK_SLOTS } from './standard-variables.js';
 
 /** The 2.0.1 security events (Part 2 appendix 1) and whether each is critical. */
@@ -117,10 +117,10 @@ export interface Security201Options {
   /** Sends when registered; undefined otherwise. */
   send<A extends Sent>(
     action: A,
-    payload: Ocpp201RequestOf<A>,
-  ): Promise<RpcOutcome<Ocpp201ResponseOf<A>>> | undefined;
+    payload: Ocpp21RequestOf<A>,
+  ): Promise<RpcOutcome<Ocpp21ResponseOf<A>>> | undefined;
   /** Queues a SecurityEventNotification with guaranteed delivery. */
-  enqueue(payload: Ocpp201RequestOf<'SecurityEventNotification'>): void;
+  enqueue(payload: Ocpp21RequestOf<'SecurityEventNotification'>): void;
   tools?: CertificateTools | undefined;
   transfer?: FileTransfer | undefined;
   firmware?: Partial<FirmwareSettings> | undefined;
@@ -160,22 +160,16 @@ export interface ConnectionSecurity201 {
 
 interface Handlers {
   InstallCertificate(
-    r: Ocpp201RequestOf<'InstallCertificate'>,
-  ): Ocpp201ResponseOf<'InstallCertificate'>;
+    r: Ocpp21RequestOf<'InstallCertificate'>,
+  ): Ocpp21ResponseOf<'InstallCertificate'>;
   GetInstalledCertificateIds(
-    r: Ocpp201RequestOf<'GetInstalledCertificateIds'>,
-  ): Ocpp201ResponseOf<'GetInstalledCertificateIds'>;
-  DeleteCertificate(
-    r: Ocpp201RequestOf<'DeleteCertificate'>,
-  ): Ocpp201ResponseOf<'DeleteCertificate'>;
-  CertificateSigned(
-    r: Ocpp201RequestOf<'CertificateSigned'>,
-  ): Ocpp201ResponseOf<'CertificateSigned'>;
-  SetNetworkProfile(
-    r: Ocpp201RequestOf<'SetNetworkProfile'>,
-  ): Ocpp201ResponseOf<'SetNetworkProfile'>;
-  UpdateFirmware(r: Ocpp201RequestOf<'UpdateFirmware'>): Ocpp201ResponseOf<'UpdateFirmware'>;
-  GetLog(r: Ocpp201RequestOf<'GetLog'>): Ocpp201ResponseOf<'GetLog'>;
+    r: Ocpp21RequestOf<'GetInstalledCertificateIds'>,
+  ): Ocpp21ResponseOf<'GetInstalledCertificateIds'>;
+  DeleteCertificate(r: Ocpp21RequestOf<'DeleteCertificate'>): Ocpp21ResponseOf<'DeleteCertificate'>;
+  CertificateSigned(r: Ocpp21RequestOf<'CertificateSigned'>): Ocpp21ResponseOf<'CertificateSigned'>;
+  SetNetworkProfile(r: Ocpp21RequestOf<'SetNetworkProfile'>): Ocpp21ResponseOf<'SetNetworkProfile'>;
+  UpdateFirmware(r: Ocpp21RequestOf<'UpdateFirmware'>): Ocpp21ResponseOf<'UpdateFirmware'>;
+  GetLog(r: Ocpp21RequestOf<'GetLog'>): Ocpp21ResponseOf<'GetLog'>;
 }
 
 export type SecurityTrigger =
@@ -384,7 +378,7 @@ export function createSecurity201(options: Security201Options): Security201 {
     return false;
   }
 
-  async function runFirmwareUpdate(request: Ocpp201RequestOf<'UpdateFirmware'>): Promise<void> {
+  async function runFirmwareUpdate(request: Ocpp21RequestOf<'UpdateFirmware'>): Promise<void> {
     const current = { requestId: request.requestId, cancelled: false };
     update = current;
     const { firmware, requestId } = request;
@@ -461,10 +455,7 @@ export function createSecurity201(options: Security201Options): Security201 {
     changed();
   }
 
-  async function runLogUpload(
-    request: Ocpp201RequestOf<'GetLog'>,
-    fileName: string,
-  ): Promise<void> {
+  async function runLogUpload(request: Ocpp21RequestOf<'GetLog'>, fileName: string): Promise<void> {
     const upload = { requestId: request.requestId, cancelled: false };
     logUpload = upload;
     const content =

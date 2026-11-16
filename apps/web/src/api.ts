@@ -3,9 +3,12 @@
  * action is one of these calls, and state comes back from the engine.
  */
 
-export type OcppVersion = '1.6' | '2.0.1';
+export type OcppVersion = '1.6' | '2.0.1' | '2.1';
 
-/** The IdToken types a 2.0.1 station takes (IdTokenEnumType). */
+/**
+ * The IdToken types a 2.0.1 station takes (IdTokenEnumType). A 2.1 station
+ * takes any type; ID_TOKEN_TYPES_21 are its predefined ones.
+ */
 export const ID_TOKEN_TYPES = [
   'ISO14443',
   'ISO15693',
@@ -16,6 +19,9 @@ export const ID_TOKEN_TYPES = [
   'MacAddress',
   'NoAuthorization',
 ] as const;
+
+/** 2.1's predefined IdToken types (IdTokenEnumStringType): 2.0.1's plus DirectPayment, EVCCID and VIN. */
+export const ID_TOKEN_TYPES_21 = [...ID_TOKEN_TYPES, 'DirectPayment', 'EVCCID', 'VIN'] as const;
 
 export interface ConnectorSnapshot {
   connectorId: number;

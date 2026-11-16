@@ -36,6 +36,15 @@ describe('version capability table', () => {
       true,
     ]);
     expect([versionInfo('1.6').totalCost, versionInfo('2.0.1').totalCost]).toEqual([false, true]);
+    // 2.1 is 2.0.1's terms, a station that prices sessions itself, and the ISO 15118-20 data.
+    expect(versionInfo('2.1')).toMatchObject({
+      label: 'OCPP 2.1',
+      tone: 'v21',
+      terms: versionInfo('2.0.1').terms,
+      tariffs: true,
+    });
+    expect(unavailable('2.1', 'timeToTarget')).toBeUndefined();
+    expect(unavailable('2.0.1', 'timeToTarget')).toBeDefined();
   });
 
   it('counts 1.6 statuses and 2.0.1 charging states as charging', () => {

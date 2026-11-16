@@ -19,7 +19,11 @@ import { UsageSchema, usageProblems } from './usage.js';
 import { evProfileProblems, type EvProfile } from './ev.js';
 import type { FirmwareSettings } from './firmware.js';
 import { ChargePointErrorCodeSchema, OCPP16_MESSAGES } from './ocpp16-messages.js';
-import { CERTIFICATION_PROFILES, type ChargePoint201Options } from './ocpp201/charge-point.js';
+import {
+  CERTIFICATION_PROFILES,
+  FEATURES_21,
+  type ChargePoint201Options,
+} from './ocpp201/charge-point.js';
 import { applyOverrides, type DeviceModelOverrides } from './ocpp201/device-model.js';
 import { ChargingStationSchema, DataEnumSchema, MutabilityEnumSchema } from './ocpp201/messages.js';
 import { standardVariables } from './ocpp201/standard-variables.js';
@@ -177,17 +181,22 @@ export const DeviceModelOverridesSchema = record(
   ),
 );
 
-/** An OCPP 2.0.1 persona: `ocpp: "2.0.1"`, BootNotification's chargingStation block as `boot`. */
+/**
+ * An OCPP 2.0.1 or 2.1 persona: `ocpp: "2.0.1"` or `"2.1"`, BootNotification's
+ * chargingStation block as `boot`. 2.1 adds feature groups and a choice of how
+ * connector availability is reported.
+ */
 export const Persona201Schema = object(
   {
     persona: string({ maxLength: 64 }),
-    ocpp: oneOf(['2.0.1']),
+    ocpp: oneOf(['2.0.1', '2.1']),
     boot: ChargingStationSchema,
     connectors: integer({ minimum: 1 }),
   },
   {
     ...commonFields,
-    features: array(oneOf(CERTIFICATION_PROFILES)),
+    features: array(oneOf([...CERTIFICATION_PROFILES, ...FEATURES_21])),
+    connectorStatus: oneOf(['NotifyEvent', 'StatusNotification']),
     deviceModel: DeviceModelOverridesSchema,
     timing: object(
       {},
@@ -226,7 +235,7 @@ export type PersonaChargePointOptions = Pick<
 /** The parts of a 2.0.1 station's options a persona decides. */
 export type Persona201Options = Pick<
   ChargePoint201Options,
-  'boot' | 'connectors' | 'timing' | 'offeredPowerW' | 'evPowerW'
+  'boot' | 'connectors' | 'timing' | 'offeredPowerW' | 'evPowerW' | 'ocpp' | 'connectorStatus'
 > & {
   features: readonly string[];
   deviceModel?: DeviceModelOverrides;
@@ -249,14 +258,14 @@ export type ResolvedPersona =
       options: PersonaChargePointOptions;
     })
   | (ResolvedPersonaBase & {
-      ocpp: '2.0.1';
+      ocpp: '2.0.1' | '2.1';
       definition: Persona201Definition;
       options: Persona201Options;
     });
 
-/** The OCPP version a persona document declares; 1.6 when it says nothing. 2.1 personas come with T97. */
-export function personaVersion(data: { ocpp?: unknown }): Exclude<OcppVersion, '2.1'> {
-  return data.ocpp === '2.0.1' ? '2.0.1' : '1.6';
+/** The OCPP version a persona document declares; 1.6 when it says nothing. */
+export function personaVersion(data: { ocpp?: unknown }): OcppVersion {
+  return data.ocpp === '2.0.1' || data.ocpp === '2.1' ? data.ocpp : '1.6';
 }
 
 export interface PersonaSource {
@@ -360,6 +369,10 @@ export function persona201ToOptions(definition: Persona201Definition): Persona20
     connectors: definition.connectors,
     timing: timingFrom(definition),
     features: definition.features ?? ['Core'],
+    ocpp: definition.ocpp,
+    ...(definition.connectorStatus !== undefined && {
+      connectorStatus: definition.connectorStatus,
+    }),
     ...(definition.deviceModel !== undefined && { deviceModel: definition.deviceModel }),
     ...(definition.power?.offeredW !== undefined && { offeredPowerW: definition.power.offeredW }),
     ...(definition.power?.evW !== undefined && { evPowerW: definition.power.evW }),
@@ -420,7 +433,7 @@ export function resolvePersonas(sources: readonly PersonaSource[]): ResolvePerso
     if (data === undefined) continue;
     const ocpp = personaVersion(data);
     const validated =
-      ocpp === '2.0.1' ? validate(Persona201Schema, data) : validate(PersonaSchema, data);
+      ocpp === '1.6' ? validate(PersonaSchema, data) : validate(Persona201Schema, data);
     if (!validated.ok) {
       for (const issue of validated.issues)
         errors.push(`${source}: ${issue.path}: ${issue.message}`);
@@ -440,8 +453,19 @@ export function resolvePersonas(sources: readonly PersonaSource[]): ResolvePerso
       errors.push(...usageIssues.map((issue) => `${source}: ${issue.path}: ${issue.message}`));
       continue;
     }
-    if (ocpp === '2.0.1') {
+    if (ocpp !== '1.6') {
       const definition201 = definition as Persona201Definition;
+      // 2.1's feature groups and availability choice mean nothing to a 2.0.1 station.
+      const only21 = [
+        ...(definition201.features ?? []).filter((f) =>
+          (FEATURES_21 as readonly string[]).includes(f),
+        ),
+        ...(definition201.connectorStatus !== undefined ? ['connectorStatus'] : []),
+      ];
+      if (ocpp === '2.0.1' && only21.length > 0) {
+        errors.push(`${source}: ${only21.join(', ')} need ocpp "2.1"`);
+        continue;
+      }
       // Overrides are checked against the standard variables now, not when a station starts.
       const overrides = applyOverrides(
         standardVariables({

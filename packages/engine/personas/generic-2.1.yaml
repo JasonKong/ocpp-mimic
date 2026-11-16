@@ -1,0 +1,12 @@
+# A plain OCPP 2.1 AC charging station with spec-default behaviour. 2.1 builds
+# on 2.0.1, and so does this persona: generic-2.0.1 with the 2.1 version.
+# Connector availability goes out as NotifyEvent, the method 2.1 prefers; set
+# `connectorStatus: StatusNotification` for a CSMS that still expects it.
+persona: generic-2.1
+extends: generic-2.0.1
+ocpp: '2.1'
+description: Generic OCPP 2.1 AC charging station
+boot:
+  vendorName: ocpp-mimic
+  model: Generic-AC-2.1
+  firmwareVersion: 0.0.0

@@ -46,8 +46,14 @@ describe('persona registry', () => {
     expect(registry.list().map((p) => p.id)).toEqual([
       'generic-1.6',
       'generic-2.0.1',
+      'generic-2.1',
       'vendorX-fw2.5',
     ]);
+    // generic-2.1 is generic-2.0.1 with the 2.1 version.
+    expect(registry.get('generic-2.1')).toMatchObject({
+      ocpp: '2.1',
+      options: { ocpp: '2.1', boot: { model: 'Generic-AC-2.1' }, connectors: 1 },
+    });
     expect(registry.get('vendorX-fw2.5')?.options).toMatchObject({
       boot: {
         chargePointVendor: 'VendorX',

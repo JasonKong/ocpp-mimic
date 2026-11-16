@@ -1,0 +1,10 @@
+# The 2.1 counterpart of load-ac-2.0.1, for load tests and the benchmark
+# (docs/design.md, "M7 OCPP 2.1"). Load it with --personas scenarios/personas.
+persona: load-ac-2.1
+extends: load-ac-2.0.1
+ocpp: '2.1'
+description: Two-EVSE 22 kW AC OCPP 2.1 charging station for load tests
+boot:
+  vendorName: ocpp-mimic
+  model: Load-AC-22-2.1
+  firmwareVersion: 0.0.0

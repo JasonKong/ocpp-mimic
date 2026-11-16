@@ -214,9 +214,10 @@ function mergeDeviceModel(
   return merged;
 }
 
-/** Whether a saved state belongs to a 2.0.1 station. */
+/** Whether a saved state belongs to a 2.x (2.0.1 or 2.1) station. */
 function isState201(state: PersistedStation): state is PersistedChargePoint201 {
-  return (state as { ocpp?: string }).ocpp === '2.0.1';
+  const { ocpp } = state as { ocpp?: string };
+  return ocpp === '2.0.1' || ocpp === '2.1';
 }
 
 export function createFleet(options: FleetOptions): Fleet {
@@ -299,13 +300,13 @@ export function createFleet(options: FleetOptions): Fleet {
     const persona = options.personas.get(definition.persona);
     if (persona === undefined) throw new Error(`unknown persona ${definition.persona}`);
     const { options: personaOptions } = persona;
-    if (persona.ocpp === '2.0.1' && definition.config !== undefined) {
+    if (persona.ocpp !== '1.6' && definition.config !== undefined) {
       throw new Error(
-        `station ${definition.id}: config holds 1.6 configuration keys; a 2.0.1 station takes deviceModel`,
+        `station ${definition.id}: config holds 1.6 configuration keys; a ${persona.ocpp} station takes deviceModel`,
       );
     }
     if (persona.ocpp === '1.6' && definition.deviceModel !== undefined) {
-      throw new Error(`station ${definition.id}: deviceModel is for 2.0.1 stations; use config`);
+      throw new Error(`station ${definition.id}: deviceModel is for 2.x stations; use config`);
     }
     // The station's Device Model values go on top of the persona's, variable by variable;
     // `password` and `security.profile` are SecurityCtrlr variables of a 2.0.1 station.
@@ -316,7 +317,7 @@ export function createFleet(options: FleetOptions): Fleet {
       }),
     };
     const deviceModel =
-      persona.ocpp === '2.0.1'
+      persona.ocpp !== '1.6'
         ? mergeDeviceModel(
             mergeDeviceModel(
               persona.options.deviceModel,
@@ -455,14 +456,16 @@ export function createFleet(options: FleetOptions): Fleet {
         emit({ stationId: definition.id, type: 'charge-point', event });
       },
     };
-    // A saved state of the other version (the persona changed) is not restored.
+    // A saved state of another version (the persona changed) is not restored.
     const cp =
-      persona.ocpp === '2.0.1'
+      persona.ocpp !== '1.6'
         ? createChargePoint201({
             ...persona.options,
             ...common,
             ...(deviceModel !== undefined && { deviceModel }),
-            ...(restore !== undefined && isState201(restore) && { restore }),
+            ...(restore !== undefined &&
+              isState201(restore) &&
+              restore.ocpp === persona.ocpp && { restore }),
           })
         : createChargePoint({
             ...persona.options,

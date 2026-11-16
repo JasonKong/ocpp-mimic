@@ -1,0 +1,14 @@
+# generic-2.1 with two EVSEs and short reset downtimes, for the 2.1
+# regression suite. Load it with --personas scenarios/personas.
+persona: regression-2.1
+extends: generic-2.1
+description: generic-2.1 with two EVSEs and short reset downtimes for the regression suite
+connectors: 2
+timing:
+  resetDowntime:
+    soft: 1s
+    hard: 2s
+firmware:
+  downloadTime: 1s
+  installTime: 1s
+  uploadTime: 1s

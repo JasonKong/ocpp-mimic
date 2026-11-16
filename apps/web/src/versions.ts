@@ -116,6 +116,31 @@ export const VERSIONS: Record<OcppVersion, VersionInfo> = {
     },
     charging: { statuses: [], chargingStates: ['Charging', 'SuspendedEV', 'SuspendedEVSE'] },
   },
+  '2.1': {
+    version: '2.1',
+    label: 'OCPP 2.1',
+    tone: 'v21',
+    terms: { evse: 'EVSE', token: 'idToken', transactionId: 'string' },
+    tokenType: true,
+    remoteStartId: true,
+    totalCost: true,
+    tariffs: true,
+    vehicle: {
+      energy: yes('TransactionEvent / MeterValues'),
+      soc: some('as 2.0.1, plus Display.PresentSOC from ISO 15118-20 EVs'),
+      capacity: some('ISO 15118: evEnergyCapacity; ISO 15118-20: Display.BatteryEnergyCapacity'),
+      energyNeeded: some('ISO 15118: energyAmount; ISO 15118-20: EnergyRequest.*'),
+      targetSoc: some('ISO 15118: fullSoC, bulkSoC; ISO 15118-20: Display.TargetSOC, targetSoC'),
+      timeToTarget: some('ISO 15118-20: Display.RemainingTimeToTargetSOC'),
+      departure: some('ISO 15118: departureTime'),
+      evLimits: some('ISO 15118: the EV limits; ISO 15118-20: v2xChargingParameters'),
+      drawing: yes('chargingState SuspendedEV; Display.ChargingComplete'),
+      phases: yes('TransactionEvent numberOfPhasesUsed'),
+      preconditioning: some('TransactionEvent preconditioningStatus'),
+      identity: some('idToken type MacAddress, eMAID, VIN or EVCCID'),
+    },
+    charging: { statuses: [], chargingStates: ['Charging', 'SuspendedEV', 'SuspendedEVSE'] },
+  },
 };
 
 export const versionInfo = (version: OcppVersion): VersionInfo => VERSIONS[version];

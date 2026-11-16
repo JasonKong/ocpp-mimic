@@ -1,0 +1,70 @@
+# OCPP 2.1 stations on the 2.x adapter (T97) against the built-in CSMS: the
+# boot, connector availability reported with NotifyEvent (the method 2.1
+# prefers: G01, B01.FR.05, E02.FR.05) or StatusNotification, open idToken
+# types, and Reset ImmediateAndResume, refused while there is no
+# TxCtrlr.ResumptionTimeout (B13.FR.01). Every frame is checked against OCA's
+# 2.1 schemas. 2.1 has no Part 6 test cases yet, so names cite Part 2 use cases.
+name: B01 A 2.1 station boots and reports every connector's AvailabilityState with NotifyEvent
+station: { id: REG21-BOOT, persona: regression-2.1 }
+steps:
+  - expect:
+      sent: BootNotification
+      from: start
+      payload: { reason: PowerUp, chargingStation: { model: Generic-AC-2.1 } }
+      answer: { status: Accepted }
+  - expect:
+      sent: NotifyEvent
+      payload:
+        eventData:
+          $contains:
+            trigger: Delta
+            actualValue: Available
+            component: { name: Connector, evse: { id: 2, connectorId: 1 } }
+            variable: { name: AvailabilityState }
+  - expectStation: { ocpp: '2.1', registration: Accepted }
+  - plugIn: { evse: 1 }
+  - expect:
+      sent: NotifyEvent
+      payload:
+        eventData:
+          $contains: { actualValue: Occupied, component: { evse: { id: 1 } } }
+  - expectNo: { sent: StatusNotification, within: 1s }
+---
+name: G01 A 2.1 station set to the deprecated StatusNotification reports with it
+station: { id: REG21-STATUSNOTIFICATION, persona: statusnotification-2.1 }
+steps:
+  - expect:
+      sent: StatusNotification
+      from: start
+      payload: { evseId: 2, connectorStatus: Available }
+  - plugIn: { evse: 2 }
+  - expect: { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Occupied } }
+  - expectNo: { sent: NotifyEvent, within: 1s }
+---
+name: C01 A 2.1 station takes a vehicle's VIN as an idToken and starts a transaction
+station: { id: REG21-VIN, persona: regression-2.1 }
+steps:
+  - presentCard: { idToken: WVW00000000000001, type: VIN, result: authorized }
+  - expect: { sent: Authorize, payload: { idToken: { idToken: WVW00000000000001, type: VIN } } }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, idToken: { type: VIN } }
+---
+name: F02 A remote start with a 2.1 idToken type, and B13 ImmediateAndResume refused for now
+station: { id: REG21-REMOTE, persona: regression-2.1 }
+steps:
+  - csmsCall:
+      action: RequestStartTransaction
+      payload: { idToken: { idToken: EVCC-1, type: EVCCID }, remoteStartId: 21, evseId: 1 }
+      answer: { status: Accepted }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started } }
+  - csmsCall:
+      action: Reset
+      payload: { type: ImmediateAndResume }
+      answer: { status: Rejected }
+  - csmsCall:
+      action: SetDefaultTariff
+      payload: { evseId: 0, tariff: { tariffId: T-1, currency: NZD } }
+      error: NotSupported

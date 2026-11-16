@@ -31,8 +31,8 @@ import type {
   ChargingProfileType,
   ChargingSchedulePeriodType,
   CompositeScheduleType,
-  Ocpp201RequestOf,
-} from './messages.js';
+  Ocpp21RequestOf,
+} from '../ocpp21/messages.js';
 
 type Bare<T> = Omit<T, 'customData'>;
 export type ChargingProfile201 = Bare<ChargingProfileType>;
@@ -94,6 +94,11 @@ export function profileProblem(
       return `transaction ${profile.transactionId} is not running on EVSE ${evseId}`;
     }
   }
+  // 2.1's new purposes and the Dynamic kind come with T101 (K01.FR.120, .121).
+  if (purpose === 'PriorityCharging' || purpose === 'LocalGeneration') {
+    return `chargingProfilePurpose ${purpose} is not supported`;
+  }
+  if (profile.chargingProfileKind === 'Dynamic') return 'Dynamic profiles are not supported';
   if (profile.stackLevel < 0 || profile.stackLevel > context.maxStackLevel) {
     return `stackLevel ${profile.stackLevel} is above ProfileStackLevel ${context.maxStackLevel}`;
   }
@@ -108,6 +113,11 @@ export function profileProblem(
   const periods = schedule.chargingSchedulePeriod;
   if (periods.length > context.maxPeriods) {
     return `${periods.length} periods, more than PeriodsPerSchedule ${context.maxPeriods}`;
+  }
+  // 2.1 makes limit optional, but a ChargingOnly period needs one (Q, 2.2).
+  if (periods.some((p) => p.limit === undefined)) return 'every period needs a limit';
+  if (periods.some((p) => p.operationMode !== undefined && p.operationMode !== 'ChargingOnly')) {
+    return 'only the ChargingOnly operation mode is supported';
   }
   if (
     periods[0]?.startPeriod !== 0 ||
@@ -170,7 +180,7 @@ export function installProfile201(
 /** ClearChargingProfile (K10): by id, or every profile matching all the criteria given. */
 export function clearProfiles201(
   profiles: readonly InstalledProfile201[],
-  request: Ocpp201RequestOf<'ClearChargingProfile'>,
+  request: Ocpp21RequestOf<'ClearChargingProfile'>,
 ): { profiles: InstalledProfile201[]; status: 'Accepted' | 'Unknown' } {
   const criteria = request.chargingProfileCriteria;
   const result = clearProfiles(profiles.map(toInternal), {
@@ -191,7 +201,7 @@ export function clearProfiles201(
 /** The profiles GetChargingProfiles asks for (K09.FR.04 to .06). */
 export function selectProfiles201(
   profiles: readonly InstalledProfile201[],
-  request: Ocpp201RequestOf<'GetChargingProfiles'>,
+  request: Ocpp21RequestOf<'GetChargingProfiles'>,
 ): InstalledProfile201[] {
   const criterion = request.chargingProfile;
   const ids = criterion.chargingProfileId;
@@ -237,7 +247,8 @@ export function toInternal(installed: InstalledProfile201): InstalledProfile {
   if (schedule === undefined) throw new Error(`charging profile ${profile.id} has no schedule`);
   const periods = schedule.chargingSchedulePeriod.map((p): ChargingSchedulePeriod16 => ({
     startPeriod: p.startPeriod,
-    limit: p.limit,
+    // profileProblem() refuses periods without a limit.
+    limit: p.limit ?? 0,
     ...(p.numberPhases !== undefined && { numberPhases: p.numberPhases }),
   }));
   return {
@@ -247,7 +258,8 @@ export function toInternal(installed: InstalledProfile201): InstalledProfile {
       chargingProfileId: profile.id,
       stackLevel: profile.stackLevel,
       chargingProfilePurpose: purposeOf(profile.chargingProfilePurpose),
-      chargingProfileKind: profile.chargingProfileKind,
+      // profileProblem() refuses the Dynamic kind.
+      chargingProfileKind: profile.chargingProfileKind as 'Absolute' | 'Recurring' | 'Relative',
       ...(profile.recurrencyKind !== undefined && { recurrencyKind: profile.recurrencyKind }),
       ...(profile.validFrom !== undefined && { validFrom: profile.validFrom }),
       ...(profile.validTo !== undefined && { validTo: profile.validTo }),
@@ -309,7 +321,8 @@ export function compositeSchedule201(
   });
   const periods = schedule.chargingSchedulePeriod.map((p): Bare<ChargingSchedulePeriodType> => ({
     startPeriod: p.startPeriod,
-    limit: p.limit,
+    // profileProblem() refuses periods without a limit.
+    limit: p.limit ?? 0,
     ...(p.numberPhases !== undefined && { numberPhases: p.numberPhases }),
   }));
   return {

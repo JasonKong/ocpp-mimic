@@ -199,7 +199,7 @@ describe('2.0.1 composite schedules match 1.6 for equivalent profiles', () => {
         p.chargingProfilePurpose === 'ChargingStationMaxProfile'
           ? 'ChargePointMaxProfile'
           : (p.chargingProfilePurpose as 'TxDefaultProfile'),
-      chargingProfileKind: p.chargingProfileKind,
+      chargingProfileKind: p.chargingProfileKind as 'Absolute' | 'Recurring' | 'Relative',
       ...(p.recurrencyKind !== undefined && { recurrencyKind: p.recurrencyKind }),
       ...(p.validFrom !== undefined && { validFrom: p.validFrom }),
       ...(p.validTo !== undefined && { validTo: p.validTo }),
