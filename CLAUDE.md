@@ -38,7 +38,7 @@ CI runs lint, format check, typecheck, test and build, and in a second job the r
 
 - Talk to the user in **Chinese**.
 - Everything written to the repo or GitHub is **English**: code, comments, commit messages, PR titles and descriptions, issues, docs.
-- `docs/design.zh-CN.md` is a Chinese translation kept for reference. Change `docs/design.md` first.
+- `docs/design.zh-CN.md` and `docs/guide.zh-CN.md` are Chinese translations. Change the English file first.
 
 ## Workflow
 
@@ -47,7 +47,8 @@ CI runs lint, format check, typecheck, test and build, and in a second job the r
 3. The PR description has a summary and a verification section and ends with `Closes #<issue>`.
 4. Squash-merge once CI is green.
 5. A change to the design updates `docs/design.md` in the same PR.
-6. Commits use the repo-local git identity (a GitHub noreply address). Do not change it and never commit with a work email.
+6. A change users can see (CLI, engine API, Web UI, scenario format, personas, the built-in CSMS, load tests, logs) updates the user guide in the same PR, once it is tested: `docs/guide.md` first, then `docs/guide.zh-CN.md`.
+7. Commits use the repo-local git identity (a GitHub noreply address). Do not change it and never commit with a work email.
 
 ## OCPP notes
 
