@@ -1,0 +1,35 @@
+# ocpp-mimic with its Web UI and the built-in test CSMS, for trying it out:
+#
+#   export OCPP_MIMIC_API_TOKEN="$(openssl rand -hex 24)"
+#   docker compose -f docs/examples/docker-compose.yml up -d
+#
+# Then open http://127.0.0.1:7300 (OCPP_MIMIC_PORT changes the port), enter the token, and add stations with the
+# CSMS URL ws://127.0.0.1:9100/ocpp. The CSMS shares the engine's network, so
+# the engine reaches it on 127.0.0.1: stations need no --allow-csms, and remote
+# starts from the Web UI go through it. Only the Web UI's port is published,
+# and only on this machine. Stations are kept in the ocpp-mimic-data volume.
+#
+# To test your own CSMS instead, run the engine alone and allow its address,
+# for example command: [serve, --host, 0.0.0.0, --store, /data/ocpp-mimic.db,
+# --allow-csms, ws://host.docker.internal:8180/] (on Linux, also add
+# extra_hosts: ['host.docker.internal:host-gateway']).
+services:
+  engine:
+    image: ghcr.io/jasonkong/ocpp-mimic:${OCPP_MIMIC_VERSION:-latest}
+    command: [serve, --host, 0.0.0.0, --store, /data/ocpp-mimic.db]
+    environment:
+      OCPP_MIMIC_API_TOKEN: ${OCPP_MIMIC_API_TOKEN:?set OCPP_MIMIC_API_TOKEN first, see the top of this file}
+    ports:
+      - 127.0.0.1:${OCPP_MIMIC_PORT:-7300}:7300
+    volumes:
+      - ocpp-mimic-data:/data
+    restart: unless-stopped
+  csms:
+    image: ghcr.io/jasonkong/ocpp-mimic:${OCPP_MIMIC_VERSION:-latest}
+    # Loopback inside the shared network: nothing outside the engine reaches it.
+    command: [csms, --host, 127.0.0.1, --port, '9100', --status, '0']
+    network_mode: service:engine
+    depends_on: [engine]
+    restart: unless-stopped
+volumes:
+  ocpp-mimic-data:

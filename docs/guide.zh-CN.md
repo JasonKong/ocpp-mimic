@@ -61,6 +61,21 @@ ocpp-mimic samples ./samples
 
 `ocpp-mimic samples <目录>` 把示例 persona、示例场景、压测计划、导入映射和日志复制到 `<目录>`，已有的文件保留不动。本手册里提到 `scenarios/personas` 或 `scenarios/examples` 的地方，改用 `<目录>/personas` 和 `<目录>/examples`。Node.js 低于 24 时，命令会说明需要哪个版本。
 
+### 在 Docker 里运行
+
+每次发布还会提供镜像 `ghcr.io/jasonkong/ocpp-mimic`，支持 linux/amd64 和 linux/arm64。入口是 `ocpp-mimic`，默认命令是 `serve --host 0.0.0.0 --store /data/ocpp-mimic.db`。它会在容器的环回地址之外监听，所以要给它设 [API 令牌](#在本机以外监听api-令牌)：
+
+```bash
+export OCPP_MIMIC_API_TOKEN="$(openssl rand -hex 24)"
+docker run --rm -p 127.0.0.1:7300:7300 -e OCPP_MIMIC_API_TOKEN -v ocpp-mimic-data:/data ghcr.io/jasonkong/ocpp-mimic
+```
+
+其他命令用法相同，例如 `docker run --rm ghcr.io/jasonkong/ocpp-mimic --version`，或者运行当前目录里的场景：`docker run --rm -v "$PWD:/work" -w /work ghcr.io/jasonkong/ocpp-mimic run scenarios/ --junit report.xml`。
+
+[`docs/examples/docker-compose.yml`](examples/docker-compose.yml) 同时启动引擎和内置 CSMS。CSMS 共享引擎的网络，桩用 `ws://127.0.0.1:9100/ocpp` 就能连上它，Web UI 的远程启动也能用。只对外发布 Web UI 的端口，而且只在 127.0.0.1 上。
+
+在容器里，你本机上的 CSMS 不在环回地址上。放行它的地址，例如 `--allow-csms ws://host.docker.internal:8180/`；在 Linux 上还要给 `docker run` 加 `--add-host host.docker.internal:host-gateway`。在克隆的仓库里用 `docker build -t ocpp-mimic .` 构建镜像。
+
 ### 首次启动：一个桩连内置 CSMS
 
 需要两个进程：一个 CSMS 供桩连接，一个引擎运行桩并提供 Web UI。ocpp-mimic 自带一个小型 CSMS，正好用在这里。

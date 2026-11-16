@@ -59,6 +59,21 @@ ocpp-mimic samples ./samples
 
 `ocpp-mimic samples <dir>` copies the sample personas, example scenarios, load plans, import mappings and logs into `<dir>`; files already there are kept. Where this guide names `scenarios/personas` or `scenarios/examples`, use `<dir>/personas` and `<dir>/examples` instead. On a Node.js older than 24 the command says which version it needs.
 
+### Running in Docker
+
+Each release also publishes an image, `ghcr.io/jasonkong/ocpp-mimic`, for linux/amd64 and linux/arm64. Its entrypoint is `ocpp-mimic`, and its default command is `serve --host 0.0.0.0 --store /data/ocpp-mimic.db`. That listens beyond the container's loopback, so give it an [API token](#listening-beyond-this-machine-the-api-token):
+
+```bash
+export OCPP_MIMIC_API_TOKEN="$(openssl rand -hex 24)"
+docker run --rm -p 127.0.0.1:7300:7300 -e OCPP_MIMIC_API_TOKEN -v ocpp-mimic-data:/data ghcr.io/jasonkong/ocpp-mimic
+```
+
+Any other command works the same way, for example `docker run --rm ghcr.io/jasonkong/ocpp-mimic --version`, or scenarios from the current directory with `docker run --rm -v "$PWD:/work" -w /work ghcr.io/jasonkong/ocpp-mimic run scenarios/ --junit report.xml`.
+
+[`docs/examples/docker-compose.yml`](examples/docker-compose.yml) starts the engine and the built-in CSMS together. The CSMS shares the engine's network, so stations reach it at `ws://127.0.0.1:9100/ocpp` and remote starts from the Web UI work. Only the Web UI's port is published, and only on 127.0.0.1.
+
+Inside a container, a CSMS on your machine is not on loopback. Allow its address, for example `--allow-csms ws://host.docker.internal:8180/`; on Linux, also pass `--add-host host.docker.internal:host-gateway` to `docker run`. `docker build -t ocpp-mimic .` builds the image from a clone.
+
 ### First start: a station against the built-in CSMS
 
 You need two processes: a CSMS for the stations to connect to, and the engine that runs the stations and serves the Web UI. ocpp-mimic brings a small CSMS of its own for this.
