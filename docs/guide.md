@@ -90,6 +90,19 @@ ocpp-mimic serve --allow-csms wss://csms.staging.example.com/
 
 Only test a CSMS you operate or have permission to test, above all with load tests.
 
+### Listening beyond this machine: the API token
+
+The engine's API and the built-in CSMS's control API have no login: on 127.0.0.1, the default, only this machine reaches them. Before you listen on another address (`--host 0.0.0.0`, or a published container port), set an API token. Prefer the environment variable, which keeps the token out of the process list:
+
+```bash
+export OCPP_MIMIC_API_TOKEN="$(openssl rand -hex 24)"
+ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
+```
+
+With a token, every request to `/api/*` and `/metrics` needs `Authorization: Bearer <token>`; only `GET /api/health` stays open. The Web UI asks for the token once and keeps it until the browser tab closes. `serve`, `load --port` and `csms` take `--api-token <token>` as well. A server that listens beyond loopback without a token prints a warning at start.
+
+The built-in CSMS reads the same variable. If it has a token, give the engine that token with `--csms-api-token` or `OCPP_MIMIC_CSMS_API_TOKEN`, so remote starts from the Web UI can go through it.
+
 ### Versions and compatibility
 
 `ocpp-mimic --version` prints the version; the engine's and the built-in CSMS's `GET /api/health` report it too. [CHANGELOG.md](../CHANGELOG.md) lists every user-visible change.
@@ -121,7 +134,7 @@ The station id is appended to the CSMS URL: a station `SIM-001` with CSMS URL `w
 
 ## 3. The Web UI
 
-`ocpp-mimic serve` serves the Web UI on the same port as its API (default <http://127.0.0.1:7300>). `load --port <n>` serves it too, so you can watch a load test. The UI only calls the engine's API; everything it does can also be done with [the API](#12-engine-http-api) or in a scenario.
+`ocpp-mimic serve` serves the Web UI on the same port as its API (default <http://127.0.0.1:7300>). `load --port <n>` serves it too, so you can watch a load test. When the engine has an [API token](#listening-beyond-this-machine-the-api-token), the UI asks for it first. The UI only calls the engine's API; everything it does can also be done with [the API](#12-engine-http-api) or in a scenario.
 
 ### Station list and the Add form
 
@@ -319,12 +332,13 @@ ocpp-mimic csms --port 9100 --delay 20ms-100ms
 | `--status <d>` | Print a status line this often (default 60s; 0 never). Ctrl-C prints a summary by action |
 | `--tariff <file>` | Price 2.0.1 sessions with this tariff: totalCost in TransactionEvent answers, CostUpdated every minute |
 | `--install-tariff` | Also send that tariff to 2.1 stations as their default tariff after each accepted boot |
+| `--api-token <token>` | Require `Authorization: Bearer <token>` on the control API (default: `OCPP_MIMIC_API_TOKEN`) |
 
 It keeps no frames, so its memory stays flat over long runs.
 
 ### Control API
 
-The CSMS process serves a small HTTP API on its WebSocket port. Scenarios reach it as `{{csmsApiUrl}}`.
+The CSMS process serves a small HTTP API on its WebSocket port. Scenarios reach it as `{{csmsApiUrl}}`. With `--api-token`, every request but `GET /api/health` needs `Authorization: Bearer <token>`.
 
 | Request | Effect |
 | --- | --- |
@@ -670,6 +684,7 @@ Groups can mix OCPP versions; 2.x groups take `deviceModel` as 1.6 groups take `
 | `--port <n>` | Also serve the API, the Web UI and `/metrics`, to watch the run |
 | `--log-dir <dir>` | Write every frame to `<dir>/frames.jsonl` |
 | `--record-limit <n>` | Records kept per station for the Web UI (default 10) |
+| `--api-token <token>` | Require it on the API served with `--port` (default: `OCPP_MIMIC_API_TOKEN`) |
 | `--otlp-endpoint`, `--otlp-header` | Push metrics over OTLP |
 
 `scenarios/load/m4-exit.yaml` (1,000 1.6 stations for an hour) and `m7-exit-21.yaml` (the same with 2.1 stations and tariffs) are the plans the project's acceptance runs use.
@@ -779,7 +794,7 @@ ocpp-mimic csms --tls-cert packages/engine/test-pki/server.crt --tls-key package
 
 ## 12. Engine HTTP API
 
-`serve` listens on `http://127.0.0.1:7300` by default (`--port`, `--host`). Requests and answers are JSON. Errors answer `{ "error": "..." }` with 400 (bad input), 404 (unknown station or connector), 409 (not possible in the current state) or 405.
+`serve` listens on `http://127.0.0.1:7300` by default (`--port`, `--host`). Requests and answers are JSON. Errors answer `{ "error": "..." }` with 400 (bad input), 401 (the [API token](#listening-beyond-this-machine-the-api-token) is missing or wrong), 404 (unknown station or connector), 409 (not possible in the current state) or 405. With a token, send `Authorization: Bearer <token>` on every request but `GET /api/health`.
 
 General:
 
@@ -834,7 +849,7 @@ Records and sessions:
 | `GET /api/stations/<id>/sessions/<n>` | One session with its estimate and reference price |
 | `GET /api/stations/<id>/sessions/<n>/frames` | Its frames; `?format=jsonl` |
 
-Live updates come over the WebSocket `/api/events`: send `{ "type": "subscribe", "stations": ["SIM-001"] }` to get those stations' records, snapshots and session summaries; every client gets fleet summaries.
+Live updates come over the WebSocket `/api/events`: send `{ "type": "subscribe", "stations": ["SIM-001"] }` to get those stations' records, snapshots and session summaries; every client gets fleet summaries. With a token, send it as the `Authorization` header, or, from a browser, offer the subprotocols `ocpp-mimic` and `ocpp-mimic.token.<the token in base64url>`.
 
 A short walk through with curl:
 
@@ -870,6 +885,8 @@ Options of `serve`:
 | `--personas <dir>` | Extra persona directory; repeatable |
 | `--allow-csms <prefix>` | Allow CSMS URLs starting with it; repeatable |
 | `--otlp-endpoint`, `--otlp-header` | Push metrics over OTLP |
+| `--api-token <token>` | Require it on the API, `/metrics` and the Web UI (default: `OCPP_MIMIC_API_TOKEN`) |
+| `--csms-api-token <token>` | The built-in CSMS's control API token, for remote starts (default: `OCPP_MIMIC_CSMS_API_TOKEN`) |
 
 `ocpp-mimic --help` prints every option of every command.
 
@@ -883,6 +900,8 @@ Options of `serve`:
 | A station stays Connecting | The CSMS is not listening at that URL, or it refused the subprotocol or the password. The message log and the engine's output say which |
 | BootNotification Pending or Rejected | The CSMS does not know the station. Register its id in the CSMS, or use the built-in CSMS |
 | Cards are Invalid | The CSMS does not know the idTag. The built-in CSMS rejects only ids starting with `UNKNOWN-` |
+| Requests answer 401 | The engine or the CSMS has an API token. Send `Authorization: Bearer <token>`; in the Web UI, enter the token when it asks |
+| Remote start answers 502 with "answered 401" | The built-in CSMS has an API token and the engine does not know it. Start the engine with `--csms-api-token` or `OCPP_MIMIC_CSMS_API_TOKEN` |
 | Remote start answers 409 | The station's CSMS is not the built-in one. Start the session from your CSMS |
 | `EADDRINUSE` | Another process uses the port. Pick another with `--port` |
 | Charging takes too long to watch | Set the station's energy multiplier, e.g. 60 |

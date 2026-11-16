@@ -1450,6 +1450,7 @@ M8 确定（#267）。M1 到 M7 做出了模拟器；M8 把它变成别人可以
 
 - 引擎 API 和内置 CSMS 的控制 API 没有鉴权，在 127.0.0.1 上没问题，但容器一旦对外发布端口就不行了。`serve`、`load --port` 和 `csms` 加上 `--api-token <令牌>`（或 `OCPP_MIMIC_API_TOKEN`）后，`/api/*`、`/metrics` 和事件 WebSocket 都要求 `Authorization: Bearer <令牌>`；Web UI 只询问一次令牌，并在本次浏览器会话里保留。比较采用常量时间，令牌不会出现在日志、错误信息或快照里。
 - 在环回以外的地址上监听却没有设令牌时，启动时打印警告。不设令牌时，环回地址上的行为不变。
+- 已实现（T118）：`packages/engine/src/api-token.ts` 用 `timingSafeEqual` 比较 `Authorization: Bearer` 的 SHA-256 摘要。引擎和 CSMS 的 `GET /api/health` 保持开放，引擎探测 CSMS 和容器健康检查都不需要令牌。浏览器无法给 WebSocket 加请求头，所以事件 WebSocket 也接受子协议 `ocpp-mimic.token.<base64url>`，与 `ocpp-mimic` 一同提供，服务器选用后者；令牌不会出现在 URL 里。引擎在远程启动时把 `--csms-api-token`（或 `OCPP_MIMIC_CSMS_API_TOKEN`）发给内置 CSMS。Web UI 把令牌存在 `sessionStorage`，每个请求都带上，提供子协议，导出时带令牌下载，收到 401 时询问令牌。没有给 `--api-token` 时，`serve`、`load --port` 和 `csms` 读取 `OCPP_MIMIC_API_TOKEN`。
 
 **发布工作流**
 

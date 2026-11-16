@@ -121,3 +121,12 @@ export {
 export { runReplay, stationLines, type CompareMode, type ReplayResult } from './replay/replay.js';
 export { replayScenario, replayYaml, type ReplayScenarioOptions } from './replay/scenario.js';
 export { personaYaml } from './calibrate.js';
+export {
+  API_TOKEN_ENV,
+  createTokenCheck,
+  EVENTS_PROTOCOL,
+  exposedWithoutTokenWarning,
+  isLoopbackHost,
+  tokenProtocol,
+  TOKEN_PROTOCOL_PREFIX,
+} from './api-token.js';

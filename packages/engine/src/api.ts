@@ -53,6 +53,8 @@ interface Context {
   recorder: Recorder;
   metrics?: Metrics;
   sessions?: SessionService | undefined;
+  /** The built-in CSMS's control API token, for remote starts through it. */
+  csmsApiToken?: string;
 }
 
 interface Request {
@@ -853,10 +855,15 @@ const routes: Route[] = [
         "the station's CSMS is not ocpp-mimic's built-in CSMS: a remote start must come from that CSMS",
       );
     }
-    const answer = await remoteStartVia(csmsUrl, station.id, {
-      idToken: { idToken: idToken as string, ...(typeof type === 'string' && { type }) },
-      ...(evseId !== undefined && { evseId: Number(evseId) }),
-    });
+    const answer = await remoteStartVia(
+      csmsUrl,
+      station.id,
+      {
+        idToken: { idToken: idToken as string, ...(typeof type === 'string' && { type }) },
+        ...(evseId !== undefined && { evseId: Number(evseId) }),
+      },
+      context.csmsApiToken,
+    );
     if (answer.status !== 200) {
       const message = (answer.body as { error?: unknown } | undefined)?.error;
       throw new HttpError(

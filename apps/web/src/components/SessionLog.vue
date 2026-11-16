@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { FrameRecord, LogRecord } from '../api.js';
+import { downloadFile, type FrameRecord, type LogRecord } from '../api.js';
 import { formatTime, summarize } from '../format.js';
 import {
   actionsOf,
@@ -91,6 +91,7 @@ function answerText(row: LogRow): string {
           class="export"
           :href="exportUrl"
           :download="exportName"
+          @click.prevent="downloadFile(exportUrl, exportName)"
           title="The session's frames as JSONL, for replay and scenarios"
           >Export JSONL</a
         >

@@ -9,6 +9,12 @@ import type { AddressInfo } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { VERSION, type OcppVersion, type UsageEvent } from '@ocpp-mimic/core';
 import { WebSocketServer, type WebSocket } from 'ws';
+import {
+  createTokenCheck,
+  EVENTS_PROTOCOL,
+  exposedWithoutTokenWarning,
+  UNAUTHORIZED,
+} from './api-token.js';
 import { handleApi, sendJson, stationSummary, type ApiEvent, type StationSummary } from './api.js';
 import { createFleet, type Fleet } from './fleet.js';
 import { createMetrics, type Metrics } from './metrics.js';
@@ -50,6 +56,13 @@ export interface EngineOptions {
   sessions?: boolean;
   /** Sessions kept per station (default 20). */
   sessionsPerStation?: number;
+  /**
+   * Require `Authorization: Bearer <token>` on `/api/*` (except `/api/health`),
+   * `/metrics` and the events WebSocket. Without it the API is open, as on loopback.
+   */
+  apiToken?: string;
+  /** The token of the built-in CSMS's control API, for remote starts through it. */
+  csmsApiToken?: string;
 }
 
 export interface Engine {
@@ -132,7 +145,12 @@ export function createEngine(options: EngineOptions = {}): Engine {
           };
     },
   });
-  const events = new WebSocketServer({ noServer: true });
+  const events = new WebSocketServer({
+    noServer: true,
+    // Clients that send the token as a subprotocol also offer EVENTS_PROTOCOL; never echo the token.
+    handleProtocols: (protocols) => (protocols.has(EVENTS_PROTOCOL) ? EVENTS_PROTOCOL : false),
+  });
+  const authorized = createTokenCheck(options.apiToken);
   /** The stations each events client shows; only they get its records and full snapshots. */
   const subscriptions = new WeakMap<WebSocket, Set<string>>();
   const stationUpdates = new Map<string, ReturnType<typeof setTimeout>>();
@@ -225,12 +243,27 @@ export function createEngine(options: EngineOptions = {}): Engine {
       sendJson(res, 503, { error: 'the engine is starting' });
       return;
     }
-    if (new URL(req.url ?? '/', 'http://localhost').pathname === '/metrics') {
+    const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+    const protectedPath =
+      path === '/metrics' || (path.startsWith('/api/') && path !== '/api/health');
+    if (protectedPath && !authorized(req)) {
+      res.writeHead(UNAUTHORIZED.status, UNAUTHORIZED.headers).end(UNAUTHORIZED.body);
+      return;
+    }
+    if (path === '/metrics') {
       res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
       res.end(metrics.prometheus());
       return;
     }
-    if (await handleApi(req, res, { fleet, personas, recorder, metrics, sessions })) return;
+    const context = {
+      fleet,
+      personas,
+      recorder,
+      metrics,
+      sessions,
+      ...(options.csmsApiToken !== undefined && { csmsApiToken: options.csmsApiToken }),
+    };
+    if (await handleApi(req, res, context)) return;
     if (options.webRoot !== undefined && (await serveStatic(req, res, options.webRoot))) return;
     sendJson(res, 404, { error: 'Not found' });
   }
@@ -242,6 +275,12 @@ export function createEngine(options: EngineOptions = {}): Engine {
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (new URL(req.url ?? '/', 'http://localhost').pathname !== '/api/events') {
       socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+      return;
+    }
+    if (!authorized(req)) {
+      socket.end(
+        `HTTP/1.1 401 Unauthorized\r\nwww-authenticate: ${UNAUTHORIZED.headers['www-authenticate']}\r\n\r\n`,
+      );
       return;
     }
     events.handleUpgrade(req, socket, head, (ws) => {
@@ -375,6 +414,8 @@ export function createEngine(options: EngineOptions = {}): Engine {
         });
       });
       const { port: boundPort } = server.address() as AddressInfo;
+      const exposed = exposedWithoutTokenWarning('The engine', host, options.apiToken);
+      if (exposed !== undefined) (options.onWarning ?? ((m: string) => console.warn(m)))(exposed);
       return { url: `http://${host}:${boundPort}` };
     },
 

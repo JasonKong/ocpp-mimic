@@ -42,6 +42,7 @@ export async function runLoadCommand(
       ...(command.durationMs !== undefined && { durationMs: command.durationMs }),
       ...(command.port !== undefined && { port: command.port }),
       ...(command.webRoot !== undefined && { webRoot: command.webRoot }),
+      ...(command.apiToken !== undefined && { apiToken: command.apiToken }),
       ...(command.recordLimit !== undefined && { recordLimit: command.recordLimit }),
       ...(command.logDir !== undefined && { logDir: command.logDir }),
       ...(otlp !== undefined && { otlp }),

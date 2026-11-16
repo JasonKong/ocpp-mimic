@@ -22,6 +22,7 @@ The first release, 0.1.0. It collects milestones M1 to M8 of the [design](docs/d
 - **OCPP 2.1** (M7): tariffs and the station's own cost, payment terminals and web payments, transaction limits and resuming, priority and dynamic charging, ISO 15118-20 vehicle data and a virtual display.
 - **User guide** in English and Chinese (`docs/guide.md`, `docs/guide.zh-CN.md`).
 - **License**: the Business Source License 1.1, with third-party notices, `CONTRIBUTING.md` and `SECURITY.md`.
+- **API token** (`--api-token`, `OCPP_MIMIC_API_TOKEN`) for the engine's API, `/metrics`, the events WebSocket and the Web UI, and for the built-in CSMS's control API (`csms --api-token`; `serve --csms-api-token` for remote starts through it). A server that listens beyond loopback without a token warns at start.
 - **Versions**: version 0.1.0 in `--version`, both `/api/health` answers and OTLP's `service.version`; this changelog.
 
 ### Fixed

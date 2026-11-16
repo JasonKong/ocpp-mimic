@@ -2,7 +2,13 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { VERSION } from '@ocpp-mimic/core';
-import { createEngine, DEFAULT_ALLOWED_CSMS, otlpFromEnvironment } from '@ocpp-mimic/engine';
+import {
+  API_TOKEN_ENV,
+  createEngine,
+  DEFAULT_ALLOWED_CSMS,
+  exposedWithoutTokenWarning,
+  otlpFromEnvironment,
+} from '@ocpp-mimic/engine';
 import { USAGE, parseCommand } from './command.js';
 import { startCsmsCommand } from './csms.js';
 import { runImportCommand } from './import.js';
@@ -41,6 +47,15 @@ function otlpOf(options: { otlpEndpoint?: string; otlpHeaders?: Record<string, s
   };
 }
 
+/** The CSMS control API token `serve` uses for remote starts. */
+const CSMS_API_TOKEN_ENV = 'OCPP_MIMIC_CSMS_API_TOKEN';
+
+/** A token from the command line, else from the environment; nothing when neither is set. */
+function tokenFromEnvironment(given: string | undefined, variable: string): { apiToken?: string } {
+  const token = given ?? process.env[variable];
+  return token === undefined || token === '' ? {} : { apiToken: token };
+}
+
 switch (command.kind) {
   case 'version':
     console.log(VERSION);
@@ -68,6 +83,7 @@ switch (command.kind) {
     process.exitCode = await runLoadCommand(
       {
         ...command,
+        ...tokenFromEnvironment(command.apiToken, API_TOKEN_ENV),
         ...(existsSync(WEB_ROOT) && { webRoot: WEB_ROOT }),
       },
       undefined,
@@ -77,12 +93,21 @@ switch (command.kind) {
   case 'csms': {
     let csms: Awaited<ReturnType<typeof startCsmsCommand>>;
     try {
-      csms = await startCsmsCommand(command);
+      csms = await startCsmsCommand({
+        ...command,
+        ...tokenFromEnvironment(command.apiToken, API_TOKEN_ENV),
+      });
     } catch (error) {
       console.error(`Could not start the CSMS: ${(error as Error).message}`);
       process.exit(1);
     }
     console.log(`ocpp-mimic CSMS listening on ${csms.url}/<chargeBoxId>`);
+    const exposed = exposedWithoutTokenWarning(
+      'The control API of the CSMS',
+      command.host,
+      command.apiToken ?? process.env[API_TOKEN_ENV],
+    );
+    if (exposed !== undefined) console.warn(exposed);
     console.log(
       `control API on ${csms.url.replace(/^ws/, 'http').replace(/\/ocpp$/, '')}/api (remote starts from the engine's Web UI)`,
     );
@@ -97,6 +122,10 @@ switch (command.kind) {
     break;
   }
   case 'serve': {
+    const { apiToken: csmsApiToken } = tokenFromEnvironment(
+      command.csmsApiToken,
+      CSMS_API_TOKEN_ENV,
+    );
     const engine = createEngine({
       port: command.port,
       host: command.host,
@@ -109,6 +138,8 @@ switch (command.kind) {
       }),
       ...otlpOf(command),
       ...(existsSync(WEB_ROOT) && { webRoot: WEB_ROOT }),
+      ...tokenFromEnvironment(command.apiToken, API_TOKEN_ENV),
+      ...(csmsApiToken !== undefined && { csmsApiToken }),
     });
     try {
       const { url } = await engine.start();

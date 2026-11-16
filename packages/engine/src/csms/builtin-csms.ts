@@ -11,6 +11,7 @@ import { createServer as createHttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import type { TLSSocket } from 'node:tls';
 import type { Duplex } from 'node:stream';
+import { createTokenCheck, UNAUTHORIZED } from '../api-token.js';
 import {
   MessageTypeId,
   messageSetForSubprotocol,
@@ -151,6 +152,8 @@ export interface BuiltinCsmsOptions {
    * engine's Web UI can make the CSMS start a session remotely.
    */
   controlApi?: boolean;
+  /** Require `Authorization: Bearer <token>` on the control API, except `/api/health`. */
+  apiToken?: string;
   /**
    * Price 2.0.1 sessions with this tariff: TransactionEvent answers carry the
    * running (and finally the total) cost, and CostUpdated goes out every
@@ -1020,6 +1023,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       return [504, { action, error: caught instanceof Error ? caught.message : String(caught) }];
     }
   }
+  const controlAuthorized = createTokenCheck(options.apiToken);
   const control: RequestListener = (req, res) => {
     const json = (status: number, body: unknown) => {
       res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -1036,6 +1040,10 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
         version: VERSION,
         protocols: [OCPP16_SUBPROTOCOL, OCPP201_SUBPROTOCOL, OCPP21_SUBPROTOCOL],
       });
+      return;
+    }
+    if (!controlAuthorized(req)) {
+      res.writeHead(UNAUTHORIZED.status, UNAUTHORIZED.headers).end(UNAUTHORIZED.body);
       return;
     }
     const match = /^\/api\/stations\/([^/]+)\/([a-z-]+)$/.exec(url.pathname);

@@ -92,6 +92,19 @@ ocpp-mimic serve --allow-csms wss://csms.staging.example.com/
 
 只测试你自己运维或已获授权测试的 CSMS，压测尤其如此。
 
+### 在本机以外监听：API 令牌
+
+引擎的 API 和内置 CSMS 的控制 API 没有登录：默认监听 127.0.0.1 时只有本机能访问。要在其他地址上监听（`--host 0.0.0.0`，或对外发布的容器端口）之前，先设置 API 令牌。优先用环境变量，令牌不会出现在进程列表里：
+
+```bash
+export OCPP_MIMIC_API_TOKEN="$(openssl rand -hex 24)"
+ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
+```
+
+设置令牌后，`/api/*` 和 `/metrics` 的每个请求都需要 `Authorization: Bearer <令牌>`，只有 `GET /api/health` 仍然开放。Web UI 只询问一次令牌，在浏览器标签页关闭前一直保留。`serve`、`load --port` 和 `csms` 也接受 `--api-token <令牌>`。在环回地址以外监听却没有令牌时，启动时会打印警告。
+
+内置 CSMS 读取同一个环境变量。如果它设了令牌，用 `--csms-api-token` 或 `OCPP_MIMIC_CSMS_API_TOKEN` 把这个令牌告诉引擎，Web UI 的远程启动才能经由它发出。
+
 ### 版本与兼容性
 
 `ocpp-mimic --version` 打印版本号；引擎和内置 CSMS 的 `GET /api/health` 也会报告版本。[CHANGELOG.md](../CHANGELOG.md) 列出每一个用户可见的改动。
@@ -123,7 +136,7 @@ ocpp-mimic serve --allow-csms wss://csms.staging.example.com/
 
 ## 3. Web UI
 
-`ocpp-mimic serve` 在 API 的同一端口上提供 Web UI（默认 <http://127.0.0.1:7300>）。`load --port <n>` 也会提供，方便观察压测。UI 只调用引擎的 API；它能做的事都可以通过 [API](#12-引擎-http-api) 或场景完成。
+`ocpp-mimic serve` 在 API 的同一端口上提供 Web UI（默认 <http://127.0.0.1:7300>）。`load --port <n>` 也会提供，方便观察压测。引擎设了 [API 令牌](#在本机以外监听api-令牌)时，UI 会先询问令牌。UI 只调用引擎的 API；它能做的事都可以通过 [API](#12-引擎-http-api) 或场景完成。
 
 ### 桩列表和 Add 表单
 
@@ -321,12 +334,13 @@ ocpp-mimic csms --port 9100 --delay 20ms-100ms
 | `--status <d>` | 每隔多久打印一行状态（默认 60s；0 表示不打印）。Ctrl-C 时按 action 打印汇总 |
 | `--tariff <文件>` | 用这个资费给 2.0.1 会话计价：TransactionEvent 应答带 totalCost，每分钟发送 CostUpdated |
 | `--install-tariff` | 每次 2.1 桩启动被接受后，把这个资费作为默认资费下发给它 |
+| `--api-token <令牌>` | 控制 API 要求 `Authorization: Bearer <令牌>`（默认取 `OCPP_MIMIC_API_TOKEN`） |
 
 它不保存任何帧，长时间运行内存也保持平稳。
 
 ### 控制 API
 
-CSMS 进程在 WebSocket 端口上同时提供一个小型 HTTP API。场景里可以用 `{{csmsApiUrl}}` 访问。
+CSMS 进程在 WebSocket 端口上同时提供一个小型 HTTP API。场景里可以用 `{{csmsApiUrl}}` 访问。设了 `--api-token` 时，除 `GET /api/health` 外的每个请求都需要 `Authorization: Bearer <令牌>`。
 
 | 请求 | 作用 |
 | --- | --- |
@@ -672,6 +686,7 @@ thresholds:
 | `--port <n>` | 同时提供 API、Web UI 和 `/metrics`，方便观察 |
 | `--log-dir <目录>` | 把每一帧写进 `<目录>/frames.jsonl` |
 | `--record-limit <n>` | 每个桩保留给 Web UI 的记录条数（默认 10） |
+| `--api-token <令牌>` | `--port` 提供的 API 要求该令牌（默认取 `OCPP_MIMIC_API_TOKEN`） |
 | `--otlp-endpoint`、`--otlp-header` | 通过 OTLP 推送指标 |
 
 `scenarios/load/m4-exit.yaml`（1,000 个 1.6 桩跑一小时）和 `m7-exit-21.yaml`（同样规模的 2.1 桩，带资费）是项目验收用的计划。
@@ -781,7 +796,7 @@ ocpp-mimic csms --tls-cert packages/engine/test-pki/server.crt --tls-key package
 
 ## 12. 引擎 HTTP API
 
-`serve` 默认监听 `http://127.0.0.1:7300`（`--port`、`--host`）。请求和应答都是 JSON。出错时返回 `{ "error": "..." }`，状态码为 400（输入有误）、404（桩或连接器不存在）、409（当前状态下无法执行）或 405。
+`serve` 默认监听 `http://127.0.0.1:7300`（`--port`、`--host`）。请求和应答都是 JSON。出错时返回 `{ "error": "..." }`，状态码为 400（输入有误）、401（缺少 [API 令牌](#在本机以外监听api-令牌)或令牌不对）、404（桩或连接器不存在）、409（当前状态下无法执行）或 405。设了令牌时，除 `GET /api/health` 外的每个请求都要带 `Authorization: Bearer <令牌>`。
 
 通用：
 
@@ -836,7 +851,7 @@ ocpp-mimic csms --tls-cert packages/engine/test-pki/server.crt --tls-key package
 | `GET /api/stations/<id>/sessions/<n>` | 单个会话，含估算和参考价格 |
 | `GET /api/stations/<id>/sessions/<n>/frames` | 会话的帧；`?format=jsonl` |
 
-实时更新通过 WebSocket `/api/events` 推送：发送 `{ "type": "subscribe", "stations": ["SIM-001"] }` 订阅这些桩的记录、快照和会话摘要；所有客户端都会收到 fleet 摘要。
+实时更新通过 WebSocket `/api/events` 推送：发送 `{ "type": "subscribe", "stations": ["SIM-001"] }` 订阅这些桩的记录、快照和会话摘要；所有客户端都会收到 fleet 摘要。设了令牌时，用 `Authorization` 头传令牌；浏览器里则提供子协议 `ocpp-mimic` 和 `ocpp-mimic.token.<令牌的 base64url>`。
 
 用 curl 走一遍：
 
@@ -872,6 +887,8 @@ curl -s $API/stations/SIM-100/sessions
 | `--personas <目录>` | 额外的 persona 目录；可重复 |
 | `--allow-csms <前缀>` | 放行以此开头的 CSMS URL；可重复 |
 | `--otlp-endpoint`、`--otlp-header` | 通过 OTLP 推送指标 |
+| `--api-token <令牌>` | API、`/metrics` 和 Web UI 要求该令牌（默认取 `OCPP_MIMIC_API_TOKEN`） |
+| `--csms-api-token <令牌>` | 内置 CSMS 控制 API 的令牌，用于远程启动（默认取 `OCPP_MIMIC_CSMS_API_TOKEN`） |
 
 `ocpp-mimic --help` 打印所有命令的全部选项。
 
@@ -885,6 +902,8 @@ curl -s $API/stations/SIM-100/sessions
 | 桩一直停在 Connecting | CSMS 没在这个 URL 上监听，或者拒绝了子协议或密码。报文日志和引擎输出会说明原因 |
 | BootNotification 返回 Pending 或 Rejected | CSMS 不认识这个桩。在 CSMS 里登记它的 id，或改用内置 CSMS |
 | 刷卡返回 Invalid | CSMS 不认识这个 idTag。内置 CSMS 只拒绝以 `UNKNOWN-` 开头的 id |
+| 请求返回 401 | 引擎或 CSMS 设了 API 令牌。请求带上 `Authorization: Bearer <令牌>`；在 Web UI 里按提示输入令牌 |
+| 远程启动返回 502，提示 "answered 401" | 内置 CSMS 设了 API 令牌，而引擎不知道。用 `--csms-api-token` 或 `OCPP_MIMIC_CSMS_API_TOKEN` 启动引擎 |
 | 远程启动返回 409 | 桩连的不是内置 CSMS。请从你的 CSMS 发起 |
 | `EADDRINUSE` | 端口被占用。用 `--port` 换一个 |
 | 充电太慢，等不及 | 设置桩的能量倍率，例如 60 |
