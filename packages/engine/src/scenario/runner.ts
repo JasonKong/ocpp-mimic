@@ -67,9 +67,28 @@ export interface ScenarioRunResult {
   error?: string;
   /** Facts for reports, such as persona and CSMS. */
   properties: Record<string, string>;
+  /**
+   * How long the host was asleep (suspended) while the scenario ran, when it
+   * was at least a second: part of `durationMs`, but not of any `within`.
+   */
+  hostAsleepMs?: number;
 }
 
+/**
+ * The runner's clocks. Durations are wall-clock time; deadlines (`within`,
+ * timeouts) are awake time, which stops while the host sleeps, as Node's
+ * timers do, so a laptop going to sleep does not fail a waiting step.
+ */
+export interface RunnerClock {
+  wall(): number;
+  awake(): number;
+}
+
+const SYSTEM_CLOCK: RunnerClock = { wall: () => Date.now(), awake: () => performance.now() };
+
 export interface RunOptions {
+  /** Clocks; tests replace them. */
+  clock?: RunnerClock;
   /** Overrides the scenario's `csms`. */
   csms?: string;
   /** `--var` values; they override the scenario's `vars`. */
@@ -114,15 +133,15 @@ class FrameLog {
     return this.frames.at(-1)?.seq ?? 0;
   }
 
-  /** Resolves when a frame arrives or at `deadline` (ms since the epoch). */
-  waitForFrame(deadline: number): Promise<void> {
+  /** Resolves when a frame arrives or after `ms`. */
+  waitForFrame(ms: number): Promise<void> {
     return new Promise((resolve) => {
       const done = () => {
         clearTimeout(timer);
         this.waiters.delete(done);
         resolve();
       };
-      const timer = setTimeout(done, Math.max(0, deadline - Date.now()));
+      const timer = setTimeout(done, Math.max(0, ms));
       this.waiters.add(done);
     });
   }
@@ -158,7 +177,11 @@ export async function runScenario(
   label: string,
   options: RunOptions = {},
 ): Promise<ScenarioRunResult> {
-  const started = Date.now();
+  const clock = options.clock ?? SYSTEM_CLOCK;
+  const started = clock.wall();
+  const startedAwake = clock.awake();
+  /** Awake time: what deadlines are measured in. */
+  const now = () => clock.awake();
   const csmsTarget = options.csms ?? scenario.csms;
   const builtin = csmsTarget === 'builtin';
   const properties: Record<string, string> = {
@@ -183,18 +206,22 @@ export async function runScenario(
   const secrets = new Set<string>();
   const result = (status: ScenarioStatus, error?: string): ScenarioRunResult => {
     const mask = (text: string) => maskSecrets(text, [...secrets]);
+    const durationMs = clock.wall() - started;
+    const asleepMs = Math.round(durationMs - (clock.awake() - startedAwake));
+    const asleep = asleepMs >= 1000;
     return {
       name: scenario.name,
       label,
       status,
-      durationMs: Date.now() - started,
+      durationMs,
+      ...(asleep && { hostAsleepMs: asleepMs }),
       steps: steps.map((s) => ({
         ...s,
         ...(s.message !== undefined && { message: mask(s.message) }),
         ...(s.details !== undefined && { details: s.details.map(mask) }),
       })),
       ...(error !== undefined && { error: mask(error) }),
-      properties,
+      properties: asleep ? { ...properties, hostAsleep: formatDuration(asleepMs) } : properties,
     };
   };
 
@@ -206,7 +233,7 @@ export async function runScenario(
   }
 
   const timeoutMs = scenario.timeoutMs ?? options.defaultTimeoutMs ?? DEFAULT_SCENARIO_TIMEOUT_MS;
-  const deadline = started + timeoutMs;
+  const deadline = startedAwake + timeoutMs;
   const log = new FrameLog();
   const vars: Record<string, unknown> = { ...scenario.vars, ...options.vars };
   const env = options.env ?? process.env;
@@ -216,7 +243,7 @@ export async function runScenario(
   let csms: BuiltinCsms | undefined;
   let aborted = false;
 
-  const timeLeft = () => deadline - Date.now();
+  const timeLeft = () => deadline - now();
 
   try {
     // ---- Setup ----
@@ -272,9 +299,9 @@ export async function runScenario(
     const bootTimeout = Math.min(options.bootTimeoutMs ?? 30_000, timeLeft());
     for (const definition of scenario.stations.filter((s) => s.waitForBoot)) {
       const station = fleet.get(definition.id);
-      const bootDeadline = Date.now() + bootTimeout;
+      const bootDeadline = now() + bootTimeout;
       while (station?.snapshot().registration !== 'Accepted') {
-        if (Date.now() > bootDeadline) {
+        if (now() > bootDeadline) {
           throw new Error(
             `station ${definition.id} was not accepted by the CSMS within ${formatDuration(bootTimeout)} (registration ${station?.snapshot().registration ?? 'unknown'}, connection ${station?.snapshot().transport ?? 'unknown'})`,
           );
@@ -526,7 +553,7 @@ export async function runScenario(
             step.kind === 'expectConnector'
               ? connectorOf(target, step.connector)
               : target.snapshot();
-          const until = Date.now() + step.withinMs;
+          const until = now() + step.withinMs;
           let mismatches: Mismatch[];
           for (;;) {
             const snapshot = read();
@@ -535,7 +562,7 @@ export async function runScenario(
               save(step.save, snapshot);
               return;
             }
-            if (Date.now() >= until || aborted) break;
+            if (now() >= until || aborted) break;
             await sleep(50);
           }
           throw new StepFailure(
@@ -616,13 +643,13 @@ export async function runScenario(
 
     /** An http step, repeated every 250 ms until it matches when it has `within`. */
     async function httpStep(step: Extract<ScenarioStep, { kind: 'http' }>): Promise<void> {
-      const deadline = Date.now() + Math.min(step.withinMs ?? 0, Math.max(0, timeLeft()));
+      const deadline = now() + Math.min(step.withinMs ?? 0, Math.max(0, timeLeft()));
       for (;;) {
         try {
           await httpOnce(step);
           return;
         } catch (error) {
-          if (!(error instanceof StepFailure) || Date.now() >= deadline || aborted) throw error;
+          if (!(error instanceof StepFailure) || now() >= deadline || aborted) throw error;
           await sleepUnlessAborted(250);
         }
       }
@@ -683,8 +710,8 @@ export async function runScenario(
     }
 
     async function sleepUnlessAborted(ms: number): Promise<void> {
-      const until = Date.now() + ms;
-      while (!aborted && Date.now() < until) await sleep(Math.min(100, until - Date.now()));
+      const until = now() + ms;
+      while (!aborted && now() < until) await sleep(Math.min(100, until - now()));
     }
 
     const directionOf = (step: { direction: 'sent' | 'received' }) =>
@@ -718,7 +745,7 @@ export async function runScenario(
       const needAnswer =
         step.answer !== undefined ||
         Object.values(step.save ?? {}).some((p) => p.startsWith('$.answer'));
-      const until = Date.now() + step.withinMs;
+      const until = now() + step.withinMs;
       let problems: string[];
       for (;;) {
         problems = [];
@@ -760,8 +787,8 @@ export async function runScenario(
           save(step.save, { payload: call.payload, answer });
           return;
         }
-        if (Date.now() >= until || aborted) break;
-        await log.waitForFrame(until);
+        if (now() >= until || aborted) break;
+        await log.waitForFrame(until - now());
       }
       const seen = [
         ...new Set(
@@ -791,7 +818,7 @@ export async function runScenario(
       station: VirtualStation,
       stepStartSeq: number,
     ): Promise<void> {
-      const until = Date.now() + step.withinMs;
+      const until = now() + step.withinMs;
       for (;;) {
         const match = callsOf(station, step, stepStartSeq).find(
           (call) =>
@@ -802,8 +829,8 @@ export async function runScenario(
             JSON.stringify(match.payload),
           ]);
         }
-        if (Date.now() >= until || aborted) return;
-        await log.waitForFrame(until);
+        if (now() >= until || aborted) return;
+        await log.waitForFrame(until - now());
       }
     }
 
@@ -811,7 +838,7 @@ export async function runScenario(
     for (const [index, raw] of scenario.steps.entries()) {
       const record = steps[index];
       if (record === undefined) break;
-      const stepStarted = Date.now();
+      const stepStarted = clock.wall();
       const stepStartSeq = log.lastSeq;
       try {
         const { kind, name, ...args } = raw;
@@ -851,7 +878,7 @@ export async function runScenario(
         }
         failed = true;
       }
-      record.durationMs = Date.now() - stepStarted;
+      record.durationMs = clock.wall() - stepStarted;
       options.onStep?.(record, scenario);
       if (failed) break;
     }
