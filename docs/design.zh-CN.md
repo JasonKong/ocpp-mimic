@@ -1099,7 +1099,7 @@ interface SessionRecord {
 
 **参考费率**
 
-参考费率就是一个不带 conditions 的 2.1 TariffType，以后同一份 JSON 可以直接发给 2.1 的桩：
+参考费率就是一个不带 conditions 的 2.1 TariffType，以后同一份 JSON 可以直接发给 2.1 的桩（M7 起，电能部分也可以按时段设价，见 T107）：
 
 ```json
 {
@@ -1284,7 +1284,7 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 - **显示（I01–I06）。** 桩没有屏幕，但会保存它本该显示的内容：个人消息、兜底消息、实时费用和最终费用。这些放在快照的 `display` 里，场景和 Web UI 可以检查。
 - **规范没说清或自相矛盾的地方的取舍**，记录下来以保证测试结果确定：MaxElements 按一个维度的价格数计；maxCost 把总价精确封顶在 maxCost，而不是晚一个计算周期再冻结；空闲时长按整个事务累计；没有税率时 inclTax 等于 exclTax；HandleFailedTariff 用成员列表里的拼写 UseDefaultTariff。Part 2 I 块 1.3 的算例数字对不上，不用作测试向量；测试用手工核对过的用例。
 
-- 已实现（T103）：`core/src/ocpp21/tariff-cost.ts` 校验资费（`checkTariff`），按桩的时区判断条件（用 `Intl`，夏令时随时区变化），并在事务进行中计价（`createCostMeter`），测试数字都是手算核对过的。有 TariffAndCost 特性的 2.1 桩：按 EVSE 保存默认资费并跨重启保留；从 AuthorizeResponse 接收司机资费，随其事务结束而删除；应答 SetDefaultTariff、GetTariffs、ClearTariffs 和 ChangeTransactionTariff（没有 Enabled[Tariff] 时回 NotSupported）；在 Started 事件里报一次资费 id；在 Started 里带实时费用，之后每 Interval[Cost] 秒发一次 RunningCost 事件；Ended 带完整费用和计费时段；maxCost 限额按自己算的费用判断（不取整，取整只用于上报）。计价每 Interval[Tariff] 秒一次（为 0 时 10 秒），时段或日期条件变化时也会计价。桩处理不了的司机资费会置位 TariffCostCtrlr.Problem、发 NotifyEvent，并按 HandleFailedTariff 处理。尚未实现：模拟司机总是接受资费（没有 TariffNotAccepted 开关）；桩不计预约时长和预约费（计费器支持，但预约没有记录创建时间）；虚拟屏幕（I01–I06）未模拟（见 T107）；M6 的参考价格仍按上报值单独计算，便于 Web UI 对比两者。`scenarios/regression/ocpp21-tariffs.yaml`（persona `tariffs-2.1`）覆盖 I07 到 I12。
+- 已实现（T103）：`core/src/ocpp21/tariff-cost.ts` 校验资费（`checkTariff`），按桩的时区判断条件（用 `Intl`，夏令时随时区变化），并在事务进行中计价（`createCostMeter`），测试数字都是手算核对过的。有 TariffAndCost 特性的 2.1 桩：按 EVSE 保存默认资费并跨重启保留；从 AuthorizeResponse 接收司机资费，随其事务结束而删除；应答 SetDefaultTariff、GetTariffs、ClearTariffs 和 ChangeTransactionTariff（没有 Enabled[Tariff] 时回 NotSupported）；在 Started 事件里报一次资费 id；在 Started 里带实时费用，之后每 Interval[Cost] 秒发一次 RunningCost 事件；Ended 带完整费用和计费时段；maxCost 限额按自己算的费用判断（不取整，取整只用于上报）。计价每 Interval[Tariff] 秒一次（为 0 时 10 秒），时段或日期条件变化时也会计价。桩处理不了的司机资费会置位 TariffCostCtrlr.Problem、发 NotifyEvent，并按 HandleFailedTariff 处理。尚未实现：模拟司机总是接受资费（没有 TariffNotAccepted 开关）；桩不计预约时长和预约费（计费器支持，但预约没有记录创建时间）；虚拟屏幕（I01–I06）随 #235 补上（见 T107）；M6 的参考价格仍按上报值单独计算，便于 Web UI 对比两者。`scenarios/regression/ocpp21-tariffs.yaml`（persona `tariffs-2.1`）覆盖 I07 到 I12。
 
 **支付（C 块）**
 
@@ -1322,7 +1322,10 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 - 内置 CSMS 接受 `ocpp2.1`，应答新的桩消息（NotifySettlement；VatNumberValidation 返回一个测试公司；NotifyPriorityCharging；PullDynamicScheduleUpdate 返回曲线的当前值）。它的控制 API 和场景步骤可以下发资费（把参考资费作为 2.1 资费下发）、在 TransactionEventResponse 里下发事务限额、动态曲线更新、UsePriorityCharging 和 NotifyWebPaymentStarted，也可以在 Authorize 应答里带司机资费。
 - 已实现（T106）：对 2.1 桩，内置 CSMS 记住自己设置过的内容，并据此应答。PullDynamicScheduleUpdate 得到最后一次被接受的 SetChargingProfile 或 UpdateDynamicSchedule 里 Dynamic 曲线的值，没有则 Rejected（NotFound）。被接受的令牌，其 Authorize 应答带上为该桩设置的司机资费。下一条 TransactionEventResponse（Ended 除外）带上排队的事务限额。它设置过的 WebPaymentsCtrlr 值（SharedSecret、ValidityTime、URLTemplate）用于校验支付链接。控制 API 除 `remote-start` 外，还接受 `POST /api/stations/:id/` 加命令：`call`（该桩版本的任意 CSMS 命令：`{action, payload}`），以及 2.1 专用的 `default-tariff`（CSMS 的参考资费或给定的 `tariff`，下发到 `evseId`，默认 0）、`transaction-limit`（`{transactionLimit, transactionId?}`）、`driver-tariff`（`{tariff}`，null 为删除）和 `web-payment`。`web-payment` 就是二维码背后的支付页面：给定 `{url}`，它校验 TOTP（前后各一个时间片也算），把链接里的限额排队等事务的应答带上，并发送 NotifyWebPaymentStarted（`timeout`，默认 60 秒）。场景通过 `{{csmsApiUrl}}` 访问它。`csmsCall` 支持 `resultError`，用 CALLRESULTERROR 回应 CALLRESULT。引擎的 HMAC 移到了 `engine/src/hmac.ts`。`scenarios/regression/ocpp21-csms.yaml` 通过控制 API 驱动这些命令；所覆盖 2.1 块的其余 CSMS 命令在 T99 到 T105 的场景里用 `csmsCall` 驱动。
 - Web UI 加上版本表的 2.1 行（徽标、术语、能力），2.1 桩上的支付终端和优先充电按钮，桩自己算的费用（costDetails）和 CSMS 的费用、参考价格并排显示，会话的限额，虚拟屏幕，以及车辆卡片里的 Display.\* 值。
-- 已实现（T107）：会话保存桩自己算的费用（最新的 costDetails：总额、币种、typeOfCost、是否最终）以及桩最后上报的事务限额。计价卡把桩的费用和 CSMS 的费用、参考价格并排显示；会话头显示限额、结算（带收据链接）和 Payment 来源。2.1 桩的每个 EVSE 有司机的优先充电按钮（开、关）；有 Payment 时有支付终端（卡品牌、Pay by card、Stop payment）；有 WebPayments 时显示支付链接及其有效期（是链接，不是二维码图片）。车辆卡片显示 Display.\* 值（T105）。组件测试渲染 2.1 的桩、计价卡和会话头；这些视图已对着引擎和内置 CSMS 手工检查过。未做：参考资费编辑器里的资费条件。M6 的参考价格不含条件，要按时间片计价才能支持；这和把它与桩的计费统一一起做，作为后续工作。桩的虚拟屏幕显示 I01–I06（资费和费用消息）也未做。
+- 已实现（T107）：会话保存桩自己算的费用（最新的 costDetails：总额、币种、typeOfCost、是否最终）以及桩最后上报的事务限额。计价卡把桩的费用和 CSMS 的费用、参考价格并排显示；会话头显示限额、结算（带收据链接）和 Payment 来源。2.1 桩的每个 EVSE 有司机的优先充电按钮（开、关）；有 Payment 时有支付终端（卡品牌、Pay by card、Stop payment）；有 WebPayments 时显示支付链接及其有效期（是链接，不是二维码图片）。车辆卡片显示 Display.\* 值（T105）。组件测试渲染 2.1 的桩、计价卡和会话头；这些视图已对着引擎和内置 CSMS 手工检查过。资费条件和虚拟屏幕随 #235 的第二个 PR 补上：
+  - **按时段的电价。** 参考资费的电能部分可以有带 2.1 日历条件（时段、星期、日期）的价格，最后一个价格不带条件；其他部分仍只有一个价格。参考价格按读数之间的区段拆分电量：每段采用在其起点满足条件的第一个价格，按桩的 ClockCtrlr.TimeZone 判断（1.6 或未设置时为 UTC），每个用到的价格一行。内置 CSMS 的 `--tariff` 按 UTC 计价。资费编辑器加了谷时电价及其时段，计价卡写明每行的时段。
+  - **虚拟屏幕（I01–I06）。** 2.1 桩在快照里保存每个 EVSE 屏幕当前显示的内容（`display`），桩视图会显示出来：Authorize 的 personalMessage 里的司机资费说明（I01），否则显示 TariffFallbackMessage（I04）；CostUpdated 和 TransactionEventResponse 里的实时费用（I02）；Ended 应答里的总费用（I03），没有应答时显示 TotalCostFallbackMessage（I05）；以及 updatedPersonalMessage（I06）。
+  - 未做：把参考价格和桩自己的计费统一。
 - 日志、导出导入、回放、标定和指标带上 `ocpp: 2.1`；回放像处理事务 id 一样映射 tariffId 和 pspRef；用 ocpp-mimic 录制一份合成的 2.1 样例日志。
 - 已实现（T108）：
   - 日志行和导出已带 `ocpp: 2.1`（T96）。
@@ -1348,7 +1351,7 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
   - 覆盖 core、可用性、授权（含本地列表）、事务、远程控制、预约、配置、故障、安全（含固件、证书和日志）、智能充电、资费、支付、车辆（ISO 15118-20）、计量，以及内置 CSMS 的 2.1 命令。
   - 套件发现了缺口，在这里补上：J 块的上游电表原先没有实现。现在 SampledDataCtrlr 和 AlignedDataCtrlr 有 UpstreamInterval 和 UpstreamMeasurands，默认关闭。事务在 Started 里和每个 UpstreamInterval 带上上游读数；整站读数按时钟对齐，用 EVSE 0 的 MeterValues 发送。所有读数的 location 都是 Upstream；模拟的上游电表在电能、功率和电流上加 2% 的损耗。
   - 新场景还覆盖 GetLog 的 DataCollectorLog、DataTransfer，以及用 CSMS 的 CostUpdated 衡量 maxCost（E16.FR.15）。
-  - 显示消息（O 块）和 I01–I06 仍不在范围内，见 T107 的记录。
+  - 显示消息（O 块）仍不在范围内；I01–I06 随 #235 补上。
 - `scenarios/citrineos/ocpp21-*.yaml` 放 CitrineOS v2.1.0 能驱动的部分，在现有的 CitrineOS workflow 里运行。
 
 **任务**

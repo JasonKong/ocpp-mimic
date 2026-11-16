@@ -733,6 +733,21 @@ describe('the 2.1 views', () => {
     expect(shown).toContain('Stop payment');
     expect(shown).toContain('Priority on');
     expect(shown).toContain('Payment URL');
+    // The virtual display (I01 to I06).
+    const showing = {
+      ...station21,
+      connectors: station21.connectors.map((c, i) =>
+        i === 0
+          ? {
+              ...c,
+              display: { at: '2026-11-16T10:00:00Z', kind: 'totalCost', text: 'Total 4.50 EUR' },
+            }
+          : c,
+      ),
+    };
+    expect(text(await render(StationDetail, { station: showing, persona: persona21 }))).toContain(
+      'Display Total 4.50 EUR',
+    );
     // Without the feature groups only priority charging is left; 2.0.1 has none of it.
     const plain = text(
       await render(StationDetail, {

@@ -329,6 +329,20 @@ export interface ConnectorSnapshot {
   ev?: { name?: string; soc: number; profile: EvProfile };
   /** The Smart Charging limit in force, in W, when a charging profile applies. */
   limitW?: number;
+  /** 2.1: what the EVSE's display shows now (I01 to I06). */
+  display?: DisplayMessage;
+}
+
+/** A message on a 2.1 station's virtual display (block I: tariff and cost). */
+export interface DisplayMessage {
+  at: string;
+  /**
+   * tariff: the driver's tariff text (I01); fallback: TariffFallbackMessage or
+   * TotalCostFallbackMessage (I04, I05); runningCost (I02); totalCost (I03);
+   * personal: an updated personal message (I06).
+   */
+  kind: 'tariff' | 'fallback' | 'runningCost' | 'totalCost' | 'personal';
+  text: string;
 }
 
 export interface ChargePointSnapshot {

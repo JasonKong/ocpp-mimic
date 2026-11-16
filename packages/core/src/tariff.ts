@@ -1,7 +1,10 @@
 /**
  * The reference tariff and what it makes of a session. A reference tariff
- * is an OCPP 2.1 TariffType without conditions (one price per part), so the
- * same JSON can later be sent to a 2.1 station. A session is priced from its
+ * is an OCPP 2.1 TariffType, so the same JSON can be sent to a 2.1 station:
+ * one price per part, except energy, which may have prices by time of day,
+ * weekday and date (2.1 TariffConditions) before a last price without
+ * conditions. Energy is then priced per stretch between two readings, at the
+ * price of the stretch's start in the station's time zone. A session is priced from its
  * reported values only, as a CSMS or a third party would, and every item
  * names the frames it used.
  *
@@ -12,6 +15,7 @@
  * itself suspends (SuspendedEVSE) is not billed. Each item is rounded to
  * cents; minCost and maxCost bound the total before tax.
  */
+import { fixedConditionsHold } from './ocpp21/tariff-cost.js';
 import { stateDurations, type SessionRecord } from './session.js';
 
 export interface TaxRate {
@@ -33,13 +37,26 @@ interface Part<P> {
   taxRates?: TaxRate[];
 }
 
+/** When an energy price applies: 2.1 TariffConditions about the calendar (local time). */
+export interface TimeConditions {
+  /** HH:MM; a window that ends before it starts runs across midnight. */
+  startTimeOfDay?: string;
+  endTimeOfDay?: string;
+  dayOfWeek?: (
+    'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday' | 'Sunday'
+  )[];
+  /** YYYY-MM-DD, from inclusive, to exclusive. */
+  validFromDate?: string;
+  validToDate?: string;
+}
+
 export interface ReferenceTariff {
   tariffId: string;
   /** ISO 4217. */
   currency: string;
   description?: { format: string; content: string; language?: string }[];
   fixedFee?: Part<{ priceFixed: number }>;
-  energy?: Part<{ priceKwh: number }>;
+  energy?: Part<{ priceKwh: number; conditions?: TimeConditions }>;
   chargingTime?: Part<{ priceMinute: number }>;
   idleTime?: Part<{ priceMinute: number }>;
   minCost?: Price;
@@ -58,6 +75,8 @@ export interface PriceItem {
   inclTax: number;
   /** Seqs of the frames the item comes from. */
   frames: number[];
+  /** Energy at a price with conditions: when it applies. */
+  conditions?: TimeConditions;
 }
 
 export interface SessionPrice {
@@ -114,14 +133,21 @@ export function tariffProblems(value: unknown): string[] {
       problems.push(`${part}.prices must be a list`);
       continue;
     }
-    if (entry.prices.length !== 1) problems.push(`${part} must have exactly one price`);
-    for (const price of entry.prices) {
+    if (part !== 'energy' && entry.prices.length !== 1) {
+      problems.push(`${part} must have exactly one price`);
+    }
+    if (part === 'energy' && entry.prices.length === 0) problems.push('energy needs a price');
+    const prices: unknown[] = entry.prices;
+    prices.forEach((price, i) => {
       if (!isObject(price) || !amount(price[field])) {
         problems.push(`${part}.prices: ${field} must be a number of at least 0`);
       } else if (price.conditions !== undefined) {
-        problems.push(`${part}.prices: conditions are not supported yet`);
+        if (part !== 'energy') problems.push(`${part}.prices: conditions are not supported`);
+        else if (i === prices.length - 1) {
+          problems.push('the last energy price must have no conditions');
+        } else problems.push(...conditionProblems(price.conditions));
       }
-    }
+    });
     if (entry.taxRates !== undefined) {
       const rates = Array.isArray(entry.taxRates) ? entry.taxRates : [undefined];
       for (const rate of rates) {
@@ -149,6 +175,50 @@ export function tariffProblems(value: unknown): string[] {
   const max = isObject(value.maxCost) ? value.maxCost.exclTax : undefined;
   if (typeof min === 'number' && typeof max === 'number' && min > max) {
     problems.push('minCost must not be above maxCost');
+  }
+  return problems;
+}
+
+const CONDITION_KEYS = [
+  'startTimeOfDay',
+  'endTimeOfDay',
+  'dayOfWeek',
+  'validFromDate',
+  'validToDate',
+];
+const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+function conditionProblems(value: unknown): string[] {
+  if (!isObject(value)) return ['energy.prices: conditions must be an object'];
+  const problems: string[] = [];
+  for (const key of Object.keys(value)) {
+    if (!CONDITION_KEYS.includes(key)) {
+      problems.push(
+        `energy.prices: condition ${key} is not supported (time of day, weekday, dates)`,
+      );
+    }
+  }
+  for (const key of ['startTimeOfDay', 'endTimeOfDay'] as const) {
+    const time = value[key];
+    if (
+      time !== undefined &&
+      !(typeof time === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(time))
+    ) {
+      problems.push(`energy.prices: ${key} must be HH:MM`);
+    }
+  }
+  for (const key of ['validFromDate', 'validToDate'] as const) {
+    const date = value[key];
+    if (date !== undefined && !(typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date))) {
+      problems.push(`energy.prices: ${key} must be YYYY-MM-DD`);
+    }
+  }
+  const days = value.dayOfWeek;
+  if (
+    days !== undefined &&
+    !(Array.isArray(days) && days.length > 0 && days.every((d) => WEEKDAYS.includes(String(d))))
+  ) {
+    problems.push(`energy.prices: dayOfWeek must list days such as Monday`);
   }
   return problems;
 }
@@ -220,21 +290,97 @@ function startFrame(record: SessionRecord): number | undefined {
   )?.seq;
 }
 
+/**
+ * Energy at prices with conditions: each stretch between two readings goes
+ * to the first price whose conditions hold at its start, in `timeZone`. One
+ * item per price used, in the tariff's order.
+ */
+function energyByTime(
+  record: SessionRecord,
+  tariff: ReferenceTariff,
+  timeZone: string,
+): PriceItem[] {
+  const entry = tariff.energy;
+  if (entry === undefined) return [];
+  const readings: { at: number; wh: number; seq?: number | undefined }[] = [];
+  if (record.meterStartWh !== undefined && record.startedAt !== undefined) {
+    readings.push({
+      at: Date.parse(record.startedAt),
+      wh: record.meterStartWh,
+      seq: record.meterStartSeq,
+    });
+  }
+  for (const s of record.samples) {
+    if (s.energyWh !== undefined)
+      readings.push({ at: Date.parse(s.at), wh: s.energyWh, seq: s.seq });
+  }
+  if (record.meterStopWh !== undefined && record.endedAt !== undefined) {
+    readings.push({
+      at: Date.parse(record.endedAt),
+      wh: record.meterStopWh,
+      seq: record.meterStopSeq,
+    });
+  }
+  readings.sort((a, b) => a.at - b.at);
+  const place = { timeZone, evseKind: 'AC' as const };
+  const totals = entry.prices.map(() => ({ wh: 0, frames: [] as (number | undefined)[] }));
+  for (let i = 1; i < readings.length; i++) {
+    const from = readings[i - 1];
+    const to = readings[i];
+    if (from === undefined || to === undefined) continue;
+    const index = entry.prices.findIndex((p) => fixedConditionsHold(p.conditions, from.at, place));
+    const total = totals[index === -1 ? entry.prices.length - 1 : index];
+    if (total === undefined) continue;
+    total.wh += Math.max(0, to.wh - from.wh);
+    total.frames.push(from.seq, to.seq);
+  }
+  return entry.prices.flatMap((price, i) => {
+    const total = totals[i];
+    if (total === undefined || (total.wh === 0 && price.conditions !== undefined)) return [];
+    const quantity = Math.round(total.wh) / 1000;
+    const exclTax = cents(quantity * price.priceKwh);
+    const tax = taxOn(exclTax, entry.taxRates);
+    return [
+      {
+        part: 'energy' as const,
+        quantity,
+        unit: 'kWh' as const,
+        unitPrice: price.priceKwh,
+        exclTax,
+        tax,
+        inclTax: cents(exclTax + tax),
+        frames: [...new Set(total.frames.filter((f): f is number => f !== undefined))],
+        ...(price.conditions !== undefined && { conditions: price.conditions }),
+      },
+    ];
+  });
+}
+
+/** Where a session is priced: the station's time zone for time-of-day prices (default UTC). */
+export interface PricingPlace {
+  timeZone?: string;
+}
+
 /** What `tariff` makes of `record`, up to its end or `now` while it runs. */
 export function priceSession(
   record: SessionRecord,
   tariff: ReferenceTariff,
   now: string,
+  place: PricingPlace = {},
 ): SessionPrice {
   const items: PriceItem[] = [];
   const started = record.startedAt !== undefined && record.state !== 'not-started';
   if (started) {
     const fixed = item('fixedFee', tariff, 1, [startFrame(record)]);
     if (fixed !== undefined) items.push(fixed);
-    const energy = deliveredWh(record);
-    const kwh = Math.round(energy.wh) / 1000;
-    const energyItem = item('energy', tariff, kwh, energy.frames);
-    if (energyItem !== undefined) items.push(energyItem);
+    if (tariff.energy?.prices.some((p) => p.conditions !== undefined) === true) {
+      items.push(...energyByTime(record, tariff, place.timeZone || 'UTC'));
+    } else {
+      const energy = deliveredWh(record);
+      const kwh = Math.round(energy.wh) / 1000;
+      const energyItem = item('energy', tariff, kwh, energy.frames);
+      if (energyItem !== undefined) items.push(energyItem);
+    }
     const durations = stateDurations(record, now);
     const minutes = (ms: number) => Math.round(ms / 600) / 100;
     const seqsOf = (...states: string[]) =>

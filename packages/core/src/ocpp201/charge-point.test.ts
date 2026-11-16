@@ -3873,3 +3873,68 @@ describe('a 2.1 station: upstream metering (J, 2.1)', () => {
     expect(old.cp.deviceModelView().some((v) => v.variable === 'UpstreamInterval')).toBe(false);
   });
 });
+
+describe('a 2.1 station: the virtual display (I01 to I06)', () => {
+  const displayOf = (h: ReturnType<typeof setup>, evseId = 1) =>
+    h.cp.snapshot().connectors.find((c) => c.connectorId === evseId)?.display;
+
+  it("shows the driver's tariff, running and total costs, personal messages and fallbacks", async () => {
+    let ended: JsonObject = { totalCost: 4.5 };
+    const h = setup({
+      features: ['Core', 'TariffAndCost'],
+      extra: { ocpp: '2.1' },
+      deviceModel: {
+        TariffCostCtrlr: {
+          TariffFallbackMessage: 'Standard tariff applies',
+          TotalCostFallbackMessage: 'See your receipt',
+        },
+      },
+      csms: {
+        Authorize: (p) =>
+          (p.idToken as JsonObject).idToken === 'TAG-1'
+            ? {
+                idTokenInfo: {
+                  status: 'Accepted',
+                  personalMessage: { format: 'UTF8', content: '0.30 EUR/kWh' },
+                },
+              }
+            : { idTokenInfo: { status: 'Accepted' } },
+        TransactionEvent: (p) =>
+          p.eventType === 'Ended'
+            ? ended
+            : p.triggerReason === 'MeterValuePeriodic'
+              ? { totalCost: 1.2, updatedPersonalMessage: { format: 'UTF8', content: 'Thanks!' } }
+              : {},
+      },
+    });
+    await h.boot();
+    // I01: the driver's tariff text.
+    await h.present(1, 'TAG-1');
+    expect(displayOf(h)).toMatchObject({ kind: 'tariff', text: '0.30 EUR/kWh' });
+    h.cp.plugIn(1);
+    await h.advance(0);
+    const tx = (h.calls('TransactionEvent')[0]?.payload.transactionInfo as JsonObject)
+      .transactionId;
+    // I02: a running cost from the CSMS.
+    await h.csmsCall('CostUpdated', { totalCost: 0.9, transactionId: tx });
+    expect(displayOf(h)).toMatchObject({ kind: 'runningCost', text: 'So far 0.90 EUR' });
+    // I06 after I02 in a TransactionEventResponse.
+    await h.advance(60_000);
+    expect(displayOf(h)).toMatchObject({ kind: 'personal', text: 'Thanks!' });
+    // I03: the total cost at the end.
+    await h.present(1, 'TAG-1');
+    await h.settle();
+    expect(displayOf(h)).toMatchObject({ kind: 'totalCost', text: 'Total 4.50 EUR' });
+    // I04: no tariff text for this driver, so the fallback.
+    await h.present(2, 'TAG-2');
+    expect(displayOf(h, 2)).toMatchObject({ kind: 'fallback', text: 'Standard tariff applies' });
+    // I05: the Ended event got no answer.
+    ended = { __callError: 'InternalError' };
+    h.cp.plugIn(2);
+    await h.advance(0);
+    await h.present(2, 'TAG-2');
+    // The station tries the Ended event MessageAttempts times before it gives up.
+    await h.advance(600_000);
+    expect(displayOf(h, 2)).toMatchObject({ kind: 'fallback', text: 'See your receipt' });
+  });
+});

@@ -21,6 +21,7 @@ import {
   type ChargePointBehaviour,
   type ChargePointEvent,
   type ChargePointSnapshot,
+  type DisplayMessage,
   type ChargePointTiming,
   type IdTagResult,
   type PluggedEv,
@@ -1325,6 +1326,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         ? (outcome.payload as Ocpp21ResponseOf<'TransactionEvent'>)
         : undefined;
       extra.onAnswer?.(answer);
+      showAnswer(connectorId, eventType, answer);
       if (answer === undefined || eventType === 'Ended') return;
       const response = answer;
       if (v21 && transactions.get(connectorId) === tx) {
@@ -1529,6 +1531,52 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     if (action === 'Deauthorize') return false;
     if (action === 'CentralCost') centralCostTokens.add(key);
     return true;
+  }
+
+  // ---- Virtual display (2.1, I01 to I06) -----------------------------------
+
+  /** What each EVSE's display shows: the latest tariff or cost message. */
+  const displays = new Map<number, DisplayMessage>();
+  function show(evseId: number, kind: DisplayMessage['kind'], text: string): void {
+    if (!v21 || text === '') return;
+    displays.set(evseId, { at: timestamp(), kind, text });
+    log(`EVSE ${evseId} display: ${text}`);
+    changed();
+  }
+  /** A cost as the display shows it: two decimals and the station's currency. */
+  const money = (amount: number) =>
+    `${amount.toFixed(2)}${dmValue('TariffCostCtrlr', 'Currency') === '' ? '' : ` ${dmValue('TariffCostCtrlr', 'Currency')}`}`;
+  /** I01, I04: the driver's tariff text with an accepted token, else the fallback message. */
+  function showTariff(evseId: number, info: TokenInfo | undefined): void {
+    const message = info?.personalMessage?.content;
+    if (message !== undefined && message !== '') show(evseId, 'tariff', message);
+    else show(evseId, 'fallback', dmValue('TariffCostCtrlr', 'TariffFallbackMessage'));
+  }
+  /**
+   * I02, I03, I05, I06: a TransactionEventResponse's running or total cost and
+   * updated personal message; the total cost fallback when the Ended event got
+   * no answer.
+   */
+  function showAnswer(
+    evseId: number,
+    eventType: TransactionEventEnumType,
+    answer: Ocpp21ResponseOf<'TransactionEvent'> | undefined,
+  ): void {
+    if (answer === undefined) {
+      if (eventType === 'Ended') {
+        show(evseId, 'fallback', dmValue('TariffCostCtrlr', 'TotalCostFallbackMessage'));
+      }
+      return;
+    }
+    if (answer.totalCost !== undefined) {
+      show(
+        evseId,
+        eventType === 'Ended' ? 'totalCost' : 'runningCost',
+        `${eventType === 'Ended' ? 'Total' : 'So far'} ${money(answer.totalCost)}`,
+      );
+    }
+    const personal = answer.updatedPersonalMessage?.content;
+    if (personal !== undefined) show(evseId, 'personal', personal);
   }
 
   // ---- Ad hoc payment (2.1, C18 to C25) ------------------------------------
@@ -2909,6 +2957,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       const entry = [...transactions].find(([, tx]) => tx.id === request.transactionId);
       if (v21 && entry !== undefined) {
         const [connectorId, tx] = entry;
+        // I02: the running cost on the EVSE's display.
+        show(connectorId, 'runningCost', `So far ${money(request.totalCost)}`);
         tx.csmsCost = request.totalCost;
         later(0, () => checkTxLimits(connectorId, tx));
       }
@@ -3691,6 +3741,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         idToken: tokenRef(idToken),
         source: localSource(idToken),
       });
+      showTariff(connectorId, result.info);
       if (!connector.plugged) awaitCable(connectorId);
       evaluate(connectorId, 'Authorized', idToken);
       return 'authorized';
@@ -3791,6 +3842,9 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
             offeredW: reading.offeredW,
             ...((limit) => (limit === undefined ? {} : { limitW: Math.round(limit * 10) / 10 }))(
               profileLimitW(connector.connectorId),
+            ),
+            ...((message) => (message === undefined ? {} : { display: message }))(
+              displays.get(connector.connectorId),
             ),
             ...(ev !== undefined && {
               ev: {

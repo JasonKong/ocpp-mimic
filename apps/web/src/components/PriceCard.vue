@@ -78,6 +78,16 @@ function save() {
       <label>Currency <input v-model="form.currency" maxlength="3" class="short" /></label>
       <label>Session fee <input v-model="form.fixedFee" inputmode="decimal" /></label>
       <label>Per kWh <input v-model="form.priceKwh" inputmode="decimal" /></label>
+      <label
+        >Off-peak per kWh <input v-model="form.offPeakKwh" inputmode="decimal" /> from
+        <input
+          v-model="form.offPeakFrom"
+          class="short"
+          placeholder="21:00"
+          aria-label="Off-peak from" />
+        to
+        <input v-model="form.offPeakTo" class="short" placeholder="07:00" aria-label="Off-peak to"
+      /></label>
       <label>Per charging minute <input v-model="form.chargingMinute" inputmode="decimal" /></label>
       <label>Idle fee per minute <input v-model="form.idleMinute" inputmode="decimal" /></label>
       <label
@@ -93,8 +103,9 @@ function save() {
       <label>Minimum <input v-model="form.minCost" inputmode="decimal" /></label>
       <label>Maximum <input v-model="form.maxCost" inputmode="decimal" /></label>
       <p class="hint">
-        Prices before tax; an empty field leaves that part out. It is a 2.1 TariffType without
-        conditions.
+        Prices before tax; an empty field leaves that part out. It is a 2.1 TariffType; the off-peak
+        hours are the station's local time (UTC for 1.6) and become a time-of-day condition on the
+        energy price.
       </p>
       <p v-if="problem" class="problem" role="alert">{{ problem }}</p>
       <button class="primary" type="submit">Save the tariff</button>
@@ -169,8 +180,15 @@ function save() {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="item in price.items" :key="item.part">
-          <td>{{ PART_LABELS[item.part] }}</td>
+        <tr v-for="(item, index) in price.items" :key="`${item.part}-${index}`">
+          <td>
+            {{ PART_LABELS[item.part] }}
+            <span v-if="item.conditions?.startTimeOfDay" class="muted"
+              >{{ item.conditions.startTimeOfDay }}–{{
+                item.conditions.endTimeOfDay ?? '24:00'
+              }}</span
+            >
+          </td>
           <td>{{ item.unit === 'session' ? '1' : `${item.quantity} ${item.unit}` }}</td>
           <td>{{ item.unitPrice }}</td>
           <td>{{ item.exclTax.toFixed(2) }}</td>
