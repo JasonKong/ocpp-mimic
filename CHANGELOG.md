@@ -23,6 +23,7 @@ The first release, 0.1.0. It collects milestones M1 to M8 of the [design](docs/d
 - **User guide** in English and Chinese (`docs/guide.md`, `docs/guide.zh-CN.md`).
 - **License**: the Business Source License 1.1, with third-party notices, `CONTRIBUTING.md` and `SECURITY.md`.
 - **API token** (`--api-token`, `OCPP_MIMIC_API_TOKEN`) for the engine's API, `/metrics`, the events WebSocket and the Web UI, and for the built-in CSMS's control API (`csms --api-token`; `serve --csms-api-token` for remote starts through it). A server that listens beyond loopback without a token warns at start.
+- **npm package** `ocpp-mimic`: one install with the CLI, the Web UI, the built-in personas, the OCA schemas, the test PKI and the samples; `ocpp-mimic samples <dir>` copies the samples to edit; the command names the Node.js version it needs on an older one.
 - **Versions**: version 0.1.0 in `--version`, both `/api/health` answers and OTLP's `service.version`; this changelog.
 
 ### Fixed

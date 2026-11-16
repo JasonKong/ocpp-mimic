@@ -22,6 +22,7 @@ ocpp-mimic is an OCPP charge point simulator. Read [docs/design.md](docs/design.
 | `pnpm serve`          | Build and start the engine on `http://127.0.0.1:7300`           |
 | `pnpm dev:web`        | Vite dev server; `/api` is proxied to the engine                |
 | `pnpm notices`        | Regenerate `THIRD_PARTY_NOTICES.md` from the installed packages |
+| `pnpm pack:release`   | Build, then pack the `ocpp-mimic` npm package into `release/`   |
 
 CI runs the third-party notices check, lint, format check, typecheck, test and build, and in a second job the regression scenarios. Run the same before pushing.
 

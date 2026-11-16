@@ -91,8 +91,8 @@ function answerText(row: LogRow): string {
           class="export"
           :href="exportUrl"
           :download="exportName"
-          @click.prevent="downloadFile(exportUrl, exportName)"
           title="The session's frames as JSONL, for replay and scenarios"
+          @click.prevent="downloadFile(exportUrl, exportName)"
           >Export JSONL</a
         >
       </div>

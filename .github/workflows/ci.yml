@@ -27,6 +27,27 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
+  package:
+    name: npm package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build and pack the ocpp-mimic package
+        run: pnpm pack:release
+      - name: Install the package and run the smoke test
+        run: bash tools/smoke-package.sh release/ocpp-mimic-*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ocpp-mimic-package
+          path: release/ocpp-mimic-*.tgz
+
   scenarios:
     name: regression scenarios
     runs-on: ubuntu-latest

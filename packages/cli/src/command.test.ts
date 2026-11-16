@@ -84,6 +84,16 @@ describe('parseCommand', () => {
     expect(parseCommand(['csms', '--csms-api-token', 't'])).toMatchObject({ kind: 'error' });
   });
 
+  it('parses samples with one directory', () => {
+    expect(parseCommand(['samples', 'my-samples'])).toEqual({
+      kind: 'samples',
+      target: 'my-samples',
+    });
+    expect(parseCommand(['samples'])).toMatchObject({ kind: 'error' });
+    expect(parseCommand(['samples', 'a', 'b'])).toMatchObject({ kind: 'error' });
+    expect(parseCommand(['samples', 'a', '--port', '1'])).toMatchObject({ kind: 'error' });
+  });
+
   it('rejects a port that is not a valid number', () => {
     expect(parseCommand(['serve', '--port', 'abc'])).toMatchObject({ kind: 'error' });
     expect(parseCommand(['serve', '--port', '70000'])).toMatchObject({ kind: 'error' });

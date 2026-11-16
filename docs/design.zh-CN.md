@@ -1440,6 +1440,7 @@ M8 确定（#267）。M1 到 M7 做出了模拟器；M8 把它变成别人可以
 - `engines.node` 为 `>=24`，命令启动时先检查 Node 版本并说出需要的版本，而不是因为缺少某个导出而报错。
 - 内置文件从包里解析，绝不从工作目录解析。`ocpp-mimic samples <目录>` 把示例复制到一个目录里，供阅读、修改，以及传给 `--personas`、`run` 和 `load`。
 - 存在 `NPM_TOKEN` secret 时，发布工作流带 npm provenance 发布这个包；npm 账号归仓库所有者。在那之前，每次发布都附上 tarball，可以用 `npm install -g <url>` 安装。
+- 已实现（T116）：`tools/pack.mjs`（`pnpm pack:release`）用 rolldown（已通过 Vite 在 lockfile 里）把 `packages/cli/dist/bin.js` 打包成 `dist/ocpp-mimic.js` 和一个 chunk，npm 依赖和 Node 内置模块保留为 import；把 Web UI 复制到 `web/`，引擎的 `personas/`、`oca-schemas/` 和 `test-pki/` 放在 `dist/` 旁边（引擎本来就按自身代码的相对位置查找），示例放到 `samples/`，再加上 LICENSE、THIRD_PARTY_NOTICES.md、CHANGELOG.md 和 README.md；写入清单（版本取自 `VERSION`、`license: BUSL-1.1`、`engines.node >=24`、引擎的依赖）后运行 `npm pack`：约 450 个文件、485 kB。入口先检查 Node.js 版本，再导入其余部分，所以在 Node 16 上会说明需要的版本，而不是报导入错误。CLI 先在包里找 Web UI 和示例，找不到再到 monorepo 里找（`paths.ts`）。`ocpp-mimic samples <目录>` 复制 persona、示例场景、压测计划、导入映射和日志，不覆盖已有文件。`tools/smoke-package.sh` 把 tarball 装进临时前缀，检查版本、示例、一个示例场景、CSMS、引擎及其 Web UI、通过 API 的一次会话，以及 30 秒的冒烟压测；CI 在 `package` job 里运行它，并把 tarball 存为 artifact。
 
 **Docker 镜像**
 
