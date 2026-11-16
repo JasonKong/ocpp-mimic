@@ -13,7 +13,12 @@
  */
 
 import type { OcppVersion } from './message-set.js';
-export type SessionSource = 'local' | 'remote' | 'noAuth';
+/**
+ * How a session started: a card at the station, a remote start, no
+ * authorization, or an ad hoc payment (2.1: an idToken of type DirectPayment,
+ * from a payment terminal or a web payment the CSMS started).
+ */
+export type SessionSource = 'local' | 'remote' | 'noAuth' | 'payment';
 export type SessionState = 'starting' | 'running' | 'finished' | 'not-started';
 export type StartFailure = 'Rejected' | 'NotAuthorized' | 'ConnectionTimeout' | 'StartFailed';
 export type SessionOcpp = OcppVersion;
@@ -131,9 +136,24 @@ export interface SessionRecord {
   /** The NotifyEVChargingNeeds payload's chargingNeeds (2.0.1). */
   chargingNeeds?: Record<string, unknown>;
   costs: SessionCost[];
+  /** 2.1: the ad hoc payment's settlement (NotifySettlement, C19 to C22). */
+  settlement?: SessionSettlement;
   stopReason?: string;
   /** Periodic meter frames past the frame limit were not kept. */
   framesTruncated?: true;
+}
+
+/** A NotifySettlement for the session's DirectPayment token. */
+export interface SessionSettlement {
+  at: string;
+  seq: number;
+  pspRef: string;
+  status: string;
+  amount: number;
+  statusInfo?: string;
+  receiptId?: string;
+  receiptUrl?: string;
+  vatNumber?: string;
 }
 
 /** A session a frame or hint touched, with the frames that belong to it. */
@@ -327,6 +347,8 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
   const loose: LooseAuthorize[] = [];
   /** Sessions that just ended as not-started, for hints that arrive after the frame that failed them. */
   const recent: SessionRecord[] = [];
+  /** Sessions that finished lately: a settlement comes after the end (C21). */
+  const ended: SessionRecord[] = [];
 
   for (const session of options.open ?? []) {
     open.push(session);
@@ -370,6 +392,10 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
     session.state = state;
     const index = open.indexOf(session);
     if (index >= 0) open.splice(index, 1);
+    if (state === 'finished') {
+      ended.push(session);
+      if (ended.length > MAX_RECENT) ended.shift();
+    }
   }
 
   function fail(session: SessionRecord, reason: StartFailure, at: string, detail?: string) {
@@ -530,8 +556,13 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
   }
 
   function sourceOfToken(token: SessionIdToken): SessionSource {
+    if (token.type === 'DirectPayment') return 'payment';
     return token.type === 'NoAuthorization' ? 'noAuth' : 'local';
   }
+
+  /** A remote start with a DirectPayment token is a web payment (C24, C25). */
+  const remoteSource = (token: SessionIdToken | undefined): SessionSource =>
+    token?.type === 'DirectPayment' ? 'payment' : 'remote';
 
   // ---- CALLs ----------------------------------------------------------------
 
@@ -548,8 +579,8 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
         const waiting = open.find(
           (s) => s.state === 'running' && s.evseId === evseId && s.idToken === undefined,
         );
-        const session = waiting ?? create(frame.at, 'remote', true);
-        setSource(session, 'remote');
+        const session = waiting ?? create(frame.at, remoteSource(token), true);
+        setSource(session, remoteSource(token));
         setEvse(session, evseId);
         if (token !== undefined) session.idToken = token;
         if (remoteStartId !== undefined) session.remoteStartId = remoteStartId;
@@ -627,6 +658,41 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
         session.costs.push({ at: frame.at, seq: frame.seq, totalCost, from: 'CostUpdated' });
         return [session];
       }
+      case 'NotifySettlement': {
+        const pspRef = str(payload.pspRef);
+        const transactionId = str(payload.transactionId);
+        const amount = num(payload.settlementAmount);
+        const status = str(payload.status);
+        if (pspRef === undefined || amount === undefined || status === undefined) return [];
+        const paidWith = (s: SessionRecord) =>
+          s.idToken?.idToken === pspRef && s.idToken.type === 'DirectPayment';
+        const session =
+          byTransaction(transactionId) ??
+          [...ended, ...recent]
+            .reverse()
+            .find((s) =>
+              transactionId === undefined ? paidWith(s) : s.transactionId === transactionId,
+            ) ??
+          open.find(paidWith);
+        if (session === undefined) return [];
+        const optional = (name: string) => str(payload[name]);
+        const statusInfo = optional('statusInfo');
+        const receiptId = optional('receiptId');
+        const receiptUrl = optional('receiptUrl');
+        const vatNumber = optional('vatNumber');
+        session.settlement = {
+          at: str(payload.settlementTime) ?? frame.at,
+          seq: frame.seq,
+          pspRef,
+          status,
+          amount,
+          ...(statusInfo !== undefined && { statusInfo }),
+          ...(receiptId !== undefined && { receiptId }),
+          ...(receiptUrl !== undefined && { receiptUrl }),
+          ...(vatNumber !== undefined && { vatNumber }),
+        };
+        return [session];
+      }
       case 'NotifyEVChargingNeeds': {
         const session = openOn(num(payload.evseId));
         if (session === undefined) return [];
@@ -660,7 +726,10 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
         open.find((s) => s.state === 'starting' && evseId !== undefined && s.evseId === evseId) ??
         (token === undefined ? undefined : startingFor(token, evseId)) ??
         open.find(
-          (s) => s.state === 'starting' && s.evseId === undefined && s.source === 'remote',
+          (s) =>
+            s.state === 'starting' &&
+            s.evseId === undefined &&
+            (s.source === 'remote' || (s.source === 'payment' && s.remoteStartId !== undefined)),
         ) ??
         create(frame.at, token === undefined ? 'local' : sourceOfToken(token), token !== undefined);
       if (transactionId !== undefined) session.transactionId = transactionId;
@@ -673,7 +742,7 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
       if (!info(session).sourceKnown) setSource(session, sourceOfToken(token));
     }
     if (remoteStartId !== undefined || trigger === 'RemoteStart') {
-      setSource(session, 'remote');
+      setSource(session, remoteSource(session.idToken));
       if (remoteStartId !== undefined) session.remoteStartId = remoteStartId;
     }
     addState(session, frame, str(payload.timestamp) ?? frame.at, str(tx.chargingState));
@@ -722,8 +791,8 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
           const running = byTransaction(transactionId);
           if (running !== undefined && running !== session) {
             // The token went to a transaction that was already running (2.0.1, F02).
-            setSource(running, 'remote');
             if (session.idToken !== undefined) running.idToken ??= session.idToken;
+            setSource(running, remoteSource(running.idToken));
             if (session.remoteStartId !== undefined) running.remoteStartId = session.remoteStartId;
             mergeSteps(running, session.timeline);
             close(session, 'not-started');
@@ -752,6 +821,15 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
         case 'StopTransaction':
           if (!error) close(session, 'finished');
           break;
+        case 'NotifySettlement': {
+          // With ReceiptByCSMS, the CSMS gives the receipt (C21.FR.03).
+          const receiptUrl = str(payload.receiptUrl);
+          const receiptId = str(payload.receiptId);
+          if (session.settlement === undefined || error) break;
+          if (receiptUrl !== undefined) session.settlement.receiptUrl = receiptUrl;
+          if (receiptId !== undefined) session.settlement.receiptId = receiptId;
+          break;
+        }
         case 'TransactionEvent': {
           const totalCost = num(payload.totalCost);
           if (totalCost !== undefined) {

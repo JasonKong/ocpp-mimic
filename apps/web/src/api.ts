@@ -221,7 +221,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 // ---- Sessions (docs/session-ui.md) -------------------------------------------
 
-export type SessionSource = 'local' | 'remote' | 'noAuth';
+export type SessionSource = 'local' | 'remote' | 'noAuth' | 'payment';
 export type SessionState = 'starting' | 'running' | 'finished' | 'not-started';
 
 export interface SessionIdToken {
@@ -294,6 +294,18 @@ export interface SessionRecord extends Omit<SessionSummary, 'energyWh' | 'socPer
   meterStopSeq?: number;
   chargingNeeds?: Record<string, unknown>;
   costs: { at: string; seq: number; totalCost: number; from: string }[];
+  /** 2.1: the ad hoc payment's settlement (NotifySettlement). */
+  settlement?: {
+    at: string;
+    seq: number;
+    pspRef: string;
+    status: string;
+    amount: number;
+    statusInfo?: string;
+    receiptId?: string;
+    receiptUrl?: string;
+    vatNumber?: string;
+  };
   stopReason?: string;
   framesTruncated?: true;
 }

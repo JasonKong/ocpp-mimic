@@ -621,6 +621,27 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       // K21: acknowledged. K28: no newer values for a Dynamic profile.
       NotifyPriorityCharging: () => ({}),
       PullDynamicScheduleUpdate: () => ({ status: 'Rejected' }),
+      // C21, C22: the settlement is noted; the station gives the receipt.
+      NotifySettlement: () => ({}),
+      // C18.FR.09, .10: a number of 2 letters and 2 to 18 digits or letters is valid,
+      // and belongs to a test company; the EVSE comes back as it was asked.
+      VatNumberValidation: (payload) => {
+        const vatNumber = String(payload.vatNumber);
+        const valid = /^[A-Z]{2}[0-9A-Z]{2,18}$/.test(vatNumber);
+        return {
+          vatNumber,
+          status: valid ? 'Accepted' : 'Rejected',
+          ...(typeof payload.evseId === 'number' && { evseId: payload.evseId }),
+          ...(valid && {
+            company: {
+              name: 'Test Company Ltd',
+              address1: '1 Test Street',
+              city: 'Testville',
+              country: vatNumber.slice(0, 2),
+            },
+          }),
+        };
+      },
       SignCertificate: signCertificate,
       ...options.handlers,
     },

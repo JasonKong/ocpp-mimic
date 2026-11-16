@@ -63,7 +63,18 @@ import {
   type Tariff21,
   type TariffSituation,
 } from '../ocpp21/tariff-cost.js';
+import {
+  paymentInfo,
+  totpInterval,
+  totpV1,
+  webPaymentUrl as paymentUrlOf,
+  withCardDefaults,
+  type HmacSha256,
+  type PaymentCard,
+  type WebPaymentLimits,
+} from '../ocpp21/payment.js';
 import type {
+  AddressType,
   AttributeEnumType,
   BootReasonEnumType,
   ChargingStateEnumType,
@@ -207,6 +218,8 @@ export interface ChargePoint201Options {
   };
   /** X.509 support for certificates and signed firmware; without it those messages fail. */
   certificateTools?: CertificateTools;
+  /** 2.1: HMAC-SHA256 for the web payment code (C25); without it there is no payment URL. */
+  hmacSha256?: HmacSha256;
   /** The CN of a CSR; default the boot serial number. */
   serialNumber?: string;
   /** Timings and outcomes of simulated firmware updates and log uploads. */
@@ -244,6 +257,47 @@ export interface PersistedChargePoint201 {
   chargingProfiles?: InstalledProfile201[];
   /** Reservations not yet used, cancelled or expired; missing in older states. */
   reservations?: Reservation201[];
+  /** 2.1: cards the payment terminal holds, until their settlement. */
+  payments?: TerminalPayment[];
+}
+
+/** A card at a 2.1 station's payment terminal, and how its PSP answers (C18 to C23). */
+export interface TerminalCard extends PaymentCard {
+  /** The PSP declines the card. */
+  decline?: boolean;
+  /** The settlement's outcome at the end (C21, C22). Default Settled. */
+  settlement?: 'Settled' | 'Rejected' | 'Failed';
+  /** The PSP refuses to raise the authorization (C23). */
+  declineIncrement?: boolean;
+}
+
+/** A card the payment terminal authorized, until its settlement (C18 to C22). */
+export interface TerminalPayment {
+  evseId: number;
+  /** PspRef as an idToken of type DirectPayment, with the card's details. */
+  idToken: IdTokenType;
+  card: TerminalCard;
+  /** The amount the terminal holds now. */
+  authorized: number;
+  /** The transaction it pays for, once an event carried its token. */
+  transactionId?: string;
+  /** The PSP refused to raise the authorization. */
+  noIncrement?: boolean;
+  /** A VAT number the CSMS accepted, for the receipt (C18.FR.08). */
+  vat?: { number: string; company?: AddressType };
+  /** The transaction's cost when the state was saved, for a settlement after a restart. */
+  lastCost?: number;
+}
+
+export type PaymentCardResult =
+  'authorized' | 'declined' | 'rejected' | 'busy' | 'unknown-connector' | 'not-supported';
+export type PaymentStopResult = 'canceled' | 'stopping' | 'no-payment' | 'unknown-connector';
+export type WebPaymentUrlResult =
+  | { url: string; totp: string; validUntil: string }
+  | { error: 'not-supported' | 'disabled' | 'no-hmac' | 'unknown-connector' };
+export interface VatResult {
+  status: 'Accepted' | 'Rejected' | 'not-supported' | 'no-answer';
+  company?: AddressType;
 }
 
 export interface PersistedTransaction201 {
@@ -272,6 +326,8 @@ interface Authorization {
   txProfile?: ChargingProfile201;
   /** The reservation the token used, reported with the transaction (H01.FR.15). */
   reservationId?: number;
+  /** 2.1: limits the driver put in a payment URL, for the web payment's transaction (C25.FR.60). */
+  limits?: TransactionLimit;
 }
 
 /** A running transaction. */
@@ -393,6 +449,18 @@ export interface ChargePoint201 extends ChargePoint {
     evseId: number,
     activate: boolean,
   ): 'activated' | 'deactivated' | 'no-profile' | 'no-transaction' | 'not-2.1';
+  /**
+   * 2.1 with Payment: a card at the EVSE's payment terminal (C18). The
+   * terminal holds PaymentCtrlr.AuthorizationAmount; the CSMS approves it when
+   * AuthorizeDirectPayment is true.
+   */
+  presentPaymentCard(evseId: number, card?: TerminalCard): Promise<PaymentCardResult>;
+  /** 2.1: the driver stops at the payment terminal: canceled before the transaction (C19), else it ends (C20, C21). */
+  stopPayment(evseId: number): PaymentStopResult;
+  /** 2.1 with Payment: a VAT number the driver entered, checked by the CSMS (C18.FR.08). */
+  validateVatNumber(evseId: number | undefined, vatNumber: string): Promise<VatResult>;
+  /** 2.1 with WebPayments: the dynamic QR code's URL for an EVSE now, with the driver's limits (C25). */
+  webPaymentUrl(evseId: number, limits?: WebPaymentLimits): WebPaymentUrlResult;
   /** The Device Model: every variable with its characteristics and attribute values. */
   deviceModelView(): DeviceModelEntry[];
   /**
@@ -423,7 +491,14 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     type: idToken.type,
   });
   const localSource = (idToken: IdTokenType): SessionSource =>
-    idToken.type === 'NoAuthorization' ? 'noAuth' : 'local';
+    idToken.type === 'DirectPayment'
+      ? 'payment'
+      : idToken.type === 'NoAuthorization'
+        ? 'noAuth'
+        : 'local';
+  /** A remote start with a DirectPayment token is a web payment (C24, C25). */
+  const remoteSourceOf = (idToken: IdTokenType): SessionSource =>
+    idToken.type === 'DirectPayment' ? 'payment' : 'remote';
   /** connectorId → when the EV was plugged in; set while NotifyEVChargingNeeds is still due. */
   const needsDue = new Map<number, number>();
   const changed = () => emit({ type: 'changed' });
@@ -574,7 +649,21 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       changed();
       if (outbox.entries.length === 0) releaseDelivered();
     },
+    answered: (entry, payload) => restoredAnswers.set(entry.key, payload),
+    settled: (entry) => {
+      const settle = afterRestoredEnd.get(entry.key);
+      const answer = restoredAnswers.get(entry.key);
+      restoredAnswers.delete(entry.key);
+      afterRestoredEnd.delete(entry.key);
+      settle?.(answer as Ocpp21ResponseOf<'TransactionEvent'> | undefined);
+    },
   });
+  /** Ended events of card-paid transactions the restart ended: they settle once sent. */
+  const afterRestoredEnd = new Map<
+    string,
+    (answer: Ocpp21ResponseOf<'TransactionEvent'> | undefined) => void
+  >();
+  const restoredAnswers = new Map<string, unknown>();
 
   /** Waiting for the queued messages to be delivered (before a reset reboots). */
   let deliveredWaiters: (() => void)[] = [];
@@ -853,6 +942,15 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
   const dmValue = (component: string, variable: string) =>
     deviceModel.get(component, variable) ?? '';
+  if (
+    v21 &&
+    features.includes('WebPayments') &&
+    dmValue('WebPaymentsCtrlr', 'SharedSecret') === ''
+  ) {
+    // A random secret at first boot, for the CSMS to replace (C25, appendix).
+    const secret = `${ids()}${ids()}`.replace(/[^0-9A-Za-z]/g, '');
+    deviceModel.set('WebPaymentsCtrlr', 'SharedSecret', secret.padEnd(16, '0').slice(0, 64));
+  }
   const sample = (connectorId: number, measurands: string, context: ReadingContextEnumType) =>
     sampleMeter201(
       energy.sync(connectorId),
@@ -1136,6 +1234,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       stoppedReason?: ReasonEnumType;
       /** 2.1: the limits, sent with LimitSet (E16.FR.01, .03). */
       transactionLimit?: TransactionLimit;
+      /** Called with the CSMS's answer, or undefined when the event never got one. */
+      onAnswer?: (response: Ocpp21ResponseOf<'TransactionEvent'> | undefined) => void;
     } = {},
   ): void {
     tx.chargingState = eventType === 'Ended' ? tx.chargingState : currentChargingState(connectorId);
@@ -1159,6 +1259,18 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     }
     const tariffId = tx.tariffIdPending === true ? tx.cost?.tariffId : undefined;
     tx.tariffIdPending = false;
+    // 2.1: the first event with a terminal payment's token sets maxCost to the amount the
+    // terminal holds (C18.FR.06); a Started event carries the limits the transaction has
+    // from the start (a web payment's, C25.FR.60).
+    const payment = paymentOf(extra.idToken);
+    const paymentLimit =
+      payment !== undefined && payment.transactionId === undefined && eventType !== 'Ended';
+    if (paymentLimit) {
+      payment.transactionId = tx.id;
+      tx.limits = { ...tx.limits, maxCost: payment.authorized };
+    }
+    const ownLimits = paymentLimit || (eventType === 'Started' && tx.limits !== undefined);
+    const transactionLimit = extra.transactionLimit ?? (ownLimits ? tx.limits : undefined);
     const payload: Ocpp21RequestOf<'TransactionEvent'> = {
       eventType,
       timestamp: timestamp(),
@@ -1170,7 +1282,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         ...(extra.stoppedReason !== undefined && { stoppedReason: extra.stoppedReason }),
         ...(eventType === 'Started' &&
           tx.remoteStartId !== undefined && { remoteStartId: tx.remoteStartId }),
-        ...(extra.transactionLimit !== undefined && { transactionLimit: extra.transactionLimit }),
+        ...(transactionLimit !== undefined && { transactionLimit }),
         ...(tariffId !== undefined && { tariffId }),
       },
       ...(costDetails !== undefined && { costDetails }),
@@ -1181,8 +1293,12 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       ...(reservationId !== undefined && { reservationId }),
     };
     void outbox.enqueue('TransactionEvent', payload, tx.id).then((outcome) => {
-      if (!outcome.ok || eventType === 'Ended') return;
-      const response = outcome.payload as Ocpp21ResponseOf<'TransactionEvent'>;
+      const answer = outcome.ok
+        ? (outcome.payload as Ocpp21ResponseOf<'TransactionEvent'>)
+        : undefined;
+      extra.onAnswer?.(answer);
+      if (answer === undefined || eventType === 'Ended') return;
+      const response = answer;
       if (v21 && transactions.get(connectorId) === tx) {
         if (response.totalCost !== undefined) {
           tx.csmsCost = response.totalCost;
@@ -1200,6 +1316,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       log(`connector ${connectorId}: the CSMS answered ${info.status} for the transaction's token`);
       invalidated(connectorId, tx);
     });
+    if (ownLimits) later(0, () => checkTxLimits(connectorId, tx));
     changed();
   }
 
@@ -1287,9 +1404,18 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     const tariff =
       (key === undefined ? undefined : driverTariffs.get(key)) ?? activeDefault(connectorId);
     if (tariff === undefined) return;
+    // An ad hoc payment's brand picks its fixed fee (C18).
+    const card = paymentOf(idToken)?.card;
+    const payment = card === undefined ? undefined : withCardDefaults(card);
     tx.cost = createCostMeter({
       tariff,
-      place: { timeZone: dmValue('ClockCtrlr', 'TimeZone'), evseKind: 'AC' },
+      place: {
+        timeZone: dmValue('ClockCtrlr', 'TimeZone'),
+        evseKind: 'AC',
+        ...(payment !== undefined && {
+          payment: { brand: payment.brand, recognition: payment.recognition },
+        }),
+      },
       start: costSituation(connectorId, tx),
     });
     // The driver accepts implicitly by plugging in; the tariff goes with the next event (I07.FR.31).
@@ -1377,6 +1503,338 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     return true;
   }
 
+  // ---- Ad hoc payment (2.1, C18 to C25) ------------------------------------
+
+  /** Cards the payment terminal holds, by PspRef, until their settlement. */
+  const payments = new Map<string, TerminalPayment>(
+    (options.restore?.payments ?? []).map((p) => [p.idToken.idToken, { ...p }]),
+  );
+  /** EVSEs (0: all) where a web payment is under way: no local starts (C25.FR.22). */
+  const webHolds = new Map<number, TimerHandle>();
+  /** Limits a driver put in a payment URL, for the web payment's transaction (C25.FR.60). */
+  const webLimits = new Map<number, TransactionLimit>();
+  const paymentOn = () =>
+    v21 && features.includes('Payment') && dmValue('PaymentCtrlr', 'Enabled') === 'true';
+  const dmDecimal = (component: string, variable: string) => {
+    const text = deviceModel.get(component, variable);
+    const value = Number(text);
+    return text === undefined || text === '' || !Number.isFinite(value) ? undefined : value;
+  };
+  /** The terminal payment a token stands for. */
+  const paymentOf = (idToken: IdTokenType | undefined) =>
+    idToken?.type === 'DirectPayment' ? payments.get(idToken.idToken) : undefined;
+  const roundCents = (value: number) => Math.round(value * 100) / 100;
+  const webHeld = (evseId: number) => webHolds.has(evseId) || webHolds.has(0);
+  /** The id in a payment URL: SecurityCtrlr.Identity (C25.FR.51), else the station's id. */
+  const stationIdentity = () =>
+    dmValue('SecurityCtrlr', 'Identity') ||
+    options.serialNumber ||
+    options.boot.serialNumber ||
+    'station';
+
+  /**
+   * A card at an EVSE's terminal (C18): the PSP holds AuthorizationAmount and
+   * gives a PspRef, the station's DirectPayment idToken with the details
+   * PaymentDetails names. The CSMS authorizes it when AuthorizeDirectPayment
+   * is true (C18.FR.04), the station itself otherwise (C18.FR.03).
+   */
+  async function presentPaymentCard(
+    evseId: number,
+    card: TerminalCard,
+  ): Promise<PaymentCardResult> {
+    if (!v21 || !features.includes('Payment')) return 'not-supported';
+    const connector = findConnector(station, evseId);
+    if (connector === undefined) return 'unknown-connector';
+    if (!paymentOn()) return 'not-supported';
+    const busy = () =>
+      authorizations.has(evseId) ||
+      transactions.get(evseId)?.idToken !== undefined ||
+      webHeld(evseId);
+    if (busy()) return 'busy';
+    if (card.decline === true) {
+      log(`EVSE ${evseId}: the payment service provider declined the card`);
+      return 'declined';
+    }
+    const pspRef = `psp-${ids()}`;
+    const details = dmValue('PaymentCtrlr', 'PaymentDetails')
+      .split(',')
+      .filter((d) => d !== '');
+    const additionalInfo = paymentInfo(card, details);
+    const idToken: IdTokenType = {
+      idToken: pspRef,
+      type: 'DirectPayment',
+      ...(additionalInfo.length > 0 && { additionalInfo }),
+    };
+    const payment: TerminalPayment = {
+      evseId,
+      idToken,
+      card,
+      authorized: dmDecimal('PaymentCtrlr', 'AuthorizationAmount') ?? 0,
+    };
+    log(`EVSE ${evseId}: the terminal holds ${payment.authorized} with ${pspRef}`);
+    let info: TokenInfo = { status: 'Accepted' };
+    if (dmValue('PaymentCtrlr', 'AuthorizeDirectPayment') === 'true') {
+      const outcome = await sendIfOnline('Authorize', { idToken });
+      const answer = outcome?.ok === true ? outcome.payload : undefined;
+      let ok = answer?.idTokenInfo.status === 'Accepted';
+      if (answer !== undefined) {
+        info = bare(answer.idTokenInfo);
+        // A tariff of the CSMS's prices the payment (C18 alternative scenario).
+        if (ok && answer.tariff !== undefined && tariffOn()) {
+          ok = takeDriverTariff(idToken, bare(answer.tariff));
+        }
+      }
+      if (!ok) {
+        // The terminal releases the amount and cancels the payment (C18.FR.07).
+        log(`EVSE ${evseId}: the CSMS refused ${pspRef}; the terminal releases it`);
+        hint({
+          kind: 'start-failed',
+          evseId,
+          idToken: tokenRef(idToken),
+          source: 'payment',
+          reason: 'NotAuthorized',
+          ...(answer !== undefined && { detail: answer.idTokenInfo.status }),
+        });
+        return 'rejected';
+      }
+    }
+    payments.set(pspRef, payment);
+    if (busy()) {
+      log(`EVSE ${evseId}: in use meanwhile; the terminal releases ${pspRef}`);
+      cancelPayment(payment);
+      return 'busy';
+    }
+    authorizations.set(evseId, { idToken, info });
+    hint({ kind: 'authorized', evseId, idToken: tokenRef(idToken), source: 'payment' });
+    if (!connector.plugged) awaitCable(evseId);
+    evaluate(evseId, 'Authorized', idToken);
+    changed();
+    return 'authorized';
+  }
+
+  /**
+   * The terminal releases a card no transaction used (C19.FR.01); the CSMS
+   * hears of it when it authorized the card (C19.FR.02).
+   */
+  function cancelPayment(payment: TerminalPayment): void {
+    payments.delete(payment.idToken.idToken);
+    log(`EVSE ${payment.evseId}: payment ${payment.idToken.idToken} canceled and released`);
+    if (dmValue('PaymentCtrlr', 'AuthorizeDirectPayment') === 'true') {
+      void sendIfOnline('NotifySettlement', {
+        pspRef: payment.idToken.idToken,
+        status: 'Canceled',
+        settlementAmount: 0,
+        settlementTime: timestamp(),
+      });
+    }
+    changed();
+  }
+
+  function stopPayment(evseId: number): PaymentStopResult {
+    if (findConnector(station, evseId) === undefined) return 'unknown-connector';
+    const tx = transactions.get(evseId);
+    const payment = paymentOf(tx?.idToken ?? authorizations.get(evseId)?.idToken);
+    if (payment === undefined) return 'no-payment';
+    if (tx === undefined) {
+      authorizations.delete(evseId);
+      stopTimer(connectTimers.get(evseId));
+      connectTimers.delete(evseId);
+      hint({
+        kind: 'start-failed',
+        evseId,
+        idToken: tokenRef(payment.idToken),
+        source: 'payment',
+        reason: 'StartFailed',
+        detail: 'canceled at the payment terminal',
+      });
+      cancelPayment(payment);
+      evaluate(evseId, 'StopAuthorized');
+      return 'canceled';
+    }
+    // After the start the transaction ends with StopAuthorized (C20.FR.01); its end settles.
+    deauthorize(evseId, 'StopAuthorized', 'Local', payment.idToken);
+    return 'stopping';
+  }
+
+  /**
+   * The end of a transaction a card paid for (C20 to C22): nothing spent is
+   * released and canceled; otherwise the terminal settles the final cost (the
+   * station's own, else the CSMS's) unless the CSMS settles (SettlementByCSMS),
+   * and NotifySettlement reports the outcome.
+   */
+  function settlePayment(
+    payment: TerminalPayment,
+    transactionId: string,
+    response: Ocpp21ResponseOf<'TransactionEvent'> | undefined,
+    known: { own?: number | undefined; csms?: number | undefined } = {},
+  ): void {
+    payments.delete(payment.idToken.idToken);
+    const cost = roundCents(
+      known.own ?? response?.totalCost ?? known.csms ?? payment.lastCost ?? 0,
+    );
+    const pspRef = payment.idToken.idToken;
+    const base = { transactionId, pspRef, settlementTime: timestamp() };
+    changed();
+    if (cost <= 0) {
+      log(`transaction ${transactionId}: nothing to pay; ${pspRef} released (C20)`);
+      void sendIfOnline('NotifySettlement', { ...base, status: 'Canceled', settlementAmount: 0 });
+      return;
+    }
+    if (dmValue('PaymentCtrlr', 'SettlementByCSMS') === 'true') {
+      log(`transaction ${transactionId}: the CSMS settles ${cost} with ${pspRef} (C21.FR.05)`);
+      return;
+    }
+    const status = payment.card.settlement ?? 'Settled';
+    log(`transaction ${transactionId}: the terminal settles ${cost} with ${pspRef}: ${status}`);
+    const receiptId = `R-${transactionId}`.slice(0, 50);
+    const server = dmValue('PaymentCtrlr', 'ReceiptServerUrl').replace(/\/+$/, '');
+    // The terminal's receipt, unless the CSMS gives it (C21.FR.03, .04); none when it failed (C22).
+    const receipt = status === 'Settled' && dmValue('PaymentCtrlr', 'ReceiptByCSMS') !== 'true';
+    void sendIfOnline('NotifySettlement', {
+      ...base,
+      status,
+      settlementAmount: cost,
+      ...(status === 'Rejected' && {
+        statusInfo: 'The payment service provider rejected the settlement',
+      }),
+      ...(status === 'Failed' && {
+        statusInfo: 'The payment terminal could not reach the payment service provider',
+      }),
+      ...(receipt && {
+        receiptId,
+        ...(server !== '' && { receiptUrl: `${server}/${encodeURIComponent(receiptId)}` }),
+      }),
+      ...(payment.vat !== undefined && {
+        vatNumber: payment.vat.number,
+        ...(payment.vat.company !== undefined && { vatCompany: payment.vat.company }),
+      }),
+    })?.then((outcome) => {
+      if (outcome.ok && outcome.payload.receiptUrl !== undefined) {
+        log(`transaction ${transactionId}: receipt at ${outcome.payload.receiptUrl}`);
+      }
+    });
+  }
+
+  /**
+   * C23: the cost nears the amount the terminal holds, so it asks the PSP for
+   * IncrementalAuthorizationAmount more and the CSMS hears the new maxCost
+   * (LimitSet).
+   */
+  function raiseAuthorization(connectorId: number, tx: Transaction201): void {
+    const payment = paymentOf(tx.idToken);
+    const step = dmDecimal('PaymentCtrlr', 'IncrementalAuthorizationAmount') ?? 0;
+    const cost = costOf(tx);
+    if (payment === undefined || payment.noIncrement === true || step <= 0) return;
+    const threshold = dmDecimal('PaymentCtrlr', 'IncrementalAuthorizationThreshold') ?? 0;
+    if (cost === undefined || cost <= payment.authorized - threshold) return;
+    if (payment.card.declineIncrement === true) {
+      payment.noIncrement = true;
+      log(`transaction ${tx.id}: the PSP would not raise ${payment.authorized}`);
+      return;
+    }
+    payment.authorized = roundCents(payment.authorized + step);
+    log(`transaction ${tx.id}: the terminal now holds ${payment.authorized}`);
+    tx.limits = { ...tx.limits, maxCost: payment.authorized };
+    sendEvent(connectorId, tx, 'Updated', 'LimitSet', { transactionLimit: tx.limits });
+  }
+
+  async function validateVatNumber(
+    evseId: number | undefined,
+    vatNumber: string,
+  ): Promise<VatResult> {
+    if (!v21 || !features.includes('Payment')) return { status: 'not-supported' };
+    const outcome = await sendIfOnline('VatNumberValidation', {
+      vatNumber,
+      ...(evseId !== undefined && { evseId }),
+    });
+    if (outcome === undefined || !outcome.ok) return { status: 'no-answer' };
+    const { status } = outcome.payload;
+    const company =
+      outcome.payload.company === undefined ? undefined : bare(outcome.payload.company);
+    log(`VAT number ${vatNumber}: ${status}`);
+    if (status === 'Accepted' && evseId !== undefined) {
+      // It goes on the receipt of the EVSE's payment (C21.FR.02).
+      const held = paymentOf(
+        transactions.get(evseId)?.idToken ?? authorizations.get(evseId)?.idToken,
+      );
+      if (held !== undefined) {
+        held.vat = { number: vatNumber, ...(company !== undefined && { company }) };
+        changed();
+      }
+    }
+    return { status, ...(company !== undefined && { company }) };
+  }
+
+  /**
+   * The dynamic QR code's URL (C25): URLTemplate with the station's id, the
+   * EVSE, the TOTP and its version, and the limits the driver chose that
+   * URLParameters lists. The station applies those limits itself to the
+   * transaction the web payment starts (C25.FR.60).
+   */
+  function paymentUrl(evseId: number, limits: WebPaymentLimits): WebPaymentUrlResult {
+    if (!v21 || !features.includes('WebPayments')) return { error: 'not-supported' };
+    if (findConnector(station, evseId) === undefined) return { error: 'unknown-connector' };
+    if (dmValue('WebPaymentsCtrlr', 'Enabled') !== 'true') return { error: 'disabled' };
+    const hmac = options.hmacSha256;
+    if (hmac === undefined) return { error: 'no-hmac' };
+    const validityS = Math.max(1, dmInt('WebPaymentsCtrlr', 'ValidityTime'));
+    const totp = totpV1(
+      {
+        sharedSecret: dmValue('WebPaymentsCtrlr', 'SharedSecret'),
+        validityS,
+        length: dmInt('WebPaymentsCtrlr', 'Length'),
+      },
+      now(),
+      hmac,
+    );
+    const supported = dmValue('WebPaymentsCtrlr', 'URLParameters')
+      .split(',')
+      .filter((p) => p !== '');
+    const url = paymentUrlOf(
+      dmValue('WebPaymentsCtrlr', 'URLTemplate'),
+      {
+        chargingStationId: stationIdentity(),
+        evseId,
+        totp,
+        version: dmValue('WebPaymentsCtrlr', 'TOTPVersion') || 'v1',
+      },
+      limits,
+      supported,
+    );
+    const kept: TransactionLimit = {};
+    if (limits.maxEnergy !== undefined && supported.includes('maxenergy'))
+      kept.maxEnergy = limits.maxEnergy;
+    if (limits.maxTime !== undefined && supported.includes('maxtime'))
+      kept.maxTime = limits.maxTime;
+    if (limits.maxCost !== undefined && supported.includes('maxcost'))
+      kept.maxCost = limits.maxCost;
+    if (Object.keys(kept).length > 0) webLimits.set(evseId, kept);
+    else webLimits.delete(evseId);
+    const validUntil = (totpInterval(now(), validityS) + 1) * validityS * 1000;
+    return { url, totp, validUntil: new Date(validUntil).toISOString() };
+  }
+
+  /** NotifyWebPaymentStarted: local starts wait `timeoutS` (C25.FR.22). */
+  function holdForWebPayment(evseId: number, timeoutS: number): void {
+    stopTimer(webHolds.get(evseId));
+    webHolds.set(
+      evseId,
+      later(Math.max(0, timeoutS) * 1000, () => {
+        webHolds.delete(evseId);
+        log(`EVSE ${evseId}: the web payment's wait is over`);
+        changed();
+      }),
+    );
+    changed();
+  }
+
+  function releaseWebHold(evseId: number): void {
+    for (const id of [evseId, 0]) {
+      stopTimer(webHolds.get(id));
+      webHolds.delete(id);
+    }
+  }
+
   // ---- Transaction limits (2.1, E16) ---------------------------------------
 
   /**
@@ -1437,6 +1895,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     tx.transactionLimitTimer = undefined;
     if (tx.limits === undefined || tx.limitHit !== undefined) return;
     if (transactions.get(connectorId) !== tx) return;
+    raiseAuthorization(connectorId, tx);
     const hit = reachedLimit(connectorId, tx);
     if (hit !== undefined) {
       tx.limitHit = hit;
@@ -1572,6 +2031,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       meterStartWh: energy.sync(connectorId).energyWh,
       ...(auth !== undefined && { idToken: auth.idToken }),
       ...(auth?.remoteStartId !== undefined && { remoteStartId: auth.remoteStartId }),
+      ...(auth?.limits !== undefined && { limits: { ...auth.limits } }),
       chargingState: currentChargingState(connectorId),
       endedValues: [],
     };
@@ -1645,10 +2105,21 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       'Transaction.End',
     );
     updatePower(connectorId);
+    // A card paid for it: the terminal settles once the CSMS has the end (C20, C21).
+    const payment = paymentOf(tx.idToken);
     sendEvent(connectorId, tx, 'Ended', trigger, {
       stoppedReason: tx.stoppedReason ?? stoppedReason,
       ...(idToken !== undefined && { idToken }),
       meterValue: [...tx.endedValues, ...(final === undefined ? [] : [final])],
+      ...(payment !== undefined && {
+        onAnswer: (response) => {
+          const own = tx.cost?.details(true).totalCost.total;
+          settlePayment(payment, tx.id, response, {
+            own: own?.inclTax ?? own?.exclTax,
+            csms: tx.csmsCost,
+          });
+        },
+      }),
     });
     applyDevice({ type: 'TransactionEnded', connectorId });
     updateLock(connectorId);
@@ -1854,9 +2325,15 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
               kind: 'start-failed',
               evseId: connectorId,
               idToken: tokenRef(waiting.idToken),
-              source: waiting.remoteStartId !== undefined ? 'remote' : localSource(waiting.idToken),
+              source:
+                waiting.remoteStartId !== undefined
+                  ? remoteSourceOf(waiting.idToken)
+                  : localSource(waiting.idToken),
               reason: 'ConnectionTimeout',
             });
+            // A card no transaction used is released (C19.FR.01).
+            const payment = paymentOf(waiting.idToken);
+            if (payment !== undefined) cancelPayment(payment);
           }
           changed();
         }
@@ -2018,7 +2495,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
           kind: 'start-failed',
           evseId: connectorId,
           idToken: tokenRef(idToken),
-          source: 'remote',
+          source: remoteSourceOf(idToken),
           reason: 'NotAuthorized',
         });
         return;
@@ -2032,15 +2509,19 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         kind: 'start-failed',
         evseId: connectorId,
         idToken: tokenRef(idToken),
-        source: 'remote',
+        source: remoteSourceOf(idToken),
         reason: 'NotAuthorized',
         detail: 'the EVSE is reserved',
       });
       return;
     }
+    // A web payment's transaction keeps the limits of its payment URL (C25.FR.60).
+    const limits = idToken.type === 'DirectPayment' ? webLimits.get(connectorId) : undefined;
+    webLimits.delete(connectorId);
     authorizations.set(connectorId, {
       idToken,
       remoteStartId,
+      ...(limits !== undefined && { limits }),
       ...(info !== undefined && { info }),
       ...(txProfile !== undefined && { txProfile }),
       ...(claim.reservationId !== undefined && { reservationId: claim.reservationId }),
@@ -2049,7 +2530,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       kind: 'authorized',
       evseId: connectorId,
       idToken: tokenRef(idToken),
-      source: 'remote',
+      source: remoteSourceOf(idToken),
       remoteStartId,
     });
     const tx = transactions.get(connectorId);
@@ -2251,6 +2732,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         }
       }
       const running = transactions.get(evseId);
+      // The web payment the driver made starts here: local starts may go on (C25.FR.22).
+      releaseWebHold(evseId);
       later(commandDelay('RequestStartTransaction'), () =>
         remoteStart(
           evseId,
@@ -2265,6 +2748,13 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         status: 'Accepted',
         ...(running !== undefined && { transactionId: running.id }),
       };
+    },
+
+    // 2.1: a driver pays on the CSMS's web page; the EVSE waits for the remote start (C25.FR.22, .27).
+    NotifyWebPaymentStarted(request) {
+      log(`EVSE ${request.evseId}: a web payment started; local starts wait ${request.timeout} s`);
+      holdForWebPayment(request.evseId, request.timeout);
+      return {};
     },
 
     // A running cost to show the driver (I03); the station only logs it.
@@ -2828,9 +3318,14 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         dmValue('SampledDataCtrlr', 'TxEndedMeasurands'),
         'Transaction.End',
       );
+      const key = nextKey('msg');
+      const payment = paymentOf(saved.idToken);
+      if (payment !== undefined) {
+        afterRestoredEnd.set(key, (answer) => settlePayment(payment, saved.transactionId, answer));
+      }
       void outbox.restore([
         {
-          key: nextKey('msg'),
+          key,
           action: 'TransactionEvent',
           txRef: saved.transactionId,
           attempts: 0,
@@ -2899,7 +3394,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
           ((action !== 'ReserveNow' && action !== 'CancelReservation') || reservationsOn()) &&
           (action !== 'CertificateSigned' || features.includes('AdvancedSecurity')) &&
           // Without Enabled[Tariff], tariffs are NotSupported (I07.FR.01, I11.FR.01).
-          (!TARIFF_ACTIONS.has(action) || tariffOn()),
+          (!TARIFF_ACTIONS.has(action) || tariffOn()) &&
+          (action !== 'NotifyWebPaymentStarted' || features.includes('WebPayments')),
         onEvent: (event) => emit({ type: 'rpc', event }),
       });
       void boot();
@@ -2987,6 +3483,10 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
           deauthorize(connectorId, 'StopAuthorized', 'Local', idToken);
           return 'stopping';
         }
+        return 'busy';
+      }
+      if (webHeld(connectorId)) {
+        log(`connector ${connectorId}: a web payment is under way`);
         return 'busy';
       }
       const result = await authorize(idToken);
@@ -3186,6 +3686,11 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       return activate ? 'activated' : 'deactivated';
     },
 
+    presentPaymentCard: (evseId, card = {}) => presentPaymentCard(evseId, card),
+    stopPayment,
+    validateVatNumber,
+    webPaymentUrl: (evseId, limits = {}) => paymentUrl(evseId, limits),
+
     persistentState(): PersistedChargePoint201 {
       return {
         version: 1,
@@ -3227,6 +3732,13 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         security: security.persistent(),
         chargingProfiles: chargingProfiles.map((p) => ({ ...p })),
         reservations: reservations.map((r) => ({ ...r })),
+        ...(payments.size > 0 && {
+          payments: [...payments.values()].map((p) => {
+            const tx = [...transactions.values()].find((t) => t.id === p.transactionId);
+            const cost = tx === undefined ? undefined : (costOf(tx) ?? undefined);
+            return { ...p, ...(cost !== undefined && { lastCost: roundCents(cost) }) };
+          }),
+        }),
       };
     },
 

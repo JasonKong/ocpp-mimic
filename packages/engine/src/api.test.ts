@@ -739,3 +739,66 @@ describe('engine API: OCPP 2.0.1 stations', () => {
     expect((await api('GET', '/api/stations/SIM-16/device-model')).status).toBe(404);
   });
 });
+
+describe('engine API: OCPP 2.1 payment', () => {
+  it('presents a card at the terminal, checks a VAT number, stops, and serves the payment URL', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mimic-pay-'));
+    dirs.push(dir);
+    await writeFile(
+      join(dir, 'pay.yaml'),
+      [
+        'persona: pay-2.1',
+        'extends: generic-2.1',
+        'features: [Core, Payment, WebPayments]',
+        'deviceModel: { PaymentCtrlr: { AuthorizeDirectPayment: true } }',
+      ].join('\n'),
+    );
+    const { api, csmsUrl } = await start({ personaDirs: [dir] });
+    expect(
+      (await api('POST', '/api/stations', { id: 'PAY-1', persona: 'pay-2.1', csmsUrl })).status,
+    ).toBe(201);
+    await until(
+      async () => (await api('GET', '/api/stations/PAY-1')).body?.registration === 'Accepted',
+    );
+
+    const card = await api('POST', '/api/stations/PAY-1/connectors/1/payment', {
+      brand: 'Mastercard',
+      settlement: 'Rejected',
+    });
+    expect(card.body?.result).toBe('authorized');
+    expect(
+      (await api('POST', '/api/stations/PAY-1/connectors/1/payment', { settlement: 'Maybe' }))
+        .status,
+    ).toBe(400);
+    // The built-in CSMS accepts a well-formed number, with a test company.
+    expect(
+      (await api('POST', '/api/stations/PAY-1/vat-number', { vatNumber: 'NZ123456789', evseId: 1 }))
+        .body,
+    ).toMatchObject({ status: 'Accepted', company: { country: 'NZ' } });
+    expect(
+      (await api('POST', '/api/stations/PAY-1/vat-number', { vatNumber: 'nope' })).body,
+    ).toEqual({ status: 'Rejected' });
+    expect(
+      (await api('POST', '/api/stations/PAY-1/connectors/1/payment/stop', {})).body?.result,
+    ).toBe('canceled');
+    expect(
+      (await api('POST', '/api/stations/PAY-1/connectors/1/payment/stop', {})).body?.result,
+    ).toBe('no-payment');
+
+    const qr = await api('GET', '/api/stations/PAY-1/connectors/1/payment-url?maxcost=12.5');
+    expect(qr.body?.url).toMatch(
+      /^https:\/\/pay\.example\.com\/PAY-1\/1\/[0-9A-Za-z]{8}\/v1\?maxcost=12\.5$/,
+    );
+    expect(
+      (await api('GET', '/api/stations/PAY-1/connectors/1/payment-url?maxcost=-1')).status,
+    ).toBe(400);
+
+    // A 2.0.1 station has no payment terminal.
+    expect(
+      (await api('POST', '/api/stations', { id: 'SIM-201', persona: 'generic-2.0.1', csmsUrl }))
+        .status,
+    ).toBe(201);
+    expect((await api('POST', '/api/stations/SIM-201/connectors/1/payment', {})).status).toBe(404);
+    expect((await api('GET', '/api/stations/SIM-201/connectors/1/payment-url')).status).toBe(404);
+  });
+});

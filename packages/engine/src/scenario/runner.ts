@@ -17,6 +17,7 @@ import {
   stepLabel,
   TemplateError,
   variableProblems,
+  type ChargePoint201,
   type JsonObject,
   type LogLine,
   type Mismatch,
@@ -361,6 +362,53 @@ export async function runScenario(
             if (step.result !== undefined && outcome !== step.result) {
               throw new StepFailure(`the card was ${outcome}, expected ${step.result}`);
             }
+          });
+        }
+        case 'presentPaymentCard':
+        case 'stopPayment':
+        case 'validateVat': {
+          const target = station!;
+          if (target.chargePoint.ocpp !== '2.1') {
+            return refusal(() => `${step.kind} needs an OCPP 2.1 station`);
+          }
+          const cp = target.chargePoint as ChargePoint201;
+          if (step.kind === 'validateVat') {
+            if (step.evse !== undefined) connectorOf(target, step.evse);
+            return refusal(async () => {
+              const outcome = await cp.validateVatNumber(step.evse, step.vatNumber);
+              if (outcome.status === 'not-supported' || outcome.status === 'no-answer') {
+                return `the VAT number check got ${outcome.status}`;
+              }
+              if (step.result !== undefined && outcome.status !== step.result) {
+                throw new StepFailure(
+                  `the VAT number was ${outcome.status}, expected ${step.result}`,
+                );
+              }
+              return undefined;
+            });
+          }
+          connectorOf(target, step.connector);
+          if (step.kind === 'stopPayment') {
+            return refusal(() => {
+              const outcome = cp.stopPayment(step.connector);
+              if (outcome === 'no-payment' || outcome === 'unknown-connector') {
+                return `no payment to stop at EVSE ${step.connector}`;
+              }
+              if (step.result !== undefined && outcome !== step.result) {
+                throw new StepFailure(`the payment was ${outcome}, expected ${step.result}`);
+              }
+              return undefined;
+            });
+          }
+          return refusal(async () => {
+            const outcome = await cp.presentPaymentCard(step.connector, step.card);
+            if (outcome === 'not-supported' || outcome === 'unknown-connector') {
+              return `the station has no payment terminal (${outcome})`;
+            }
+            if (step.result !== undefined && outcome !== step.result) {
+              throw new StepFailure(`the card was ${outcome}, expected ${step.result}`);
+            }
+            return undefined;
           });
         }
         case 'evSuspend':

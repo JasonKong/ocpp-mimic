@@ -76,6 +76,19 @@ const duration = computed(() => sessionDuration(session.value, props.now));
           <dt>Stopped</dt>
           <dd>{{ session.stopReason }}</dd>
         </div>
+        <div v-if="session.settlement" :title="session.settlement.statusInfo">
+          <dt>Settlement</dt>
+          <dd>
+            {{ session.settlement.status }} {{ session.settlement.amount.toFixed(2) }}
+            <a
+              v-if="session.settlement.receiptUrl"
+              :href="session.settlement.receiptUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              >receipt</a
+            >
+          </dd>
+        </div>
       </dl>
       <p v-if="session.failure" class="failure" role="status">{{ failureText(session.failure) }}</p>
     </header>
@@ -123,6 +136,10 @@ h4 {
 .source.remote {
   color: var(--accent);
   background: var(--selected);
+}
+.source.payment {
+  color: var(--good);
+  background: var(--good-bg);
 }
 .state.good {
   color: var(--good);

@@ -20,7 +20,13 @@ export {
   type ChargePoint201,
   type ChargePoint201Options,
   type DeviceModelEntry,
+  type PaymentCardResult,
+  type PaymentStopResult,
   type PersistedChargePoint201,
+  type TerminalCard,
+  type TerminalPayment,
+  type VatResult,
+  type WebPaymentUrlResult,
 } from './ocpp201/charge-point.js';
 export {
   ID_TOKEN_TYPES,
@@ -60,6 +66,16 @@ export {
   type Ocpp21RequestOf,
   type Ocpp21ResponseOf,
 } from './ocpp21/messages.js';
+export {
+  checkTotpV1,
+  parseWebPaymentUrl,
+  totpV1,
+  webPaymentUrl,
+  type HmacSha256,
+  type PaymentCard,
+  type TotpSettings,
+  type WebPaymentLimits,
+} from './ocpp21/payment.js';
 export * from './ocppj.js';
 export {
   validate,

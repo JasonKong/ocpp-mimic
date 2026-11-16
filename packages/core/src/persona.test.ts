@@ -194,10 +194,8 @@ describe('resolvePersonas', () => {
         features: ['Core', 'Payment'],
       },
     });
-    // The 2.1 group is not built yet, so the persona says so.
-    expect(personas.get('v21')?.warnings).toEqual([
-      'test.yaml: certification profile Payment is supported in the persona but not implemented yet',
-    ]);
+    // Every 2.1 group is built, so the persona has nothing to warn about.
+    expect(personas.get('v21')?.warnings).toEqual([]);
     expect(resolveOne({ ...v2, ocpp: '2.0.1' }).errors).toEqual([
       'test.yaml: Payment, connectorStatus need ocpp "2.1"',
     ]);
