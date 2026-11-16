@@ -1,0 +1,10 @@
+# regression-2.1 with local cost calculation (TariffAndCost): running costs
+# every 5 s, local time in Auckland, for the 2.1 tariff scenarios.
+persona: tariffs-2.1
+extends: regression-2.1
+description: regression-2.1 that prices its sessions from the tariffs it is sent
+features:
+  [Core, AdvancedSecurity, LocalAuthListManagement, SmartCharging, Reservation, TariffAndCost]
+deviceModel:
+  ClockCtrlr: { TimeZone: Pacific/Auckland }
+  TariffCostCtrlr: { 'Interval:Cost': 5 }

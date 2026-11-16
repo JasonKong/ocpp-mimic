@@ -1,0 +1,95 @@
+# OCPP 2.1 tariffs and local cost calculation (T103) against the built-in CSMS:
+# default tariffs (I07), driver tariffs (I08), GetTariffs and ClearTariffs (I09,
+# I10), ChangeTransactionTariff (I11) and costDetails (I12). Every frame is
+# checked against OCA's 2.1 schemas.
+name: I07 and I12 A default tariff prices the session, with running costs and the full cost at the end
+station: { id: REG21-TARIFF, persona: tariffs-2.1, energyMultiplier: 100 }
+steps:
+  - csmsCall:
+      action: SetDefaultTariff
+      payload:
+        evseId: 0
+        tariff:
+          tariffId: DEFAULT-1
+          currency: NZD
+          fixedFee: { prices: [{ priceFixed: 1.5 }], taxRates: [{ type: GST, tax: 15 }] }
+          energy: { prices: [{ priceKwh: 0.35 }], taxRates: [{ type: GST, tax: 15 }] }
+      answer: { status: Accepted }
+  - presentCard: { idToken: TAG-TARIFF, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Started
+        transactionInfo: { tariffId: DEFAULT-1 }
+        costDetails: { totalCost: { currency: NZD, fixed: { exclTax: 1.5, inclTax: 1.73 } } }
+  - expect:
+      sent: TransactionEvent
+      within: 10s
+      payload:
+        {
+          triggerReason: RunningCost,
+          costDetails: { totalCost: { energy: { exclTax: { $gt: 0 } } } },
+        }
+  - unplug: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Ended
+        costDetails:
+          totalCost: { typeOfCost: NormalCost, total: { inclTax: { $gt: 1.73 } } }
+          chargingPeriods: { $contains: { tariffId: DEFAULT-1 } }
+---
+name: I09 and I10 GetTariffs lists a default tariff on every EVSE, and ClearTariffs removes it
+station: { id: REG21-GET, persona: tariffs-2.1 }
+steps:
+  - csmsCall:
+      action: SetDefaultTariff
+      payload:
+        {
+          evseId: 0,
+          tariff: { tariffId: D-2, currency: NZD, energy: { prices: [{ priceKwh: 0.3 }] } },
+        }
+      answer: { status: Accepted }
+  - csmsCall:
+      action: GetTariffs
+      payload: { evseId: 0 }
+      answer:
+        status: Accepted
+        tariffAssignments: [{ tariffId: D-2, tariffKind: DefaultTariff, evseIds: [1, 2] }]
+  - csmsCall:
+      action: ClearTariffs
+      payload: { tariffIds: [D-2] }
+      answer: { clearTariffsResult: [{ tariffId: D-2, status: Accepted }] }
+  - csmsCall: { action: GetTariffs, payload: { evseId: 0 }, answer: { status: NoTariff } }
+---
+name: I08 and I11 A driver tariff from Authorize, then ChangeTransactionTariff
+station: { id: REG21-DRIVER, persona: tariffs-2.1 }
+steps:
+  - csmsReply:
+      action: Authorize
+      payload:
+        idTokenInfo: { status: Accepted }
+        tariff: { tariffId: DRIVER-9, currency: NZD, energy: { prices: [{ priceKwh: 0.2 }] } }
+      times: 1
+  - presentCard: { idToken: TAG-DRIVER, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, transactionInfo: { tariffId: DRIVER-9 } }
+      save: { tx: '$.payload.transactionInfo.transactionId' }
+  - csmsCall:
+      action: ChangeTransactionTariff
+      payload:
+        transactionId: '{{tx}}'
+        tariff: { tariffId: DRIVER-10, currency: NZD, energy: { prices: [{ priceKwh: 0.1 }] } }
+      answer: { status: Accepted }
+  - expect:
+      sent: TransactionEvent
+      payload: { triggerReason: TariffChanged, transactionInfo: { tariffId: DRIVER-10 } }
+  - csmsCall:
+      action: ChangeTransactionTariff
+      payload:
+        transactionId: '{{tx}}'
+        tariff: { tariffId: DRIVER-11, currency: AUD, energy: { prices: [{ priceKwh: 0.1 }] } }
+      answer: { status: NoCurrencyChange }
