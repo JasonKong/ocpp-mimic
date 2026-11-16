@@ -1500,6 +1500,11 @@ M8 确定（#267）。M1 到 M7 做出了模拟器；M8 把它变成别人可以
 
 关键路径是 T113 → T115 → T116 → T117 → T119 → T122。没有 T114 就不能打发布 tag。
 
+**验收（T122）**
+
+- `tools/prepare-release.mjs 0.1.0` 开出变更日志的 0.1.0 一节；在 main 的合并提交上打 `v0.1.0` tag，触发发布工作流。
+- `.github/workflows/acceptance.yml`（手动运行，输入版本号）只用发布产物检查已发布的版本。npm job 在 `ubuntu-latest` 和 `macos-latest` 上从 GitHub Release 下载 tarball，运行 `tools/smoke-package.sh`，包括全部示例场景和完整两分钟的冒烟压测。镜像 job 在 `ubuntu-latest` 和 `ubuntu-24.04-arm` 上拉取 `ghcr.io/jasonkong/ocpp-mimic:<版本>`，运行 `tools/smoke-image.sh`，再运行 `tools/accept-image.sh`：复制示例、运行全部示例场景，并让冒烟压测对着共享网络的另一个容器里的 CSMS 运行。只有测试脚本取自仓库，且是该版本 tag 下的版本。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。

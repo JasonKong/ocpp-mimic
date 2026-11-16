@@ -1,0 +1,66 @@
+name: acceptance
+
+# Checks a published release from its artifacts alone (docs/design.md, "M8
+# Release", G8): the npm package from the GitHub Release on clean Linux and
+# macOS runners, and the image from GHCR on linux/amd64 and linux/arm64. Each
+# runs the guide's quick start, every example scenario and the 100-station
+# smoke plan for its full two minutes. Only the test scripts come from the
+# repository.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, e.g. 0.1.0
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  npm:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: v${{ inputs.version }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Download the package from the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "v${{ inputs.version }}" --repo "$GITHUB_REPOSITORY" --pattern "ocpp-mimic-${{ inputs.version }}.tgz" --dir artifacts
+      - name: Install it and run the quick start, the examples and the smoke plan
+        env:
+          SMOKE_EXAMPLES: all
+          SMOKE_LOAD_DURATION: 2m
+        run: bash tools/smoke-package.sh "artifacts/ocpp-mimic-${{ inputs.version }}.tgz"
+
+  image:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: v${{ inputs.version }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull the image on ${{ runner.arch }}
+        run: docker pull "ghcr.io/jasonkong/ocpp-mimic:${{ inputs.version }}"
+      - name: Quick start through the image
+        run: bash tools/smoke-image.sh "ghcr.io/jasonkong/ocpp-mimic:${{ inputs.version }}" "${{ inputs.version }}"
+      - name: The examples and the smoke plan in containers
+        run: bash tools/accept-image.sh "ghcr.io/jasonkong/ocpp-mimic:${{ inputs.version }}"
