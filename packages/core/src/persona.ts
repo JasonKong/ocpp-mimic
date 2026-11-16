@@ -472,6 +472,7 @@ export function resolvePersonas(sources: readonly PersonaSource[]): ResolvePerso
           connectors: definition201.connectors,
           features: definition201.features ?? ['Core'],
           offeredW: definition201.power?.offeredW ?? 7360,
+          ocpp: definition201.ocpp,
         }),
         definition201.deviceModel,
       );

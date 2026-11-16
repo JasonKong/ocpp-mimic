@@ -407,6 +407,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       connectors: options.connectors,
       features: options.features ?? ['Core'],
       offeredW,
+      ocpp,
     }),
     options.deviceModel,
   );
