@@ -1227,6 +1227,7 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 
 - 内置 CSMS，覆盖所有功能块；它在 T106 学会 2.1 消息。
 - CitrineOS v2.1.0，就是 2.0.1 套件已经钉住的版本。这个版本号是 CitrineOS 自己的，不是 OCPP 的；它同样会说 OCPP 2.1：WebSocket 服务器接受 `ocpp2.1`，REST API 在 `/ocpp/2.1/<module>/<action>` 下提供 2.x 的 action，并且有 Authorize、GetCompositeSchedule、SetDefaultTariff、GetTariffs、NotifySettlement、VatNumberValidation 和 NotifyWebPaymentStarted 的 2.1 处理器。T111 摸清它能驱动哪些 2.1 场景，2.1 套件放进现有的 CitrineOS workflow。
+- 已实现（T111）：`scenarios/citrineos/ocpp21.yaml` 有七个对 CitrineOS v2.1.0 的 2.1 场景，通过它的 2.1 REST API 驱动：启动和 NotifyEvent 可用性、本地会话、默认资费加桩自己的费用和 CostUpdated、远程启停、支付终端会话及其 NotifySettlement、充电曲线，以及读取一个 2.1 变量。它们和 2.0.1 套件一起在 CitrineOS workflow 里运行。`scenarios/citrineos/README.md` 记录了 CitrineOS v2.1.0 的两个行为，这两项交给内置 CSMS 覆盖：它不应答 VatNumberValidation；它的 2.1 REST API 只接受 2.0.1 的 idToken 类型，因此无法发起网页支付（DirectPayment）的远程启动。
 
 **选择版本**
 

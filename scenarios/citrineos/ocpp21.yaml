@@ -1,0 +1,207 @@
+# OCPP 2.1 with CitrineOS v2.1.0 as the CSMS (T111): a 2.1 station connects
+# with ocpp2.1, and commands come through CitrineOS's 2.1 REST API
+# (`/ocpp/2.1/<module>/<action>`). The scenarios cover what CitrineOS's 2.1
+# support reaches: boot and NotifyEvent availability, transactions, default
+# tariffs and the station's own cost, CostUpdated, a web payment's remote
+# start, the payment terminal's settlement and VAT check, a 2.1 charging
+# profile and a 2.1 variable.
+name: 2.1 TC_B_01_CSMS A 2.1 station boots and reports availability with NotifyEvent
+csms: ws://localhost:8081
+station: { id: MIMIC21-B01, persona: regression-2.1 }
+steps:
+  - expect: { sent: BootNotification, answer: { status: Accepted } }
+  - expect:
+      sent: NotifyEvent
+      payload:
+        eventData:
+          $contains: { component: { name: Connector }, variable: { name: AvailabilityState } }
+      answer: {}
+---
+name: 2.1 TC_E_01_CSMS A local 2.1 session, from the card to the end
+csms: ws://localhost:8081
+station: { id: MIMIC21-E01, persona: regression-2.1 }
+steps:
+  - presentCard: { idToken: AA000101, result: authorized }
+  - expect: { sent: Authorize, answer: { idTokenInfo: { status: Accepted } } }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, idToken: { idToken: AA000101 } }
+      answer: { idTokenInfo: { status: Accepted } }
+  - presentCard: { idToken: AA000101, result: stopping }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Ended, transactionInfo: { stoppedReason: Local } }
+      answer: {}
+---
+name: 2.1 I07 and I12 CitrineOS sets a default tariff, and the station reports its own cost
+csms: ws://localhost:8081
+station: { id: MIMIC21-I07, persona: tariffs-2.1, energyMultiplier: 100 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.1/transactions/setDefaultTariff?identifier=MIMIC21-I07&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      within: 10s
+      json:
+        evseId: 0
+        tariff:
+          tariffId: CITRINE-T1
+          currency: EUR
+          fixedFee: { prices: [{ priceFixed: 1 }] }
+          energy: { prices: [{ priceKwh: 0.3 }] }
+      expect: { json: [{ success: true }] }
+  - expect: { received: SetDefaultTariff, answer: { status: Accepted } }
+  - presentCard: { idToken: AA000102, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Started
+        transactionInfo: { tariffId: CITRINE-T1 }
+        costDetails: { totalCost: { currency: EUR, fixed: { exclTax: 1 } } }
+      save: { tx: $.payload.transactionInfo.transactionId }
+  # CostUpdated (I03) through CitrineOS's 2.1 API.
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.1/transactions/costUpdated?identifier=MIMIC21-I07&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { totalCost: 1.5, transactionId: '{{tx}}' }
+      expect: { json: [{ success: true }] }
+  - expect: { received: CostUpdated, payload: { totalCost: 1.5 }, answer: {} }
+  - unplug: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Ended
+        costDetails: { totalCost: { total: { exclTax: { $gte: 1 } } } }
+---
+name: 2.1 TC_F_02_CSMS CitrineOS starts and stops a session through its 2.1 API
+csms: ws://localhost:8081
+station: { id: MIMIC21-F02, persona: regression-2.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.1/evdriver/requestStartTransaction?identifier=MIMIC21-F02&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      within: 10s
+      # Its 2.1 API takes 2.0.1's idToken types only, so a web payment's DirectPayment token
+      # cannot go this way.
+      json: { idToken: { idToken: AA000103, type: ISO14443 }, remoteStartId: 211, evseId: 1 }
+      expect: { json: [{ success: true }] }
+  - expect: { received: RequestStartTransaction, answer: { status: Accepted } }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, transactionInfo: { remoteStartId: 211 } }
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.1/evdriver/requestStopTransaction?identifier=MIMIC21-F02&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      json: { transactionId: '{{tx}}' }
+      expect: { json: [{ success: true }] }
+  - expect: { received: RequestStopTransaction, answer: { status: Accepted } }
+  - expect: { sent: TransactionEvent, payload: { eventType: Ended, triggerReason: RemoteStop } }
+---
+name: 2.1 C18 and C21 CitrineOS takes a terminal payment's session and settlement
+csms: ws://localhost:8081
+station:
+  id: MIMIC21-C18
+  persona: payments-2.1
+  energyMultiplier: 100
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.1/transactions/setDefaultTariff?identifier=MIMIC21-C18&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      within: 10s
+      json:
+        evseId: 0
+        tariff:
+          { tariffId: CITRINE-ADHOC, currency: EUR, fixedFee: { prices: [{ priceFixed: 2 }] } }
+      expect: { json: [{ success: true }] }
+  - expect: { received: SetDefaultTariff, answer: { status: Accepted } }
+  # CitrineOS v2.1.0 does not answer VatNumberValidation, so this leaves the VAT check out.
+  - presentPaymentCard: { brand: Visa, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, idToken: { type: DirectPayment } }
+  - stopPayment: { result: stopping }
+  - expect: { sent: TransactionEvent, payload: { eventType: Ended, triggerReason: StopAuthorized } }
+  - expect:
+      sent: NotifySettlement
+      payload: { status: Settled, settlementAmount: 2 }
+---
+name: 2.1 TC_K_01_CSMS CitrineOS sets a 2.1 charging profile
+csms: ws://localhost:8081
+station: { id: MIMIC21-K01, persona: regression-2.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.1/smartcharging/setChargingProfile?identifier=MIMIC21-K01&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      within: 10s
+      json:
+        evseId: 1
+        chargingProfile:
+          id: 2101
+          stackLevel: 0
+          chargingProfilePurpose: TxDefaultProfile
+          chargingProfileKind: Absolute
+          chargingSchedule:
+            - id: 2101
+              startSchedule: '{{now}}'
+              chargingRateUnit: W
+              chargingSchedulePeriod: [{ startPeriod: 0, limit: 6000 }]
+      expect: { json: [{ success: true }] }
+  - expect: { received: SetChargingProfile, answer: { status: Accepted } }
+---
+name: 2.1 TC_B_06_CSMS CitrineOS reads a 2.1 variable
+csms: ws://localhost:8081
+station: { id: MIMIC21-B06, persona: regression-2.1 }
+vars: { CITRINE: http://localhost:8080 }
+steps:
+  - http:
+      method: POST
+      url: '{{CITRINE}}/dev/token'
+      json: { roles: [admin], tenantId: 1 }
+      save: { TOKEN: $.json.accessToken }
+  - http:
+      method: POST
+      url: '{{CITRINE}}/ocpp/2.1/monitoring/getVariables?identifier=MIMIC21-B06&tenantId=1'
+      headers: { authorization: 'Bearer {{TOKEN}}' }
+      within: 10s
+      json:
+        getVariableData: [{ component: { name: TxCtrlr }, variable: { name: SupportedLimits } }]
+      expect: { json: [{ success: true }] }
+  - expect:
+      received: GetVariables
+      answer:
+        getVariableResult:
+          [{ attributeStatus: Accepted, attributeValue: 'maxEnergy,maxTime,maxSoC,maxCost' }]
