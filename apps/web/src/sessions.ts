@@ -11,6 +11,22 @@ import type {
   TimelineStep,
 } from './api.js';
 
+/** A 2.1 transaction's limits as text: cost, energy, time and SoC. */
+export function limitsText(
+  limits: { maxCost?: number; maxEnergy?: number; maxTime?: number; maxSoC?: number },
+  currency = '',
+): string {
+  const parts = [
+    limits.maxCost === undefined
+      ? undefined
+      : `${limits.maxCost.toFixed(2)}${currency === '' ? '' : ` ${currency}`}`,
+    limits.maxEnergy === undefined ? undefined : `${(limits.maxEnergy / 1000).toFixed(1)} kWh`,
+    limits.maxTime === undefined ? undefined : formatDuration(limits.maxTime * 1000),
+    limits.maxSoC === undefined ? undefined : `${limits.maxSoC} % SoC`,
+  ];
+  return parts.filter((p) => p !== undefined).join(', ');
+}
+
 export const SOURCE_LABELS: Record<SessionSource, string> = {
   local: 'Card',
   remote: 'Remote start',

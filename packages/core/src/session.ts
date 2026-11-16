@@ -141,9 +141,37 @@ export interface SessionRecord {
   costs: SessionCost[];
   /** 2.1: the ad hoc payment's settlement (NotifySettlement, C19 to C22). */
   settlement?: SessionSettlement;
+  /** 2.1: the station's own cost, from the latest costDetails it sent (I12). */
+  stationCost?: SessionStationCost;
+  /** 2.1: the transaction's limits as the station last reported them (E16). */
+  limits?: SessionLimits;
   stopReason?: string;
   /** Periodic meter frames past the frame limit were not kept. */
   framesTruncated?: true;
+}
+
+/** The cost a 2.1 station worked out itself (costDetails.totalCost). */
+export interface SessionStationCost {
+  at: string;
+  seq: number;
+  /** Tax included when the station gave it, else without tax. */
+  totalCost: number;
+  exclTax?: number;
+  currency?: string;
+  /** NormalCost, MinCost or MaxCost. */
+  typeOfCost?: string;
+  /** From the Ended event: the final cost. */
+  final: boolean;
+}
+
+/** A 2.1 transaction's limits (transactionLimit): Wh, seconds, percent, the currency. */
+export interface SessionLimits {
+  at: string;
+  seq: number;
+  maxCost?: number;
+  maxEnergy?: number;
+  maxTime?: number;
+  maxSoC?: number;
 }
 
 /** A NotifySettlement for the session's DirectPayment token. */
@@ -759,6 +787,33 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
       if (remoteStartId !== undefined) session.remoteStartId = remoteStartId;
     }
     addState(session, frame, str(payload.timestamp) ?? frame.at, str(tx.chargingState));
+    // 2.1: the station's own cost and the transaction's limits (I12, E16).
+    const totalCost = isObject(payload.costDetails) ? payload.costDetails.totalCost : undefined;
+    const total = isObject(totalCost) && isObject(totalCost.total) ? totalCost.total : undefined;
+    const own = num(total?.inclTax) ?? num(total?.exclTax);
+    if (isObject(totalCost) && own !== undefined) {
+      const exclTax = num(total?.exclTax);
+      const currency = str(totalCost.currency);
+      const typeOfCost = str(totalCost.typeOfCost);
+      session.stationCost = {
+        at: str(payload.timestamp) ?? frame.at,
+        seq: frame.seq,
+        totalCost: own,
+        ...(exclTax !== undefined && { exclTax }),
+        ...(currency !== undefined && { currency }),
+        ...(typeOfCost !== undefined && { typeOfCost }),
+        final: eventType === 'Ended',
+      };
+    }
+    if (isObject(tx.transactionLimit)) {
+      const limit = tx.transactionLimit;
+      const limits: SessionLimits = { at: str(payload.timestamp) ?? frame.at, seq: frame.seq };
+      for (const key of ['maxCost', 'maxEnergy', 'maxTime', 'maxSoC'] as const) {
+        const value = num(limit[key]);
+        if (value !== undefined) limits[key] = value;
+      }
+      session.limits = limits;
+    }
     addSamples(session, meterSamples(payload.meterValue, frame.seq));
     if (eventType === 'Ended') {
       session.endedAt = str(payload.timestamp) ?? frame.at;

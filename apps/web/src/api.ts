@@ -298,6 +298,25 @@ export interface SessionRecord extends Omit<SessionSummary, 'energyWh' | 'socPer
   meterStopSeq?: number;
   chargingNeeds?: Record<string, unknown>;
   costs: { at: string; seq: number; totalCost: number; from: string }[];
+  /** 2.1: the station's own cost, from the latest costDetails it sent. */
+  stationCost?: {
+    at: string;
+    seq: number;
+    totalCost: number;
+    exclTax?: number;
+    currency?: string;
+    typeOfCost?: string;
+    final: boolean;
+  };
+  /** 2.1: the transaction's limits as the station last reported them (Wh, s, %). */
+  limits?: {
+    at: string;
+    seq: number;
+    maxCost?: number;
+    maxEnergy?: number;
+    maxTime?: number;
+    maxSoC?: number;
+  };
   /** 2.1: the ad hoc payment's settlement (NotifySettlement). */
   settlement?: {
     at: string;
@@ -445,6 +464,30 @@ export const api = {
   tariff: () => request<{ tariff: ReferenceTariff }>('GET', '/api/tariff'),
   setTariff: (tariff: ReferenceTariff) =>
     request<{ tariff: ReferenceTariff }>('PUT', '/api/tariff', { tariff }),
+  /** 2.1: a card at the EVSE's payment terminal, and how its PSP answers. */
+  payment: (id: string, c: number, card: Record<string, unknown>) =>
+    request<{ result: string; station: StationSnapshot }>(
+      'POST',
+      `${connector(id, c)}/payment`,
+      card,
+    ),
+  /** 2.1: the driver stops at the payment terminal. */
+  stopPayment: (id: string, c: number) =>
+    request<{ result: string; station: StationSnapshot }>(
+      'POST',
+      `${connector(id, c)}/payment/stop`,
+    ),
+  /** 2.1: the dynamic QR code's URL for the EVSE now. */
+  paymentUrl: (id: string, c: number) =>
+    request<{ url: string; totp: string; validUntil: string }>(
+      'GET',
+      `${connector(id, c)}/payment-url`,
+    ),
+  /** 2.1: the driver's priority charging button. */
+  priority: (id: string, c: number, activate: boolean) =>
+    request<{ result: string; station: StationSnapshot }>('POST', `${connector(id, c)}/priority`, {
+      activate,
+    }),
   /** Has the built-in CSMS start a session on the station (only when it is the station's CSMS). */
   remoteStart: (id: string, idToken: SessionIdToken, evseId?: number) =>
     request<{ action: string; status: string; remoteStartId?: number }>(
