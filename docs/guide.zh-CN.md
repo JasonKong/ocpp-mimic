@@ -451,7 +451,7 @@ ocpp-mimic run my-tests/ --csms ws://127.0.0.1:8081 --var APP=http://127.0.0.1:3
 | `expectConnector: { connector, status, ..., within }` | 连接器状态匹配（status、errorCode、plugged、locked、transactionId、2.x 的 chargingState 等） |
 | `expectStation: { registration, transport, ..., within }` | 桩的状态匹配 |
 
-`within` 默认 10 秒。`expect` 从上一个 `expect` 匹配到的消息之后开始找，所以连续几个 `expect` 同时也在检查消息顺序；`from: step` 只看本步骤开始之后的消息，`from: start` 看整个场景。
+`within` 默认 10 秒，和超时一样只计算电脑醒着的时间，所以笔记本在等待期间睡眠不会让步骤失败。`expect` 从上一个 `expect` 匹配到的消息之后开始找，所以连续几个 `expect` 同时也在检查消息顺序；`from: step` 只看本步骤开始之后的消息，`from: start` 看整个场景。
 
 内置 CSMS 步骤：
 
@@ -877,6 +877,7 @@ curl -s $API/stations/SIM-100/sessions
 | `EADDRINUSE` | 端口被占用。用 `--port` 换一个 |
 | 充电太慢，等不及 | 设置桩的能量倍率，例如 60 |
 | 场景因 schema 违规失败 | 有帧不符合官方 JSON schema。在报告里查看该帧；只有在测试本身就是关于非法帧时才设 `checkSchemas: false` |
+| 场景跑了约 15 分钟，结果行里有 `host asleep` | 场景等待时电脑睡眠了；这段时间计入总时长，但不计入任何 `within`。长时间运行时让电脑保持唤醒：macOS 用 `caffeinate -i ocpp-mimic run ...`，Linux 用 `systemd-inhibit ocpp-mimic run ...` |
 | CitrineOS 场景连不上 | 用 `docker compose -f tools/citrineos/docker-compose.yml up -d` 启动它，等服务健康后再跑；见 `scenarios/citrineos/README.md` |
 
 问题和 bug 请提到仓库的 GitHub issues。

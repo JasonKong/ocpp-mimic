@@ -449,7 +449,7 @@ Expectations:
 | `expectConnector: { connector, status, ..., within }` | The connector's state matches (status, errorCode, plugged, locked, transactionId, chargingState on 2.x, ...) |
 | `expectStation: { registration, transport, ..., within }` | The station's state matches |
 
-`within` defaults to 10 s. `expect` steps search after the message the previous `expect` matched, so consecutive ones also check the order; `from: step` looks only at messages after the step began and `from: start` at the whole scenario.
+`within` defaults to 10 s. It counts only time the computer is awake, as timeouts do, so a laptop that sleeps during a wait does not fail the step. `expect` steps search after the message the previous `expect` matched, so consecutive ones also check the order; `from: step` looks only at messages after the step began and `from: start` at the whole scenario.
 
 Built-in CSMS steps:
 
@@ -875,6 +875,7 @@ Options of `serve`:
 | `EADDRINUSE` | Another process uses the port. Pick another with `--port` |
 | Charging takes too long to watch | Set the station's energy multiplier, e.g. 60 |
 | Scenario fails with a schema violation | A frame broke the official JSON schema. Look at the frame in the report; set `checkSchemas: false` only if the test is about invalid frames |
+| A scenario takes about 15 minutes, and its line says `host asleep` | The computer slept while the scenario waited; the time is part of the duration but not of any `within`. Keep it awake for long runs: `caffeinate -i ocpp-mimic run ...` on macOS, `systemd-inhibit ocpp-mimic run ...` on Linux |
 | CitrineOS scenarios cannot connect | Start it with `docker compose -f tools/citrineos/docker-compose.yml up -d` and wait until the server is healthy; see `scenarios/citrineos/README.md` |
 
 Questions and bug reports go to the repository's GitHub issues.

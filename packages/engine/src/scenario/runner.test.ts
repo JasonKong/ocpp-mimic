@@ -3,6 +3,7 @@ import { parseScenario, type Scenario } from '@ocpp-mimic/core';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { findScenarioFiles, readScenarioFile } from './files.js';
+import { formatScenarioResult } from './report.js';
 import { runScenario, type RunOptions } from './runner.js';
 
 const EXAMPLES = fileURLToPath(new URL('../../../../scenarios/examples/', import.meta.url));
@@ -276,6 +277,50 @@ steps:
         FAST,
       );
       expect(setup).toMatchObject({ status: 'error', error: 'unknown persona nope' });
+    },
+  );
+
+  it(
+    'measures waits in awake time and reports how long the host slept',
+    { timeout: 20_000 },
+    async () => {
+      // A laptop that sleeps for 15 minutes during a wait: the wall clock jumps,
+      // Node's timers and the awake clock do not (#264).
+      let asleepMs = 0;
+      const clock = { wall: () => Date.now() + asleepMs, awake: () => performance.now() };
+      const sleeper = setTimeout(() => (asleepMs = 15 * 60_000), 300);
+      const slept = await runScenario(
+        scenario(`
+name: host sleeps
+${STATION}
+steps:
+  - wait: 1s
+  - expectStation: { registration: Accepted, within: 1s }
+`),
+        'sleep#1',
+        { ...FAST, clock },
+      );
+      clearTimeout(sleeper);
+      expect(slept.status).toBe('passed');
+      expect(slept.durationMs).toBeGreaterThanOrEqual(15 * 60_000);
+      expect(slept.hostAsleepMs).toBeGreaterThan(15 * 60_000 - 1000);
+      expect(slept.hostAsleepMs).toBeLessThan(15 * 60_000 + 1000);
+      expect(slept.properties.hostAsleep).toBe('15m');
+      expect(formatScenarioResult(slept)[0]).toContain(', host asleep 15m)');
+
+      const awake = await runScenario(
+        scenario(`
+name: host stays awake
+${STATION}
+steps:
+  - wait: 100ms
+`),
+        'awake#1',
+        FAST,
+      );
+      expect(awake.status).toBe('passed');
+      expect(awake.hostAsleepMs).toBeUndefined();
+      expect(awake.properties.hostAsleep).toBeUndefined();
     },
   );
 });

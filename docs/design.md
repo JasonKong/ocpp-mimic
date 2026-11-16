@@ -1472,6 +1472,7 @@ v0.1.0 is released from a tag by the release workflow. From the release's artifa
 **Also in M8**
 
 - #264: a scenario that fails against CitrineOS waits about 15 minutes before it ends. Bound what the runner waits for after a failure, so a failing run ends in seconds.
+- Implemented (T121): the runner was not waiting for anything. A failing scenario waits out its `within` (10 s), and on the laptop the runs came from, the system log shows clamshell sleeps of 900 to 1,000 s starting during exactly those waits; passing scenarios end within a second and never met one. CI runners do not sleep. The runner now measures deadlines (`within`, the boot wait, the scenario timeout) in awake time (`performance.now()`, which stops while the host is suspended, as Node's timers do) and durations in wall-clock time; a scenario whose two differ by a second or more reports `hostAsleepMs`, the console line says `host asleep 15m`, and JUnit gets a `hostAsleep` property. The guide says to keep the machine awake for long runs.
 
 **Out of M8**
 

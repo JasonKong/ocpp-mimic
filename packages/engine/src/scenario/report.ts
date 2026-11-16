@@ -13,6 +13,10 @@ export function formatScenarioResult(result: ScenarioRunResult): string[] {
     ...(result.properties.energyMultiplier !== undefined
       ? [`energy ${result.properties.energyMultiplier}`]
       : []),
+    // A sleeping laptop stretches the time; say so instead of leaving a mystery.
+    ...(result.hostAsleepMs !== undefined
+      ? [`host asleep ${formatDuration(result.hostAsleepMs)}`]
+      : []),
   ];
   const lines = [`${MARK[result.status]} ${result.name} (${facts.join(', ')})  ${result.label}`];
   if (result.status === 'error' && result.error !== undefined) {
