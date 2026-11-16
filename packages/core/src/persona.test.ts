@@ -174,4 +174,36 @@ describe('resolvePersonas', () => {
     expect([...IMPLEMENTED_FEATURE_PROFILES].sort()).toEqual([...FEATURE_PROFILES].sort());
     expect(personas.get('base')?.warnings).toEqual([]);
   });
+
+  it('reads a 2.1 persona with its feature groups and availability method, and keeps them from 2.0.1', () => {
+    const v2 = {
+      persona: 'v21',
+      ocpp: '2.1',
+      boot: { vendorName: 'VendorX', model: 'AC-21' },
+      connectors: 2,
+      features: ['Core', 'TariffAndCost'],
+      connectorStatus: 'StatusNotification',
+    };
+    const { personas, errors } = resolveOne(v2);
+    expect(errors).toEqual([]);
+    expect(personas.get('v21')).toMatchObject({
+      ocpp: '2.1',
+      options: {
+        ocpp: '2.1',
+        connectorStatus: 'StatusNotification',
+        features: ['Core', 'TariffAndCost'],
+      },
+    });
+    // The 2.1 group is not built yet, so the persona says so.
+    expect(personas.get('v21')?.warnings).toEqual([
+      'test.yaml: certification profile TariffAndCost is supported in the persona but not implemented yet',
+    ]);
+    expect(resolveOne({ ...v2, ocpp: '2.0.1' }).errors).toEqual([
+      'test.yaml: TariffAndCost, connectorStatus need ocpp "2.1"',
+    ]);
+    // Any other version is read as a 1.6 persona, which this is not.
+    expect(resolveOne({ ...v2, ocpp: '2.2' }).errors).toContain(
+      'test.yaml: $.boot.chargePointVendor: missing required property',
+    );
+  });
 });

@@ -44,7 +44,7 @@ import { createEnergy } from '../energy.js';
 import type { FileTransfer, FirmwareSettings } from '../firmware.js';
 import { nextAlignedSample, nextPeriodicSample } from '../meter.js';
 import type { IdGenerator } from '../ids.js';
-import { OCPP201_MESSAGE_SET, type Ocpp201RpcTypes } from '../message-set.js';
+import { OCPP201_MESSAGE_SET, OCPP21_MESSAGE_SET, type Ocpp21RpcTypes } from '../message-set.js';
 import type { JsonObject } from '../ocppj.js';
 import { createOutbox, type OutboxEntry } from '../outbox.js';
 import {
@@ -61,7 +61,6 @@ import type {
   BootReasonEnumType,
   ChargingStateEnumType,
   ChargingStationType,
-  IdTokenEnumType,
   IdTokenInfoType,
   IdTokenType,
   MeterValueType,
@@ -69,9 +68,9 @@ import type {
   ReasonEnumType,
   TransactionEventEnumType,
   TriggerReasonEnumType,
-  Ocpp201RequestOf,
-  Ocpp201ResponseOf,
-} from './messages.js';
+  Ocpp21RequestOf,
+  Ocpp21ResponseOf,
+} from '../ocpp21/messages.js';
 import { chargingNeeds } from './charging-needs.js';
 import {
   applyOverrides,
@@ -126,7 +125,7 @@ import {
 import { chargingState, parseTxPoints, startPoint, stopPoint } from './transaction.js';
 import { connectorStatus201, stationStatus201, type ConnectorStatus201 } from './status.js';
 
-type Out = Ocpp201RpcTypes['out'];
+type Out = Ocpp21RpcTypes['out'];
 
 /** The CSMS messages of the SmartCharging profile; without it they answer NotSupported (K01.FR.29). */
 const SMART_CHARGING_ACTIONS: ReadonlySet<string> = new Set([
@@ -145,9 +144,23 @@ export const CERTIFICATION_PROFILES = [
   'Reservation',
 ] as const;
 
+/**
+ * 2.1 has no certification profiles yet; a 2.1 station keeps the 2.0.1 ones
+ * and adds these feature groups (see "M7 OCPP 2.1" in docs/design.md).
+ */
+export const FEATURES_21 = ['TariffAndCost', 'Payment', 'WebPayments'] as const;
+
 export interface ChargePoint201Options {
   clock: Clock;
   ids: IdGenerator;
+  /** The station's OCPP version: 2.0.1 (default) or 2.1, which builds on it. */
+  ocpp?: '2.0.1' | '2.1';
+  /**
+   * How a 2.1 station reports connector availability: NotifyEvent on
+   * Connector.AvailabilityState, the method 2.1 prefers (default), or the
+   * deprecated StatusNotification. 2.0.1 stations always use StatusNotification.
+   */
+  connectorStatus?: 'NotifyEvent' | 'StatusNotification';
   /** BootNotification's chargingStation block: model, vendor, serial number, firmware. */
   boot: ChargingStationType;
   /** EVSEs, each with one connector. */
@@ -190,7 +203,7 @@ export interface ChargePoint201Options {
 /** Everything a 2.0.1 station keeps across an engine restart. */
 export interface PersistedChargePoint201 {
   version: 1;
-  ocpp: '2.0.1';
+  ocpp: '2.0.1' | '2.1';
   savedAt: number;
   /** connectorId → energy register in Wh. */
   meters: Record<string, number>;
@@ -324,6 +337,11 @@ export interface ChargePoint201 extends ChargePoint {
 
 export function createChargePoint201(options: ChargePoint201Options): ChargePoint201 {
   const { clock, ids } = options;
+  const ocpp = options.ocpp ?? '2.0.1';
+  const v21 = ocpp === '2.1';
+  const availabilityByEvent = v21 && options.connectorStatus !== 'StatusNotification';
+  // NotifyEvent ids, shared by availability and fault events.
+  let eventId = 0;
   const timing: ChargePointTiming = { ...DEFAULT_TIMING, ...options.timing };
   const offeredW = options.offeredPowerW ?? 7360;
   const emit = options.onEvent ?? (() => {});
@@ -350,7 +368,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   let sequence = options.restore?.sequence ?? 0;
   const nextKey = (prefix: string) => `${prefix}-${++sequence}`;
 
-  let rpc: Rpc<Ocpp201RpcTypes> | undefined;
+  let rpc: Rpc<Ocpp21RpcTypes> | undefined;
   let registration: Registration = 'Offline';
   let heartbeatTimer: TimerHandle | undefined;
   let bootTimer: TimerHandle | undefined;
@@ -456,10 +474,10 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   /** Sends now when registered; otherwise drops the message (status reports, heartbeats). */
   function sendIfOnline<A extends Out>(
     action: A,
-    payload: Ocpp201RequestOf<A>,
-  ): Promise<RpcOutcome<Ocpp201ResponseOf<A>>> | undefined {
+    payload: Ocpp21RequestOf<A>,
+  ): Promise<RpcOutcome<Ocpp21ResponseOf<A>>> | undefined {
     return online()
-      ? (rpc?.call(action, payload as never) as Promise<RpcOutcome<Ocpp201ResponseOf<A>>>)
+      ? (rpc?.call(action, payload as never) as Promise<RpcOutcome<Ocpp21ResponseOf<A>>>)
       : undefined;
   }
 
@@ -558,16 +576,35 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   function reportStatuses(all = false): void {
     const queueAll = deviceModel.get('OCPPCommCtrlr', 'QueueAllMessages') === 'true';
     if (!online() && !queueAll) return;
+    const changes: { evseId: number; status: ConnectorStatus201 }[] = [];
     for (const connector of connectors(station)) {
       const status = connectorStatus201(connector, station);
       if (!all && reported.get(connector.connectorId) === status) continue;
       reported.set(connector.connectorId, status);
-      const payload = {
-        timestamp: timestamp(),
-        connectorStatus: status,
-        evseId: connector.connectorId,
-        connectorId: 1,
+      changes.push({ evseId: connector.connectorId, status });
+    }
+    if (changes.length === 0) return;
+    if (availabilityByEvent) {
+      // 2.1: one NotifyEvent with an AvailabilityState event per connector (G01, B01.FR.05).
+      const payload: Ocpp21RequestOf<'NotifyEvent'> = {
+        generatedAt: timestamp(),
+        seqNo: 0,
+        eventData: changes.map(({ evseId, status }) => ({
+          eventId: ++eventId,
+          timestamp: timestamp(),
+          trigger: 'Delta' as const,
+          actualValue: status,
+          eventNotificationType: 'HardWiredNotification' as const,
+          component: { name: 'Connector', evse: { id: evseId, connectorId: 1 } },
+          variable: { name: 'AvailabilityState' },
+        })),
       };
+      if (online()) void sendIfOnline('NotifyEvent', payload);
+      else void outbox.enqueue('NotifyEvent', payload);
+      return;
+    }
+    for (const { evseId, status } of changes) {
+      const payload = { timestamp: timestamp(), connectorStatus: status, evseId, connectorId: 1 };
       if (online()) void sendIfOnline('StatusNotification', payload);
       else void outbox.enqueue('StatusNotification', payload);
     }
@@ -684,8 +721,6 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
   // ---- Faults ---------------------------------------------------------------
 
-  let eventId = 0;
-
   /**
    * Reports a fault, or its end, as NotifyEvent for the Problem variable of
    * the connector (or the station for connectorId 0): techCode is the
@@ -697,7 +732,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       connectorId === 0
         ? { name: 'ChargingStation' }
         : { name: 'Connector', evse: { id: connectorId, connectorId: 1 } };
-    const payload: Ocpp201RequestOf<'NotifyEvent'> = {
+    const payload: Ocpp21RequestOf<'NotifyEvent'> = {
       generatedAt: timestamp(),
       seqNo: 0,
       eventData: [
@@ -931,7 +966,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     if (reservationId !== undefined) tx.reservationSent = true;
     const meterValue = extra.meterValue?.filter((m) => m !== undefined) ?? [];
     const [firstValue, ...otherValues] = meterValue;
-    const payload: Ocpp201RequestOf<'TransactionEvent'> = {
+    const payload: Ocpp21RequestOf<'TransactionEvent'> = {
       eventType,
       timestamp: timestamp(),
       triggerReason,
@@ -951,7 +986,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     };
     void outbox.enqueue('TransactionEvent', payload, tx.id).then((outcome) => {
       if (!outcome.ok || eventType === 'Ended') return;
-      const info = (outcome.payload as Ocpp201ResponseOf<'TransactionEvent'>).idTokenInfo;
+      const info = (outcome.payload as Ocpp21ResponseOf<'TransactionEvent'>).idTokenInfo;
       if (info !== undefined && extra.idToken !== undefined) rememberAnswer(extra.idToken, info);
       if (info === undefined || info.status === 'Accepted') return;
       if (transactions.get(connectorId) !== tx) return;
@@ -1597,7 +1632,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     }
   }
 
-  type ReportData = NonNullable<Ocpp201RequestOf<'NotifyReport'>['reportData']>;
+  type ReportData = NonNullable<Ocpp21RequestOf<'NotifyReport'>['reportData']>;
 
   /**
    * Sends a report in NotifyReport pages of ItemsPerMessageGetReport entries,
@@ -1623,7 +1658,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
   // ---- Commands from the CSMS ---------------------------------------------
 
-  const handlers: RpcHandlers<Ocpp201RpcTypes> = {
+  const handlers: RpcHandlers<Ocpp21RpcTypes> = {
     RequestStartTransaction(request) {
       const busy = (id: number) =>
         authorizations.has(id) || transactions.get(id)?.idToken !== undefined;
@@ -1775,12 +1810,16 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       }
       const busy =
         request.evseId === undefined ? transactions.size > 0 : transactions.has(request.evseId);
+      // Resuming transactions after a reset comes with T99; until then there is no
+      // TxCtrlr.ResumptionTimeout, so ImmediateAndResume is refused (B13.FR.01).
+      if (request.type === 'ImmediateAndResume') return { status: 'Rejected' };
       if (request.type === 'OnIdle' && busy) {
         scheduledReset = request.evseId === undefined ? {} : { evseId: request.evseId };
         return { status: 'Scheduled' };
       }
+      const { type } = request;
       later(commandDelay('Reset'), () =>
-        request.evseId === undefined ? resetStation(request.type) : resetEvse(request.evseId),
+        request.evseId === undefined ? resetStation(type) : resetEvse(request.evseId),
       );
       return { status: 'Accepted' };
     },
@@ -2070,16 +2109,16 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   security.securityEvent('StartupOfTheDevice');
 
   return {
-    ocpp: '2.0.1',
+    ocpp,
 
     connected() {
       security.connected();
       rpc?.close();
-      rpc = createRpc<Ocpp201RpcTypes>({
+      rpc = createRpc<Ocpp21RpcTypes>({
         clock,
         ids,
         send: options.send,
-        messages: OCPP201_MESSAGE_SET,
+        messages: v21 ? OCPP21_MESSAGE_SET : OCPP201_MESSAGE_SET,
         handlers,
         // Actions of a certification profile the persona does not support answer NotSupported.
         supports: (action) =>
@@ -2157,7 +2196,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     async presentIdTag(connectorId, token, type = 'ISO14443'): Promise<IdTagResult> {
       const connector = findConnector(station, connectorId);
       if (connector === undefined) return 'unknown-connector';
-      const idToken: IdTokenType = { idToken: token, type: type as IdTokenEnumType };
+      const idToken: IdTokenType = { idToken: token, type };
       const session = authorizations.get(connectorId);
       const current = session?.idToken ?? transactions.get(connectorId)?.idToken;
       if (current !== undefined) {
@@ -2274,7 +2313,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     },
 
     dataTransfer(request) {
-      const sent = sendIfOnline('DataTransfer', request as Ocpp201RequestOf<'DataTransfer'>);
+      const sent = sendIfOnline('DataTransfer', request as Ocpp21RequestOf<'DataTransfer'>);
       return (sent ?? Promise.resolve({ ok: false, failure: { kind: 'Closed' } })) as Promise<
         CallOutcome<'DataTransfer'>
       >;
@@ -2295,7 +2334,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       const securitySnapshot = security.snapshot();
       const firmwareVersion = security.firmwareVersion();
       return {
-        ocpp: '2.0.1',
+        ocpp,
         registration,
         connected: rpc !== undefined,
         station: { status: stationStatus201(station), errorCode: 'NoError' },
@@ -2366,7 +2405,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     persistentState(): PersistedChargePoint201 {
       return {
         version: 1,
-        ocpp: '2.0.1',
+        ocpp,
         savedAt: now(),
         meters: energy.registers(),
         outbox: outbox.entries.map((entry) => ({ ...entry })),

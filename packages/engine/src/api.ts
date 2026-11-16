@@ -380,7 +380,7 @@ const routes: Route[] = [
       ocpp: persona.ocpp,
       description: persona.definition.description,
       connectors: persona.definition.connectors,
-      ...(persona.ocpp === '2.0.1' && { features: persona.options.features }),
+      ...(persona.ocpp !== '1.6' && { features: persona.options.features }),
       boot: persona.definition.boot,
       faults: persona.definition.faults ?? [],
       evs: persona.definition.evs ?? {},
@@ -619,9 +619,14 @@ const routes: Route[] = [
     'POST',
     '/api/stations/:param/connectors/:param/id-tag',
     connectorAction(async (s, c, body) => {
-      // A 2.0.1 station takes an IdToken type (default ISO14443); 1.6 has none.
+      // A 2.x station takes an IdToken type (default ISO14443); 1.6 has none. 2.0.1's
+      // types are an enumeration; 2.1's are any string of up to 20 characters.
       const type = stringField(body, 'type', false);
-      if (type !== undefined && !ID_TOKEN_TYPES.includes(type)) {
+      if (s.chargePoint.ocpp === '2.1') {
+        if (type !== undefined && (type === '' || type.length > 20)) {
+          throw new HttpError(400, '"type" must be 1 to 20 characters');
+        }
+      } else if (type !== undefined && !ID_TOKEN_TYPES.includes(type)) {
         throw new HttpError(400, `"type" must be one of ${ID_TOKEN_TYPES.join(', ')}`);
       }
       return {
@@ -653,7 +658,7 @@ const routes: Route[] = [
 
   route('GET', '/api/stations/:param/device-model', (request, context) => {
     const station = stationOf(context, request.params[0]);
-    if (station.chargePoint.ocpp !== '2.0.1') {
+    if (station.chargePoint.ocpp === '1.6') {
       throw new HttpError(404, `station ${station.id} speaks OCPP 1.6, which has no Device Model`);
     }
     return { variables: (station.chargePoint as ChargePoint201).deviceModelView() };
@@ -661,7 +666,7 @@ const routes: Route[] = [
 
   route('PATCH', '/api/stations/:param/device-model', async (request, context) => {
     const station = stationOf(context, request.params[0]);
-    if (station.chargePoint.ocpp !== '2.0.1') {
+    if (station.chargePoint.ocpp === '1.6') {
       throw new HttpError(404, `station ${station.id} speaks OCPP 1.6, which has no Device Model`);
     }
     const body = await request.body();

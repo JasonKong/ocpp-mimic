@@ -27,8 +27,8 @@ export function replayDocument(
 ): Record<string, unknown> {
   const first = Date.parse(options.lines[0]?.at ?? '') || 0;
   // The replay station speaks the log's version: a 2.0.1 log replays as generic-2.0.1.
-  const version = logVersions(options.lines).get(options.station);
-  const persona = options.persona ?? (version === '2.0.1' ? 'generic-2.0.1' : 'generic-1.6');
+  const version = logVersions(options.lines).get(options.station) ?? '1.6';
+  const persona = options.persona ?? `generic-${version}`;
   return {
     name: `Replay of ${options.station} from ${options.file.split(/[\\/]/).pop() ?? options.file}`,
     csms: options.csms ?? 'builtin',

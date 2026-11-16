@@ -10,11 +10,7 @@ import { OCPP16_CHARGE_POINT_INITIATED, OCPP16_CSMS_INITIATED, RPC_ERROR_CODES }
 import type { OcppVersion } from './message-set.js';
 import { OCPP201_RPC_ERROR_CODES } from './ocpp201/constants.js';
 import { OCPP21_CHARGING_STATION_ACTIONS, OCPP21_CSMS_ACTIONS } from './ocpp21/messages.js';
-import {
-  IdTokenEnumSchema,
-  OCPP201_CHARGING_STATION_ACTIONS,
-  OCPP201_CSMS_ACTIONS,
-} from './ocpp201/messages.js';
+import { OCPP201_CHARGING_STATION_ACTIONS, OCPP201_CSMS_ACTIONS } from './ocpp201/messages.js';
 import { durationSchema, parseDuration } from './duration.js';
 import {
   array,
@@ -428,7 +424,8 @@ const ARGUMENTS = {
     {
       idTag: nonEmpty,
       idToken: nonEmpty,
-      type: IdTokenEnumSchema,
+      // 2.0.1's IdTokenEnumType values, or in 2.1 any type of up to 20 characters.
+      type: string({ maxLength: 20 }),
       connector,
       evse,
       result: oneOf(['authorized', 'rejected', 'stopping', 'busy']),

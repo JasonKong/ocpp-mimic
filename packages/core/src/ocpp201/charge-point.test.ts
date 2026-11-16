@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CertificateTools } from '../certificates.js';
 import { ManualClock } from '../clock.js';
 import { sequentialIds } from '../ids.js';
-import { OCPP201_MESSAGE_SET } from '../message-set.js';
+import { OCPP201_MESSAGE_SET, OCPP21_MESSAGE_SET } from '../message-set.js';
 import { parseFrame, type CallFrame, type Frame, type JsonObject } from '../ocppj.js';
 import { resolvePersonas } from '../persona.js';
 import {
@@ -348,6 +348,91 @@ describe('a 2.0.1 station: the RPC framework', () => {
     await settle();
     const errors = frames.filter((f) => f.type === 4).map((f) => (f.type === 4 ? f.errorCode : ''));
     expect(errors).toEqual(['NotSupported', 'NotImplemented']);
+  });
+});
+
+describe('a 2.1 station on the 2.x adapter', () => {
+  const v21 = (extra: Partial<ChargePoint201Options> = {}) =>
+    setup({ extra: { ocpp: '2.1', ...extra } });
+  /** `evse:value` of every AvailabilityState event sent after frame `from`. */
+  const availability = (frames: Frame[], from = 0) =>
+    frames
+      .slice(from)
+      .filter((f): f is CallFrame => f.type === 2 && f.action === 'NotifyEvent')
+      .flatMap(
+        (f) =>
+          f.payload.eventData as {
+            component: { evse: { id: number } };
+            actualValue: string;
+            variable: { name: string };
+          }[],
+      )
+      .filter((e) => e.variable.name === 'AvailabilityState')
+      .map((e) => `${e.component.evse.id}:${e.actualValue}`);
+
+  it('boots as 2.1 and reports availability with NotifyEvent, not StatusNotification', async () => {
+    const { cp, frames, calls, statuses, boot, settle } = v21();
+    expect(cp.ocpp).toBe('2.1');
+    await boot();
+    expect(cp.snapshot()).toMatchObject({ ocpp: '2.1', registration: 'Accepted' });
+    expect(statuses()).toEqual([]);
+    // After the boot every connector (B01.FR.05), then each change (G01, E02.FR.05).
+    expect(availability(frames)).toEqual(['1:Available', '2:Available']);
+    expect(calls('NotifyEvent')[0]?.payload.eventData).toEqual([
+      expect.objectContaining({
+        trigger: 'Delta',
+        eventNotificationType: 'HardWiredNotification',
+        component: { name: 'Connector', evse: { id: 1, connectorId: 1 } },
+        variable: { name: 'AvailabilityState' },
+      }),
+      expect.objectContaining({
+        component: { name: 'Connector', evse: { id: 2, connectorId: 1 } },
+      }),
+    ]);
+    const from = frames.length;
+    cp.plugIn(2);
+    await settle();
+    expect(availability(frames, from)).toEqual(['2:Occupied']);
+    // Every frame is a valid 2.1 request.
+    for (const call of calls()) {
+      expect(OCPP21_MESSAGE_SET.validateRequest(call.action, call.payload).ok).toBe(true);
+    }
+  });
+
+  it('uses the deprecated StatusNotification when the persona says so', async () => {
+    const { frames, statuses, boot } = v21({ connectorStatus: 'StatusNotification' });
+    await boot();
+    expect(statuses()).toEqual(['1/1:Available', '2/1:Available']);
+    expect(availability(frames)).toEqual([]);
+  });
+
+  it("knows 2.1's actions: NotSupported for those it does not do yet, Rejected for ImmediateAndResume", async () => {
+    const { frames, boot, settle, cp, csmsCall } = v21();
+    await boot();
+    cp.receive(
+      '[2,"x1","SetDefaultTariff",{"evseId":0,"tariff":{"tariffId":"T","currency":"NZD"}}]',
+    );
+    cp.receive('[2,"x2","RemoteStartTransaction",{"idTag":"A"}]');
+    await settle();
+    const errors = frames.filter((f) => f.type === 4).map((f) => (f.type === 4 ? f.errorCode : ''));
+    expect(errors).toEqual(['NotSupported', 'NotImplemented']);
+    // No TxCtrlr.ResumptionTimeout yet, so no resuming after a reset (B13.FR.01).
+    expect(await csmsCall('Reset', { type: 'ImmediateAndResume' })).toEqual({ status: 'Rejected' });
+  });
+
+  it('takes any idToken type, such as VIN', async () => {
+    const { calls, boot, present } = v21();
+    await boot();
+    expect(await present(1, 'WVW00000000000001', 'VIN')).toBe('authorized');
+    expect(calls('Authorize').at(-1)?.payload).toEqual({
+      idToken: { idToken: 'WVW00000000000001', type: 'VIN' },
+    });
+  });
+
+  it('keeps its version in the saved state', async () => {
+    const { cp, boot } = v21();
+    await boot();
+    expect(cp.persistentState().ocpp).toBe('2.1');
   });
 });
 

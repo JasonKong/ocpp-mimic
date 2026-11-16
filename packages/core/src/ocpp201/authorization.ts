@@ -3,7 +3,7 @@
  * to C12), the Local Authorization List (C13, C14, D01, D02), and the local
  * decision for a presented IdToken. Pure; the station keeps the state.
  */
-import type { IdTokenInfoType, IdTokenType, Ocpp201RequestOf } from './messages.js';
+import type { IdTokenInfoType, IdTokenType, Ocpp21RequestOf } from '../ocpp21/messages.js';
 
 /** The cache and list key of a token: its type and value. */
 export const tokenKey = (token: Pick<IdTokenType, 'idToken' | 'type'>) =>
@@ -82,7 +82,7 @@ export const EMPTY_LOCAL_LIST_201: LocalList201 = { version: 0, entries: {} };
  */
 export function applyLocalList(
   list: LocalList201,
-  request: Ocpp201RequestOf<'SendLocalList'>,
+  request: Ocpp21RequestOf<'SendLocalList'>,
   maxEntries: number,
 ): { status: 'Accepted' | 'Failed' | 'VersionMismatch'; list: LocalList201 } {
   if (request.versionNumber <= 0) return { status: 'Failed', list };

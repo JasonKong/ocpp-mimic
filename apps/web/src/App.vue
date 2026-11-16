@@ -219,7 +219,7 @@ async function select(id: string) {
     ocpp = snapshot.ocpp;
     records.set(id, entries);
   });
-  if (ocpp === '2.0.1') await loadDeviceModel(id);
+  if (ocpp !== '1.6') await loadDeviceModel(id);
 }
 
 async function setVariable(component: string, variable: string, value: string) {
@@ -394,7 +394,7 @@ onUnmounted(() => {
           </nav>
           <template v-if="tab === 'station'">
             <StationDetail :station="selected" :persona="selectedPersona" @action="act" />
-            <template v-if="selected.ocpp === '2.0.1'">
+            <template v-if="selected.ocpp !== '1.6'">
               <TransactionEvents :entries="selectedRecords" />
               <DeviceModelBrowser
                 :variables="deviceModel"

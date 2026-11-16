@@ -328,6 +328,26 @@ export function createMetrics(options: MetricsOptions): Metrics {
             typeof payload.evseId === 'number' ? payload.evseId : payload.connectorId;
           const status = payload.connectorStatus ?? payload.status;
           if (connectorId > 0) connectors.set(connectorId, String(status));
+        } else if (record.action === 'NotifyEvent' && Array.isArray(payload.eventData)) {
+          // 2.1 reports connector availability as AvailabilityState events.
+          for (const event of payload.eventData as {
+            actualValue?: string;
+            component?: { name?: string; evse?: { id?: number } };
+            variable?: { name?: string };
+          }[]) {
+            const evseId = event.component?.evse?.id;
+            if (
+              event.component?.name !== 'Connector' ||
+              event.variable?.name !== 'AvailabilityState' ||
+              typeof evseId !== 'number' ||
+              evseId <= 0
+            ) {
+              continue;
+            }
+            let connectors = statuses.get(record.stationId);
+            if (connectors === undefined) statuses.set(record.stationId, (connectors = new Map()));
+            connectors.set(evseId, String(event.actualValue));
+          }
         } else if (record.action === 'TransactionEvent') {
           const transactionId = (payload.transactionInfo as { transactionId?: string } | undefined)
             ?.transactionId;

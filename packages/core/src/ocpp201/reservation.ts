@@ -10,7 +10,7 @@
  * EVSE each among their candidates (of their connector type), so a free EVSE
  * shows Reserved when the others alone could not serve them (H01.FR.20, .24).
  */
-import type { IdTokenType } from './messages.js';
+import type { IdTokenType } from '../ocpp21/messages.js';
 
 type Bare<T> = Omit<T, 'customData'>;
 

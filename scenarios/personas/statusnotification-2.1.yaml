@@ -1,0 +1,6 @@
+# regression-2.1 reporting connector availability with StatusNotification,
+# which 2.1 deprecates but still allows (G01), instead of NotifyEvent.
+persona: statusnotification-2.1
+extends: regression-2.1
+description: regression-2.1 that reports availability with StatusNotification
+connectorStatus: StatusNotification
