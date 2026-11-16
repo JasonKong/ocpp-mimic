@@ -31,6 +31,7 @@ import { exportLog } from '../logs/export.js';
 import { runReplay, stationLines } from '../replay/replay.js';
 import { resolveEv } from '../evs.js';
 import { DEFAULT_ALLOWED_CSMS, type VirtualStation } from '../fleet.js';
+import { localControlOrigin } from '../csms/probe.js';
 import type { FrameRecord } from '../recorder.js';
 import {
   startBuiltinCsms,
@@ -245,6 +246,10 @@ export async function runScenario(
     const csmsUrl = csms?.url ?? csmsTarget;
     // The built-in `csmsUrl`, unless the scenario or --var defines its own.
     if (!Object.hasOwn(vars, 'csmsUrl')) vars.csmsUrl = csmsUrl;
+    // The built-in CSMS's control API, for http steps that drive it (T106).
+    if (csms !== undefined && !Object.hasOwn(vars, 'csmsApiUrl')) {
+      vars.csmsApiUrl = localControlOrigin(csms.url) ?? '';
+    }
     for (const definition of scenario.stations) {
       const station = fleet.add({
         id: definition.id,
@@ -556,10 +561,14 @@ export async function runScenario(
             }
             return;
           }
+          if (step.resultError !== undefined && connection.ocpp !== '2.1') {
+            throw new StepFailure('resultError needs an OCPP 2.1 station');
+          }
           const answer = await connection.call(
             step.action,
             step.payload as JsonObject,
             DEFAULT_WITHIN_MS,
+            step.resultError === undefined ? {} : { resultError: step.resultError },
           );
           if (step.error !== undefined) {
             if (answer.type !== 4)

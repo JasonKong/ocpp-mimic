@@ -207,6 +207,8 @@ export type ScenarioStep =
       error?: string;
       /** Passes only when no answer arrives for this long (a CSMS-side timeout). */
       noAnswerMs?: number;
+      /** 2.1: the CSMS answers the station's CALLRESULT with a CALLRESULTERROR of this code. */
+      resultError?: string;
       save?: SaveMap;
     })
   | (StepBase & {
@@ -546,6 +548,7 @@ const ARGUMENTS = {
       answer: anyJson,
       error: oneOf(ERROR_CODES),
       noAnswer: durationSchema,
+      resultError: oneOf(ERROR_CODES),
       save: saveSchema,
       station: nonEmpty,
     },
@@ -960,7 +963,7 @@ function parseStep(
       return {
         kind: argsKind,
         ...named,
-        ...pick(args, ['station', 'answer', 'error', 'save'] as const),
+        ...pick(args, ['station', 'answer', 'error', 'resultError', 'save'] as const),
         ...(args.noAnswer !== undefined && { noAnswerMs: durationMs(args.noAnswer, 0) }),
         action: args.action as string,
         payload: (args.payload as JsonValue | undefined) ?? {},
@@ -1191,7 +1194,7 @@ export function parseScenario(document: unknown, label?: string): ScenarioResult
 }
 
 /** Variables every scenario has: `csmsUrl` is the address its stations connect to. */
-export const BUILTIN_VARIABLES: readonly string[] = ['csmsUrl', 'engineUrl'];
+export const BUILTIN_VARIABLES: readonly string[] = ['csmsUrl', 'csmsApiUrl', 'engineUrl'];
 
 /**
  * Template names a scenario uses before they are defined. `provided` are the
