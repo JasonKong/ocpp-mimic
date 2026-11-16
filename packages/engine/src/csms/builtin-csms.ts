@@ -32,7 +32,13 @@ import {
   type Frame,
   type SendFrame,
   type JsonObject,
+  checkTotpV1,
+  OCPP16_CSMS_INITIATED,
+  OCPP201_CSMS_ACTIONS,
+  OCPP21_CSMS_ACTIONS,
+  parseWebPaymentUrl,
 } from '@ocpp-mimic/core';
+import { hmacSha256 } from '../hmac.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { signCsr } from '../x509.js';
 
@@ -57,6 +63,30 @@ interface ReplyOverride {
   reply: CsmsReply;
   /** Calls left to answer this way; undefined means all of them. */
   remaining?: number;
+}
+
+/** A control API answer: HTTP status and JSON body. */
+type ControlAnswer = [number, Record<string, unknown>];
+type ControlCommand = (
+  connection: BuiltinCsmsConnection,
+  body: Record<string, unknown>,
+) => ControlAnswer | Promise<ControlAnswer>;
+
+/** The payment URL template a 2.1 station starts with (its WebPaymentsCtrlr.URLTemplate). */
+const DEFAULT_TEMPLATE = 'https://pay.example.com/{chargingstationid}/{evse}/{totp}/{version}';
+
+/** What the CSMS keeps per 2.1 station: what it set, and what it answers with. */
+interface Station21 {
+  /** Dynamic profiles by id, with their current values (K28: PullDynamicScheduleUpdate). */
+  dynamic: Map<number, JsonObject>;
+  /** A limit for the next TransactionEventResponse (E16.FR.02, C25.FR.24). */
+  limit?: { transactionId?: string; transactionLimit: JsonObject };
+  /** A tariff for the driver in Authorize answers (I08). */
+  driverTariff?: JsonObject;
+  /** WebPaymentsCtrlr values the CSMS set, to check payment URLs with (C25). */
+  sharedSecret?: string;
+  validityS?: number;
+  urlTemplate?: string;
 }
 
 /** Serving wss:// (Security Profiles 2 and 3). */
@@ -176,8 +206,17 @@ export interface BuiltinCsmsConnection {
   readonly unconfirmed: readonly (SendFrame | CallResultErrorFrame)[];
   /** Resolves with the next CALL of `action` not yet returned by an earlier wait. */
   waitForCall(action: string, timeoutMs?: number): Promise<CallFrame>;
-  /** Sends a CALL and resolves with the CALLRESULT or CALLERROR frame. */
-  call(action: string, payload: JsonObject, timeoutMs?: number): Promise<Frame>;
+  /**
+   * Sends a CALL and resolves with the CALLRESULT or CALLERROR frame. With
+   * `resultError` (2.1), the CSMS answers the CALLRESULT with a CALLRESULTERROR
+   * of that code, as if it could not process it (a fault to test stations with).
+   */
+  call(
+    action: string,
+    payload: JsonObject,
+    timeoutMs?: number,
+    options?: { resultError?: string },
+  ): Promise<Frame>;
   /** Sends a WebSocket ping and resolves with whether a pong came back in time. */
   ping(timeoutMs?: number): Promise<boolean>;
   close(): void;
@@ -273,6 +312,38 @@ function defaultHandlers201(options: BuiltinCsmsOptions): Record<string, CsmsHan
   };
 }
 
+/** The CSMS commands of a version, for the control API's `call`. */
+function csmsActions(ocpp: OcppVersion): ReadonlySet<string> {
+  return new Set<string>(
+    ocpp === '1.6'
+      ? OCPP16_CSMS_INITIATED
+      : ocpp === '2.1'
+        ? OCPP21_CSMS_ACTIONS
+        : OCPP201_CSMS_ACTIONS,
+  );
+}
+
+/** The values of a schedule period that a ChargingScheduleUpdate carries (K28). */
+function scheduleValues(period: JsonObject): JsonObject {
+  const keys = [
+    'limit',
+    'limit_L2',
+    'limit_L3',
+    'dischargeLimit',
+    'dischargeLimit_L2',
+    'dischargeLimit_L3',
+    'setpoint',
+    'setpoint_L2',
+    'setpoint_L3',
+    'setpointReactive',
+    'setpointReactive_L2',
+    'setpointReactive_L3',
+  ];
+  return Object.fromEntries(
+    keys.filter((key) => period[key] !== undefined).map((key) => [key, period[key]]),
+  ) as JsonObject;
+}
+
 /** Waits for `predicate` to hold, re-checking whenever `subscribe` signals a change. */
 function waitUntil<T>(
   check: () => T | undefined,
@@ -310,6 +381,8 @@ interface ConnectionContext {
   stats: BuiltinCsmsStats;
   /** Prices 2.0.1 sessions (see BuiltinCsmsOptions.tariff). */
   pricing?: { tariff: ReferenceTariff; everyMs: number };
+  /** Sees each CALL the CSMS sent with its answer, to keep what it set. */
+  observe: (chargeBoxId: string, action: string, payload: JsonObject, answer: Frame) => void;
 }
 
 function createConnection(
@@ -403,7 +476,7 @@ function createConnection(
         `${action} from ${chargeBoxId}`,
       );
     },
-    async call(action, payload, timeoutMs = 2000) {
+    async call(action, payload, timeoutMs = 2000, callOptions = {}) {
       const id = ids();
       send({ type: MessageTypeId.Call, id, action, payload });
       const answer = await waitUntil(
@@ -415,7 +488,17 @@ function createConnection(
       // 2.1: an answer that breaks its definition gets a CALLRESULTERROR (Part 4, 4.2.3).
       if (answer.type === MessageTypeId.CallResult && context.messages.ocppj21) {
         const checked = context.messages.validateResponse(action, answer.payload);
-        if (!checked.ok) {
+        if (checked.ok && callOptions.resultError !== undefined) {
+          socket.send(
+            serializeFrame({
+              type: 5,
+              id,
+              errorCode: callOptions.resultError,
+              errorDescription: 'the built-in CSMS refused this answer on purpose',
+              errorDetails: {},
+            }),
+          );
+        } else if (!checked.ok) {
           socket.send(
             serializeFrame({
               type: 5,
@@ -427,6 +510,7 @@ function createConnection(
           );
         }
       }
+      context.observe(chargeBoxId, action, payload, answer);
       // Like a real CSMS, take an accepted AuthorizationKey as the new password (A01.FR.03).
       if (
         action === 'ChangeConfiguration' &&
@@ -608,19 +692,92 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     }, 50);
     return { status: 'Accepted' };
   };
+  const state21 = new Map<string, Station21>();
+  const stateOf = (chargeBoxId: string): Station21 => {
+    let state = state21.get(chargeBoxId);
+    if (state === undefined) {
+      state = { dynamic: new Map() };
+      state21.set(chargeBoxId, state);
+    }
+    return state;
+  };
+  /** Keeps what an accepted CALL set: Dynamic profiles' values, web payment settings. */
+  const observe: ConnectionContext['observe'] = (chargeBoxId, action, payload, answer) => {
+    if (answer.type !== MessageTypeId.CallResult) return;
+    if (action === 'SetChargingProfile' && answer.payload.status === 'Accepted') {
+      const profile = payload.chargingProfile as JsonObject | undefined;
+      const schedules = profile?.chargingSchedule as JsonObject[] | undefined;
+      const period = (schedules?.[0]?.chargingSchedulePeriod as JsonObject[] | undefined)?.[0];
+      if (profile?.chargingProfileKind === 'Dynamic' && period !== undefined) {
+        stateOf(chargeBoxId).dynamic.set(Number(profile.id), scheduleValues(period));
+      }
+    }
+    if (action === 'UpdateDynamicSchedule' && answer.payload.status === 'Accepted') {
+      const update = payload.scheduleUpdate as JsonObject | undefined;
+      const values = stateOf(chargeBoxId).dynamic;
+      const id = Number(payload.chargingProfileId);
+      values.set(id, { ...values.get(id), ...update });
+    }
+    if (action === 'SetVariables') {
+      const results = (answer.payload.setVariableResult as JsonObject[] | undefined) ?? [];
+      const data = (payload.setVariableData as JsonObject[] | undefined) ?? [];
+      data.forEach((entry, i) => {
+        const component = (entry.component as JsonObject | undefined)?.name;
+        const variable = (entry.variable as JsonObject | undefined)?.name;
+        if (component !== 'WebPaymentsCtrlr' || results[i]?.attributeStatus !== 'Accepted') return;
+        const value = String(entry.attributeValue);
+        const state = stateOf(chargeBoxId);
+        if (variable === 'SharedSecret') state.sharedSecret = value;
+        if (variable === 'ValidityTime') state.validityS = Number(value);
+        if (variable === 'URLTemplate') state.urlTemplate = value;
+      });
+    }
+  };
+  const base201 = defaultHandlers201(options);
   const handlersFor: Record<OcppVersion, Record<string, CsmsHandler>> = {
     '1.6': { ...defaultHandlers(options), SignCertificate: signCertificate, ...options.handlers },
     '2.0.1': {
-      ...defaultHandlers201(options),
+      ...base201,
       SignCertificate: signCertificate,
       ...options.handlers,
     },
-    // 2.1 stations get the 2.0.1 answers and the first 2.1 ones; T106 adds the rest.
+    // 2.1 stations get the 2.0.1 answers and the 2.1 ones.
     '2.1': {
-      ...defaultHandlers201(options),
-      // K21: acknowledged. K28: no newer values for a Dynamic profile.
+      ...base201,
+      // I08: a driver tariff set for the station goes with an accepted token.
+      Authorize: async (payload, connection) => {
+        const answer = (await base201.Authorize?.(payload, connection)) as JsonObject;
+        const tariff = state21.get(connection.chargeBoxId)?.driverTariff;
+        const accepted = (answer.idTokenInfo as JsonObject | undefined)?.status === 'Accepted';
+        return tariff !== undefined && accepted ? { ...answer, tariff } : answer;
+      },
+      // E16.FR.02: a queued limit goes with the next answer for its transaction.
+      TransactionEvent: async (payload, connection) => {
+        const answer = (await base201.TransactionEvent?.(payload, connection)) as JsonObject;
+        const state = state21.get(connection.chargeBoxId);
+        const queued = state?.limit;
+        const transactionId = (payload.transactionInfo as JsonObject | undefined)?.transactionId;
+        if (
+          state === undefined ||
+          queued === undefined ||
+          payload.eventType === 'Ended' ||
+          (queued.transactionId !== undefined && queued.transactionId !== transactionId)
+        ) {
+          return answer;
+        }
+        delete state.limit;
+        return { ...answer, transactionLimit: queued.transactionLimit };
+      },
+      // K21: acknowledged. K28: the profile's current values, as the CSMS last set them.
       NotifyPriorityCharging: () => ({}),
-      PullDynamicScheduleUpdate: () => ({ status: 'Rejected' }),
+      PullDynamicScheduleUpdate: (payload, connection) => {
+        const values = state21
+          .get(connection.chargeBoxId)
+          ?.dynamic.get(Number(payload.chargingProfileId));
+        return values === undefined
+          ? { status: 'Rejected', statusInfo: { reasonCode: 'NotFound' } }
+          : { status: 'Accepted', scheduleUpdate: values };
+      },
       // C21, C22: the settlement is noted; the station gives the receipt.
       NotifySettlement: () => ({}),
       // C18.FR.09, .10: a number of 2 letters and 2 to 18 digits or letters is valid,
@@ -677,6 +834,161 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       [...protocols].find((protocol) => messageSetForSubprotocol(protocol) !== undefined) ?? false,
   });
   let remoteStartIds = 0;
+  /** The control API's commands, `POST /api/stations/:id/<command>`. */
+  const commands: Record<string, ControlCommand> = {
+    // Starts a session as a third-party app would (M6).
+    'remote-start': async (connection, body) => {
+      const token = body.idToken as Record<string, unknown> | undefined;
+      const evseId = body.evseId;
+      if (typeof token?.idToken !== 'string' || token.idToken === '') {
+        return [400, { error: '"idToken" needs an idToken string' }];
+      }
+      if (evseId !== undefined && !(Number.isInteger(evseId) && Number(evseId) > 0)) {
+        return [400, { error: '"evseId" must be a whole number from 1' }];
+      }
+      const remoteStartId = ++remoteStartIds;
+      const [action, payload]: [string, JsonObject] =
+        connection.ocpp === '1.6'
+          ? [
+              'RemoteStartTransaction',
+              {
+                idTag: token.idToken,
+                ...(evseId !== undefined && { connectorId: Number(evseId) }),
+              },
+            ]
+          : [
+              'RequestStartTransaction',
+              {
+                remoteStartId,
+                idToken: {
+                  idToken: token.idToken,
+                  type: typeof token.type === 'string' ? token.type : 'Central',
+                },
+                ...(evseId !== undefined && { evseId: Number(evseId) }),
+              },
+            ];
+      return relay(connection, action, payload, {
+        ...(connection.ocpp !== '1.6' && { remoteStartId }),
+      });
+    },
+    // Any command of the station's version, as a CSMS operator would send it.
+    call: (connection, body) => {
+      const action = body.action;
+      if (typeof action !== 'string' || !csmsActions(connection.ocpp).has(action)) {
+        return [400, { error: `"action" must be a CSMS command of OCPP ${connection.ocpp}` }];
+      }
+      const payload = body.payload ?? {};
+      if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+        return [400, { error: '"payload" must be an object' }];
+      }
+      return relay(connection, action, payload as JsonObject);
+    },
+    // 2.1: the reference tariff (or the one given) as a default tariff (I07).
+    'default-tariff': (connection, body) => {
+      if (connection.ocpp !== '2.1') return only21(connection);
+      const tariff = body.tariff ?? options.tariff;
+      if (typeof tariff !== 'object' || tariff === null || Array.isArray(tariff)) {
+        return [409, { error: 'give a "tariff", or start the CSMS with one' }];
+      }
+      const evseId = body.evseId ?? 0;
+      if (!(Number.isInteger(evseId) && Number(evseId) >= 0)) {
+        return [400, { error: '"evseId" must be a whole number from 0' }];
+      }
+      return relay(connection, 'SetDefaultTariff', {
+        evseId: Number(evseId),
+        tariff: tariff as JsonObject,
+      });
+    },
+    // 2.1: a limit for the next TransactionEventResponse (E16.FR.02), of one transaction or any.
+    'transaction-limit': (connection, body) => {
+      if (connection.ocpp !== '2.1') return only21(connection);
+      const limit = body.transactionLimit;
+      if (typeof limit !== 'object' || limit === null || Array.isArray(limit)) {
+        return [400, { error: '"transactionLimit" must be an object' }];
+      }
+      const transactionId = typeof body.transactionId === 'string' ? body.transactionId : undefined;
+      stateOf(connection.chargeBoxId).limit = {
+        transactionLimit: limit as JsonObject,
+        ...(transactionId !== undefined && { transactionId }),
+      };
+      return [200, { queued: true }];
+    },
+    // 2.1: a tariff for the driver in Authorize answers (I08); null removes it.
+    'driver-tariff': (connection, body) => {
+      if (connection.ocpp !== '2.1') return only21(connection);
+      const state = stateOf(connection.chargeBoxId);
+      if (body.tariff === null) {
+        delete state.driverTariff;
+        return [200, { driverTariff: null }];
+      }
+      if (typeof body.tariff !== 'object' || Array.isArray(body.tariff)) {
+        return [400, { error: '"tariff" must be an object or null' }];
+      }
+      state.driverTariff = body.tariff as JsonObject;
+      return [200, { driverTariff: state.driverTariff }];
+    },
+    // 2.1: the payment page behind the dynamic QR code (C25): checks the TOTP, tells the
+    // station a web payment started, and has the URL's limits answered at the start.
+    'web-payment': async (connection, body) => {
+      if (connection.ocpp !== '2.1') return only21(connection);
+      const state = stateOf(connection.chargeBoxId);
+      const url = body.url;
+      const secret = typeof body.sharedSecret === 'string' ? body.sharedSecret : state.sharedSecret;
+      if (typeof url !== 'string') return [400, { error: '"url" must be the payment URL' }];
+      if (secret === undefined) {
+        return [409, { error: 'give "sharedSecret", or set WebPaymentsCtrlr.SharedSecret first' }];
+      }
+      const template =
+        typeof body.template === 'string' ? body.template : (state.urlTemplate ?? DEFAULT_TEMPLATE);
+      const parsed = parseWebPaymentUrl(template, url);
+      const totp = parsed?.values.totp;
+      const evseId = Number(parsed?.values.evse ?? 0);
+      if (parsed === undefined || totp === undefined) {
+        return [200, { valid: false, reason: 'the URL does not fit the template' }];
+      }
+      const valid = checkTotpV1(
+        totp,
+        { sharedSecret: secret, validityS: state.validityS ?? 30, length: totp.length },
+        Date.now(),
+        hmacSha256,
+      );
+      if (!valid) return [200, { valid: false, reason: 'the code is not valid now' }];
+      if (Object.keys(parsed.limits).length > 0) {
+        state.limit = { transactionLimit: parsed.limits as JsonObject };
+      }
+      const timeout = Number.isInteger(body.timeout) ? Number(body.timeout) : 60;
+      return relay(
+        connection,
+        'NotifyWebPaymentStarted',
+        { evseId, timeout },
+        { valid: true, evseId, limits: parsed.limits },
+      );
+    },
+  };
+  const only21 = (connection: BuiltinCsmsConnection): ControlAnswer => [
+    404,
+    { error: `${connection.chargeBoxId} speaks OCPP ${connection.ocpp}, not 2.1` },
+  ];
+  /** Sends a CALL and answers with its result (200), CALLERROR (502) or timeout (504). */
+  async function relay(
+    connection: BuiltinCsmsConnection,
+    action: string,
+    payload: JsonObject,
+    extra: Record<string, unknown> = {},
+  ): Promise<ControlAnswer> {
+    try {
+      const answer = await connection.call(action, payload, 10_000);
+      if (answer.type === MessageTypeId.CallResult) {
+        return [200, { action, ...answer.payload, ...extra }];
+      }
+      if (answer.type === MessageTypeId.CallError) {
+        return [502, { action, error: answer.errorCode, description: answer.errorDescription }];
+      }
+      return [502, { action, error: 'unexpected answer' }];
+    } catch (caught) {
+      return [504, { action, error: caught instanceof Error ? caught.message : String(caught) }];
+    }
+  }
   const control: RequestListener = (req, res) => {
     const json = (status: number, body: unknown) => {
       res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -694,8 +1006,9 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       });
       return;
     }
-    const match = /^\/api\/stations\/([^/]+)\/remote-start$/.exec(url.pathname);
-    if (req.method !== 'POST' || match === null) {
+    const match = /^\/api\/stations\/([^/]+)\/([a-z-]+)$/.exec(url.pathname);
+    const command = match === null ? undefined : commands[match[2] ?? ''];
+    if (req.method !== 'POST' || match === null || command === undefined) {
       json(404, { error: 'not found' });
       return;
     }
@@ -704,7 +1017,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size <= 16 * 1024) chunks.push(chunk);
+      if (size <= 64 * 1024) chunks.push(chunk);
     });
     req.on('end', () => {
       void (async () => {
@@ -718,56 +1031,13 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
           json(400, { error: 'the body must be a JSON object' });
           return;
         }
-        const token = body.idToken as Record<string, unknown> | undefined;
-        const evseId = body.evseId;
-        if (typeof token?.idToken !== 'string' || token.idToken === '') {
-          json(400, { error: '"idToken" needs an idToken string' });
-          return;
-        }
-        if (evseId !== undefined && !(Number.isInteger(evseId) && Number(evseId) > 0)) {
-          json(400, { error: '"evseId" must be a whole number from 1' });
-          return;
-        }
         const connection = connections.get(chargeBoxId);
         if (connection === undefined) {
           json(404, { error: `${chargeBoxId} is not connected` });
           return;
         }
-        const remoteStartId = ++remoteStartIds;
-        const [action, payload]: [string, JsonObject] =
-          connection.ocpp === '1.6'
-            ? [
-                'RemoteStartTransaction',
-                {
-                  idTag: token.idToken,
-                  ...(evseId !== undefined && { connectorId: Number(evseId) }),
-                },
-              ]
-            : [
-                'RequestStartTransaction',
-                {
-                  remoteStartId,
-                  idToken: {
-                    idToken: token.idToken,
-                    type: typeof token.type === 'string' ? token.type : 'Central',
-                  },
-                  ...(evseId !== undefined && { evseId: Number(evseId) }),
-                },
-              ];
-        try {
-          const answer = await connection.call(action, payload, 10_000);
-          if (answer.type === MessageTypeId.CallResult) {
-            json(200, {
-              action,
-              ...answer.payload,
-              ...(connection.ocpp !== '1.6' && { remoteStartId }),
-            });
-          } else if (answer.type === MessageTypeId.CallError) {
-            json(502, { action, error: answer.errorCode, description: answer.errorDescription });
-          }
-        } catch (caught) {
-          json(504, { action, error: caught instanceof Error ? caught.message : String(caught) });
-        }
+        const [status, answer] = await command(connection, body);
+        json(status, answer);
       })();
     });
   };
@@ -797,6 +1067,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       }
     },
     keepFrames: options.keepFrames ?? true,
+    observe,
     ...(options.tariff !== undefined && {
       pricing: { tariff: options.tariff, everyMs: options.costUpdatedEveryMs ?? 60_000 },
     }),

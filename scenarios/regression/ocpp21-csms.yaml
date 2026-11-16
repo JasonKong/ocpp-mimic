@@ -1,0 +1,137 @@
+# The built-in CSMS with 2.1 stations (T106): its control API sends tariffs,
+# transaction limits and any command, answers PullDynamicScheduleUpdate with
+# the values it set, and checks payment URLs like a payment page.
+# `{{csmsApiUrl}}` is the built-in CSMS's control API, `{{engineUrl}}` the engine.
+name: I07, I08 and E16 The CSMS sends a default tariff, a driver tariff and a transaction limit
+station: { id: REG21-CSMS, persona: payments-2.1 }
+steps:
+  - http:
+      method: POST
+      url: '{{csmsApiUrl}}/api/stations/REG21-CSMS/default-tariff'
+      json:
+        {
+          tariff:
+            { tariffId: CSMS-DEFAULT, currency: NZD, energy: { prices: [{ priceKwh: 0.3 }] } },
+        }
+      within: 5s
+      expect: { json: { action: SetDefaultTariff, status: Accepted } }
+  - expect:
+      {
+        received: SetDefaultTariff,
+        from: start,
+        payload: { evseId: 0, tariff: { tariffId: CSMS-DEFAULT } },
+      }
+  - http:
+      method: POST
+      url: '{{csmsApiUrl}}/api/stations/REG21-CSMS/driver-tariff'
+      json:
+        {
+          tariff: { tariffId: CSMS-DRIVER, currency: NZD, energy: { prices: [{ priceKwh: 0.2 }] } },
+        }
+      expect: { status: 200 }
+  - http:
+      method: POST
+      url: '{{csmsApiUrl}}/api/stations/REG21-CSMS/transaction-limit'
+      json: { transactionLimit: { maxCost: 5 } }
+      expect: { json: { queued: true } }
+  - presentCard: { idToken: TAG-CSMS, result: authorized }
+  - expect: { sent: Authorize, answer: { tariff: { tariffId: CSMS-DRIVER } } }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, transactionInfo: { tariffId: CSMS-DRIVER } }
+      answer: { transactionLimit: { maxCost: 5 } }
+  - expect:
+      {
+        sent: TransactionEvent,
+        payload: { triggerReason: LimitSet, transactionInfo: { transactionLimit: { maxCost: 5 } } },
+      }
+---
+name: K28 The CSMS answers PullDynamicScheduleUpdate with the values it last sent
+station: { id: REG21-CSMS-PULL, persona: payments-2.1 }
+steps:
+  - http:
+      method: POST
+      url: '{{csmsApiUrl}}/api/stations/REG21-CSMS-PULL/call'
+      within: 5s
+      json:
+        action: SetChargingProfile
+        payload:
+          evseId: 1
+          chargingProfile:
+            id: 31
+            stackLevel: 0
+            chargingProfilePurpose: TxDefaultProfile
+            chargingProfileKind: Dynamic
+            dynUpdateInterval: 1
+            chargingSchedule:
+              [
+                {
+                  id: 1,
+                  chargingRateUnit: W,
+                  duration: 3600,
+                  chargingSchedulePeriod: [{ startPeriod: 0, limit: 6000 }],
+                },
+              ]
+      expect: { json: { action: SetChargingProfile, status: Accepted } }
+  - http:
+      method: POST
+      url: '{{csmsApiUrl}}/api/stations/REG21-CSMS-PULL/call'
+      json:
+        action: UpdateDynamicSchedule
+        payload: { chargingProfileId: 31, scheduleUpdate: { limit: 4000 } }
+      expect: { json: { status: Accepted } }
+  - expect:
+      sent: PullDynamicScheduleUpdate
+      within: 5s
+      payload: { chargingProfileId: 31 }
+      answer: { status: Accepted, scheduleUpdate: { limit: 4000 } }
+---
+name: C25 The CSMS's payment page checks the code, holds the EVSE, and limits the web payment's transaction
+station: { id: REG21-CSMS-WEB, persona: payments-2.1 }
+steps:
+  - csmsCall:
+      action: SetVariables
+      payload:
+        setVariableData:
+          - component: { name: WebPaymentsCtrlr }
+            variable: { name: SharedSecret }
+            attributeValue: scenario-secret-1
+      answer: { setVariableResult: [{ attributeStatus: Accepted }] }
+  - http:
+      url: '{{engineUrl}}/api/stations/REG21-CSMS-WEB/connectors/1/payment-url?maxcost=12.5'
+      expect: { status: 200 }
+      save: { paymentUrl: '$.json.url' }
+  - http:
+      method: POST
+      url: '{{csmsApiUrl}}/api/stations/REG21-CSMS-WEB/web-payment'
+      json: { url: '{{paymentUrl}}', timeout: 60 }
+      expect: { json: { valid: true, evseId: 1, limits: { maxCost: 12.5 } } }
+  - expect: { received: NotifyWebPaymentStarted, payload: { evseId: 1, timeout: 60 } }
+  - presentCard: { idToken: TAG-CSMS-WEB, result: busy }
+  - csmsCall:
+      action: RequestStartTransaction
+      payload: { remoteStartId: 25, evseId: 1, idToken: { idToken: PSP-25, type: DirectPayment } }
+      answer: { status: Accepted }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        {
+          eventType: Started,
+          transactionInfo: { remoteStartId: 25, transactionLimit: { maxCost: 12.5 } },
+        }
+      answer: { transactionLimit: { maxCost: 12.5 } }
+---
+name: OCPP-J 2.1 The CSMS answers a station's CALLRESULT with a CALLRESULTERROR on purpose
+station: { id: REG21-CSMS-RESERR, persona: payments-2.1 }
+steps:
+  - csmsCall: { action: ClearCache, payload: {}, resultError: FormatViolation }
+  - http:
+      url: '{{engineUrl}}/api/stations/REG21-CSMS-RESERR/messages?action=ClearCache'
+      within: 5s
+      expect:
+        json:
+          entries:
+            $contains:
+              { messageType: 5, direction: csms-to-cp, payload: { errorCode: FormatViolation } }
