@@ -2,7 +2,10 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import {
   api,
+  apiToken,
   connectEvents,
+  onUnauthorized,
+  setApiToken,
   type DeviceModelEntry,
   type EventsConnection,
   type FrameRecord,
@@ -33,6 +36,16 @@ const selected = ref<StationSnapshot | undefined>();
 /** The selected 2.0.1 station's Device Model; undefined while loading. */
 const deviceModel = ref<DeviceModelEntry[] | undefined>();
 const error = ref<string | undefined>();
+/** The engine answered 401: it was started with an API token, and this tab has none or a wrong one. */
+const needsToken = ref(false);
+const tokenInput = ref('');
+const hadToken = apiToken() !== undefined;
+const stopUnauthorized = onUnauthorized(() => (needsToken.value = true));
+function saveToken() {
+  setApiToken(tokenInput.value.trim());
+  // Every view and the events socket start again with the token.
+  location.reload();
+}
 const live = ref(false);
 const MAX_RECORDS = 1000;
 let events: EventsConnection | undefined;
@@ -365,6 +378,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  stopUnauthorized();
   events?.close();
   clearInterval(clock);
   window.removeEventListener('hashchange', applyRoute);
@@ -377,7 +391,20 @@ onUnmounted(() => {
       <h1>ocpp-mimic</h1>
       <span class="live" :class="{ on: live }">{{ live ? 'live' : 'reconnecting…' }}</span>
     </header>
-    <p v-if="error" class="error" role="alert">
+    <form v-if="needsToken" class="token" @submit.prevent="saveToken">
+      <label>
+        {{ hadToken ? 'The API token was not accepted.' : 'This engine needs an API token.' }}
+        <input
+          v-model="tokenInput"
+          type="password"
+          autocomplete="off"
+          placeholder="API token"
+          aria-label="API token"
+        />
+      </label>
+      <button class="primary" type="submit">Use token</button>
+    </form>
+    <p v-if="error && !needsToken" class="error" role="alert">
       {{ error }} <button class="link" @click="error = undefined">dismiss</button>
     </p>
     <main>
@@ -496,6 +523,21 @@ main {
 .tabs button.on {
   border-bottom-color: var(--accent);
   font-weight: 600;
+}
+.token {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.token label {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 .error {
   background: var(--bad-bg);

@@ -48,12 +48,16 @@ export async function remoteStartVia(
   csmsUrl: string,
   stationId: string,
   request: RemoteStartRequest,
+  apiToken?: string,
 ): Promise<{ status: number; body: unknown }> {
   const origin = localControlOrigin(csmsUrl);
   if (origin === undefined) throw new Error('the station does not use a CSMS on this machine');
   const res = await fetch(`${origin}/api/stations/${encodeURIComponent(stationId)}/remote-start`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...(apiToken !== undefined && { authorization: `Bearer ${apiToken}` }),
+    },
     body: JSON.stringify(request),
     signal: AbortSignal.timeout(15_000),
   });

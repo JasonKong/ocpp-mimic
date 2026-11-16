@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { FrameRecord, RecordEntry } from '../api.js';
+import { downloadFile, type FrameRecord, type RecordEntry } from '../api.js';
 import { formatTime, messageTypeLabel, summarize } from '../format.js';
 import VersionBadge from './VersionBadge.vue';
 
@@ -48,6 +48,12 @@ function pretty(record: FrameRecord): string {
         class="export"
         :href="`/api/stations/${encodeURIComponent(stationId)}/messages?format=jsonl`"
         :download="`${stationId}.jsonl`"
+        @click.prevent="
+          downloadFile(
+            `/api/stations/${encodeURIComponent(stationId)}/messages?format=jsonl`,
+            `${stationId}.jsonl`,
+          )
+        "
         title="The station's frames as a JSONL log, for import, replay and calibration"
         >Export JSONL</a
       >

@@ -67,6 +67,23 @@ describe('parseCommand', () => {
     });
   });
 
+  it('takes API tokens for serve, load and csms, and only there', () => {
+    expect(
+      parseCommand(['serve', '--api-token', 'engine-secret', '--csms-api-token', 'csms-secret']),
+    ).toMatchObject({ kind: 'serve', apiToken: 'engine-secret', csmsApiToken: 'csms-secret' });
+    expect(parseCommand(['serve', '--api-token', ''])).not.toHaveProperty('apiToken');
+    expect(parseCommand(['csms', '--api-token', 'csms-secret'])).toMatchObject({
+      kind: 'csms',
+      apiToken: 'csms-secret',
+    });
+    expect(parseCommand(['load', 'plan.yaml', '--port', '0', '--api-token', 't'])).toMatchObject({
+      kind: 'load',
+      apiToken: 't',
+    });
+    expect(parseCommand(['run', 'x.yaml', '--api-token', 't'])).toMatchObject({ kind: 'error' });
+    expect(parseCommand(['csms', '--csms-api-token', 't'])).toMatchObject({ kind: 'error' });
+  });
+
   it('rejects a port that is not a valid number', () => {
     expect(parseCommand(['serve', '--port', 'abc'])).toMatchObject({ kind: 'error' });
     expect(parseCommand(['serve', '--port', '70000'])).toMatchObject({ kind: 'error' });

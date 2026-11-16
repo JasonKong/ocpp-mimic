@@ -37,6 +37,8 @@ export interface LoadRunOptions {
   /** Also serve the API and Web UI here while running (0: any free port). */
   port?: number;
   webRoot?: string;
+  /** The API token of the engine served with `port`. */
+  apiToken?: string;
   /** Called with a progress line every `progressMs` (default 10 s). */
   progress?: (line: string) => void;
   progressMs?: number;
@@ -131,6 +133,7 @@ export async function runLoadPlan(options: LoadRunOptions): Promise<LoadReport> 
       ...(options.personaDirs !== undefined && { personaDirs: options.personaDirs }),
       ...(options.allowedCsms !== undefined && { allowedCsms: options.allowedCsms }),
       ...(options.webRoot !== undefined && { webRoot: options.webRoot }),
+      ...(options.apiToken !== undefined && { apiToken: options.apiToken }),
     });
     const { url } = await engine.start();
     options.onStart?.({ url, csms: csmsUrl });

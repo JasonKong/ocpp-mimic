@@ -203,14 +203,78 @@ export interface MetricsSummary {
   eventLoopDelayMs: { p50: number; p99: number; max: number };
 }
 
+// ---- API token --------------------------------------------------------------
+
+/** Where the engine's API token is kept for this browser tab. */
+const TOKEN_KEY = 'ocpp-mimic.apiToken';
+/** The subprotocols of the events WebSocket: its own, and one that carries the token. */
+const EVENTS_PROTOCOL = 'ocpp-mimic';
+const TOKEN_PROTOCOL_PREFIX = 'ocpp-mimic.token.';
+
+/** The API token entered in this tab, if any. Storage may be unavailable. */
+export function apiToken(): string | undefined {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Keeps the token for this tab (an empty string forgets it). */
+export function setApiToken(token: string): void {
+  try {
+    if (token === '') sessionStorage.removeItem(TOKEN_KEY);
+    else sessionStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    // Without storage the token cannot be kept; requests stay unauthorized.
+  }
+}
+
+const unauthorizedListeners = new Set<() => void>();
+
+/** Called whenever the engine answers 401: it needs a token, or a different one. */
+export function onUnauthorized(listener: () => void): () => void {
+  unauthorizedListeners.add(listener);
+  return () => unauthorizedListeners.delete(listener);
+}
+
+function authorization(): Record<string, string> {
+  const token = apiToken();
+  return token === undefined ? {} : { authorization: `Bearer ${token}` };
+}
+
+/** The token as an events WebSocket subprotocol: base64url of its UTF-8 bytes. */
+export function tokenProtocol(token: string): string {
+  let binary = '';
+  for (const byte of new TextEncoder().encode(token)) binary += String.fromCharCode(byte);
+  return (
+    TOKEN_PROTOCOL_PREFIX + btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  );
+}
+
+/** Fetches a file from the API with the token and has the browser save it. */
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const res = await fetch(path, { headers: authorization() });
+  if (res.status === 401) for (const listener of unauthorizedListeners) listener();
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
-    ...(body !== undefined && {
-      body: JSON.stringify(body),
-      headers: { 'content-type': 'application/json' },
-    }),
+    headers: {
+      ...authorization(),
+      ...(body !== undefined && { 'content-type': 'application/json' }),
+    },
+    ...(body !== undefined && { body: JSON.stringify(body) }),
   });
+  if (res.status === 401) for (const listener of unauthorizedListeners) listener();
   const text = await res.text();
   const data = text === '' ? undefined : (JSON.parse(text) as unknown);
   if (!res.ok) {
@@ -550,7 +614,11 @@ export function connectEvents(
   };
   const connect = () => {
     const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/events`;
-    socket = new WebSocket(url);
+    const token = apiToken();
+    socket =
+      token === undefined
+        ? new WebSocket(url)
+        : new WebSocket(url, [EVENTS_PROTOCOL, tokenProtocol(token)]);
     socket.onopen = () => {
       onConnection(true);
       send();

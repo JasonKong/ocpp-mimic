@@ -74,6 +74,7 @@ export async function startCsmsCommand(
     ...(tls !== undefined && { tls }),
     ...(tariff !== undefined && { tariff }),
     ...(command.installTariff === true && { installTariff: true }),
+    ...(command.apiToken !== undefined && { apiToken: command.apiToken }),
   });
   const started = Date.now();
   const timer =

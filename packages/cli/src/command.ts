@@ -19,6 +19,10 @@ export interface ServeCommand {
   personas: string[];
   /** CSMS URL prefixes stations may connect to, on top of loopback. */
   allowCsms: string[];
+  /** Required on the API; main falls back to OCPP_MIMIC_API_TOKEN. */
+  apiToken?: string;
+  /** The built-in CSMS's control API token, for remote starts through it. */
+  csmsApiToken?: string;
 }
 
 export interface RunCommand {
@@ -102,6 +106,8 @@ export interface CsmsCommand {
   tariff?: string;
   /** Send that tariff to 2.1 stations as their default tariff after each accepted boot. */
   installTariff?: boolean;
+  /** Required on the control API; main falls back to OCPP_MIMIC_API_TOKEN. */
+  apiToken?: string;
 }
 
 export interface LoadCommand {
@@ -122,6 +128,8 @@ export interface LoadCommand {
   otlpHeaders?: Record<string, string>;
   personas: string[];
   allowCsms: string[];
+  /** Required on the API served with --port; main falls back to OCPP_MIMIC_API_TOKEN. */
+  apiToken?: string;
 }
 
 export type Command =
@@ -166,6 +174,10 @@ Options for serve:
   --otlp-endpoint <url>  Push metrics to an OpenTelemetry collector over
                          OTLP/HTTP (default: OTEL_EXPORTER_OTLP_ENDPOINT)
   --otlp-header <k=v>    Header for the OTLP export; repeat for more
+  --api-token <token>    Require Authorization: Bearer <token> on the API,
+                         /metrics and the Web UI (default: OCPP_MIMIC_API_TOKEN)
+  --csms-api-token <t>   Token of the built-in CSMS's control API, for remote
+                         starts (default: OCPP_MIMIC_CSMS_API_TOKEN)
 
 Options for run:
   --csms <url>           Run every scenario against this CSMS instead of its
@@ -195,6 +207,7 @@ Options for load:
   --log-dir <dir>        Stream every frame to <dir>/frames.jsonl
   --otlp-endpoint <url>, --otlp-header <k=v>
                          Push metrics over OTLP/HTTP, as for serve
+  --api-token <token>    Require it on the API served with --port, as for serve
 
 Options for replay:
   --station <id>         The log's station, when it has several
@@ -241,6 +254,8 @@ Options for csms (stations connect to ws://<host>:<port>/ocpp/<id>):
                          CostUpdated each minute
   --install-tariff       Also send it to 2.1 stations as their default tariff
                          (SetDefaultTariff) after each accepted boot
+  --api-token <token>    Require Authorization: Bearer <token> on the control
+                         API (default: OCPP_MIMIC_API_TOKEN)
 
   -v, --version          Print the version
   -h, --help             Print this help`;
@@ -289,6 +304,8 @@ const OPTIONS = {
   out: { type: 'string', short: 'o' },
   duration: { type: 'string' },
   'report-dir': { type: 'string' },
+  'api-token': { type: 'string' },
+  'csms-api-token': { type: 'string' },
   version: { type: 'boolean', short: 'v' },
   help: { type: 'boolean', short: 'h' },
 } as const;
@@ -307,6 +324,8 @@ const COMMANDS = {
     'otlp-header',
     'personas',
     'allow-csms',
+    'api-token',
+    'csms-api-token',
   ],
   run: ['csms', 'var', 'timeout', 'bail', 'junit', 'log-dir', 'personas', 'allow-csms'],
   csms: [
@@ -323,6 +342,7 @@ const COMMANDS = {
     'status',
     'tariff',
     'install-tariff',
+    'api-token',
   ],
   import: ['map', 'mask', 'no-mask', 'salt', 'salt-file', 'out'],
   calibrate: ['station', 'name', 'extends', 'out', 'report'],
@@ -349,6 +369,7 @@ const COMMANDS = {
     'otlp-header',
     'personas',
     'allow-csms',
+    'api-token',
   ],
 } as const satisfies Record<string, readonly OptionName[]>;
 
@@ -420,10 +441,21 @@ export function parseCommand(argv: readonly string[]): Command {
       ...otlpOptions(values),
       personas: values.personas ?? [],
       allowCsms: values['allow-csms'] ?? [],
+      ...tokenOptions(values),
     };
   } catch (caught) {
     return error(caught instanceof Error ? caught.message : String(caught));
   }
+}
+
+/** `--api-token` and `--csms-api-token`; empty values count as none. */
+function tokenOptions(values: Values): { apiToken?: string; csmsApiToken?: string } {
+  const apiToken = values['api-token'];
+  const csmsApiToken = values['csms-api-token'];
+  return {
+    ...(apiToken !== undefined && apiToken !== '' && { apiToken }),
+    ...(csmsApiToken !== undefined && csmsApiToken !== '' && { csmsApiToken }),
+  };
 }
 
 /** `--otlp-endpoint` and `--otlp-header`, checked; throws a readable Error. */
@@ -604,6 +636,8 @@ function parseLoad(rest: string[], values: Values): Command {
     ...otlpOptions(values),
     personas: values.personas ?? [],
     allowCsms: values['allow-csms'] ?? [],
+    // Only --api-token is allowed for load, so tokenOptions gives at most that.
+    ...tokenOptions(values),
   };
 }
 
@@ -681,5 +715,6 @@ function parseCsms(values: Values): Command {
     statusMs,
     ...(values.tariff !== undefined && { tariff: values.tariff }),
     ...(values['install-tariff'] === true && { installTariff: true }),
+    ...tokenOptions(values),
   };
 }
