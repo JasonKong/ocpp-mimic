@@ -1176,6 +1176,204 @@ describe('a 2.1 station: triggers and reservations carried over (F06, H03)', () 
   });
 });
 
+describe('a 2.1 station: tariffs and local cost calculation (I07 to I12)', () => {
+  const features = ['Core', 'TariffAndCost'];
+  const TARIFF = {
+    tariffId: 'T-1',
+    currency: 'NZD',
+    fixedFee: { prices: [{ priceFixed: 1 }] },
+    energy: { prices: [{ priceKwh: 0.3 }] },
+  };
+  const station = (
+    csms: Record<string, Responder> = {},
+    deviceModel?: ChargePoint201Options['deviceModel'],
+  ) =>
+    setup({
+      features,
+      csms,
+      ...(deviceModel !== undefined && { deviceModel }),
+      extra: { ocpp: '2.1' },
+    });
+  type Event = {
+    triggerReason: string;
+    eventType: string;
+    transactionInfo: { tariffId?: string };
+    costDetails?: JsonObject;
+  };
+  const txEvents = (h: ReturnType<typeof setup>) =>
+    h.calls('TransactionEvent').map((c) => c.payload as unknown as Event);
+
+  it('installs default tariffs with the statuses of I07', async () => {
+    const h = station();
+    await h.boot();
+    expect(await h.csmsCall('SetDefaultTariff', { evseId: 0, tariff: TARIFF })).toEqual({
+      status: 'Accepted',
+    });
+    expect(await h.csmsCall('SetDefaultTariff', { evseId: 1, tariff: TARIFF })).toEqual({
+      status: 'DuplicateTariffId',
+    });
+    expect(
+      await h.csmsCall('SetDefaultTariff', { evseId: 9, tariff: { ...TARIFF, tariffId: 'T-9' } }),
+    ).toMatchObject({
+      status: 'Rejected',
+      statusInfo: { reasonCode: 'UnknownEVSE' },
+    });
+    const many = { prices: Array.from({ length: 11 }, (_, i) => ({ priceKwh: i })) };
+    expect(
+      await h.csmsCall('SetDefaultTariff', {
+        evseId: 1,
+        tariff: { ...TARIFF, tariffId: 'T-2', energy: many },
+      }),
+    ).toEqual({ status: 'TooManyElements' });
+    expect(await h.csmsCall('GetTariffs', { evseId: 0 })).toEqual({
+      status: 'Accepted',
+      tariffAssignments: [{ tariffId: 'T-1', tariffKind: 'DefaultTariff', evseIds: [1, 2] }],
+    });
+    expect(await h.csmsCall('ClearTariffs', {})).toEqual({
+      clearTariffsResult: [{ tariffId: 'T-1', status: 'Accepted' }],
+    });
+    expect(await h.csmsCall('GetTariffs', { evseId: 0 })).toEqual({ status: 'NoTariff' });
+    expect(await h.csmsCall('ClearTariffs', {})).toEqual({
+      clearTariffsResult: [{ status: 'NoTariff' }],
+    });
+    // Without the feature the messages are not supported (I07.FR.01).
+    const plain = setup({ extra: { ocpp: '2.1' } });
+    await plain.boot();
+    expect(await plain.csmsCall('SetDefaultTariff', { evseId: 0, tariff: TARIFF })).toMatchObject({
+      errorCode: 'NotSupported',
+    });
+  });
+
+  it('prices a transaction: tariffId once, running cost, and the full cost at the end (I12)', async () => {
+    const h = station();
+    await h.boot();
+    await h.csmsCall('SetDefaultTariff', { evseId: 0, tariff: TARIFF });
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1);
+    await h.advance(0);
+    const [started] = txEvents(h);
+    expect(started).toMatchObject({
+      eventType: 'Started',
+      transactionInfo: { tariffId: 'T-1' },
+      costDetails: { totalCost: { typeOfCost: 'NormalCost', total: { exclTax: 1 } } },
+    });
+    // Every 60 s a RunningCost event, without charging periods (I12.FR.02, errata).
+    await h.advance(60_000);
+    const running = txEvents(h).find((e) => e.triggerReason === 'RunningCost');
+    expect(running?.costDetails).toMatchObject({ totalUsage: { chargingTime: 60 } });
+    expect(running?.costDetails?.chargingPeriods).toBeUndefined();
+    expect(running?.transactionInfo.tariffId).toBeUndefined();
+    // 10 minutes at 7360 W: 1226.7 Wh x 0.30 = 0.368 -> 0.37; with the 1.00 fee, 1.37.
+    await h.advance(540_000);
+    h.cp.unplug(1);
+    await h.settle();
+    const ended = txEvents(h).at(-1);
+    expect(ended).toMatchObject({
+      eventType: 'Ended',
+      costDetails: {
+        totalCost: {
+          fixed: { exclTax: 1 },
+          energy: { exclTax: 0.37 },
+          total: { exclTax: 1.37, inclTax: 1.37 },
+        },
+        totalUsage: { chargingTime: 600 },
+        chargingPeriods: [{ tariffId: 'T-1' }],
+      },
+    });
+  });
+
+  it('switches a transaction to another tariff with TariffChanged (I11)', async () => {
+    const h = station();
+    await h.boot();
+    await h.csmsCall('SetDefaultTariff', { evseId: 0, tariff: TARIFF });
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1);
+    await h.advance(0);
+    const transactionId = (
+      h.calls('TransactionEvent')[0]?.payload.transactionInfo as { transactionId: string }
+    ).transactionId;
+    const other = { ...TARIFF, tariffId: 'T-2' };
+    expect(
+      await h.csmsCall('ChangeTransactionTariff', { transactionId: 'nope', tariff: other }),
+    ).toEqual({
+      status: 'TxNotFound',
+    });
+    expect(
+      await h.csmsCall('ChangeTransactionTariff', {
+        transactionId,
+        tariff: { ...other, currency: 'AUD' },
+      }),
+    ).toEqual({ status: 'NoCurrencyChange' });
+    expect(await h.csmsCall('ChangeTransactionTariff', { transactionId, tariff: other })).toEqual({
+      status: 'Accepted',
+    });
+    await h.advance(0);
+    expect(txEvents(h).at(-1)).toMatchObject({
+      triggerReason: 'TariffChanged',
+      transactionInfo: { tariffId: 'T-2' },
+    });
+  });
+
+  it("uses the driver's tariff from Authorize, and refuses the token when it cannot be used and HandleFailedTariff says so (I08)", async () => {
+    const driver = { ...TARIFF, tariffId: 'DRIVER-1' };
+    const h = station({
+      Authorize: () => ({ idTokenInfo: { status: 'Accepted' }, tariff: driver }),
+    });
+    await h.boot();
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1);
+    await h.advance(0);
+    expect(txEvents(h)[0]?.transactionInfo.tariffId).toBe('DRIVER-1');
+
+    const many = {
+      ...driver,
+      energy: { prices: Array.from({ length: 11 }, (_, i) => ({ priceKwh: i })) },
+    };
+    const strict = station(
+      { Authorize: () => ({ idTokenInfo: { status: 'Accepted' }, tariff: many }) },
+      { TariffCostCtrlr: { 'HandleFailedTariff:Tariff': 'Deauthorize' } },
+    );
+    await strict.boot();
+    expect(await strict.present(1, 'TAG-2')).toBe('rejected');
+    expect(strict.calls('NotifyEvent').at(-1)?.payload.eventData).toEqual([
+      expect.objectContaining({
+        component: { name: 'TariffCostCtrlr' },
+        variable: { name: 'Problem' },
+        actualValue: 'true',
+        techCode: 'TooManyElements',
+      }),
+    ]);
+  });
+
+  it('measures maxCost with its own cost (E16.FR.16), and waits for validFrom (I07.FR.19)', async () => {
+    const h = station({
+      TransactionEvent: (payload: JsonObject) =>
+        payload.eventType === 'Started' ? { transactionLimit: { maxCost: 1.2 } } : {},
+    });
+    await h.boot();
+    await h.csmsCall('SetDefaultTariff', { evseId: 0, tariff: TARIFF });
+    await h.present(1, 'TAG-1');
+    h.cp.plugIn(1);
+    await h.advance(0);
+    // 1.00 fee + 0.20 of energy (666.7 Wh at 7360 W: 326 s).
+    await h.advance(320_000);
+    expect(txEvents(h).some((e) => e.triggerReason === 'CostLimitReached')).toBe(false);
+    await h.advance(20_000);
+    expect(txEvents(h).some((e) => e.triggerReason === 'CostLimitReached')).toBe(true);
+
+    const later = station();
+    await later.boot();
+    await later.csmsCall('SetDefaultTariff', {
+      evseId: 0,
+      tariff: { ...TARIFF, validFrom: new Date(T0 + 3_600_000).toISOString() },
+    });
+    await later.present(1, 'TAG-1');
+    later.cp.plugIn(1);
+    await later.advance(0);
+    expect(txEvents(later)[0]?.transactionInfo.tariffId).toBeUndefined();
+  });
+});
+
 describe('2.0.1 personas', () => {
   it('resolve with the 2.0.1 boot block and certification profiles', () => {
     const { personas, errors } = resolvePersonas([

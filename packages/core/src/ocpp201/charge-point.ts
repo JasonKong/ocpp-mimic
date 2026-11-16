@@ -56,6 +56,13 @@ import {
   type RpcOutcome,
 } from '../rpc.js';
 import { createStationTimers } from '../station-timers.js';
+import {
+  checkTariff,
+  createCostMeter,
+  type CostMeter,
+  type Tariff21,
+  type TariffSituation,
+} from '../ocpp21/tariff-cost.js';
 import type {
   AttributeEnumType,
   BootReasonEnumType,
@@ -128,6 +135,14 @@ import { chargingState, parseTxPoints, startPoint, stopPoint } from './transacti
 import { connectorStatus201, stationStatus201, type ConnectorStatus201 } from './status.js';
 
 type Out = Ocpp21RpcTypes['out'];
+
+/** The 2.1 tariff messages; without TariffCostCtrlr.Enabled[Tariff] they answer NotSupported. */
+const TARIFF_ACTIONS: ReadonlySet<string> = new Set([
+  'SetDefaultTariff',
+  'GetTariffs',
+  'ClearTariffs',
+  'ChangeTransactionTariff',
+]);
 
 /** The CSMS messages of the SmartCharging profile; without it they answer NotSupported (K01.FR.29). */
 const SMART_CHARGING_ACTIONS: ReadonlySet<string> = new Set([
@@ -205,6 +220,8 @@ export interface ChargePoint201Options {
 /** Everything a 2.0.1 station keeps across an engine restart. */
 export interface PersistedChargePoint201 {
   version: 1;
+  /** 2.1: the default tariffs, kept across restarts (I07.FR.13). */
+  tariffs?: TariffEntry[];
   ocpp: '2.0.1' | '2.1';
   savedAt: number;
   /** connectorId → energy register in Wh. */
@@ -290,6 +307,19 @@ interface Transaction201 {
   wasCharging?: boolean | undefined;
   /** 2.1: resumed without AllowEnergyTransferResumption, so it stays SuspendedEVSE (B13.FR.14). */
   resumeHold?: boolean;
+  /** 2.1: the station's own cost of the transaction, from its tariff (I12). */
+  cost?: CostMeter;
+  /** 2.1: the next event names the tariff (I07.FR.31, I11.FR.07). */
+  tariffIdPending?: boolean;
+  costTimer?: TimerHandle | undefined;
+  costReportTimer?: TimerHandle | undefined;
+}
+
+/** A default tariff installed on an EVSE (I07). */
+interface TariffEntry {
+  evseId: number;
+  tariff: Tariff21;
+  installedAt: number;
 }
 
 type TransactionLimit = Omit<
@@ -1117,6 +1147,18 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     if (reservationId !== undefined) tx.reservationSent = true;
     const meterValue = extra.meterValue?.filter((m) => m !== undefined) ?? [];
     const [firstValue, ...otherValues] = meterValue;
+    // 2.1: the station's own cost: with Started and running-cost events, and in full at the end (I12.FR.01, .02).
+    let costDetails: Ocpp21RequestOf<'TransactionEvent'>['costDetails'];
+    if (tx.cost !== undefined) {
+      tx.cost.advance(costSituation(connectorId, tx));
+      const running = dmValue('TariffCostCtrlr', 'Enabled:RunningCost') === 'true';
+      if (eventType === 'Ended') costDetails = tx.cost.details(true);
+      else if (running && (eventType === 'Started' || triggerReason === 'RunningCost')) {
+        costDetails = tx.cost.details(false);
+      }
+    }
+    const tariffId = tx.tariffIdPending === true ? tx.cost?.tariffId : undefined;
+    tx.tariffIdPending = false;
     const payload: Ocpp21RequestOf<'TransactionEvent'> = {
       eventType,
       timestamp: timestamp(),
@@ -1129,7 +1171,9 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         ...(eventType === 'Started' &&
           tx.remoteStartId !== undefined && { remoteStartId: tx.remoteStartId }),
         ...(extra.transactionLimit !== undefined && { transactionLimit: extra.transactionLimit }),
+        ...(tariffId !== undefined && { tariffId }),
       },
+      ...(costDetails !== undefined && { costDetails }),
       ...(!online() && { offline: true }),
       evse: { id: connectorId, connectorId: 1 },
       ...(extra.idToken !== undefined && { idToken: extra.idToken }),
@@ -1187,6 +1231,152 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     );
   }
 
+  // ---- Tariffs and local cost calculation (2.1, I07 to I12) -----------------
+
+  let defaultTariffs: TariffEntry[] = [...(options.restore?.tariffs ?? [])];
+  /** Driver tariffs from AuthorizeResponse, by token (I08). */
+  const driverTariffs = new Map<string, Tariff21>();
+  /** Tokens whose tariff failed with HandleFailedTariff CentralCost: no local cost (I08.FR.33). */
+  const centralCostTokens = new Set<string>();
+  const tariffOn = () =>
+    v21 &&
+    features.includes('TariffAndCost') &&
+    dmValue('TariffCostCtrlr', 'Enabled:Tariff') === 'true';
+  const costOn = () => tariffOn() && dmValue('TariffCostCtrlr', 'Enabled:Cost') === 'true';
+  const tariffLimits = () => ({
+    maxElements: dmInt('TariffCostCtrlr', 'MaxElements:Tariff'),
+    conditionsSupported: dmValue('TariffCostCtrlr', 'ConditionsSupported:Tariff') === 'true',
+  });
+  const effectiveFrom = (e: TariffEntry) => Date.parse(e.tariff.validFrom ?? '') || e.installedAt;
+  const bare = <T extends { customData?: unknown }>(value: T): Omit<T, 'customData'> => {
+    const { customData: _dropped, ...rest } = value;
+    return rest;
+  };
+
+  /** The default tariff of an EVSE now: the latest that is valid (I07.FR.19 to .23). */
+  function activeDefault(evseId: number): Tariff21 | undefined {
+    const valid = defaultTariffs
+      .filter((e) => e.evseId === evseId && effectiveFrom(e) <= now())
+      .sort((a, b) => effectiveFrom(a) - effectiveFrom(b) || a.installedAt - b.installedAt);
+    return valid.at(-1)?.tariff;
+  }
+
+  function costSituation(connectorId: number, tx: Transaction201): TariffSituation {
+    const reading = energy.sync(connectorId);
+    return {
+      at: now(),
+      energyWh: reading.energyWh - tx.meterStartWh,
+      powerW: reading.powerW,
+      currentA: reading.powerW / 230,
+      durationS: (now() - tx.startedAt) / 1000,
+      chargingS: 0,
+      idleS: 0,
+      charging: reading.powerW > 0,
+    };
+  }
+
+  /** The transaction is priced with its driver's tariff, else the EVSE's default (I07.FR.14, I08.FR.04). */
+  function startCost(
+    connectorId: number,
+    tx: Transaction201,
+    idToken: IdTokenType | undefined,
+  ): void {
+    if (!costOn()) return;
+    const key = idToken === undefined ? undefined : tokenKey(idToken);
+    if (key !== undefined && centralCostTokens.has(key)) return;
+    const tariff =
+      (key === undefined ? undefined : driverTariffs.get(key)) ?? activeDefault(connectorId);
+    if (tariff === undefined) return;
+    tx.cost = createCostMeter({
+      tariff,
+      place: { timeZone: dmValue('ClockCtrlr', 'TimeZone'), evseKind: 'AC' },
+      start: costSituation(connectorId, tx),
+    });
+    // The driver accepts implicitly by plugging in; the tariff goes with the next event (I07.FR.31).
+    tx.tariffIdPending = true;
+    scheduleCost(connectorId, tx);
+  }
+
+  /**
+   * Prices the transaction every Interval[Tariff] seconds (10 when 0: as often
+   * as is useful), at each calendar change of its tariff, and reports the
+   * running cost every Interval[Cost] seconds (I12.FR.02, .31, .32).
+   */
+  function scheduleCost(connectorId: number, tx: Transaction201): void {
+    stopTimer(tx.costTimer);
+    tx.costTimer = undefined;
+    if (tx.cost === undefined || transactions.get(connectorId) !== tx) return;
+    const tickMs = Math.max(1, dmInt('TariffCostCtrlr', 'Interval:Tariff') || 10) * 1000;
+    const boundary = tx.cost.nextChange();
+    const wait = Math.min(tickMs, boundary === undefined ? Infinity : boundary - now());
+    tx.costTimer = later(Math.max(1, wait), () => {
+      tx.cost?.advance(costSituation(connectorId, tx));
+      checkTxLimits(connectorId, tx);
+      scheduleCost(connectorId, tx);
+    });
+    if (
+      tx.costReportTimer === undefined &&
+      dmValue('TariffCostCtrlr', 'Enabled:RunningCost') === 'true'
+    ) {
+      const everyMs = Math.max(1, dmInt('TariffCostCtrlr', 'Interval:Cost')) * 1000;
+      const report = () => {
+        tx.costReportTimer = later(everyMs, () => {
+          if (transactions.get(connectorId) !== tx) return;
+          sendEvent(connectorId, tx, 'Updated', 'RunningCost');
+          report();
+        });
+      };
+      report();
+    }
+  }
+
+  /** TariffCostCtrlr.Problem, raised or cleared, and reported (I08.FR.30, .35 to .37). */
+  function tariffProblem(raised: boolean, techCode?: string): void {
+    if ((dmValue('TariffCostCtrlr', 'Problem') === 'true') === raised) return;
+    deviceModel.set('TariffCostCtrlr', 'Problem', String(raised));
+    void sendIfOnline('NotifyEvent', {
+      generatedAt: timestamp(),
+      seqNo: 0,
+      eventData: [
+        {
+          eventId: ++eventId,
+          timestamp: timestamp(),
+          trigger: 'Alerting',
+          actualValue: String(raised),
+          eventNotificationType: 'HardWiredNotification',
+          component: { name: 'TariffCostCtrlr' },
+          variable: { name: 'Problem' },
+          ...(raised ? { techCode: techCode ?? 'UnsupportedParam' } : { cleared: true }),
+        },
+      ],
+    });
+  }
+
+  /**
+   * A driver tariff from AuthorizeResponse (I08): kept for the token, or, when
+   * the station cannot use it, Problem and HandleFailedTariff: Deauthorize (the
+   * token is refused), UseDefaultTariff, or CentralCost (no local cost).
+   */
+  function takeDriverTariff(idToken: IdTokenType, tariff: Tariff21): boolean {
+    const key = tokenKey(idToken);
+    const check = checkTariff(tariff, tariffLimits());
+    if (check.status === 'Accepted') {
+      driverTariffs.set(key, tariff);
+      centralCostTokens.delete(key);
+      tariffProblem(false);
+      return true;
+    }
+    log(`driver tariff ${tariff.tariffId} not usable: ${check.reason}`);
+    tariffProblem(
+      true,
+      check.status === 'TooManyElements' ? 'TooManyElements' : 'UnsupportedParam',
+    );
+    const action = dmValue('TariffCostCtrlr', 'HandleFailedTariff:Tariff');
+    if (action === 'Deauthorize') return false;
+    if (action === 'CentralCost') centralCostTokens.add(key);
+    return true;
+  }
+
   // ---- Transaction limits (2.1, E16) ---------------------------------------
 
   /**
@@ -1215,6 +1405,9 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     checkTxLimits(connectorId, tx);
   }
 
+  /** The cost a maxCost limit is measured with: the station's own when it has a tariff (E16.FR.16). */
+  const costOf = (tx: Transaction201) => tx.cost?.totalInclTax() ?? tx.csmsCost;
+
   /** The first limit the transaction has reached, if any. */
   function reachedLimit(connectorId: number, tx: Transaction201): LimitName | undefined {
     const { limits } = tx;
@@ -1222,8 +1415,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     const reading = energy.sync(connectorId);
     const soc = energy.ev(connectorId)?.state.soc;
     const reached: Record<LimitName, boolean> = {
-      maxCost:
-        limits.maxCost !== undefined && tx.csmsCost !== undefined && tx.csmsCost >= limits.maxCost,
+      maxCost: limits.maxCost !== undefined && (costOf(tx) ?? -Infinity) >= limits.maxCost,
       maxEnergy:
         limits.maxEnergy !== undefined && reading.energyWh - tx.meterStartWh >= limits.maxEnergy,
       maxSoC: limits.maxSoC !== undefined && soc !== undefined && soc >= limits.maxSoC,
@@ -1387,6 +1579,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     applyDevice({ type: 'TransactionStarted', connectorId, transactionId: 1 });
     updateLock(connectorId);
     if (auth?.txProfile !== undefined) installTxProfile(connectorId, auth.txProfile);
+    startCost(connectorId, tx, auth?.idToken);
     const value = sample(
       connectorId,
       dmValue('SampledDataCtrlr', 'TxStartedMeasurands'),
@@ -1419,8 +1612,21 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       tx.endedTimer,
       tx.limitTimer,
       tx.transactionLimitTimer,
+      tx.costTimer,
+      tx.costReportTimer,
     ]) {
       stopTimer(timer);
+    }
+    // A driver tariff lasts as long as its transaction (I08.FR.06, .07).
+    if (tx.idToken !== undefined) {
+      const key = tokenKey(tx.idToken);
+      const elsewhere = [...transactions.values()].some(
+        (other) => other.idToken !== undefined && tokenKey(other.idToken) === key,
+      );
+      if (!elsewhere) {
+        driverTariffs.delete(key);
+        centralCostTokens.delete(key);
+      }
     }
     const hadTxProfile = chargingProfiles.some(
       (p) => p.evseId === connectorId && p.profile.chargingProfilePurpose === 'TxProfile',
@@ -1595,6 +1801,10 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     const info = outcome.payload.idTokenInfo;
     rememberAnswer(idToken, info);
     const { customData: _dropped, ...plain } = info;
+    const { tariff } = outcome.payload;
+    if (info.status === 'Accepted' && tariff !== undefined && tariffOn()) {
+      if (!takeDriverTariff(idToken, bare(tariff))) return { ok: false, info: plain };
+    }
     return { ok: info.status === 'Accepted', info: plain };
   }
 
@@ -2267,6 +2477,128 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       return { status: 'Accepted' };
     },
 
+    SetDefaultTariff(request) {
+      const tariff = bare(request.tariff);
+      const evseIds = connectors(station).map((c) => c.connectorId);
+      if (request.evseId !== 0 && !evseIds.includes(request.evseId)) {
+        return { status: 'Rejected', statusInfo: { reasonCode: 'UnknownEVSE' } };
+      }
+      const check = checkTariff(tariff, tariffLimits());
+      if (check.status !== 'Accepted') {
+        log(`SetDefaultTariff ${tariff.tariffId}: ${check.reason}`);
+        return {
+          status: check.status,
+          ...(check.status === 'Rejected' && { statusInfo: { reasonCode: 'InvalidValue' } }),
+        };
+      }
+      // A tariffId names one tariff on the whole station (I07.FR.04).
+      const taken =
+        defaultTariffs.some((e) => e.tariff.tariffId === tariff.tariffId) ||
+        [...driverTariffs.values()].some((d) => d.tariffId === tariff.tariffId);
+      if (taken) return { status: 'DuplicateTariffId' };
+      const targets = request.evseId === 0 ? evseIds : [request.evseId];
+      const at = now();
+      defaultTariffs = [
+        ...defaultTariffs,
+        ...targets.map((evseId) => ({ evseId, tariff, installedAt: at })),
+      ];
+      // Tariffs a newer valid one replaced on an EVSE go (I07.FR.20 to .23).
+      defaultTariffs = defaultTariffs.filter(
+        (e) => effectiveFrom(e) > at || activeDefault(e.evseId) === e.tariff,
+      );
+      log(
+        `default tariff ${tariff.tariffId} on ${request.evseId === 0 ? 'every EVSE' : `EVSE ${request.evseId}`}`,
+      );
+      changed();
+      return { status: 'Accepted' };
+    },
+
+    GetTariffs(request) {
+      const evseOk = (evseId: number) => request.evseId === 0 || evseId === request.evseId;
+      const byId = new Map<string, { tariff: Tariff21; evseIds: number[] }>();
+      for (const e of defaultTariffs) {
+        if (!evseOk(e.evseId)) continue;
+        const entry = byId.get(e.tariff.tariffId) ?? { tariff: e.tariff, evseIds: [] };
+        entry.evseIds.push(e.evseId);
+        byId.set(e.tariff.tariffId, entry);
+      }
+      type Assignment = NonNullable<Ocpp21ResponseOf<'GetTariffs'>['tariffAssignments']>[number];
+      const list: Assignment[] = [...byId.values()].map(({ tariff, evseIds }) => ({
+        tariffId: tariff.tariffId,
+        tariffKind: 'DefaultTariff',
+        ...(tariff.validFrom !== undefined && { validFrom: tariff.validFrom }),
+        evseIds,
+      }));
+      // Driver tariffs in use, with the EVSE of their transaction and their token (I09.FR.06).
+      for (const [evseId, tx] of transactions) {
+        if (!evseOk(evseId) || tx.cost === undefined || tx.idToken === undefined) continue;
+        const driver = driverTariffs.get(tokenKey(tx.idToken));
+        if (driver === undefined || driver.tariffId !== tx.cost.tariffId) continue;
+        list.push({
+          tariffId: driver.tariffId,
+          tariffKind: 'DriverTariff',
+          evseIds: [evseId],
+          idTokens: [tx.idToken.idToken],
+        });
+      }
+      const [first, ...rest] = list;
+      return first === undefined
+        ? { status: 'NoTariff' }
+        : { status: 'Accepted', tariffAssignments: [first, ...rest] };
+    },
+
+    ClearTariffs(request) {
+      const matches = (e: TariffEntry) =>
+        (request.tariffIds === undefined || request.tariffIds.includes(e.tariff.tariffId)) &&
+        (request.evseId === undefined || request.evseId === 0 || e.evseId === request.evseId);
+      const cleared = [...new Set(defaultTariffs.filter(matches).map((e) => e.tariff.tariffId))];
+      // A running transaction keeps the tariff it has (I10.FR.07).
+      defaultTariffs = defaultTariffs.filter((e) => !matches(e));
+      changed();
+      const [first, ...rest] = cleared.map((tariffId) => ({
+        tariffId,
+        status: 'Accepted' as const,
+      }));
+      return {
+        clearTariffsResult:
+          first === undefined ? [{ status: 'NoTariff' as const }] : [first, ...rest],
+      };
+    },
+
+    ChangeTransactionTariff(request) {
+      const tariff = bare(request.tariff);
+      const check = checkTariff(tariff, tariffLimits());
+      if (check.status === 'TooManyElements' || check.status === 'ConditionNotSupported') {
+        return { status: check.status };
+      }
+      if (check.status !== 'Accepted') return { status: 'Rejected' };
+      const entry = [...transactions].find(([, tx]) => tx.id === request.transactionId);
+      if (entry === undefined) return { status: 'TxNotFound' };
+      const [evseId, tx] = entry;
+      if (tx.cost !== undefined && tx.cost.currency !== tariff.currency) {
+        return { status: 'NoCurrencyChange' };
+      }
+      // From now on, with TariffChanged and the new tariffId (I11.FR.07, .08).
+      later(0, () => {
+        if (transactions.get(evseId) !== tx) return;
+        if (tx.cost === undefined) {
+          tx.cost = createCostMeter({
+            tariff,
+            place: { timeZone: dmValue('ClockCtrlr', 'TimeZone'), evseKind: 'AC' },
+            start: costSituation(evseId, tx),
+          });
+        } else {
+          tx.cost.advance(costSituation(evseId, tx));
+          tx.cost.changeTariff(tariff);
+        }
+        if (tx.idToken !== undefined) driverTariffs.set(tokenKey(tx.idToken), tariff);
+        tx.tariffIdPending = true;
+        sendEvent(evseId, tx, 'Updated', 'TariffChanged');
+        scheduleCost(evseId, tx);
+      });
+      return { status: 'Accepted' };
+    },
+
     UsePriorityCharging(request) {
       if (!v21) return { status: 'Rejected' };
       const entry = [...transactions].find(([, tx]) => tx.id === request.transactionId);
@@ -2565,7 +2897,9 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
             features.includes('LocalAuthListManagement')) &&
           (!SMART_CHARGING_ACTIONS.has(action) || smartCharging()) &&
           ((action !== 'ReserveNow' && action !== 'CancelReservation') || reservationsOn()) &&
-          (action !== 'CertificateSigned' || features.includes('AdvancedSecurity')),
+          (action !== 'CertificateSigned' || features.includes('AdvancedSecurity')) &&
+          // Without Enabled[Tariff], tariffs are NotSupported (I07.FR.01, I11.FR.01).
+          (!TARIFF_ACTIONS.has(action) || tariffOn()),
         onEvent: (event) => emit({ type: 'rpc', event }),
       });
       void boot();
@@ -2856,6 +3190,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       return {
         version: 1,
         ocpp,
+        ...(defaultTariffs.length > 0 && { tariffs: defaultTariffs.map((e) => ({ ...e })) }),
         savedAt: now(),
         meters: energy.registers(),
         outbox: outbox.entries.map((entry) => ({ ...entry })),

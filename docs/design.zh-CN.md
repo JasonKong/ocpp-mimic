@@ -1278,6 +1278,8 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 - **显示（I01–I06）。** 桩没有屏幕，但会保存它本该显示的内容：个人消息、兜底消息、实时费用和最终费用。这些放在快照的 `display` 里，场景和 Web UI 可以检查。
 - **规范没说清或自相矛盾的地方的取舍**，记录下来以保证测试结果确定：MaxElements 按一个维度的价格数计；maxCost 把总价精确封顶在 maxCost，而不是晚一个计算周期再冻结；空闲时长按整个事务累计；没有税率时 inclTax 等于 exclTax；HandleFailedTariff 用成员列表里的拼写 UseDefaultTariff。Part 2 I 块 1.3 的算例数字对不上，不用作测试向量；测试用手工核对过的用例。
 
+- 已实现（T103）：`core/src/ocpp21/tariff-cost.ts` 校验资费（`checkTariff`），按桩的时区判断条件（用 `Intl`，夏令时随时区变化），并在事务进行中计价（`createCostMeter`），测试数字都是手算核对过的。有 TariffAndCost 特性的 2.1 桩：按 EVSE 保存默认资费并跨重启保留；从 AuthorizeResponse 接收司机资费，随其事务结束而删除；应答 SetDefaultTariff、GetTariffs、ClearTariffs 和 ChangeTransactionTariff（没有 Enabled[Tariff] 时回 NotSupported）；在 Started 事件里报一次资费 id；在 Started 里带实时费用，之后每 Interval[Cost] 秒发一次 RunningCost 事件；Ended 带完整费用和计费时段；maxCost 限额按自己算的费用判断（不取整，取整只用于上报）。计价每 Interval[Tariff] 秒一次（为 0 时 10 秒），时段或日期条件变化时也会计价。桩处理不了的司机资费会置位 TariffCostCtrlr.Problem、发 NotifyEvent，并按 HandleFailedTariff 处理。尚未实现：模拟司机总是接受资费（没有 TariffNotAccepted 开关）；桩不计预约时长和预约费（计费器支持，但预约没有记录创建时间）；虚拟屏幕（I01–I06）随 T107；M6 的参考价格仍按上报值单独计算，便于 Web UI 对比两者。`scenarios/regression/ocpp21-tariffs.yaml`（persona `tariffs-2.1`）覆盖 I07 到 I12。
+
 **支付（C 块）**
 
 桩模拟一个集成的支付终端（C18–C23）和动态二维码（C25）；独立终端和静态二维码（C24、C25）在桩这边只需要带限额的远程启动。

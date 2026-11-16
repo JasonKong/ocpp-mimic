@@ -181,7 +181,7 @@ describe('resolvePersonas', () => {
       ocpp: '2.1',
       boot: { vendorName: 'VendorX', model: 'AC-21' },
       connectors: 2,
-      features: ['Core', 'TariffAndCost'],
+      features: ['Core', 'Payment'],
       connectorStatus: 'StatusNotification',
     };
     const { personas, errors } = resolveOne(v2);
@@ -191,15 +191,15 @@ describe('resolvePersonas', () => {
       options: {
         ocpp: '2.1',
         connectorStatus: 'StatusNotification',
-        features: ['Core', 'TariffAndCost'],
+        features: ['Core', 'Payment'],
       },
     });
     // The 2.1 group is not built yet, so the persona says so.
     expect(personas.get('v21')?.warnings).toEqual([
-      'test.yaml: certification profile TariffAndCost is supported in the persona but not implemented yet',
+      'test.yaml: certification profile Payment is supported in the persona but not implemented yet',
     ]);
     expect(resolveOne({ ...v2, ocpp: '2.0.1' }).errors).toEqual([
-      'test.yaml: TariffAndCost, connectorStatus need ocpp "2.1"',
+      'test.yaml: Payment, connectorStatus need ocpp "2.1"',
     ]);
     // Any other version is read as a 1.6 persona, which this is not.
     expect(resolveOne({ ...v2, ocpp: '2.2' }).errors).toContain(

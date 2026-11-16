@@ -61,6 +61,8 @@ export const IMPLEMENTED_201_PROFILES: readonly string[] = [
   'LocalAuthListManagement',
   'SmartCharging',
   'Reservation',
+  // 2.1's feature groups, as they are built (M7).
+  'TariffAndCost',
 ];
 
 /** Feature profiles this version of the charge point implements. */

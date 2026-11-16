@@ -220,6 +220,43 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
   ];
 
   if (input.ocpp === '2.1') {
+    // The station's time zone: tariff conditions are in local time (I07.FR.17).
+    out.push(variable(clock, 'TimeZone', 'string', rw(''), { maxLimit: 64 }));
+  }
+
+  if (input.ocpp === '2.1' && input.features.includes('TariffAndCost')) {
+    // Local cost calculation (I07 to I12); instances as in appendix v2.0.
+    const tariffCost: ComponentType = { name: 'TariffCostCtrlr' };
+    out.push(
+      variable(tariffCost, 'Available', 'boolean', ro('true', true), { instance: 'Tariff' }),
+      variable(tariffCost, 'Enabled', 'boolean', rw('true'), { instance: 'Tariff' }),
+      variable(tariffCost, 'Available', 'boolean', ro('true', true), { instance: 'Cost' }),
+      variable(tariffCost, 'Enabled', 'boolean', rw('true'), { instance: 'Cost' }),
+      variable(tariffCost, 'Enabled', 'boolean', rw('true'), { instance: 'RunningCost' }),
+      variable(tariffCost, 'Interval', 'integer', rw('60'), {
+        instance: 'Cost',
+        unit: 's',
+        minLimit: 1,
+      }),
+      variable(tariffCost, 'Interval', 'integer', rw('0'), {
+        instance: 'Tariff',
+        unit: 's',
+        minLimit: 0,
+      }),
+      variable(tariffCost, 'MaxElements', 'integer', ro('10'), { instance: 'Tariff', minLimit: 0 }),
+      variable(tariffCost, 'ConditionsSupported', 'boolean', ro('true'), { instance: 'Tariff' }),
+      variable(tariffCost, 'HandleFailedTariff', 'OptionList', rw('UseDefaultTariff'), {
+        instance: 'Tariff',
+        valuesList: 'Deauthorize,UseDefaultTariff,CentralCost',
+      }),
+      variable(tariffCost, 'Currency', 'string', rw('EUR'), { maxLimit: 3 }),
+      variable(tariffCost, 'TariffFallbackMessage', 'string', rw(''), { maxLimit: 512 }),
+      variable(tariffCost, 'TotalCostFallbackMessage', 'string', rw(''), { maxLimit: 512 }),
+      variable(tariffCost, 'Problem', 'boolean', ro('false')),
+    );
+  }
+
+  if (input.ocpp === '2.1') {
     // F06: the vendor triggers TriggerMessage CustomTrigger takes; none unless the persona
     // names some, each answered with a DataTransfer named after it.
     out.push(variable({ name: 'CustomizationCtrlr' }, 'CustomTriggers', 'MemberList', ro('')));
