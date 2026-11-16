@@ -21,9 +21,7 @@ const STATION = 'station: { id: SIM-1, persona: generic-1.6 }';
 
 describe('scenario runner', () => {
   it('runs the reference examples against the built-in CSMS', { timeout: 90_000 }, async () => {
-    const files = (await findScenarioFiles([EXAMPLES])).filter(
-      (f) => !f.endsWith('app-triggered-start.yaml'),
-    );
+    const files = await findScenarioFiles([EXAMPLES]);
     const outcomes: string[] = [];
     for (const file of files) {
       for (const document of (await readScenarioFile(file)).documents) {

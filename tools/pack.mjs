@@ -58,7 +58,7 @@ copy('packages/engine/personas', 'personas');
 copy('packages/engine/oca-schemas', 'oca-schemas');
 copy('packages/engine/test-pki', 'test-pki');
 copy('apps/web/dist', 'web');
-for (const sample of ['personas', 'examples', 'load', 'import', 'logs']) {
+for (const sample of ['personas', 'examples', 'templates', 'load', 'import', 'logs']) {
   copy(`scenarios/${sample}`, `samples/${sample}`);
 }
 for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'CHANGELOG.md', 'README.md']) {

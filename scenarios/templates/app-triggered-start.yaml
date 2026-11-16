@@ -1,6 +1,6 @@
 # Template for testing your own CSMS and app backend; it needs a real system
 # under test, so the test suite does not run it. Example:
-#   ocpp-mimic run scenarios/examples/app-triggered-start.yaml \
+#   ocpp-mimic run scenarios/templates/app-triggered-start.yaml \
 #     --csms wss://csms.example.com/ocpp --allow-csms wss://csms.example.com \
 #     --var APP_API=https://app.example.com/api
 # with APP_TOKEN set in the environment.

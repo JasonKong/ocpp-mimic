@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { samplesRoot } from './paths.js';
 
 /** The sample folders, in scenarios/ and in the package's samples/. */
-export const SAMPLE_DIRS = ['personas', 'examples', 'load', 'import', 'logs'] as const;
+export const SAMPLE_DIRS = ['personas', 'examples', 'templates', 'load', 'import', 'logs'] as const;
 
 /** Copies the samples into `target`; files that already exist there are kept. */
 export async function copySamples(target: string, root = samplesRoot()): Promise<string[]> {

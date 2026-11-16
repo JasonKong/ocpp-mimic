@@ -3,9 +3,9 @@
 Scenario files for `ocpp-mimic run`, in the format described under
 "Scenario format v1" in [docs/design.md](../docs/design.md).
 
-- `examples/`: reference examples. All but `app-triggered-start.yaml` run
-  against the built-in CSMS; that one is a template for testing your own CSMS
-  and app backend.
+- `examples/`: reference examples; all of them run against the built-in CSMS.
+- `templates/`: starting points for testing your own CSMS and app backend,
+  such as `app-triggered-start.yaml`; they need a real system under test.
 - `regression/`: the regression suite, run against the built-in CSMS. It uses
   the personas in `personas/` (`--personas scenarios/personas`).
 - `steve/`: scenarios that need SteVe (see `tools/steve/README.md`): CSMS
