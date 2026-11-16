@@ -75,5 +75,30 @@ actions (draft-06).
   (`shasum -a 256 *.json > ../SHA256SUMS-ocpp201` inside `ocpp201/`), and the
   same test checks them. The same rules apply.
 
-Action names repeat between 1.6 and 2.0.1 with different payloads, so the
+## OCPP 2.1 schemas
+
+`ocpp21/` holds the official OCPP 2.1 JSON Schema files: one request
+(`<Action>Request.json`) and one response schema for each of the 91 OCPP 2.1
+actions, except NotifyPeriodicEventStream, an unconfirmed (SEND) message that
+has only `NotifyPeriodicEventStream.json` (181 files, draft-06).
+
+- **Work:** `OCPP-2.1_part3_JSON_schemas` (Edition 1, 2025-01-23), folder
+  `OCPP-2.1_part3_JSON_schemas/` of `OCPP-2.1_part3_JSON_schemas.zip`, inside
+  the OCA download "OCPP 2.1 (all files)" (Edition 1 with the errata of
+  2025-09). The download's ReadMe states that the errata do not affect any
+  schemas.
+- **Source:** https://openchargealliance.org/my-oca/ocpp/ (download archive
+  SHA-256 `94ae24f3f2757ccd6e4b655fd81eb269284e5f145ef0f95bcdad173e836411df`;
+  inner `OCPP-2.1_part3_JSON_schemas.zip` SHA-256
+  `af012407f31f6e24600068c0f96759115a40eadcacb48e0a10eae8ccaf1cc499`).
+- **Copyright:** © 2010 – 2025 Open Charge Alliance. All rights reserved.
+- **Licence:** Creative Commons Attribution-NoDerivatives 4.0 International
+  Public License, https://creativecommons.org/licenses/by-nd/4.0/legalcode, as
+  stated in the OCPP 2.1 specification parts shipped in the same download (for
+  example Part 4) and in each file's `comment`.
+- **Changes:** none. `SHA256SUMS-ocpp21` lists their checksums
+  (`shasum -a 256 *.json > ../SHA256SUMS-ocpp21` inside `ocpp21/`), and the
+  same test checks them. The same rules apply.
+
+Action names repeat between 1.6, 2.0.1 and 2.1 with different payloads, so the
 engine loads one set per version (`OCA_SCHEMA_DIRS` in `src/oca-schemas.ts`).

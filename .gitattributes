@@ -5,3 +5,5 @@ packages/engine/oca-schemas/ocpp16/*.json -text
 packages/engine/oca-schemas/ocpp16-security/*.json -text
 # OCPP 2.0.1's JSON schemas likewise.
 packages/engine/oca-schemas/ocpp201/*.json -text
+# OCPP 2.1's JSON schemas likewise.
+packages/engine/oca-schemas/ocpp21/*.json -text
