@@ -1302,6 +1302,7 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 - SignCertificate 带 requestId，CertificateSigned 必须回带（未知的拒绝）；CSR 重发退避在 CertSigningRepeatTimes 次后停止，直到 CSMS 触发新的 CSR（A02、A03）。SecurityCtrlr.AllowSecurityProfileDowngrade 允许从 profile 3 降到 2（A05）。
 - SetNetworkProfile 的 identity 和 basicAuthPassword，以及每个槽位的 NetworkConfiguration 组件，按勘误的校验规则（B09、B10）。
 - 固件和日志状态通知的 statusInfo；GetLog 的 DataCollectorLog 类型；NotifyEvent 的 severity。
+- 已实现（T100）：2.1 桩的 CSR 带 requestId（会持久保存，重发时保持不变），requestId 对不上的 CertificateSigned 会被拒绝；内置 CSMS 会原样回带。SecurityCtrlr.AllowSecurityProfileDowngrade 允许在桩处于 profile 3 时设置并使用 profile 2 的槽位，连上之后安全等级变成 2；profile 1 仍然拒绝。SetNetworkProfile 不再要求 ocppVersion；槽位自带的 identity 和 basicAuthPassword 随该槽位使用，连上之后成为 SecurityCtrlr.Identity 和 BasicAuthPassword（B09.FR.28）。每个槽位是一个只读的 NetworkConfiguration 组件（B09.FR.08、.10），其中不放密码，因为只读副本会把密码报出去。GetLog 支持 DataCollectorLog。固件和日志通知里可选的 statusInfo 不发，NotifyEvent 的 severity 也不填，两者都是可选的。`scenarios/regression/ocpp21-security.yaml` 在 2.1 桩上跑 2.0.1 的安全场景。
 
 **内置 CSMS、Web UI 和工具**
 

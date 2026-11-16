@@ -599,6 +599,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       while (transactions.size > 0) await timers.delay(1000);
     },
     diagnostics: () => diagnosticsText(),
+    v21,
   });
 
   // ---- Status -------------------------------------------------------------
