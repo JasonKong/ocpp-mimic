@@ -1,6 +1,6 @@
 # ocpp-mimic design
 
-Updated 2026-11-15 · Chinese version: [design.zh-CN.md](design.zh-CN.md). This English version is the source of truth.
+Updated 2026-11-16 · Chinese version: [design.zh-CN.md](design.zh-CN.md). This English version is the source of truth.
 
 ## Overview
 
@@ -1177,6 +1177,167 @@ Follow-ups, outside any milestone:
 - #216: show ETAs in wall-clock time when the energy multiplier is on.
 - #217: the event loop's tail and heap floor with session saves on the 1,000-station bench. Done: running sessions are saved a slice at a time (at most 50 a second, each once its changes waited 30 s), a touched session is no longer read back from SQLite, and only Authorize frames are kept for later touches. On the reference bench ([1.6](https://github.com/JasonKong/ocpp-mimic/actions/runs/43739632631), [2.0.1](https://github.com/JasonKong/ocpp-mimic/actions/runs/43739635880)): heartbeats late p99 / max 1.7 / 53 ms and 5.9 / 188 ms (were 1.9 / 147 and 67 / 311), meter values late 1.3 / 24 and 27 / 188 ms (were 1.2 / 2 and 84 / 343), event-loop max 60 and 241 ms (were 153 and 365), and the heap floor no longer rises (61.8 → 59 and 130.6 → 129.6 MB). The remaining 2.0.1 spikes are the ones of #180.
 
+## M7 OCPP 2.1
+
+Decided for M7 (#221). M7 adds OCPP 2.1 next to 1.6J and 2.0.1 on the same engine. As in M5, a station speaks one version, the one its persona names, and everything around the charge point works with all three. The specification is OCPP 2.1 Edition 1 (2025-01-23) with the errata of 2025-09; the test targets are the built-in CSMS and CitrineOS v2.1.0, which accepts `ocpp2.1` and handles 2.1's tariff and payment messages.
+
+**What 2.1 is, for a simulator**
+
+- 2.1 keeps 2.0.1's application logic and extends it (Part 0, chapter 2). On the wire it is a superset for every action 2.0.1 has: comparing OCA's 2.0.1 and 2.1 schemas finds no removed field, no newly required field, and no narrowed enumeration or length; three enumerations became open strings (IdTokenEnumType, ConnectorEnumType, ChargingLimitSourceEnumType). 27 actions are new, for 91 in all.
+- The largest additions are bidirectional power transfer (V2X), DER control and ISO 15118-20; next come local cost calculation from tariffs, ad hoc payment, transactions with limits, resuming transactions after a reboot, dynamic and priority charging profiles, and periodic event streams over the new unconfirmed SEND message.
+- 2.1 has no Part 5 (certification profiles) and no Part 6 (test cases) yet. Scope is therefore set by functional block and use case, and scenarios are named after Part 2 use cases and requirement ids.
+
+**Scope**
+
+By functional block of Part 2 (2.1 has no certification profiles yet):
+
+| Block | In M7 | Notes |
+| --- | --- | --- |
+| A Security | Yes | As in M5, with A02/A03's requestId and A05's downgrade; no ISO 15118-20 certificates |
+| B Provisioning | Yes | B09's new connection data; B13 resuming a transaction after a reset |
+| C Authorization | Yes | Open idToken types; C17 prepaid cards; C18–C25 ad hoc payment; not C07/C08 (ISO 15118 contract certificates) |
+| D Local Authorization List | Yes | Unchanged apart from open idToken types |
+| E Transactions | Yes | E16 transaction limits; E17 resuming after a forced reboot; new trigger and stop reasons; not E15 (ISO 15118 end of charging) |
+| F Remote Control | Yes | F06's customTrigger; F07 remote start with limits |
+| G Availability | Yes | Connector availability also through NotifyEvent |
+| H Reservation | Yes | Unchanged apart from open types and NoTransaction |
+| I Tariff and Cost | Yes | Local cost calculation (I07–I12); I01–I06 on a virtual display |
+| J Metering | Yes | Upstream location; the ISO 15118-20 measurands from the EV model |
+| K Smart Charging | Yes | Dynamic profiles (K28, K29), priority charging (K21, K22), the LocalGeneration purpose, the 2.1 period fields; ISO 15118-20 charging needs (K18, K20) without discharge; not external limits (K11–K14, as in M5) or EMS topologies (K23–K26) |
+| L Firmware Management | Yes | statusInfo; not the local controller |
+| M Certificate Management | Partly | As in M5: CA certificates; not ISO 15118 certificates or chain status |
+| N Diagnostics | Partly | As in M5: logs (with DataCollectorLog) and customer information; not monitoring or periodic event streams |
+| O Display Message | No | |
+| P DataTransfer | Yes | Unchanged |
+| Q Bidirectional Power Transfer | No | V2X discharge |
+| R DER Control | No | |
+| S Battery Swapping | No | |
+
+58 of the 91 actions are in scope; "OCPP 2.1 coverage" lists them.
+
+**Exit criterion G7**
+
+Every 2.1 scenario for the covered blocks passes against the built-in CSMS in CI, and those CitrineOS v2.1.0 can drive pass against it; every frame of those runs is valid against OCA's 2.1 JSON schemas; the bench with a 2.1 load persona stays within the M4 thresholds; the 1.6 and 2.0.1 suites (regression, SteVe, CitrineOS) stay green.
+
+**Test targets**
+
+- The built-in CSMS, for every covered block; it learns the 2.1 messages in T106.
+- CitrineOS v2.1.0, the version the 2.0.1 suite already pins. Its version number is CitrineOS's own, not OCPP's, and it speaks OCPP 2.1 as well: its WebSocket servers accept `ocpp2.1`, its REST API serves the 2.x actions under `/ocpp/2.1/<module>/<action>`, and it has 2.1 handlers for Authorize, GetCompositeSchedule, SetDefaultTariff, GetTariffs, NotifySettlement, VatNumberValidation and NotifyWebPaymentStarted. T111 finds out which 2.1 scenarios it can drive, and the 2.1 suite runs in the existing CitrineOS workflow.
+
+**Choosing the version**
+
+- A persona declares `ocpp: "2.1"`; `generic-2.1`, `regression-2.1` and `load-ac-2.1` join the 1.6 and 2.0.1 personas.
+- The station offers only `ocpp2.1`. Part 4 lets a station offer several subprotocols (`ocpp2.1, ocpp2.0.1, ocpp1.6`), but a simulated station models one firmware, as decided in M5. The built-in CSMS accepts all three and takes the first the station offers that it speaks.
+- `OcppVersion` becomes `'1.6' | '2.0.1' | '2.1'` in core, the engine (fleet, API, State Store, recorder, metrics labels, logs, replay, calibration), scenarios and the Web UI. Where code asks "is this 2.0.1?" to mean "is this a 2.x station", it asks a helper `isOcpp2(version)` instead.
+
+**Protocol seam: 2.1 as a delta on the 2.0.1 adapter**
+
+- **Messages.** `core/src/ocpp21/messages.ts` holds the 2.1 definitions, transcribed from Part 2's "Messages, Datatypes and Enumerations" like the 2.0.1 ones. Classes that did not change are the 2.0.1 schemas, re-exported; changed classes extend the 2.0.1 shapes with the new fields and enumeration values; the 27 new actions are new classes. Because 2.1 is a wire superset, a 2.0.1 payload type is assignable to its 2.1 type. A test in the engine cross-checks the definitions against OCA's 2.1 schemas, as for 2.0.1 (T95).
+- **Message set.** `OCPP21_MESSAGE_SET`: subprotocol `ocpp2.1`, the 91 actions by sender, the 2.0.1 error codes, and two new properties: `sendsCallResultError` (true) and `unconfirmedActions` (the actions carried by SEND, which is NotifyPeriodicEventStream).
+- **One adapter for 2.0.1 and 2.1.** `createChargePoint201` becomes the 2.x charge point: it takes `ocpp: '2.0.1' | '2.1'` from the persona, uses that version's message set, and is typed by the 2.1 message types. What 2.1 adds lives in new modules under `core/src/ocpp21/` (transaction limits and resumption, tariffs and cost, payment, dynamic and priority charging), wired in only on a 2.1 station; a 2.0.1 station never sends a 2.1-only field or action. The 2.0.1 regression and CitrineOS suites guard that, and the recorder's schema check runs on every frame of them.
+- Rejected: a separate 2.1 adapter copied from the 2.0.1 one. It would duplicate about 2,400 lines that 2.1 leaves unchanged, and every fix would have to land twice.
+- The device reducer stays the one source of connector facts, and the shared parts (timers, outbox, energy, certificates, file transfers) are used as they are.
+
+**OCPP-J 2.1**
+
+Part 4 of 2.1 adds two message types to the RPC framework:
+
+- **SEND (6)**, an unconfirmed message: `[6, messageId, action, payload]`, never answered, and allowed while a CALL is outstanding. The frame parser and the RPC layer accept it on a 2.1 connection; a received SEND goes to its handler without an answer, and an unknown action in a SEND is logged and dropped. `rpc.send(action, payload)` sends one. In M7 only the built-in CSMS and tests use it: the one action carried by SEND, NotifyPeriodicEventStream, belongs to periodic event streams, which are out of scope.
+- **CALLRESULTERROR (5)**, an error answer to a CALLRESULT that cannot be processed, with the CALLRESULT's message id and the five CALLERROR elements. A 2.1 station answers a CALLRESULT that fails validation with a CALLRESULTERROR (FormatViolation, OccurrenceConstraintViolation and so on, as for a CALL) and then treats its CALL as failed, as 2.0.1 does; a received CALLRESULTERROR is logged and recorded. The built-in CSMS does the same for the stations' answers, and fault injection can make it send one.
+- An unknown message type number is handled as on 2.0.1: answered with MessageTypeNotSupported when the message id can be read.
+- The recorder, log export and import, replay and the Web UI's frame view know message types 5 and 6. SEND payloads are checked against the action's request schema.
+
+**Personas and the Device Model**
+
+- A 2.1 persona has the 2.0.1 persona format. `features` names the M5 profiles a 2.1 station keeps (Core, AdvancedSecurity, LocalAuthListManagement, SmartCharging, Reservation) plus three 2.1 groups: `TariffAndCost` (TariffCostCtrlr and block I), `Payment` (PaymentCtrlr, C18–C23, VatNumberValidation) and `WebPayments` (WebPaymentsCtrlr, C25). Finer switches are the Device Model variables 2.1 defines for them (TxCtrlr.SupportedLimits, TxCtrlr.ResumptionTimeout, SmartChargingCtrlr.SupportsFeature[...] and SupportedAdditionalPurposes), which personas set like any other variable.
+- The standard variables come from the 2.1 appendix (Appendices CSV v2.0) for the covered blocks: the M5 controllers with their 2.1 additions, and TariffCostCtrlr, PaymentCtrlr, WebPaymentsCtrlr, CustomizationCtrlr.CustomTriggers, the NetworkConfiguration component (B09) and the 2.1 SampledDataCtrlr and AlignedDataCtrlr Upstream variables. V2XChargingCtrlr, the DER controllers and BatterySwapCtrlr stay out with their blocks.
+- Connector availability: 2.1 prefers NotifyEvent on Connector.AvailabilityState to StatusNotification, which is deprecated but still allowed (G01, B01.FR.05, E02.FR.05). A 2.1 station reports availability with NotifyEvent (trigger Delta, HardWiredNotification); a persona can choose StatusNotification instead (`connectorStatus: StatusNotification`), for CSMSs that still expect it. Never both, which would report every change twice.
+
+**Transactions (blocks E, F, B13)**
+
+- **Limits (E16, F07, C17, C24).** TransactionLimitType carries maxEnergy, maxTime, maxSoC and maxCost. The CSMS sends a limit in a TransactionEventResponse (RequestStartTransaction has no limit field: F07 sends it in the response to Started); the station echoes the limits it supports once with triggerReason LimitSet, never exceeds them, and when one is reached suspends energy (SuspendedEVSE) or, when TxStopPoint includes EnergyTransfer, ends the transaction, with CostLimitReached, EnergyLimitReached, TimeLimitReached or SoCLimitReached. A raised limit resumes charging. maxSoC uses the EV model's SoC; maxCost uses the station's own cost when it has a tariff, otherwise the CSMS's totalCost and CostUpdated. TxCtrlr.SupportedLimits lists what a persona supports (default all four). LimitSet and limit events are never dropped from the offline queue (E12.FR.04).
+- **Resuming (B13, E17).** Reset ImmediateAndResume and a simulated power loss (the existing reboot and power-cut actions) keep each transaction's state when TxCtrlr.ResumptionTimeout is above 0. After the reboot the station resumes the transactions with TxResumed, in their previous state or SuspendedEVSE when AllowEnergyTransferResumption is false; after more than the timeout it ends them with PowerLoss or Reboot. Reset with an evseId resets only that EVSE.
+- **Other changes.** TriggerMessage's CustomTrigger (answered NotImplemented unless the persona lists the trigger in CustomizationCtrlr.CustomTriggers, and then sending a DataTransfer the persona defines); idTokens of up to 255 characters and any type; a refused idToken during a transaction goes to EVConnected rather than SuspendedEVSE (E05.FR.09); cacheExpiryDateTime and C10's 2.1 cache rules; preconditioningStatus is not sent (no requirement uses it), evseSleep is not sent (V2X).
+
+**Tariffs and local cost calculation (block I)**
+
+A 2.1 station can price its own sessions from tariffs the CSMS sends (I07–I12), which is the largest new behaviour M7 builds. It also covers R-PRICE-4 and R-PRICE-5 of `docs/session-ui.md`.
+
+- **Tariff store.** Per EVSE, the default tariffs from SetDefaultTariff (evseId 0 installs on every EVSE), kept persistently with their validFrom: the active one is the latest whose validFrom has passed, and a running transaction keeps the tariff it started with (I07.FR.17–24). Driver tariffs come with AuthorizeResponse, live with the authorization cache entry, and are dropped when their transaction ends or EVConnectionTimeOut expires (I08). ChangeTransactionTariff replaces a running transaction's tariff from that moment, with TariffChanged (I11). GetTariffs and ClearTariffs report and remove them (I09, I10). The statuses follow the spec: TooManyElements (per dimension, against TariffCostCtrlr.MaxElements), ConditionNotSupported, DuplicateTariffId, UnknownEVSE, TxNotFound, NoCurrencyChange.
+- **Calculation.** `core/src/tariff.ts` grows from the M6 subset to the full TariffType: conditions (time of day across midnight, day of week, valid dates, EVSE kind, energy, current, power, total, charging and idle time; payment brand and recognition for fixed fees), the first applicable price per dimension, fixed fees evaluated once at the start, reservation time and fee, stacked tax rates, minCost at the end and maxCost as a ceiling. Time and energy are pro-rated per second and per Wh; the specification has no billing increments or rounding, so none are applied and amounts are rounded only when shown. Times of day and dates are local to the station's time zone, ClockCtrlr.TimeZone (an IANA name such as Pacific/Auckland; UTC when unset). The same function prices the M6 reference price, so a station given the reference tariff reports the reference price.
+- **costDetails.** A charging period starts whenever the set of applicable prices changes or the tariff changes; each carries its tariffId and its Energy, ChargingTime, IdleTime and power or current dimensions. Started and every Interval[Cost] seconds carry the running cost (without charging periods, per the 2025-09 errata), with triggerReason RunningCost when nothing else is reported; Ended carries the final cost with all periods. A tariff the station cannot use sets TariffCostCtrlr.Problem, sends a NotifyEvent, and follows HandleFailedTariff (Deauthorize, UseDefaultTariff, CentralCost).
+- **Device Model.** TariffCostCtrlr with the 2.1 variables. A persona with the TariffAndCost feature has Available and Enabled true for Tariff and Cost, RunningCost on with Interval[Cost] 60 s, Interval[Tariff] 0, MaxElements 10, ConditionsSupported true, HandleFailedTariff UseDefaultTariff; personas can change any of them.
+- **Driver acceptance.** A real station may ask the driver to accept a tariff. The simulated driver accepts implicitly when plugging in (the station then sends the tariffId once, I07.FR.31); a behaviour switch makes the driver refuse, which deauthorizes the token and, during a transaction, sends TariffNotAccepted (I07.FR.30).
+- **Display (I01–I06).** The station has no screen, but it keeps what it would show: the personal message, the fallback messages, the running and the final cost. These go in the snapshot as `display`, so scenarios and the Web UI can check them.
+- **Choices where the specification is silent or contradicts itself**, recorded so tests are deterministic: MaxElements counts the prices of one dimension; maxCost caps the total at maxCost exactly instead of freezing it one evaluation late; idle time is cumulative over the transaction; without tax rates inclTax equals exclTax; HandleFailedTariff uses the member list's spelling UseDefaultTariff. The worked examples in Part 2, I 1.3 do not add up, so they are not used as test vectors; tests use hand-checked cases instead.
+
+**Payment (block C)**
+
+The station simulates an integrated payment terminal (C18–C23) and a dynamic QR code (C25); stand-alone terminals and static QR codes (C24, C25) need nothing on the station beyond remote starts with limits.
+
+- **Terminal.** `presentPaymentCard` (API, scenario step and Web UI) presents a card to an EVSE's terminal: brand and recognition (for example Visa, Contactless), which become a DirectPayment idToken whose id is a generated PspRef and whose additionalInfo carries the PaymentDetails the persona lists. The terminal reserves PaymentCtrlr.AuthorizationAmount; with AuthorizeDirectPayment the station sends Authorize, otherwise it authorizes locally. The transaction carries maxCost = the authorized amount (E16), the driver can cancel before or after the start (C19, C20), and at the end the terminal settles the station's final cost and the station sends NotifySettlement (C21) unless SettlementByCSMS. Behaviour switches make the terminal decline, fail the settlement (C22) or allow incremental authorization (C23).
+- **VAT number.** A driver may enter a VAT number before settlement: the station sends VatNumberValidation and puts the number and company on NotifySettlement.
+- **Web payment (C25).** With WebPaymentsCtrlr, each EVSE's virtual display shows the payment URL built from URLTemplate with a TOTP code (v1: HMAC-SHA256 over the ValidityTime interval, base62, Length characters), renewed every ValidityTime. NotifyWebPaymentStarted blocks local starts on the EVSE for its timeout; the CSMS then starts the transaction with RequestStartTransaction and a limit. The built-in CSMS can check the TOTP code like a payment back end.
+- The session tracker's `payment` start source (R-START-1) is set for terminal and web payments, and the session keeps the settlement.
+
+**Smart charging (block K)**
+
+- The M5 composite schedule model gains the 2.1 purposes and kinds: PriorityCharging replaces TxProfile and TxDefaultProfile while active (K21 from the CSMS with UsePriorityCharging, K22 from a button in the API and Web UI; NotifyPriorityCharging either way); LocalGeneration adds its capacity on top of the composite; Dynamic profiles hold one period that UpdateDynamicSchedule replaces or the station fetches with PullDynamicScheduleUpdate every dynUpdateInterval, and that goes stale after its duration (K28, with the errata). randomizedDelay, useLocalTime, limitAtSoC and maxOfflineDuration are supported too. Each is gated by its SmartChargingCtrlr.SupportsFeature or SupportedAdditionalPurposes variable, and refused with the reason codes K01.FR.120–126 give when a persona switches it off.
+- Operation modes other than ChargingOnly, setpoints, discharge limits and EVSE sleep are V2X and are refused with InvalidOperationMode; ExternalLimits and ExternalSetpoint for LocalGeneration from an external system (K27, K29) come with external limits, which stay out as in M5.
+
+**ISO 15118-20 vehicle data (block K, J), charging only**
+
+- The EV model's `communication` gains `iso15118-20`. Such an EV makes the station send NotifyEVChargingNeeds with the 2.1 fields: controlMode (ScheduledControl by default, DynamicControl as an EV setting), mobilityNeedsMode, v2xChargingParameters with the charging values (power, current, voltage, energy requests, target SoC), departure time and a timestamp when the needs were received offline. NoChargingProfile means no profile is coming; Rejected ends the transaction with ReqEnergyTransferRejected (K18, K19). Changed needs are sent again (K20).
+- The Display.\* and EnergyRequest.\* measurands are sampled from the EV model for ISO 15118-20 EVs when listed in the measurand variables (R-EV-4); the session estimate uses Display.RemainingTimeToTargetSOC and Display.BatteryEnergyCapacity when present.
+- NotifyAllowedEnergyTransfer is accepted and recorded; with charging only there is nothing to switch.
+- Out: ISO 15118 certificates and Plug & Charge (as in M5), NotifyEVChargingSchedule and price schedules to the EV, discharge.
+
+**Security, provisioning and diagnostics (blocks A, B, L, N)**
+
+- SignCertificate carries a requestId that CertificateSigned must echo (an unknown one is rejected), and the CSR back-off stops after CertSigningRepeatTimes until the CSMS triggers a new CSR (A02, A03). SecurityCtrlr.AllowSecurityProfileDowngrade allows going from profile 3 to 2 (A05).
+- SetNetworkProfile's identity and basicAuthPassword, and the NetworkConfiguration component for each slot with the errata's validation rules (B09, B10).
+- statusInfo on firmware and log status notifications; GetLog's DataCollectorLog type; NotifyEvent's severity.
+
+**Built-in CSMS, Web UI and tools**
+
+- The built-in CSMS accepts `ocpp2.1` and answers the new station messages (NotifySettlement, VatNumberValidation with a test company, NotifyPriorityCharging, PullDynamicScheduleUpdate with the current value of the profile). Its control API and scenario steps send tariffs (the reference tariff as a 2.1 tariff), transaction limits in TransactionEventResponse, dynamic schedule updates, UsePriorityCharging and NotifyWebPaymentStarted, and it can answer Authorize with a driver tariff.
+- The Web UI gets the 2.1 row of the version table (badge, terms, capabilities), the payment terminal and priority button on a 2.1 station, the station's own cost (costDetails) next to the CSMS's cost and the reference price, the limits of a session, the virtual display, and Display.\* values in the vehicle card.
+- Logs, export and import, replay, calibration and metrics carry `ocpp: 2.1`; replay maps tariffIds and pspRefs like transaction ids; a synthetic 2.1 sample log is recorded from ocpp-mimic.
+- Load and bench: `load-ac-2.1` with tariffs on, and the bench workflow's persona choice.
+
+**Tests**
+
+- Core tests per module, with requirement ids in their names where a requirement drives them.
+- `scenarios/regression/ocpp21-*.yaml`, one file per block, named after Part 2 use cases and requirement ids, against the built-in CSMS with every frame checked against OCA's 2.1 schemas.
+- `scenarios/citrineos/ocpp21-*.yaml` for what CitrineOS v2.1.0 can drive, in the existing CitrineOS workflow.
+
+**Tasks**
+
+| Task | Issue | Wave | Depends on |
+| --- | --- | --- | --- |
+| T93 Design (this section) | #221 | 1 | |
+| T94 2.1 message set in core | #222 | 2 | T93 |
+| T95 OCA 2.1 schemas and frame checks | #223 | 2 | T94 |
+| T96 OCPP-J 2.1: SEND, CALLRESULTERROR, ocpp2.1 | #224 | 2 | T94 |
+| T97 2.1 station and OcppVersion 2.1 end to end | #225 | 3 | T96 |
+| T98 Device Model 2.1 | #226 | 3 | T97 |
+| T99 Transactions 2.1: limits, resumption | #227 | 4 | T98 |
+| T100 Security and network configuration on 2.1 | #228 | 4 | T97 |
+| T101 Smart charging 2.1 | #229 | 4 | T98 |
+| T102 Local list, reservations, remote control, provisioning on 2.1 | #230 | 4 | T98 |
+| T103 Tariffs and local cost calculation | #231 | 5 | T99 |
+| T104 Payment | #232 | 5 | T99 |
+| T105 ISO 15118-20 vehicle data | #233 | 5 | T99 |
+| T106 Built-in CSMS for 2.1 | #234 | 5 | T99 |
+| T107 Web UI for 2.1 | #235 | 6 | T103, T104, T105 |
+| T108 Logs, replay, calibration, metrics | #236 | 6 | T99 |
+| T109 Load and bench | #237 | 6 | T97 |
+| T110 2.1 regression suite | #238 | 7 | T100–T106 |
+| T111 CitrineOS 2.1 suite | #239 | 7 | T110 |
+| T112 Acceptance | #240 | 8 | all |
+
+The critical path is T93 → T94 → T96 → T97 → T98 → T99 → T103 → T110 → T112.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
@@ -1386,6 +1547,80 @@ M6 adds two of the actions listed below: NotifyEVChargingNeeds, sent for ISO 151
 
 **Out of scope**: the station never sends the charging station messages below and answers the CSMS ones with CALLERROR NotSupported: ClearedChargingLimit, NotifyChargingLimit (external limits); Get15118EVCertificate, GetCertificateStatus, NotifyEVChargingSchedule (ISO 15118); NotifyDisplayMessages, SetDisplayMessage, GetDisplayMessages, ClearDisplayMessage (Advanced User Interface); NotifyMonitoringReport, SetVariableMonitoring, ClearVariableMonitoring, SetMonitoringBase, SetMonitoringLevel, GetMonitoringReport (monitoring); PublishFirmware, UnpublishFirmware, PublishFirmwareStatusNotification (local controller).
 
+## OCPP 2.1 coverage
+
+Planned for M7 (see "M7 OCPP 2.1"); each row names the M7 task that implements it. Blocks are those of Part 2. A 2.1 station answers in-scope CSMS actions as listed, out-of-scope ones with CALLERROR NotSupported, and actions that are not 2.1 at all with NotImplemented.
+
+**Charging station → CSMS** (21 of 37 in scope)
+
+| Message | Block | New in 2.1 | In M7 | Task |
+| --- | --- | --- | --- | --- |
+| Authorize | C | Open idToken types, DirectPayment; tariff and allowedEnergyTransfer in the response | Yes | T97, T103, T104 |
+| BootNotification | B | | Yes | T97 |
+| DataTransfer | P | | Yes | T102 |
+| FirmwareStatusNotification | L | statusInfo | Yes | T100 |
+| Heartbeat | G | | Yes | T97 |
+| LogStatusNotification | N | statusInfo | Yes | T100 |
+| MeterValues | J | Upstream location, new measurands | Yes | T97, T105 |
+| NotifyCustomerInformation | N | | Yes | T102 |
+| NotifyEVChargingNeeds | K | 2.1 charging needs (ISO 15118-20) | Yes | T105 |
+| NotifyEvent | N, G | severity; connector availability | Yes | T97 |
+| NotifyPriorityCharging | K | New | Yes | T101 |
+| NotifyReport | B | maxElements | Yes | T98 |
+| NotifySettlement | C | New | Yes | T104 |
+| PullDynamicScheduleUpdate | K | New | Yes | T101 |
+| ReportChargingProfiles | K | 2.1 profile fields | Yes | T101 |
+| ReservationStatusUpdate | H | NoTransaction | Yes | T102 |
+| SecurityEventNotification | A | | Yes | T100 |
+| SignCertificate | A | requestId, hashRootCertificate | Yes | T100 |
+| StatusNotification | G | | Yes | T97 |
+| TransactionEvent | E | costDetails, limits, new reasons, preconditioning, EVSE sleep | Yes | T99, T103 |
+| VatNumberValidation | C | New | Yes | T104 |
+| ClearedChargingLimit, NotifyChargingLimit | K | | No (external limits, as in M5) | |
+| Get15118EVCertificate, GetCertificateStatus, GetCertificateChainStatus | M | GetCertificateChainStatus new | No (ISO 15118 certificates) | |
+| NotifyEVChargingSchedule | K | | No (ISO 15118) | |
+| NotifyDisplayMessages | O | | No | |
+| NotifyMonitoringReport, OpenPeriodicEventStream, ClosePeriodicEventStream, NotifyPeriodicEventStream | N | Event streams new | No (monitoring) | |
+| PublishFirmwareStatusNotification | L | | No (local controller) | |
+| NotifyDERAlarm, NotifyDERStartStop, ReportDERControl | R | New | No (DER control) | |
+| BatterySwap | S | New | No (battery swapping) | |
+
+**CSMS → charging station** (38 of 55 in scope)
+
+| Message | Block | New in 2.1 | In M7 | Task |
+| --- | --- | --- | --- | --- |
+| CancelReservation, ReserveNow | H | Open idToken and connector types | Yes | T102 |
+| CertificateSigned | A | requestId | Yes | T100 |
+| ChangeAvailability | G | | Yes | T97 |
+| ChangeTransactionTariff | I | New | Yes | T103 |
+| ClearCache | C | | Yes | T102 |
+| ClearChargingProfile, GetChargingProfiles, GetCompositeSchedule, SetChargingProfile | K | Dynamic kind, new purposes and period fields | Yes | T101 |
+| ClearTariffs, GetTariffs, SetDefaultTariff | I | New | Yes | T103 |
+| CostUpdated | I | | Yes | T103 |
+| CustomerInformation | N | | Yes | T102 |
+| DataTransfer | P | | Yes | T102 |
+| DeleteCertificate, GetInstalledCertificateIds, InstallCertificate | M | New certificate types | Yes | T100 |
+| GetBaseReport, GetReport, GetVariables, SetVariables | B | | Yes | T98 |
+| GetLocalListVersion, SendLocalList | D | Open idToken types | Yes | T102 |
+| GetLog | N | DataCollectorLog | Yes | T100 |
+| GetTransactionStatus | E | | Yes | T99 |
+| NotifyAllowedEnergyTransfer | Q | New | Yes: accepted and recorded (charging only) | T105 |
+| NotifyWebPaymentStarted | C | New | Yes | T104 |
+| RequestStartTransaction | F | Open idToken types; its limits come in the response to Started (F07) | Yes | T99, T102 |
+| RequestStopTransaction | F | | Yes | T102 |
+| Reset | B | ImmediateAndResume | Yes | T99 |
+| SetNetworkProfile | B | basicAuthPassword, identity | Yes | T100 |
+| TriggerMessage | F | customTrigger | Yes | T102 |
+| UnlockConnector | F | | Yes | T102 |
+| UpdateDynamicSchedule, UsePriorityCharging | K | New | Yes | T101 |
+| UpdateFirmware | L | | Yes | T100 |
+| ClearDisplayMessage, GetDisplayMessages, SetDisplayMessage | O | | No | |
+| ClearVariableMonitoring, GetMonitoringReport, SetMonitoringBase, SetMonitoringLevel, SetVariableMonitoring, AdjustPeriodicEventStream, GetPeriodicEventStream | N | Event streams new | No (monitoring) | |
+| PublishFirmware, UnpublishFirmware | L | | No (local controller) | |
+| AFRRSignal | Q | New | No (V2X) | |
+| ClearDERControl, GetDERControl, SetDERControl | R | New | No (DER control) | |
+| RequestBatterySwap | S | New | No (battery swapping) | |
+
 ## Roadmap
 
 ```mermaid
@@ -1402,7 +1637,9 @@ flowchart TB
   G5{{"Exit: every 2.0.1 scenario for the covered profiles passes against CitrineOS in CI"}}
   M6["<b>M6 · Charging sessions</b><br/>Sessions view: start source and timeline, version, per-session log<br/>Energy and time to full (estimate vs truth), vehicle information by version, reference price"]
   G6{{"Exit: sessions show the right source and timeline on 1.6 and 2.0.1 against the built-in CSMS, SteVe and CitrineOS; estimates and prices check out"}}
-  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6
+  M7["<b>M7 · OCPP 2.1</b><br/>2.1 on the 2.0.1 adapter: SEND, CALLRESULTERROR, Device Model 2.1<br/>Tariffs and local cost, payment, transaction limits and resumption, dynamic and priority charging, ISO 15118-20 needs"]
+  G7{{"Exit: every 2.1 scenario for the covered blocks passes against the built-in CSMS and CitrineOS in CI"}}
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7
 ```
 
 Each phase ends with an exit criterion; the next phase starts once it is met. The M4 thresholds are set in "M4 scale" and can be adjusted to real needs.

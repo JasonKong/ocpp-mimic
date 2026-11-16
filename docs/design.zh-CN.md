@@ -1,6 +1,6 @@
 # ocpp-mimic 设计方案
 
-更新于 2026-11-15 · 英文版：[design.md](design.md)（两版不一致时以英文版为准）
+更新于 2026-11-16 · 英文版：[design.md](design.md)（两版不一致时以英文版为准）
 
 ## 概述
 
@@ -1176,6 +1176,167 @@ M6 的出口标准在 main（b317bbe）上达成：
 - #216：开启能量倍率时，ETA 按钟表时间显示。
 - #217：会话保存对 1,000 站 bench 的事件循环长尾和堆底的影响。已完成：运行中的会话分批保存（每秒最多 50 个，每个在改动等满 30 秒后保存），更新会话时不再从 SQLite 读回，之后要引用的报文只保留 Authorize 帧。参考 bench（[1.6](https://github.com/JasonKong/ocpp-mimic/actions/runs/43739632631)、[2.0.1](https://github.com/JasonKong/ocpp-mimic/actions/runs/43739635880)）上：心跳迟到 p99 / 最大为 1.7 / 53 ms 和 5.9 / 188 ms（原为 1.9 / 147 和 67 / 311），电表值迟到为 1.3 / 24 和 27 / 188 ms（原为 1.2 / 2 和 84 / 343），事件循环最大为 60 和 241 ms（原为 153 和 365），堆底不再上升（61.8 → 59 和 130.6 → 129.6 MB）。2.0.1 剩下的尖峰是 #180 跟踪的那些。
 
+## M7 OCPP 2.1
+
+M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上 OCPP 2.1。和 M5 一样，一个桩只说一种版本，就是它的 persona 写的那个；桩外围的一切三种版本都能用。规范依据是 OCPP 2.1 Edition 1（2025-01-23）加 2025-09 的勘误；测试对象是内置 CSMS 和 CitrineOS v2.1.0，后者接受 `ocpp2.1`，并处理 2.1 的资费和支付消息。
+
+**对模拟器来说 2.1 是什么**
+
+- 2.1 保留 2.0.1 的应用逻辑并在其上扩展（Part 0 第 2 章）。对 2.0.1 已有的每个 action，2.1 在线上都是超集：对比 OCA 的 2.0.1 和 2.1 schema，没有删除字段，没有新增必填字段，也没有收窄枚举或长度；有三个枚举变成了开放字符串（IdTokenEnumType、ConnectorEnumType、ChargingLimitSourceEnumType）。新增 27 个 action，共 91 个。
+- 最大的新增是双向充放电（V2X）、DER 控制和 ISO 15118-20；其次是按资费本地计费、临时支付、带限额的事务、重启后恢复事务、动态和优先充电曲线，以及通过新的不确认消息 SEND 发送的周期事件流。
+- 2.1 目前没有 Part 5（认证 profile），也没有 Part 6（测试用例）。所以范围按功能块和用例来定，场景按 Part 2 的用例和需求编号命名。
+
+**范围**
+
+按 Part 2 的功能块（2.1 还没有认证 profile）：
+
+| 功能块 | M7 是否包含 | 说明 |
+| --- | --- | --- |
+| A Security | 是 | 同 M5，加上 A02/A03 的 requestId 和 A05 的降级；不含 ISO 15118-20 证书 |
+| B Provisioning | 是 | B09 新的连接数据；B13 复位后恢复事务 |
+| C Authorization | 是 | 开放的 idToken 类型；C17 预付卡；C18–C25 临时支付；不含 C07/C08（ISO 15118 合同证书） |
+| D Local Authorization List | 是 | 除开放的 idToken 类型外不变 |
+| E Transactions | 是 | E16 事务限额；E17 强制重启后恢复；新的触发原因和停止原因；不含 E15（ISO 15118 结束充电） |
+| F Remote Control | 是 | F06 的 customTrigger；F07 带限额的远程启动 |
+| G Availability | 是 | 连接器可用性也可用 NotifyEvent 上报 |
+| H Reservation | 是 | 除开放的类型和 NoTransaction 外不变 |
+| I Tariff and Cost | 是 | 本地计费（I07–I12）；I01–I06 显示在虚拟屏幕上 |
+| J Metering | 是 | Upstream 位置；EV 模型给出 ISO 15118-20 的测量量 |
+| K Smart Charging | 是 | 动态曲线（K28、K29）、优先充电（K21、K22）、LocalGeneration 用途、2.1 的时段字段；只充不放的 ISO 15118-20 充电需求（K18、K20）；不含外部限值（K11–K14，同 M5）和 EMS 拓扑（K23–K26） |
+| L Firmware Management | 是 | statusInfo；不含本地控制器 |
+| M Certificate Management | 部分 | 同 M5：CA 证书；不含 ISO 15118 证书和证书链状态 |
+| N Diagnostics | 部分 | 同 M5：日志（加上 DataCollectorLog）和客户信息；不含监控和周期事件流 |
+| O Display Message | 否 | |
+| P DataTransfer | 是 | 不变 |
+| Q Bidirectional Power Transfer | 否 | V2X 放电 |
+| R DER Control | 否 | |
+| S Battery Swapping | 否 | |
+
+91 个 action 里有 58 个在范围内，清单见「OCPP 2.1 覆盖范围」。
+
+**出口标准 G7**
+
+覆盖的功能块的每个 2.1 场景在 CI 里对内置 CSMS 通过，CitrineOS v2.1.0 能驱动的那些也对它通过；这些运行的每一帧都符合 OCA 的 2.1 JSON schema；用 2.1 压测 persona 跑基准，结果在 M4 的阈值以内；1.6 和 2.0.1 的套件（回归、SteVe、CitrineOS）保持全绿。
+
+**测试对象**
+
+- 内置 CSMS，覆盖所有功能块；它在 T106 学会 2.1 消息。
+- CitrineOS v2.1.0，就是 2.0.1 套件已经钉住的版本。这个版本号是 CitrineOS 自己的，不是 OCPP 的；它同样会说 OCPP 2.1：WebSocket 服务器接受 `ocpp2.1`，REST API 在 `/ocpp/2.1/<module>/<action>` 下提供 2.x 的 action，并且有 Authorize、GetCompositeSchedule、SetDefaultTariff、GetTariffs、NotifySettlement、VatNumberValidation 和 NotifyWebPaymentStarted 的 2.1 处理器。T111 摸清它能驱动哪些 2.1 场景，2.1 套件放进现有的 CitrineOS workflow。
+
+**选择版本**
+
+- persona 声明 `ocpp: "2.1"`；`generic-2.1`、`regression-2.1` 和 `load-ac-2.1` 加入 1.6 和 2.0.1 的 persona。
+- 桩只提供 `ocpp2.1`。Part 4 允许桩同时提供几个子协议（`ocpp2.1, ocpp2.0.1, ocpp1.6`），但模拟的桩代表一种固件，这是 M5 定下的。内置 CSMS 三种都接受，取桩提供的、自己会说的第一个。
+- `OcppVersion` 在 core、引擎（车队、API、State Store、录制器、指标标签、日志、回放、标定）、场景和 Web UI 里变成 `'1.6' | '2.0.1' | '2.1'`。代码里用「是不是 2.0.1」来表示「是不是 2.x 桩」的地方，改成调用辅助函数 `isOcpp2(version)`。
+
+**协议接缝：2.1 作为 2.0.1 适配器上的增量**
+
+- **消息。** `core/src/ocpp21/messages.ts` 放 2.1 的定义，和 2.0.1 一样从 Part 2 的「Messages, Datatypes and Enumerations」誊写。没变的类直接再导出 2.0.1 的 schema；变了的类在 2.0.1 的结构上加新字段和新枚举值；27 个新 action 是新类。因为 2.1 在线上是超集，2.0.1 的载荷类型可以赋给对应的 2.1 类型。引擎里有测试把这些定义和 OCA 的 2.1 schema 交叉核对，同 2.0.1（T95）。
+- **消息集。** `OCPP21_MESSAGE_SET`：子协议 `ocpp2.1`，按发送方列出 91 个 action，错误码同 2.0.1，另加两个属性：`sendsCallResultError`（true）和 `unconfirmedActions`（用 SEND 发送的 action，即 NotifyPeriodicEventStream）。
+- **2.0.1 和 2.1 共用一个适配器。** `createChargePoint201` 变成 2.x 的桩：从 persona 取 `ocpp: '2.0.1' | '2.1'`，用该版本的消息集，类型按 2.1 的消息类型。2.1 新增的东西放在 `core/src/ocpp21/` 下的新模块里（事务限额和恢复、资费和费用、支付、动态和优先充电），只在 2.1 桩上接入；2.0.1 桩永远不会发 2.1 才有的字段或 action。2.0.1 的回归套件和 CitrineOS 套件守住这一点，录制器对其中每一帧都做 schema 检查。
+- 否决的方案：从 2.0.1 适配器复制出一个单独的 2.1 适配器。那会重复大约 2,400 行 2.1 没改的代码，每个修复都得落两遍。
+- 设备 reducer 仍然是连接器事实的唯一来源，共享部件（定时器、outbox、能量、证书、文件传输）照原样使用。
+
+**OCPP-J 2.1**
+
+2.1 的 Part 4 给 RPC 框架加了两种消息类型：
+
+- **SEND (6)**，不确认的消息：`[6, messageId, action, payload]`，从不应答，在有 CALL 未完成时也可以发。帧解析器和 RPC 层在 2.1 连接上接受它；收到的 SEND 交给对应的处理器，不应答；SEND 里的未知 action 记日志后丢弃。`rpc.send(action, payload)` 用来发送。M7 里只有内置 CSMS 和测试会用到：SEND 承载的唯一 action 是 NotifyPeriodicEventStream，属于周期事件流，不在范围内。
+- **CALLRESULTERROR (5)**，对无法处理的 CALLRESULT 的错误应答，messageId 用那个 CALLRESULT 的，其余是 CALLERROR 的五个元素。2.1 桩收到校验不通过的 CALLRESULT 时，回一个 CALLRESULTERROR（FormatViolation、OccurrenceConstraintViolation 等，和对 CALL 一样），然后把自己的 CALL 当作失败，和 2.0.1 一样；收到 CALLRESULTERROR 时记日志并录制。内置 CSMS 对桩的应答做同样的事，故障注入可以让它发一个。
+- 未知的消息类型号按 2.0.1 处理：messageId 可读时回 MessageTypeNotSupported。
+- 录制器、日志导出导入、回放和 Web UI 的帧视图认识消息类型 5 和 6。SEND 的载荷按该 action 的请求 schema 检查。
+
+**Persona 和设备模型**
+
+- 2.1 persona 用 2.0.1 persona 的格式。`features` 写 2.1 桩保留的 M5 profile（Core、AdvancedSecurity、LocalAuthListManagement、SmartCharging、Reservation），再加三个 2.1 分组：`TariffAndCost`（TariffCostCtrlr 和 I 块）、`Payment`（PaymentCtrlr、C18–C23、VatNumberValidation）和 `WebPayments`（WebPaymentsCtrlr、C25）。更细的开关是 2.1 为它们定义的设备模型变量（TxCtrlr.SupportedLimits、TxCtrlr.ResumptionTimeout、SmartChargingCtrlr.SupportsFeature[...] 和 SupportedAdditionalPurposes），persona 像设置其他变量一样设置它们。
+- 标准变量取自 2.1 附录（Appendices CSV v2.0）里覆盖的功能块：M5 的各个 controller 及其 2.1 新增变量，加上 TariffCostCtrlr、PaymentCtrlr、WebPaymentsCtrlr、CustomizationCtrlr.CustomTriggers、每个槽位的 NetworkConfiguration 组件（B09），以及 2.1 的 SampledDataCtrlr 和 AlignedDataCtrlr Upstream 变量。V2XChargingCtrlr、DER 的 controller 和 BatterySwapCtrlr 随它们的功能块一起不做。
+- 连接器可用性：2.1 优先用 NotifyEvent 上报 Connector.AvailabilityState，StatusNotification 已弃用但仍允许（G01、B01.FR.05、E02.FR.05）。2.1 桩用 NotifyEvent 上报可用性（trigger Delta，HardWiredNotification）；persona 可以改用 StatusNotification（`connectorStatus: StatusNotification`），给仍然依赖它的 CSMS 用。两者不同时发，否则每次变化会报两遍。
+
+**事务（E、F 块和 B13）**
+
+- **限额（E16、F07、C17、C24）。** TransactionLimitType 包含 maxEnergy、maxTime、maxSoC 和 maxCost。CSMS 在 TransactionEventResponse 里下发限额（RequestStartTransaction 没有限额字段：F07 在对 Started 的应答里下发）；桩用 triggerReason LimitSet 回显一次它支持的限额，绝不超出；达到某个限额时暂停供电（SuspendedEVSE），如果 TxStopPoint 含 EnergyTransfer 就结束事务，原因为 CostLimitReached、EnergyLimitReached、TimeLimitReached 或 SoCLimitReached。限额调高后恢复充电。maxSoC 用 EV 模型的 SoC；maxCost 在桩有资费时用自己算的费用，否则用 CSMS 的 totalCost 和 CostUpdated。TxCtrlr.SupportedLimits 列出 persona 支持哪些（默认四个都支持）。离线队列削减时绝不丢弃 LimitSet 和限额事件（E12.FR.04）。
+- **恢复（B13、E17）。** TxCtrlr.ResumptionTimeout 大于 0 时，Reset ImmediateAndResume 和模拟断电（现有的重启和断电操作）会保留每个事务的状态。重启后桩用 TxResumed 恢复事务，回到之前的状态；AllowEnergyTransferResumption 为 false 时回到 SuspendedEVSE；中断超过超时时间就以 PowerLoss 或 Reboot 结束事务。带 evseId 的 Reset 只复位那个 EVSE。
+- **其他变化。** TriggerMessage 的 CustomTrigger（persona 没在 CustomizationCtrlr.CustomTriggers 里列出的触发器回 NotImplemented，列出的就发送 persona 定义的 DataTransfer）；idToken 最长 255 个字符，类型任意；事务中被拒的 idToken 进入 EVConnected 而不是 SuspendedEVSE（E05.FR.09）；cacheExpiryDateTime 和 C10 的 2.1 缓存规则；不发 preconditioningStatus（没有需求用到它），不发 evseSleep（属于 V2X）。
+
+**资费和本地计费（I 块）**
+
+2.1 桩可以按 CSMS 下发的资费自己给会话计价（I07–I12），这是 M7 新建的最大一块行为。它也覆盖 `docs/session-ui.md` 的 R-PRICE-4 和 R-PRICE-5。
+
+- **资费存储。** 每个 EVSE 上存 SetDefaultTariff 下发的默认资费（evseId 0 表示装到每个 EVSE），连同 validFrom 持久保存：生效的是 validFrom 已过的最新那个，进行中的事务继续用它开始时的资费（I07.FR.17–24）。司机资费随 AuthorizeResponse 下发，跟授权缓存条目同生命周期，事务结束或 EVConnectionTimeOut 到期时删除（I08）。ChangeTransactionTariff 从那一刻起替换进行中事务的资费，并发 TariffChanged（I11）。GetTariffs 和 ClearTariffs 查询和删除资费（I09、I10）。状态码照规范：TooManyElements（按维度，对比 TariffCostCtrlr.MaxElements）、ConditionNotSupported、DuplicateTariffId、UnknownEVSE、TxNotFound、NoCurrencyChange。
+- **计算。** `core/src/tariff.ts` 从 M6 的子集扩展到完整的 TariffType：条件（跨午夜的时段、星期、有效日期、EVSE 类型、电量、电流、功率、总时长、充电时长和空闲时长；固定费用的支付品牌和识别方式），每个维度取第一个适用的价格，固定费用在开始时计算一次，预约时长和预约费，叠加税率，结束时的 minCost 和作为上限的 maxCost。时间和电量按秒和按 Wh 分摊；规范没有计费步长或取整规则，所以不做，只在显示时取整。时段和日期按桩的时区算，即 ClockCtrlr.TimeZone（IANA 名称，如 Pacific/Auckland；未设置时为 UTC）。M6 的参考价格用同一个函数计算，所以给桩下发参考资费时，桩上报的就是参考价格。
+- **costDetails。** 适用价格的集合变化或资费变化时开始一个新的计费时段；每个时段带 tariffId，以及 Energy、ChargingTime、IdleTime 和功率或电流维度。Started 以及之后每 Interval[Cost] 秒带上实时费用（按 2025-09 勘误，不带计费时段），没有别的事要报时 triggerReason 为 RunningCost；Ended 带最终费用和全部时段。桩处理不了的资费会把 TariffCostCtrlr.Problem 置位、发 NotifyEvent，并按 HandleFailedTariff 处理（Deauthorize、UseDefaultTariff、CentralCost）。
+- **设备模型。** 带 2.1 变量的 TariffCostCtrlr。有 TariffAndCost 特性的 persona 默认：Tariff 和 Cost 的 Available、Enabled 为 true，RunningCost 开、Interval[Cost] 60 秒，Interval[Tariff] 0，MaxElements 10，ConditionsSupported true，HandleFailedTariff 为 UseDefaultTariff；persona 都可以改。
+- **司机确认。** 真实的桩可能要求司机确认资费。模拟的司机在插枪时隐式接受（桩随后发送一次 tariffId，I07.FR.31）；有行为开关让司机拒绝，这会撤销该 token 的授权，事务进行中则发送 TariffNotAccepted（I07.FR.30）。
+- **显示（I01–I06）。** 桩没有屏幕，但会保存它本该显示的内容：个人消息、兜底消息、实时费用和最终费用。这些放在快照的 `display` 里，场景和 Web UI 可以检查。
+- **规范没说清或自相矛盾的地方的取舍**，记录下来以保证测试结果确定：MaxElements 按一个维度的价格数计；maxCost 把总价精确封顶在 maxCost，而不是晚一个计算周期再冻结；空闲时长按整个事务累计；没有税率时 inclTax 等于 exclTax；HandleFailedTariff 用成员列表里的拼写 UseDefaultTariff。Part 2 I 块 1.3 的算例数字对不上，不用作测试向量；测试用手工核对过的用例。
+
+**支付（C 块）**
+
+桩模拟一个集成的支付终端（C18–C23）和动态二维码（C25）；独立终端和静态二维码（C24、C25）在桩这边只需要带限额的远程启动。
+
+- **终端。** `presentPaymentCard`（API、场景步骤和 Web UI）在某个 EVSE 的终端上刷卡：品牌和识别方式（例如 Visa、Contactless），变成一个 DirectPayment 类型的 idToken，id 是生成的 PspRef，additionalInfo 带上 persona 列出的 PaymentDetails。终端预授权 PaymentCtrlr.AuthorizationAmount；AuthorizeDirectPayment 为 true 时桩发 Authorize，否则本地授权。事务带上 maxCost = 预授权金额（E16），司机可以在开始前或开始后取消（C19、C20），结束时终端按桩算出的最终费用结算，除非 SettlementByCSMS，否则桩发送 NotifySettlement（C21）。行为开关可以让终端拒卡、结算失败（C22）或允许追加授权（C23）。
+- **VAT 号。** 司机可以在结算前输入 VAT 号：桩发送 VatNumberValidation，并把号码和公司信息放进 NotifySettlement。
+- **网页支付（C25）。** 有 WebPaymentsCtrlr 时，每个 EVSE 的虚拟屏幕显示用 URLTemplate 生成的支付链接，带 TOTP 码（v1：对 ValidityTime 时间片做 HMAC-SHA256，base62，Length 个字符），每 ValidityTime 更新一次。NotifyWebPaymentStarted 在超时时间内禁止该 EVSE 本地启动；随后 CSMS 用 RequestStartTransaction 加限额启动事务。内置 CSMS 可以像支付后端一样校验 TOTP 码。
+- 会话跟踪器的 `payment` 启动来源（R-START-1）在终端支付和网页支付时设置，会话保存结算信息。
+
+**智能充电（K 块）**
+
+- M5 的合成曲线模型加入 2.1 的用途和类型：PriorityCharging 激活期间替代 TxProfile 和 TxDefaultProfile（K21 由 CSMS 通过 UsePriorityCharging 触发，K22 由 API 和 Web UI 里的按钮触发；两种情况都发 NotifyPriorityCharging）；LocalGeneration 把它的容量加在合成曲线之上；Dynamic 曲线只有一个时段，由 UpdateDynamicSchedule 替换，或由桩每隔 dynUpdateInterval 用 PullDynamicScheduleUpdate 拉取，超过其 duration 后失效（K28，含勘误）。randomizedDelay、useLocalTime、limitAtSoC 和 maxOfflineDuration 也支持。每一项都由对应的 SmartChargingCtrlr.SupportsFeature 或 SupportedAdditionalPurposes 变量控制，persona 关掉时按 K01.FR.120–126 给的原因码拒绝。
+- ChargingOnly 以外的运行模式、setpoint、放电限值和 EVSE 休眠属于 V2X，用 InvalidOperationMode 拒绝；外部系统给 LocalGeneration 的 ExternalLimits 和 ExternalSetpoint（K27、K29）属于外部限值，和 M5 一样不做。
+
+**ISO 15118-20 车辆数据（K、J 块），只充不放**
+
+- EV 模型的 `communication` 增加 `iso15118-20`。这样的 EV 让桩发送带 2.1 字段的 NotifyEVChargingNeeds：controlMode（默认 ScheduledControl，EV 设置可改为 DynamicControl）、mobilityNeedsMode、带充电数值的 v2xChargingParameters（功率、电流、电压、能量需求、目标 SoC）、离开时间，以及离线时收到需求的 timestamp。NoChargingProfile 表示不会有曲线；Rejected 以 ReqEnergyTransferRejected 结束事务（K18、K19）。需求变化时重新发送（K20）。
+- 对 ISO 15118-20 的 EV，测量量变量里列出时，Display.\* 和 EnergyRequest.\* 从 EV 模型采样（R-EV-4）；有 Display.RemainingTimeToTargetSOC 和 Display.BatteryEnergyCapacity 时，会话估算直接用它们。
+- NotifyAllowedEnergyTransfer 接受并记录；只充不放时没有什么可切换的。
+- 不做：ISO 15118 证书和 Plug & Charge（同 M5）、NotifyEVChargingSchedule 和发给 EV 的价格表、放电。
+
+**安全、配置和诊断（A、B、L、N 块）**
+
+- SignCertificate 带 requestId，CertificateSigned 必须回带（未知的拒绝）；CSR 重发退避在 CertSigningRepeatTimes 次后停止，直到 CSMS 触发新的 CSR（A02、A03）。SecurityCtrlr.AllowSecurityProfileDowngrade 允许从 profile 3 降到 2（A05）。
+- SetNetworkProfile 的 identity 和 basicAuthPassword，以及每个槽位的 NetworkConfiguration 组件，按勘误的校验规则（B09、B10）。
+- 固件和日志状态通知的 statusInfo；GetLog 的 DataCollectorLog 类型；NotifyEvent 的 severity。
+
+**内置 CSMS、Web UI 和工具**
+
+- 内置 CSMS 接受 `ocpp2.1`，应答新的桩消息（NotifySettlement；VatNumberValidation 返回一个测试公司；NotifyPriorityCharging；PullDynamicScheduleUpdate 返回曲线的当前值）。它的控制 API 和场景步骤可以下发资费（把参考资费作为 2.1 资费下发）、在 TransactionEventResponse 里下发事务限额、动态曲线更新、UsePriorityCharging 和 NotifyWebPaymentStarted，也可以在 Authorize 应答里带司机资费。
+- Web UI 加上版本表的 2.1 行（徽标、术语、能力），2.1 桩上的支付终端和优先充电按钮，桩自己算的费用（costDetails）和 CSMS 的费用、参考价格并排显示，会话的限额，虚拟屏幕，以及车辆卡片里的 Display.\* 值。
+- 日志、导出导入、回放、标定和指标带上 `ocpp: 2.1`；回放像处理事务 id 一样映射 tariffId 和 pspRef；用 ocpp-mimic 录制一份合成的 2.1 样例日志。
+- 压测和基准：开启资费的 `load-ac-2.1`，基准 workflow 可选该 persona。
+
+**测试**
+
+- 每个 core 模块有自己的测试；由某条需求驱动的测试，名字里带需求编号。
+- `scenarios/regression/ocpp21-*.yaml`，每个功能块一个文件，按 Part 2 的用例和需求编号命名，对内置 CSMS 运行，每一帧都按 OCA 的 2.1 schema 检查。
+- `scenarios/citrineos/ocpp21-*.yaml` 放 CitrineOS v2.1.0 能驱动的部分，在现有的 CitrineOS workflow 里运行。
+
+**任务**
+
+| 任务 | Issue | 波次 | 依赖 |
+| --- | --- | --- | --- |
+| T93 设计（本节） | #221 | 1 | |
+| T94 core 里的 2.1 消息集 | #222 | 2 | T93 |
+| T95 OCA 2.1 schema 和帧检查 | #223 | 2 | T94 |
+| T96 OCPP-J 2.1：SEND、CALLRESULTERROR、ocpp2.1 | #224 | 2 | T94 |
+| T97 2.1 桩，OcppVersion 2.1 全链路 | #225 | 3 | T96 |
+| T98 设备模型 2.1 | #226 | 3 | T97 |
+| T99 事务 2.1：限额、恢复 | #227 | 4 | T98 |
+| T100 2.1 上的安全和网络配置 | #228 | 4 | T97 |
+| T101 智能充电 2.1 | #229 | 4 | T98 |
+| T102 2.1 上的本地列表、预约、远程控制、配置 | #230 | 4 | T98 |
+| T103 资费和本地计费 | #231 | 5 | T99 |
+| T104 支付 | #232 | 5 | T99 |
+| T105 ISO 15118-20 车辆数据 | #233 | 5 | T99 |
+| T106 内置 CSMS 支持 2.1 | #234 | 5 | T99 |
+| T107 Web UI 支持 2.1 | #235 | 6 | T103、T104、T105 |
+| T108 日志、回放、标定、指标 | #236 | 6 | T99 |
+| T109 压测和基准 | #237 | 6 | T97 |
+| T110 2.1 回归套件 | #238 | 7 | T100–T106 |
+| T111 CitrineOS 2.1 套件 | #239 | 7 | T110 |
+| T112 验收 | #240 | 8 | 全部 |
+
+关键路径是 T93 → T94 → T96 → T97 → T98 → T99 → T103 → T110 → T112。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。
@@ -1385,6 +1546,80 @@ M6 加入了下面所列中的两个：NotifyEVChargingNeeds，为 ISO 15118 车
 
 **不在范围内**：下面的充电桩消息桩从不发送，CSMS 消息回 CALLERROR NotSupported：ClearedChargingLimit、NotifyChargingLimit（外部限值）；Get15118EVCertificate、GetCertificateStatus、NotifyEVChargingSchedule（ISO 15118）；NotifyDisplayMessages、SetDisplayMessage、GetDisplayMessages、ClearDisplayMessage（Advanced User Interface）；NotifyMonitoringReport、SetVariableMonitoring、ClearVariableMonitoring、SetMonitoringBase、SetMonitoringLevel、GetMonitoringReport（监控）；PublishFirmware、UnpublishFirmware、PublishFirmwareStatusNotification（本地控制器）。
 
+## OCPP 2.1 覆盖范围
+
+计划在 M7 实现（见「M7 OCPP 2.1」），每行注明实现它的 M7 任务。功能块指 Part 2 的功能块。2.1 桩对范围内的 CSMS action 按表中所列应答，对范围外的回 CALLERROR NotSupported，对根本不属于 2.1 的 action 回 NotImplemented。
+
+**充电桩 → CSMS**（37 个里 21 个在范围内）
+
+| 消息 | 功能块 | 2.1 新增 | M7 是否包含 | 任务 |
+| --- | --- | --- | --- | --- |
+| Authorize | C | 开放的 idToken 类型、DirectPayment；应答里的 tariff 和 allowedEnergyTransfer | 是 | T97、T103、T104 |
+| BootNotification | B | | 是 | T97 |
+| DataTransfer | P | | 是 | T102 |
+| FirmwareStatusNotification | L | statusInfo | 是 | T100 |
+| Heartbeat | G | | 是 | T97 |
+| LogStatusNotification | N | statusInfo | 是 | T100 |
+| MeterValues | J | Upstream 位置、新测量量 | 是 | T97、T105 |
+| NotifyCustomerInformation | N | | 是 | T102 |
+| NotifyEVChargingNeeds | K | 2.1 充电需求（ISO 15118-20） | 是 | T105 |
+| NotifyEvent | N、G | severity；连接器可用性 | 是 | T97 |
+| NotifyPriorityCharging | K | 新增 | 是 | T101 |
+| NotifyReport | B | maxElements | 是 | T98 |
+| NotifySettlement | C | 新增 | 是 | T104 |
+| PullDynamicScheduleUpdate | K | 新增 | 是 | T101 |
+| ReportChargingProfiles | K | 2.1 曲线字段 | 是 | T101 |
+| ReservationStatusUpdate | H | NoTransaction | 是 | T102 |
+| SecurityEventNotification | A | | 是 | T100 |
+| SignCertificate | A | requestId、hashRootCertificate | 是 | T100 |
+| StatusNotification | G | | 是 | T97 |
+| TransactionEvent | E | costDetails、限额、新原因、预处理、EVSE 休眠 | 是 | T99、T103 |
+| VatNumberValidation | C | 新增 | 是 | T104 |
+| ClearedChargingLimit、NotifyChargingLimit | K | | 否（外部限值，同 M5） | |
+| Get15118EVCertificate、GetCertificateStatus、GetCertificateChainStatus | M | GetCertificateChainStatus 新增 | 否（ISO 15118 证书） | |
+| NotifyEVChargingSchedule | K | | 否（ISO 15118） | |
+| NotifyDisplayMessages | O | | 否 | |
+| NotifyMonitoringReport、OpenPeriodicEventStream、ClosePeriodicEventStream、NotifyPeriodicEventStream | N | 事件流新增 | 否（监控） | |
+| PublishFirmwareStatusNotification | L | | 否（本地控制器） | |
+| NotifyDERAlarm、NotifyDERStartStop、ReportDERControl | R | 新增 | 否（DER 控制） | |
+| BatterySwap | S | 新增 | 否（换电） | |
+
+**CSMS → 充电桩**（55 个里 38 个在范围内）
+
+| 消息 | 功能块 | 2.1 新增 | M7 是否包含 | 任务 |
+| --- | --- | --- | --- | --- |
+| CancelReservation、ReserveNow | H | 开放的 idToken 和连接器类型 | 是 | T102 |
+| CertificateSigned | A | requestId | 是 | T100 |
+| ChangeAvailability | G | | 是 | T97 |
+| ChangeTransactionTariff | I | 新增 | 是 | T103 |
+| ClearCache | C | | 是 | T102 |
+| ClearChargingProfile、GetChargingProfiles、GetCompositeSchedule、SetChargingProfile | K | Dynamic 类型、新用途和时段字段 | 是 | T101 |
+| ClearTariffs、GetTariffs、SetDefaultTariff | I | 新增 | 是 | T103 |
+| CostUpdated | I | | 是 | T103 |
+| CustomerInformation | N | | 是 | T102 |
+| DataTransfer | P | | 是 | T102 |
+| DeleteCertificate、GetInstalledCertificateIds、InstallCertificate | M | 新证书类型 | 是 | T100 |
+| GetBaseReport、GetReport、GetVariables、SetVariables | B | | 是 | T98 |
+| GetLocalListVersion、SendLocalList | D | 开放的 idToken 类型 | 是 | T102 |
+| GetLog | N | DataCollectorLog | 是 | T100 |
+| GetTransactionStatus | E | | 是 | T99 |
+| NotifyAllowedEnergyTransfer | Q | 新增 | 是：接受并记录（只充不放） | T105 |
+| NotifyWebPaymentStarted | C | 新增 | 是 | T104 |
+| RequestStartTransaction | F | 开放的 idToken 类型；限额在对 Started 的应答里下发（F07） | 是 | T99、T102 |
+| RequestStopTransaction | F | | 是 | T102 |
+| Reset | B | ImmediateAndResume | 是 | T99 |
+| SetNetworkProfile | B | basicAuthPassword、identity | 是 | T100 |
+| TriggerMessage | F | customTrigger | 是 | T102 |
+| UnlockConnector | F | | 是 | T102 |
+| UpdateDynamicSchedule、UsePriorityCharging | K | 新增 | 是 | T101 |
+| UpdateFirmware | L | | 是 | T100 |
+| ClearDisplayMessage、GetDisplayMessages、SetDisplayMessage | O | | 否 | |
+| ClearVariableMonitoring、GetMonitoringReport、SetMonitoringBase、SetMonitoringLevel、SetVariableMonitoring、AdjustPeriodicEventStream、GetPeriodicEventStream | N | 事件流新增 | 否（监控） | |
+| PublishFirmware、UnpublishFirmware | L | | 否（本地控制器） | |
+| AFRRSignal | Q | 新增 | 否（V2X） | |
+| ClearDERControl、GetDERControl、SetDERControl | R | 新增 | 否（DER 控制） | |
+| RequestBatterySwap | S | 新增 | 否（换电） | |
+
 ## 分阶段路线图
 
 ```mermaid
@@ -1401,7 +1636,9 @@ flowchart TB
   G5{{"出口：覆盖的 profile 的每个 2.0.1 场景在 CI 里对 CitrineOS 通过"}}
   M6["<b>M6 · 充电会话</b><br/>会话视图：启动来源和时间线、版本、会话日志<br/>电量和充满时间（推算 vs 真值）、各版本车辆信息、参考价"]
   G6{{"出口：1.6 和 2.0.1 的会话对内置 CSMS、SteVe 和 CitrineOS 显示正确的来源和时间线；推算值和价格经得起核对"}}
-  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6
+  M7["<b>M7 · OCPP 2.1</b><br/>在 2.0.1 适配层上做 2.1：SEND、CALLRESULTERROR、Device Model 2.1<br/>资费和本地计费、支付、事务限额和恢复、动态和优先充电、ISO 15118-20 充电需求"]
+  G7{{"出口：覆盖的功能块的每个 2.1 场景在 CI 里对内置 CSMS 和 CitrineOS 通过"}}
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7
 ```
 
 每个阶段以一条出口标准收尾，达标后再进入下一阶段。M4 的具体阈值见「M4 规模」，可以按实际需求调整。
