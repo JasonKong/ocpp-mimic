@@ -223,3 +223,40 @@ describe('session estimates', () => {
     expect(estimateGap(estimateSession(base()), truth)).toBeUndefined();
   });
 });
+
+describe('estimates from ISO 15118-20 values', () => {
+  it("take the EV's capacity, target and remaining time when it reports them", () => {
+    const record = base();
+    record.ocpp = '2.1';
+    record.chargingNeeds = { v2xChargingParameters: { targetSoC: 85 } };
+    record.samples.push(
+      { at: iso(T0), seq: 1, energyWh: 0, powerW: 11_000, socPercent: 30 },
+      {
+        at: iso(T0 + 60_000),
+        seq: 2,
+        energyWh: 183,
+        powerW: 11_000,
+        socPercent: 30,
+        vehicle: {
+          'Display.BatteryEnergyCapacity': 60_000,
+          'Display.TargetSOC': 80,
+          'Display.RemainingTimeToTargetSOC': 9000,
+        },
+      },
+    );
+    expect(estimateSession(record)).toMatchObject({
+      capacityWh: 60_000,
+      capacityFrom: 'display',
+      targetSoc: 80,
+      targetFrom: 'display',
+      msToTarget: 9_000_000,
+      etaAt: iso(T0 + 60_000 + 9_000_000),
+      etaFrom: 'display',
+    });
+    // Without Display values: the target from the charging needs, the ETA worked out.
+    const plain = base();
+    plain.chargingNeeds = { v2xChargingParameters: { targetSoC: 85 } };
+    plain.samples.push({ at: iso(T0), seq: 1, energyWh: 0, powerW: 11_000, socPercent: 30 });
+    expect(estimateSession(plain)).toMatchObject({ targetSoc: 85, targetFrom: 'chargingNeeds' });
+  });
+});

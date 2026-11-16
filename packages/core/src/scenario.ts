@@ -136,6 +136,13 @@ export type ScenarioStep =
       result?: 'authorized' | 'declined' | 'rejected' | 'busy';
     })
   | (ActionBase & {
+      kind: 'changeEvNeeds';
+      connector: number;
+      /** The EV's new target SoC, departure or minimum SoC (K20). */
+      changes: { targetSoc?: number; departureMinutes?: number; minimumSoc?: number };
+      result?: 'reported' | 'changed';
+    })
+  | (ActionBase & {
       kind: 'stopPayment';
       connector: number;
       result?: 'canceled' | 'stopping';
@@ -483,6 +490,18 @@ const ARGUMENTS = {
     },
   ),
   stopPayment: object({}, { connector, evse, result: oneOf(['canceled', 'stopping']), ...action }),
+  changeEvNeeds: object(
+    {},
+    {
+      connector,
+      evse,
+      targetSoc: number(),
+      departureMinutes: number(),
+      minimumSoc: number(),
+      result: oneOf(['reported', 'changed']),
+      ...action,
+    },
+  ),
   validateVat: object(
     { vatNumber: nonEmpty },
     { evse, result: oneOf(['Accepted', 'Rejected']), ...action },
@@ -815,6 +834,24 @@ function parseStep(
         ] as const),
         ...pick(args, ['result'] as const),
       } as ScenarioStep;
+    case 'changeEvNeeds': {
+      const changes = pick(args, ['targetSoc', 'departureMinutes', 'minimumSoc'] as const);
+      if (Object.keys(changes).length === 0) {
+        issues.push({
+          path: at,
+          errorCode: 'OccurenceConstraintViolation',
+          message: 'nothing to change (targetSoc, departureMinutes or minimumSoc)',
+        });
+        return undefined;
+      }
+      return {
+        kind: argsKind,
+        ...base,
+        connector: connectorId,
+        changes,
+        ...pick(args, ['result'] as const),
+      } as ScenarioStep;
+    }
     case 'stopPayment':
       return {
         kind: argsKind,
@@ -1221,6 +1258,8 @@ export function stepLabel(step: ScenarioStep): string {
       return `${at}presentPaymentCard ${step.card.brand ?? 'Visa'} at EVSE ${step.connector}`;
     case 'stopPayment':
       return `${at}stopPayment at EVSE ${step.connector}`;
+    case 'changeEvNeeds':
+      return `${at}changeEvNeeds at connector ${step.connector}`;
     case 'validateVat':
       return `${at}validateVat ${step.vatNumber}${step.evse !== undefined ? ` for EVSE ${step.evse}` : ''}`;
     case 'fault':

@@ -13,6 +13,7 @@
  */
 
 import type { OcppVersion } from './message-set.js';
+import { VEHICLE_MEASURANDS, type VehicleReadings } from './ocpp21/iso15118-20.js';
 /**
  * How a session started: a card at the station, a remote start, no
  * authorization, or an ad hoc payment (2.1: an idToken of type DirectPayment,
@@ -87,6 +88,8 @@ export interface ReportedSample {
   socPercent?: number;
   currentA?: Partial<Record<Phase, number>>;
   voltageV?: Partial<Record<Phase, number>>;
+  /** 2.1: what an ISO 15118-20 EV reported (Display.* and EnergyRequest.*; Wh, s, percent). */
+  vehicle?: VehicleReadings;
 }
 
 /** The simulator's ground truth at a moment, from the EV model. */
@@ -299,6 +302,16 @@ export function meterSamples(meterValue: unknown, seq: number): ReportedSample[]
         case 'Voltage':
           sample.voltageV = { ...sample.voltageV, [phase ?? 'L1']: scaled };
           break;
+        default: {
+          const measurand = str(value.measurand) ?? '';
+          if (!(VEHICLE_MEASURANDS as readonly string[]).includes(measurand)) break;
+          sample.vehicle = {
+            ...sample.vehicle,
+            [measurand]: unit === 'kWh' ? scaled * 1000 : scaled,
+          };
+          // The SoC the EV shows is its SoC, when SoC itself is not sampled.
+          if (measurand === 'Display.PresentSOC') sample.socPercent ??= scaled;
+        }
       }
     }
     samples.push(sample);

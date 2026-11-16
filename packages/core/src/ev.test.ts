@@ -6,7 +6,9 @@ import {
   evPowerW,
   evProfileProblems,
   msUntilFull,
+  msUntilSoc,
   reportsSoc,
+  speaksIso15118,
   TAPER_FLOOR,
   type EvProfile,
 } from './ev.js';
@@ -130,7 +132,7 @@ describe('EV model', () => {
     ]);
     expect(() => createEv({ ...SMALL, capacityKWh: 0 })).toThrow(RangeError);
     expect(evProfileProblems({ ...SMALL, communication: 'wifi' as 'dc' })).toEqual([
-      'communication must be one of basic, dc, iso15118',
+      'communication must be one of basic, dc, iso15118, iso15118-20',
     ]);
   });
 
@@ -181,5 +183,40 @@ describe('EV model', () => {
       ],
     });
     expect(sampleMeter(meter, 0, ['SoC'], 'Sample.Periodic')).toBeUndefined();
+  });
+});
+
+describe('ISO 15118-20 EVs', () => {
+  it('reach any SoC at the moment msUntilSoc predicts, before and in the taper', () => {
+    const ev = createEv(SMALL);
+    // 20 % to 50 % of 10 kWh at 7400 W: 3 kWh, 0.4054 h.
+    expect(msUntilSoc(ev, 7400, 50)).toBe(Math.ceil((3000 / 7400) * HOUR));
+    expect(msUntilSoc(ev, 7400, 100)).toBe(msUntilFull(ev, 7400));
+    for (const goal of [50, 85, 95]) {
+      const ms = msUntilSoc(ev, 7400, goal) ?? NaN;
+      expect(advanceEv(ev, 7400, ms).ev.soc).toBeCloseTo(goal, 3);
+    }
+    // Under a 3 kW limit the EV takes 3 kW until its taper falls below it.
+    const limited = msUntilSoc(ev, 3000, 90) ?? NaN;
+    expect(advanceEv(ev, 3000, limited).ev.soc).toBeCloseTo(90, 3);
+    expect(msUntilSoc(ev, 7400, 10)).toBe(0);
+    expect(msUntilSoc(ev, 0, 50)).toBeUndefined();
+  });
+
+  it('speak ISO 15118 and check their control mode and minimum SoC', () => {
+    expect(speaksIso15118({ ...SMALL, communication: 'iso15118-20' })).toBe(true);
+    expect(speaksIso15118({ ...SMALL, communication: 'dc' })).toBe(false);
+    expect(reportsSoc({ ...SMALL, communication: 'iso15118-20' })).toBe(true);
+    expect(
+      evProfileProblems({
+        ...SMALL,
+        targetSoc: 80,
+        minimumSoc: 90,
+        controlMode: 'Sometimes' as 'DynamicControl',
+      }),
+    ).toEqual([
+      'controlMode must be one of ScheduledControl, DynamicControl',
+      'minimumSoc must be between 0 and targetSoc',
+    ]);
   });
 });

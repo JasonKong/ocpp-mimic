@@ -655,6 +655,33 @@ const routes: Route[] = [
   ),
   route(
     'POST',
+    '/api/stations/:param/connectors/:param/ev-needs',
+    connectorAction((s, c, body) => {
+      // The driver or the EV changes the target or the departure (K20 for ISO 15118-20).
+      if (s.chargePoint.ocpp === '1.6') {
+        throw new HttpError(404, `station ${s.id} speaks OCPP 1.6, without charging needs`);
+      }
+      const changes: { targetSoc?: number; departureMinutes?: number; minimumSoc?: number } = {};
+      for (const name of ['targetSoc', 'departureMinutes', 'minimumSoc'] as const) {
+        if (body[name] === undefined) continue;
+        if (typeof body[name] !== 'number') throw new HttpError(400, `"${name}" must be a number`);
+        changes[name] = body[name];
+      }
+      if (Object.keys(changes).length === 0) {
+        throw new HttpError(400, 'give targetSoc, departureMinutes or minimumSoc');
+      }
+      let result: string;
+      try {
+        result = (s.chargePoint as ChargePoint201).changeEvNeeds(c, changes);
+      } catch (error) {
+        throw new HttpError(400, error instanceof Error ? error.message : String(error));
+      }
+      if (result === 'no-ev') throw new HttpError(409, `no EV on connector ${c}`);
+      return { result, station: s.snapshot() };
+    }),
+  ),
+  route(
+    'POST',
     '/api/stations/:param/connectors/:param/payment',
     connectorAction(async (s, c, body) => {
       // A card at the EVSE's payment terminal on a 2.1 station (C18): how the PSP

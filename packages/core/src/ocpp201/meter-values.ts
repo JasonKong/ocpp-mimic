@@ -3,7 +3,12 @@
  * values and a unitOfMeasure instead of strings and a unit.
  */
 import { sampleMeter, type MeterState, type SampleExtras } from '../meter.js';
-import type { MeterValueType, ReadingContextEnumType, SampledValueType } from './messages.js';
+import { vehicleSampledValues, type VehicleReadings } from '../ocpp21/iso15118-20.js';
+import type {
+  MeterValueType,
+  ReadingContextEnumType,
+  SampledValueType,
+} from '../ocpp21/messages.js';
 
 /**
  * One MeterValue at `now` with the supported measurands of `measurands` (a
@@ -14,15 +19,19 @@ export function sampleMeter201(
   now: number,
   measurands: string,
   context: ReadingContextEnumType,
-  extras: SampleExtras = {},
+  extras: SampleExtras & {
+    /** 2.1: an ISO 15118-20 EV's values for the Display.* and EnergyRequest.* measurands. */
+    vehicle?: VehicleReadings;
+  } = {},
 ): MeterValueType | undefined {
   const list = measurands
     .split(',')
     .map((m) => m.trim())
     .filter((m) => m !== '');
   const sample = sampleMeter(meter, now, list, context, extras);
-  if (sample === undefined) return undefined;
-  const values = sample.sampledValue.map((v): SampledValueType => ({
+  const vehicle =
+    extras.vehicle === undefined ? [] : vehicleSampledValues(extras.vehicle, list, context);
+  const values = (sample?.sampledValue ?? []).map((v): SampledValueType => ({
     value: Number(v.value),
     ...(v.context !== undefined && { context: v.context }),
     // The meter only samples measurands both versions have.
@@ -33,7 +42,10 @@ export function sampleMeter201(
     ...(v.location !== undefined && { location: v.location }),
     ...(v.unit !== undefined && { unitOfMeasure: { unit: v.unit } }),
   }));
-  const [first, ...rest] = values;
+  const [first, ...rest] = [...values, ...vehicle];
   if (first === undefined) return undefined;
-  return { timestamp: sample.timestamp, sampledValue: [first, ...rest] };
+  return {
+    timestamp: sample?.timestamp ?? new Date(now).toISOString(),
+    sampledValue: [first, ...rest],
+  };
 }

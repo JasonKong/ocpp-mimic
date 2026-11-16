@@ -6,7 +6,7 @@ const T0 = Date.parse('2026-11-15T10:00:00Z');
 const at = (m: number) => new Date(T0 + m * 60_000).toISOString();
 
 function detail(
-  ocpp: '1.6' | '2.0.1',
+  ocpp: '1.6' | '2.0.1' | '2.1',
   extra: Partial<SessionDetail['session']> = {},
   estimate: Partial<SessionDetail['estimate']> = {},
 ): SessionDetail {
@@ -134,6 +134,50 @@ describe('vehicle card rows', () => {
     expect(plain.capacity?.missing).toBe('not reported by this station or EV');
     expect(plain.timeToTarget?.missing).toBe('not in this version');
     expect(plain.capacity?.truth).toBeUndefined();
+  });
+
+  it('shows what an ISO 15118-20 EV reports over 2.1 as reported values', () => {
+    const twenty = detail('2.1', {
+      chargingNeeds: {
+        requestedEnergyTransfer: 'AC_three_phase',
+        controlMode: 'ScheduledControl',
+        v2xChargingParameters: {
+          minChargePower: 4140,
+          maxChargePower: 11_000,
+          evTargetEnergyRequest: 30_000,
+          targetSoC: 80,
+        },
+      },
+      samples: [
+        {
+          at: at(10),
+          seq: 9,
+          energyWh: 1800,
+          socPercent: 33,
+          vehicle: {
+            'Display.BatteryEnergyCapacity': 60_000,
+            'Display.TargetSOC': 80,
+            'Display.RemainingTimeToTargetSOC': 5400,
+            'EnergyRequest.Target': 28_200,
+          },
+        },
+      ],
+    });
+    const rows = byField(vehicleRows(twenty, '2.1', EV));
+    expect(rows.capacity?.values).toEqual([
+      { text: '60.00 kWh (Display)', source: 'reported', seq: 9 },
+    ]);
+    expect(rows.energyNeeded?.values.map((v) => v.text)).toEqual([
+      '30.00 kWh at the start',
+      '28.20 kWh left (EnergyRequest)',
+    ]);
+    expect(rows.targetSoc?.values).toEqual([
+      { text: '80 % (Display)', source: 'reported', seq: 9 },
+    ]);
+    expect(rows.timeToTarget?.values).toEqual([
+      { text: '1 h 30 min (Display)', source: 'reported', seq: 9 },
+    ]);
+    expect(rows.evLimits?.values[0]?.text).toBe('4.1 kW–11.0 kW');
   });
 
   it('shows times to the target in wall-clock time under an energy multiplier', () => {

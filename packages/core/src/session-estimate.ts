@@ -10,6 +10,7 @@
  * ETA, a moment, so they compare whenever each was computed.
  */
 import { TAPER_FLOOR } from './ev.js';
+import type { VehicleMeasurand } from './ocpp21/iso15118-20.js';
 import type { ReportedSample, SessionRecord } from './session.js';
 
 /** SoC must rise this many points before the capacity is worked out from readings. */
@@ -30,9 +31,10 @@ export interface SessionEstimate {
   /** The SoC now, worked out from the energy since the reported SoC last went up. */
   refinedSocPercent?: number;
   capacityWh?: number;
-  capacityFrom?: 'chargingNeeds' | 'readings';
+  /** ISO 15118 charging needs, an ISO 15118-20 EV's Display.BatteryEnergyCapacity, or the readings. */
+  capacityFrom?: 'chargingNeeds' | 'display' | 'readings';
   targetSoc: number;
-  targetFrom: 'chargingNeeds' | 'default';
+  targetFrom: 'chargingNeeds' | 'display' | 'default';
   taperSoc: number;
   /** The power the estimate charges with: the latest reported, else the average of the last 5 minutes. */
   powerW?: number;
@@ -40,6 +42,8 @@ export interface SessionEstimate {
   msToTarget?: number;
   /** When the target will be reached. */
   etaAt?: string;
+  /** The EV's own Display.RemainingTimeToTargetSOC (ISO 15118-20), or worked out here. */
+  etaFrom?: 'display' | 'estimate';
   departureTime?: string;
   reachesTargetBeforeDeparture?: boolean;
   /** Why something could not be estimated. */
@@ -182,17 +186,35 @@ export function hoursToTarget(
   return hours;
 }
 
+/** The latest value an ISO 15118-20 EV reported for a measurand, with its sample. */
+function reported(
+  record: SessionRecord,
+  measurand: VehicleMeasurand,
+): { value: number; at: string } | undefined {
+  const sample = [...record.samples].reverse().find((s) => s.vehicle?.[measurand] !== undefined);
+  const value = sample?.vehicle?.[measurand];
+  return sample === undefined || value === undefined ? undefined : { value, at: sample.at };
+}
+
 /** The third party's view: capacity, target and ETA from the reported values only. */
 export function estimateSession(record: SessionRecord): SessionEstimate {
   const dc = dcParameters(record);
+  const v2x = record.chargingNeeds?.v2xChargingParameters;
   const fullSoc = num(dc?.fullSoC);
   const bulkSoc = num(dc?.bulkSoC);
-  const targetSoc = fullSoc ?? 100;
+  const displayTarget = reported(record, 'Display.TargetSOC')?.value;
+  const needsTarget = fullSoc ?? (isObject(v2x) ? num(v2x.targetSoC) : undefined);
+  const targetSoc = displayTarget ?? needsTarget ?? 100;
   const taperSoc = bulkSoc !== undefined && bulkSoc < targetSoc ? bulkSoc : Math.min(80, targetSoc);
   const departure = record.chargingNeeds?.departureTime;
   const estimate: SessionEstimate = {
     targetSoc,
-    targetFrom: fullSoc === undefined ? 'default' : 'chargingNeeds',
+    targetFrom:
+      displayTarget !== undefined
+        ? 'display'
+        : needsTarget === undefined
+          ? 'default'
+          : 'chargingNeeds',
     taperSoc,
     ...(typeof departure === 'string' && { departureTime: departure }),
   };
@@ -202,10 +224,16 @@ export function estimateSession(record: SessionRecord): SessionEstimate {
   estimate.at = latest.at;
 
   const fromNeeds = num(dc?.evEnergyCapacity);
-  const capacityWh = fromNeeds ?? capacityFromReadings(record.samples);
+  const fromDisplay = reported(record, 'Display.BatteryEnergyCapacity')?.value;
+  const capacityWh = fromNeeds ?? fromDisplay ?? capacityFromReadings(record.samples);
   if (capacityWh !== undefined) {
     estimate.capacityWh = capacityWh;
-    estimate.capacityFrom = fromNeeds === undefined ? 'readings' : 'chargingNeeds';
+    estimate.capacityFrom =
+      fromNeeds !== undefined
+        ? 'chargingNeeds'
+        : fromDisplay !== undefined
+          ? 'display'
+          : 'readings';
   }
   if (latest.socPercent >= targetSoc) {
     return {
@@ -222,11 +250,20 @@ export function estimateSession(record: SessionRecord): SessionEstimate {
   estimate.energyLeftWh = (Math.max(0, targetSoc - soc) / 100) * capacityWh;
 
   const powerW = recentPowerW(record.samples);
-  if (powerW === undefined || powerW <= 0) return { ...estimate, reason: 'no power' };
-  estimate.powerW = powerW;
-  const ms = Math.round(hoursToTarget(capacityWh, soc, powerW, taperSoc, targetSoc) * 3_600_000);
-  estimate.msToTarget = ms;
-  estimate.etaAt = iso(Date.parse(latest.at) + ms);
+  if (powerW !== undefined && powerW > 0) estimate.powerW = powerW;
+  // An ISO 15118-20 EV says how long it still needs, from when it said it.
+  const remaining = reported(record, 'Display.RemainingTimeToTargetSOC');
+  if (remaining !== undefined && Date.parse(remaining.at) >= Date.parse(latest.at)) {
+    estimate.msToTarget = remaining.value * 1000;
+    estimate.etaAt = iso(Date.parse(remaining.at) + estimate.msToTarget);
+    estimate.etaFrom = 'display';
+  } else {
+    if (powerW === undefined || powerW <= 0) return { ...estimate, reason: 'no power' };
+    const ms = Math.round(hoursToTarget(capacityWh, soc, powerW, taperSoc, targetSoc) * 3_600_000);
+    estimate.msToTarget = ms;
+    estimate.etaAt = iso(Date.parse(latest.at) + ms);
+    estimate.etaFrom = 'estimate';
+  }
   if (estimate.departureTime !== undefined) {
     estimate.reachesTargetBeforeDeparture =
       Date.parse(estimate.etaAt) <= Date.parse(estimate.departureTime);
