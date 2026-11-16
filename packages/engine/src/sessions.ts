@@ -22,6 +22,7 @@ import {
   type SessionTracker,
   type SessionTruth,
   type EstimateGap,
+  type OcppVersion,
 } from '@ocpp-mimic/core';
 import type { FrameRecord } from './recorder.js';
 import type { StateStore } from './state-store.js';
@@ -80,7 +81,7 @@ export interface SessionServiceOptions {
   /** Sessions kept per station. Default 20. */
   perStation?: number;
   /** A station's OCPP version and snapshot; undefined once it is gone. */
-  station: (id: string) => { ocpp: '1.6' | '2.0.1'; snapshot(): ChargePointSnapshot } | undefined;
+  station: (id: string) => { ocpp: OcppVersion; snapshot(): ChargePointSnapshot } | undefined;
   now?: () => number;
   /** How long a running session's changes wait before they are saved. Default 30 s. */
   saveEveryMs?: number;
@@ -381,7 +382,9 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
 
   return {
     frame(record) {
-      if (record.messageType === undefined) return;
+      // Sessions follow CALLs and their answers; 2.1's SEND and CALLRESULTERROR carry none.
+      const { messageType } = record;
+      if (messageType === undefined || messageType === 5 || messageType === 6) return;
       const tracker = trackerOf(record.stationId);
       if (tracker === undefined) return;
       if (record.action === 'Authorize') {
@@ -397,7 +400,7 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
         seq: record.seq,
         at: record.at,
         direction: record.direction,
-        messageType: record.messageType,
+        messageType,
         ...(record.uniqueId !== undefined && { uniqueId: record.uniqueId }),
         ...(record.action !== undefined && { action: record.action }),
         ...(record.payload !== undefined && { payload: record.payload }),

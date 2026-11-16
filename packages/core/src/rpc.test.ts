@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { ManualClock } from './clock.js';
 import { sequentialIds } from './ids.js';
-import { OCPP201_MESSAGE_SET, type Ocpp201RpcTypes } from './message-set.js';
+import {
+  OCPP201_MESSAGE_SET,
+  OCPP21_MESSAGE_SET,
+  type Ocpp201RpcTypes,
+  type Ocpp21RpcTypes,
+} from './message-set.js';
 import { createRpc, type CsmsHandlers, type RpcEvent, type RpcHandlers } from './rpc.js';
 
 const BOOT = { chargePointVendor: 'VendorX', chargePointModel: 'AC-7' };
@@ -280,5 +285,112 @@ describe('an OCPP 2.0.1 message set', () => {
     rpc.receive('[7,"c1","Heartbeat",{}]');
     await flush();
     expect(sent).toEqual([]);
+  });
+});
+
+describe('an OCPP 2.1 message set (OCPP-J 2.1)', () => {
+  function setup21(handlers: RpcHandlers<Ocpp21RpcTypes> = {}) {
+    const clock = new ManualClock();
+    const sent: unknown[] = [];
+    const events: RpcEvent[] = [];
+    const rpc = createRpc<Ocpp21RpcTypes>({
+      clock,
+      ids: sequentialIds('m'),
+      send: (text) => sent.push(JSON.parse(text)),
+      messages: OCPP21_MESSAGE_SET,
+      handlers,
+      onEvent: (event) => events.push(event),
+    });
+    return { rpc, sent, events };
+  }
+
+  it('answers an invalid CALLRESULT with a CALLRESULTERROR and fails the call', async () => {
+    const { rpc, sent } = setup21();
+    const outcome = rpc.call('Heartbeat', {});
+    rpc.receive('[3,"m1",{"currentTime":"yesterday"}]');
+    expect(await outcome).toMatchObject({ ok: false, failure: { kind: 'InvalidResponse' } });
+    expect(heads(sent, 3)).toEqual([
+      [2, 'm1', 'Heartbeat'],
+      [5, 'm1', 'PropertyConstraintViolation'],
+    ]);
+  });
+
+  it('only reports a CALLRESULTERROR the CSMS sends about our answer', async () => {
+    const { rpc, sent, events } = setup21({ ClearCache: () => ({ status: 'Accepted' }) });
+    rpc.receive('[2,"c1","ClearCache",{}]');
+    await flush();
+    rpc.receive('[5,"c1","FormatViolation","cannot read it",{}]');
+    expect(heads(sent, 2)).toEqual([[3, 'c1']]);
+    expect(events).toContainEqual({
+      type: 'call-result-error',
+      id: 'c1',
+      errorCode: 'FormatViolation',
+      errorDescription: 'cannot read it',
+    });
+  });
+
+  it('sends a SEND at once, even while a CALL waits for its answer', async () => {
+    const { rpc, sent } = setup21();
+    void rpc.call('Heartbeat', {});
+    const stream = {
+      id: 1,
+      pending: 0,
+      basetime: '2026-11-16T10:00:00Z',
+      data: [{ t: 0, v: '230.4' }],
+    };
+    expect(rpc.send('NotifyPeriodicEventStream', stream)).toBe(true);
+    expect(sent).toEqual([
+      [2, 'm1', 'Heartbeat', {}],
+      [6, 'm2', 'NotifyPeriodicEventStream', stream],
+    ]);
+    // Only unconfirmed actions go as SEND, and only valid ones.
+    expect(rpc.send('Heartbeat' as never, {} as never)).toBe(false);
+    expect(rpc.send('NotifyPeriodicEventStream', { id: 1 } as never)).toBe(false);
+    rpc.close();
+    expect(rpc.send('NotifyPeriodicEventStream', stream)).toBe(false);
+    expect(sent).toHaveLength(2);
+  });
+
+  it('never answers a received SEND, and reports one it drops', async () => {
+    const { rpc, sent, events } = setup21();
+    rpc.receive(
+      '[6,"s1","NotifyPeriodicEventStream",{"id":1,"pending":0,"basetime":"2026-11-16T10:00:00Z","data":[{"t":0,"v":"1"}]}]',
+    );
+    rpc.receive('[6,"s2","Heartbeat",{}]');
+    rpc.receive('[6,"s3"]');
+    await flush();
+    expect(sent).toEqual([]);
+    expect(events.filter((e) => e.type === 'send-dropped')).toEqual([
+      {
+        type: 'send-dropped',
+        action: 'NotifyPeriodicEventStream',
+        message: 'no handler for NotifyPeriodicEventStream',
+      },
+      {
+        type: 'send-dropped',
+        action: 'Heartbeat',
+        message: 'Heartbeat is not an unconfirmed action',
+      },
+    ]);
+  });
+
+  it('has no SEND or CALLRESULTERROR in 2.0.1', async () => {
+    const clock = new ManualClock();
+    const sent: unknown[] = [];
+    const rpc = createRpc<Ocpp201RpcTypes>({
+      clock,
+      ids: sequentialIds('m'),
+      send: (text) => sent.push(JSON.parse(text)),
+      messages: OCPP201_MESSAGE_SET,
+    });
+    const outcome = rpc.call('Heartbeat', {});
+    rpc.receive('[3,"m1",{"currentTime":"yesterday"}]');
+    expect(await outcome).toMatchObject({ ok: false, failure: { kind: 'InvalidResponse' } });
+    rpc.receive('[6,"s1","NotifyPeriodicEventStream",{}]');
+    await flush();
+    expect(heads(sent, 3)).toEqual([
+      [2, 'm1', 'Heartbeat'],
+      [4, 's1', 'MessageTypeNotSupported'],
+    ]);
   });
 });

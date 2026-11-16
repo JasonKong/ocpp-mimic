@@ -12,10 +12,11 @@
  * Ended. A start that never becomes a transaction ends as not-started.
  */
 
+import type { OcppVersion } from './message-set.js';
 export type SessionSource = 'local' | 'remote' | 'noAuth';
 export type SessionState = 'starting' | 'running' | 'finished' | 'not-started';
 export type StartFailure = 'Rejected' | 'NotAuthorized' | 'ConnectionTimeout' | 'StartFailed';
-export type SessionOcpp = '1.6' | '2.0.1';
+export type SessionOcpp = OcppVersion;
 export type SessionFrameDirection = 'cp-to-csms' | 'csms-to-cp';
 export type ChargingStateLabel = 'charging' | 'suspendedEV' | 'suspendedEVSE' | 'idle';
 export type Phase = 'L1' | 'L2' | 'L3';

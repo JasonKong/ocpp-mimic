@@ -1247,6 +1247,7 @@ M7 确定（#221）。M7 在同一个引擎里、在 1.6J 和 2.0.1 旁边加上
 - **CALLRESULTERROR (5)**，对无法处理的 CALLRESULT 的错误应答，messageId 用那个 CALLRESULT 的，其余是 CALLERROR 的五个元素。2.1 桩收到校验不通过的 CALLRESULT 时，回一个 CALLRESULTERROR（FormatViolation、OccurrenceConstraintViolation 等，和对 CALL 一样），然后把自己的 CALL 当作失败，和 2.0.1 一样；收到 CALLRESULTERROR 时记日志并录制。内置 CSMS 对桩的应答做同样的事，故障注入可以让它发一个。
 - 未知的消息类型号按 2.0.1 处理：messageId 可读时回 MessageTypeNotSupported。
 - 录制器、日志导出导入、回放和 Web UI 的帧视图认识消息类型 5 和 6。SEND 的载荷按该 action 的请求 schema 检查。
+- 已实现（T96）：`parseFrame(text, { ocppj21: true })` 和 `serializeFrame` 处理 CALLRESULTERROR 和 SEND（`Frame21`）；不加这个选项时它们仍是未知消息类型，所以 1.6 和 2.0.1 的行为不变。`OCPP21_MESSAGE_SET`（`ocppj21`、`unconfirmedActions`）加入 `MESSAGE_SETS`，`OcppVersion` 包含 `'2.1'`，并有辅助函数 `isOcpp2()`。`createRpc` 对校验不通过的 CALLRESULT 回 CALLRESULTERROR，收到 CALLRESULTERROR 时上报（`call-result-error`），收到 SEND 时交给处理器且不应答（或上报为 `send-dropped`），并提供 `send()`。内置 CSMS 接受 `ocpp2.1`，在 T106 之前像应答 2.0.1 桩一样应答 2.1 桩，把收到的 SEND 和 CALLRESULTERROR 放在 `connection.unconfirmed` 里，2.1 桩的应答不合法时回 CALLRESULTERROR。录制器用 OCPP-J 2.1 解析 2.1 桩的帧（消息类型 5 和 6，CALLRESULTERROR 标上它针对的 action），会话和指标只看 CALL 及其应答，日志接受 `ocpp: 2.1`，消息日志给新类型加了标签。让内置 CSMS 故意发 CALLRESULTERROR 的故障注入随 T106 一起做。
 
 **Persona 和设备模型**
 

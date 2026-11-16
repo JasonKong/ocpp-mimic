@@ -3,7 +3,7 @@
  * log lines, kept per station in a bounded buffer. Responses are matched to
  * their request so every frame carries an action.
  */
-import { MessageTypeId, parseFrame } from '@ocpp-mimic/core';
+import { MessageTypeId, parseFrame, type OcppVersion } from '@ocpp-mimic/core';
 
 export type Direction = 'cp-to-csms' | 'csms-to-cp';
 
@@ -13,8 +13,11 @@ export interface FrameRecord {
   stationId: string;
   at: string;
   direction: Direction;
-  /** 2 = CALL, 3 = CALLRESULT, 4 = CALLERROR; undefined for unreadable text. */
-  messageType?: 2 | 3 | 4;
+  /**
+   * 2 = CALL, 3 = CALLRESULT, 4 = CALLERROR, and in 2.1 5 = CALLRESULTERROR
+   * and 6 = SEND; undefined for unreadable text.
+   */
+  messageType?: 2 | 3 | 4 | 5 | 6;
   uniqueId?: string;
   action?: string;
   payload?: unknown;
@@ -28,7 +31,7 @@ export interface FrameRecord {
   /** The frame never reached the other side (dropped, or a CALL left unanswered). */
   dropped?: true;
   /** The station's OCPP version, when the recorder knows it. */
-  ocpp?: '1.6' | '2.0.1';
+  ocpp?: OcppVersion;
   text: string;
 }
 
@@ -80,7 +83,7 @@ export interface RecorderOptions {
     stationId: string,
   ) => string[] | undefined;
   /** A station's OCPP version, kept on its frames (and their log lines). */
-  versionOf?: (stationId: string) => '1.6' | '2.0.1' | undefined;
+  versionOf?: (stationId: string) => OcppVersion | undefined;
 }
 
 export function createRecorder(options: RecorderOptions = {}): Recorder {
@@ -89,6 +92,8 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
   const buffers = new Map<string, RecordEntry[]>();
   /** `${stationId} ${uniqueId}` → action, for matching responses to requests. */
   const actions = new Map<string, string>();
+  /** The same for answered CALLs, so a 2.1 CALLRESULTERROR (which reuses the id) is named too. */
+  const answeredActions = new Map<string, string>();
   const listeners = new Set<(entry: RecordEntry) => void>();
   let seq = 0;
 
@@ -129,7 +134,7 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
       };
       // A frame that is wrong on purpose is not held against the schema.
       const check = marks.injected === undefined;
-      const parsed = parseFrame(text);
+      const parsed = parseFrame(text, { ocppj21: ocpp === '2.1' });
       let entry: FrameRecord = base;
       if (parsed.ok) {
         const { frame } = parsed;
@@ -144,9 +149,41 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
             payload: frame.payload,
             ...schemaErrors(stationId, frame.action, 'request', frame.payload, check),
           };
+        } else if (frame.type === 6) {
+          // 2.1 SEND: an unconfirmed message, checked against its request schema.
+          entry = {
+            ...base,
+            messageType: 6,
+            uniqueId: frame.id,
+            action: frame.action,
+            payload: frame.payload,
+            ...schemaErrors(stationId, frame.action, 'request', frame.payload, check),
+          };
+        } else if (frame.type === 5) {
+          // 2.1 CALLRESULTERROR: the other side could not process an answer.
+          const action = answeredActions.get(key);
+          answeredActions.delete(key);
+          entry = {
+            ...base,
+            messageType: 5,
+            uniqueId: frame.id,
+            ...(action !== undefined && { action }),
+            payload: {
+              errorCode: frame.errorCode,
+              errorDescription: frame.errorDescription,
+              errorDetails: frame.errorDetails,
+            },
+          };
         } else {
           const action = actions.get(key);
           actions.delete(key);
+          if (action !== undefined && ocpp === '2.1') {
+            answeredActions.set(key, action);
+            // Only the latest answers can draw a CALLRESULTERROR; keep the map small.
+            if (answeredActions.size > 100) {
+              answeredActions.delete(answeredActions.keys().next().value ?? '');
+            }
+          }
           entry = {
             ...base,
             messageType: frame.type,
@@ -191,11 +228,15 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
 
     forget(stationId) {
       buffers.delete(stationId);
-      for (const key of actions.keys()) if (key.startsWith(`${stationId} `)) actions.delete(key);
+      for (const map of [actions, answeredActions]) {
+        for (const key of map.keys()) if (key.startsWith(`${stationId} `)) map.delete(key);
+      }
     },
 
     closed(stationId) {
-      for (const key of actions.keys()) if (key.startsWith(`${stationId} `)) actions.delete(key);
+      for (const map of [actions, answeredActions]) {
+        for (const key of map.keys()) if (key.startsWith(`${stationId} `)) map.delete(key);
+      }
     },
 
     subscribe(listener) {

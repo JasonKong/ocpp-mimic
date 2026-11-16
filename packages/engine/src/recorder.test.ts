@@ -55,4 +55,47 @@ describe('recorder', () => {
     expect(recorder.frame('S2', 'cp-to-csms', '[2,"a","Heartbeat",{}]').ocpp).toBe('2.0.1');
     expect(recorder.frame('S1', 'cp-to-csms', '[2,"b","Heartbeat",{}]').ocpp).toBeUndefined();
   });
+
+  it("records OCPP-J 2.1's SEND and CALLRESULTERROR on 2.1 stations only", () => {
+    const checked: string[] = [];
+    const recorder = createRecorder({
+      versionOf: (id) => (id === 'V21' ? '2.1' : '2.0.1'),
+      check: (action, kind) => {
+        checked.push(`${action} ${kind}`);
+        return [];
+      },
+    });
+    recorder.frame('V21', 'csms-to-cp', '[2,"c1","ClearCache",{}]');
+    recorder.frame('V21', 'cp-to-csms', '[3,"c1",{"status":"Maybe"}]');
+    const resultError = recorder.frame(
+      'V21',
+      'csms-to-cp',
+      '[5,"c1","PropertyConstraintViolation","",{}]',
+    );
+    const send = recorder.frame(
+      'V21',
+      'cp-to-csms',
+      '[6,"s1","NotifyPeriodicEventStream",{"id":1}]',
+    );
+    expect(resultError).toMatchObject({
+      messageType: 5,
+      uniqueId: 'c1',
+      action: 'ClearCache',
+      payload: { errorCode: 'PropertyConstraintViolation' },
+    });
+    expect(send).toMatchObject({
+      messageType: 6,
+      uniqueId: 's1',
+      action: 'NotifyPeriodicEventStream',
+    });
+    expect(checked).toEqual([
+      'ClearCache request',
+      'ClearCache response',
+      'NotifyPeriodicEventStream request',
+    ]);
+    // On a 2.0.1 station the same text is an unknown message type.
+    expect(
+      recorder.frame('V201', 'cp-to-csms', '[6,"s1","NotifyPeriodicEventStream",{}]').messageType,
+    ).toBeUndefined();
+  });
 });

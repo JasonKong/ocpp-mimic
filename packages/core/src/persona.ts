@@ -254,8 +254,8 @@ export type ResolvedPersona =
       options: Persona201Options;
     });
 
-/** The OCPP version a persona document declares; 1.6 when it says nothing. */
-export function personaVersion(data: { ocpp?: unknown }): OcppVersion {
+/** The OCPP version a persona document declares; 1.6 when it says nothing. 2.1 personas come with T97. */
+export function personaVersion(data: { ocpp?: unknown }): Exclude<OcppVersion, '2.1'> {
   return data.ocpp === '2.0.1' ? '2.0.1' : '1.6';
 }
 

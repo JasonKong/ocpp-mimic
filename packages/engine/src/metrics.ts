@@ -355,6 +355,8 @@ export function createMetrics(options: MetricsOptions): Metrics {
         if (record.action !== undefined) callsReceived.get({ action: record.action }).value += 1;
         return;
       }
+      // Only a CALLRESULT or CALLERROR answers a CALL (not 2.1's SEND or CALLRESULTERROR).
+      if (record.messageType !== 3 && record.messageType !== 4) return;
       const call = pending.get(key);
       if (call === undefined) return;
       pending.delete(key);

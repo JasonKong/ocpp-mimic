@@ -109,7 +109,8 @@ export interface FrameRecord {
   stationId: string;
   at: string;
   direction: 'cp-to-csms' | 'csms-to-cp';
-  messageType?: 2 | 3 | 4;
+  /** 2 CALL, 3 CALLRESULT, 4 CALLERROR; in OCPP 2.1 also 5 CALLRESULTERROR and 6 SEND. */
+  messageType?: 2 | 3 | 4 | 5 | 6;
   uniqueId?: string;
   action?: string;
   payload?: unknown;

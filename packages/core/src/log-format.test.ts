@@ -105,15 +105,19 @@ describe('log versions', () => {
     expect([
       versionOfSubprotocol('ocpp2.0.1'),
       versionOfSubprotocol('ocpp1.6'),
+      versionOfSubprotocol('ocpp2.1'),
       versionOfSubprotocol('x'),
-    ]).toEqual(['2.0.1', '1.6', undefined]);
+    ]).toEqual(['2.0.1', '1.6', '2.1', undefined]);
   });
 
   it('reads and checks the version of a line', () => {
     const line = JSON.stringify({ ...call('A', 'Heartbeat', '2.0.1') });
     expect(parseLog(line).lines[0]?.ocpp).toBe('2.0.1');
     expect(parseLog(JSON.stringify({ ...call('A', 'Heartbeat'), ocpp: '3.0' })).problems).toEqual([
-      'line 1: "ocpp" must be 1.6 or 2.0.1',
+      'line 1: "ocpp" must be 1.6, 2.0.1 or 2.1',
     ]);
+    expect(
+      parseLog(JSON.stringify({ ...call('A', 'Heartbeat'), ocpp: '2.1' })).lines[0]?.ocpp,
+    ).toBe('2.1');
   });
 });

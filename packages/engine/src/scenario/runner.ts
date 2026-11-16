@@ -662,7 +662,9 @@ export async function runScenario(
           if (needAnswer) {
             const reply = log.frames.find(
               (f) =>
-                f.stationId === station.id && f.uniqueId === call.uniqueId && f.messageType !== 2,
+                f.stationId === station.id &&
+                f.uniqueId === call.uniqueId &&
+                (f.messageType === 3 || f.messageType === 4),
             );
             if (reply === undefined) {
               problems.push(`${at}: no answer yet`);
@@ -796,7 +798,7 @@ export async function runScenario(
             .slice(0, 10)
             .map(
               (f) =>
-                `${f.stationId} ${f.direction} ${f.action ?? '?'} (${f.messageType === 2 ? 'CALL' : 'CALLRESULT'}): ${(f.schemaErrors ?? []).join('; ')}`,
+                `${f.stationId} ${f.direction} ${f.action ?? '?'} (${f.messageType === 2 ? 'CALL' : f.messageType === 6 ? 'SEND' : 'CALLRESULT'}): ${(f.schemaErrors ?? []).join('; ')}`,
             ),
         }),
       };

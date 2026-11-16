@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { sequentialIds } from './ids.js';
-import { parseFrame, serializeFrame, type Frame } from './ocppj.js';
+import { parseFrame, serializeFrame, type Frame, type Frame21 } from './ocppj.js';
 
 describe('parseFrame', () => {
   it('parses a CALL', () => {
@@ -70,6 +70,56 @@ describe('parseFrame', () => {
         error: { reason: 'invalid-structure', id: 'abc' },
       });
       expect(result.ok || result.error.replyWith).toBeUndefined();
+    }
+  });
+});
+
+describe('OCPP-J 2.1 frames', () => {
+  it('parses CALLRESULTERROR and SEND only when asked to', () => {
+    const error = '[5,"m1","FormatViolation","bad",{}]';
+    const send = '[6,"s1","NotifyPeriodicEventStream",{"id":1}]';
+    expect(parseFrame(error, { ocppj21: true })).toEqual({
+      ok: true,
+      frame: {
+        type: 5,
+        id: 'm1',
+        errorCode: 'FormatViolation',
+        errorDescription: 'bad',
+        errorDetails: {},
+      },
+    });
+    expect(parseFrame(send, { ocppj21: true })).toEqual({
+      ok: true,
+      frame: { type: 6, id: 's1', action: 'NotifyPeriodicEventStream', payload: { id: 1 } },
+    });
+    // In 1.6 and 2.0.1 they are unknown message types.
+    for (const text of [error, send]) {
+      expect(parseFrame(text)).toMatchObject({
+        ok: false,
+        error: { reason: 'unknown-message-type' },
+      });
+    }
+  });
+
+  it('never asks to answer a broken SEND or CALLRESULTERROR', () => {
+    for (const text of ['[6,"s1","Notify"]', '[6,"s1","",{}]', '[5,"m1","FormatViolation",{}]']) {
+      const parsed = parseFrame(text, { ocppj21: true });
+      expect(parsed).toMatchObject({ ok: false, error: { reason: 'invalid-structure' } });
+      expect(parsed.ok || parsed.error.replyWith).toBeUndefined();
+    }
+  });
+
+  it('writes both as OCPP-J arrays that parse back to the same frame', () => {
+    const frames: Frame21[] = [
+      { type: 5, id: 'm1', errorCode: 'FormatViolation', errorDescription: '', errorDetails: {} },
+      { type: 6, id: 's1', action: 'NotifyPeriodicEventStream', payload: { id: 1 } },
+    ];
+    expect(frames.map(serializeFrame)).toEqual([
+      '[5,"m1","FormatViolation","",{}]',
+      '[6,"s1","NotifyPeriodicEventStream",{"id":1}]',
+    ]);
+    for (const frame of frames) {
+      expect(parseFrame(serializeFrame(frame), { ocppj21: true })).toEqual({ ok: true, frame });
     }
   });
 });

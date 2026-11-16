@@ -14,6 +14,11 @@
  * Which actions exist, how payloads are validated and how error codes are
  * spelled come from the message set of the station's OCPP version (default
  * 1.6). The type parameter carries the same set's payload types.
+ *
+ * OCPP-J 2.1 (sets with `ocppj21`) adds two message types: an invalid
+ * CALLRESULT is answered with a CALLRESULTERROR, and `send()` sends an
+ * unconfirmed SEND message. A received SEND goes to its handler and is never
+ * answered; a received CALLRESULTERROR is only reported.
  */
 import type { Clock, TimerHandle } from './clock.js';
 import type { IdGenerator } from './ids.js';
@@ -26,7 +31,7 @@ import {
 } from './message-set.js';
 import { MessageTypeId } from './ocpp16.js';
 import type { CHARGE_POINT_ACTIONS, CSMS_ACTIONS, ResponseOf } from './ocpp16-messages.js';
-import { parseFrame, serializeFrame, type Frame, type JsonObject } from './ocppj.js';
+import { parseFrame, serializeFrame, type Frame21, type JsonObject } from './ocppj.js';
 import type { ValidationIssue } from './schema.js';
 
 export type ChargePointAction = (typeof CHARGE_POINT_ACTIONS)[number];
@@ -75,7 +80,11 @@ export type RpcEvent =
   | { type: 'invalid-frame'; text: string; reason: string; message: string }
   | { type: 'unmatched-response'; id: string }
   | { type: 'timeout'; id: string; action: string }
-  | { type: 'handler-error'; action: string; message: string };
+  | { type: 'handler-error'; action: string; message: string }
+  /** 2.1: the CSMS could not process our answer to its CALL `id`. */
+  | { type: 'call-result-error'; id: string; errorCode: string; errorDescription: string }
+  /** 2.1: a SEND that was dropped (unknown action, invalid payload or no handler). */
+  | { type: 'send-dropped'; action: string; message: string };
 
 export interface RpcOptions<T extends RpcTypes = Ocpp16RpcTypes> {
   clock: Clock;
@@ -101,6 +110,13 @@ export interface Rpc<T extends RpcTypes = Ocpp16RpcTypes> {
     payload: T['requests'][A],
   ): Promise<RpcOutcome<T['responses'][A]>>;
   receive(text: string): void;
+  /**
+   * OCPP-J 2.1: sends an unconfirmed message (SEND) right away, even while a
+   * CALL is unanswered. False when it was not sent: the version has no SEND,
+   * the action is not an unconfirmed one, the payload is invalid, or the
+   * connection is closed.
+   */
+  send<A extends T['out']>(action: A, payload: T['requests'][A]): boolean;
   /** Ends every pending and queued call with `Closed`; later calls end the same way. */
   close(): void;
 }
@@ -130,7 +146,7 @@ export function createRpc<T extends RpcTypes = Ocpp16RpcTypes>(options: RpcOptio
   let pending: PendingCall | undefined;
   let closed = false;
 
-  function sendFrame(frame: Frame): void {
+  function sendFrame(frame: Frame21): void {
     const text = serializeFrame(frame);
     emit({ type: 'sent', text });
     options.send(text);
@@ -174,7 +190,12 @@ export function createRpc<T extends RpcTypes = Ocpp16RpcTypes>(options: RpcOptio
     sendNext();
   }
 
-  function handleResponse(frame: Exclude<Frame, { type: typeof MessageTypeId.Call }>): void {
+  function handleResponse(
+    frame: Extract<
+      Frame21,
+      { type: typeof MessageTypeId.CallResult | typeof MessageTypeId.CallError }
+    >,
+  ): void {
     if (pending === undefined || pending.id !== frame.id) {
       emit({ type: 'unmatched-response', id: frame.id });
       return;
@@ -192,6 +213,16 @@ export function createRpc<T extends RpcTypes = Ocpp16RpcTypes>(options: RpcOptio
       return;
     }
     const validated = messages.validateResponse(pending.action, frame.payload);
+    if (!validated.ok && messages.ocppj21) {
+      // 2.1 tells the CSMS that its answer could not be processed (Part 4, 4.2.3).
+      sendFrame({
+        type: 5,
+        id: frame.id,
+        errorCode: validated.errorCode,
+        errorDescription: describeIssues(validated.issues),
+        errorDetails: { issues: validated.issues } as unknown as JsonObject,
+      });
+    }
     complete(
       validated.ok
         ? { ok: true, payload: validated.value }
@@ -200,6 +231,40 @@ export function createRpc<T extends RpcTypes = Ocpp16RpcTypes>(options: RpcOptio
             failure: { kind: 'InvalidResponse', issues: validated.issues, payload: frame.payload },
           },
     );
+  }
+
+  /** A SEND is never answered: it goes to its handler, or is dropped. */
+  function handleSend(action: string, payload: JsonObject): void {
+    const drop = (message: string) => emit({ type: 'send-dropped', action, message });
+    if (!messages.unconfirmedActions.includes(action)) {
+      drop(`${action} is not an unconfirmed action`);
+      return;
+    }
+    const handler = handlers[action];
+    if (handler === undefined) {
+      drop(`no handler for ${action}`);
+      return;
+    }
+    const request = messages.validateRequest(action, payload);
+    if (!request.ok) {
+      drop(describeIssues(request.issues));
+      return;
+    }
+    try {
+      void Promise.resolve(handler(request.value)).catch((error: unknown) =>
+        emit({
+          type: 'handler-error',
+          action,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    } catch (error) {
+      emit({
+        type: 'handler-error',
+        action,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   async function handleCall(id: string, action: string, payload: JsonObject): Promise<void> {
@@ -273,10 +338,19 @@ export function createRpc<T extends RpcTypes = Ocpp16RpcTypes>(options: RpcOptio
       });
     },
 
+    send<A extends T['out']>(action: A, payload: T['requests'][A]): boolean {
+      if (closed || !messages.ocppj21 || !messages.unconfirmedActions.includes(action)) {
+        return false;
+      }
+      if (!messages.validateRequest(action, payload).ok) return false;
+      sendFrame({ type: 6, id: ids(), action, payload: payload as JsonObject });
+      return true;
+    },
+
     receive(text: string): void {
       if (closed) return;
       emit({ type: 'received', text });
-      const parsed = parseFrame(text);
+      const parsed = parseFrame(text, { ocppj21: messages.ocppj21 });
       if (!parsed.ok) {
         const { error } = parsed;
         emit({ type: 'invalid-frame', text, reason: error.reason, message: error.message });
@@ -294,6 +368,15 @@ export function createRpc<T extends RpcTypes = Ocpp16RpcTypes>(options: RpcOptio
       const { frame } = parsed;
       if (frame.type === MessageTypeId.Call) {
         void handleCall(frame.id, frame.action, frame.payload);
+      } else if (frame.type === 6) {
+        handleSend(frame.action, frame.payload);
+      } else if (frame.type === 5) {
+        emit({
+          type: 'call-result-error',
+          id: frame.id,
+          errorCode: frame.errorCode,
+          errorDescription: frame.errorDescription,
+        });
       } else {
         handleResponse(frame);
       }

@@ -9,6 +9,7 @@ import { ChargePointErrorCodeSchema, type ChargePointErrorCode } from './ocpp16-
 import { OCPP16_CHARGE_POINT_INITIATED, OCPP16_CSMS_INITIATED, RPC_ERROR_CODES } from './ocpp16.js';
 import type { OcppVersion } from './message-set.js';
 import { OCPP201_RPC_ERROR_CODES } from './ocpp201/constants.js';
+import { OCPP21_CHARGING_STATION_ACTIONS, OCPP21_CSMS_ACTIONS } from './ocpp21/messages.js';
 import {
   IdTokenEnumSchema,
   OCPP201_CHARGING_STATION_ACTIONS,
@@ -286,8 +287,13 @@ const unique = <T extends string>(...lists: (readonly T[])[]) => [...new Set(lis
 const SENT_ACTIONS = unique<string>(
   OCPP16_CHARGE_POINT_INITIATED,
   OCPP201_CHARGING_STATION_ACTIONS,
+  OCPP21_CHARGING_STATION_ACTIONS,
 );
-const RECEIVED_ACTIONS = unique<string>(OCPP16_CSMS_INITIATED, OCPP201_CSMS_ACTIONS);
+const RECEIVED_ACTIONS = unique<string>(
+  OCPP16_CSMS_INITIATED,
+  OCPP201_CSMS_ACTIONS,
+  OCPP21_CSMS_ACTIONS,
+);
 const ERROR_CODES = unique<string>(RPC_ERROR_CODES, OCPP201_RPC_ERROR_CODES);
 const directions = {
   sent: oneOf(SENT_ACTIONS),
@@ -306,6 +312,11 @@ const ACTIONS_BY_VERSION: Record<
   '2.0.1': {
     sent: new Set(OCPP201_CHARGING_STATION_ACTIONS),
     received: new Set(OCPP201_CSMS_ACTIONS),
+    errors: new Set(OCPP201_RPC_ERROR_CODES),
+  },
+  '2.1': {
+    sent: new Set(OCPP21_CHARGING_STATION_ACTIONS),
+    received: new Set(OCPP21_CSMS_ACTIONS),
     errors: new Set(OCPP201_RPC_ERROR_CODES),
   },
 };

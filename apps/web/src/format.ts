@@ -1,7 +1,7 @@
 /** Display helpers for the message log and station views. */
 import type { DeviceModelEntry, FrameRecord, RecordEntry } from './api.js';
 
-const TYPE_LABELS = { 2: 'CALL', 3: 'RESULT', 4: 'ERROR' } as const;
+const TYPE_LABELS = { 2: 'CALL', 3: 'RESULT', 4: 'ERROR', 5: 'RES.ERR', 6: 'SEND' } as const;
 
 export function messageTypeLabel(record: FrameRecord): string {
   return record.messageType === undefined ? 'INVALID' : TYPE_LABELS[record.messageType];
@@ -16,7 +16,7 @@ function field(payload: unknown, name: string): unknown {
 /** A one-line summary of the parts of a frame worth seeing at a glance. */
 export function summarize(record: FrameRecord): string {
   const p = record.payload;
-  if (record.messageType === 4)
+  if (record.messageType === 4 || record.messageType === 5)
     return `${String(field(p, 'errorCode'))} ${String(field(p, 'errorDescription') ?? '')}`.trim();
   const status = field(p, 'status');
   if (record.messageType === 3) {
