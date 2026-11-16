@@ -1,0 +1,114 @@
+# The OCPP 2.0.1 faults (N) scenarios (ocpp201-faults.yaml) on a 2.1 station (T102):
+# 2.1 keeps 2.0.1's behaviour here. The station reports availability with the
+# StatusNotification these scenarios expect (statusnotification-2.1), and every
+# frame is checked against OCA's 2.1 schemas.
+name: 2.1 TC_G_02_CS A connector fault is reported as Faulted and with NotifyEvent
+station: { id: REG21X-FAULT, persona: statusnotification-2.1 }
+steps:
+  - fault: { evse: 1, errorCode: GroundFailure, info: GND_FAULT, vendorErrorCode: E101 }
+  - expect: { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Faulted } }
+  - expect:
+      sent: NotifyEvent
+      payload:
+        eventData:
+          - trigger: Alerting
+            actualValue: 'true'
+            techCode: E101
+            techInfo: GND_FAULT
+            component: { name: Connector, evse: { id: 1, connectorId: 1 } }
+            variable: { name: Problem }
+  - clearFault: { evse: 1 }
+  - expect: { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Available } }
+  - expect:
+      sent: NotifyEvent
+      payload: { eventData: [{ actualValue: 'false', cleared: true, variable: { name: Problem } }] }
+---
+name: 2.1 A fault ends the running transaction
+station: { id: REG21X-FAULT-TX, persona: statusnotification-2.1 }
+steps:
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started } }
+  - fault: { errorCode: OverCurrentFailure }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        {
+          eventType: Ended,
+          triggerReason: AbnormalCondition,
+          transactionInfo: { stoppedReason: Other },
+        }
+---
+name: 2.1 The fault injector on a 2.0.1 station, network and protocol layers
+station: { id: REG21X-INJECT, persona: statusnotification-2.1 }
+steps:
+  - inject: { type: latency, ms: 500, direction: sent, for: 5s }
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started } }
+  - clearInjections: {}
+  - inject: { type: callError, action: GetVariables, errorCode: InternalError }
+  - csmsCall:
+      action: GetVariables
+      payload:
+        getVariableData:
+          [{ component: { name: OCPPCommCtrlr }, variable: { name: HeartbeatInterval } }]
+      error: InternalError
+  - clearInjections: {}
+  - inject: { type: drop, direction: received, action: GetTransactionStatus, count: 1 }
+  - csmsCall: { action: GetTransactionStatus, payload: {}, noAnswer: 1s }
+  - csmsCall: { action: GetTransactionStatus, payload: {}, answer: { messagesInQueue: false } }
+---
+name: 2.1 TC_E_40_CS A power cut during a transaction ends it with PowerLoss after the restart
+station: { id: REG21X-POWER, persona: statusnotification-2.1 }
+steps:
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started }
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - inject: { type: powerLoss, off: 1s }
+  - expect: { sent: BootNotification, payload: { reason: PowerUp }, within: 15s }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Ended
+        triggerReason: AbnormalCondition
+        offline: true
+        transactionInfo: { transactionId: '{{tx}}', stoppedReason: PowerLoss }
+---
+name: 2.1 Device faults on a 2.0.1 station, a meter rollback and clock drift
+station:
+  id: REG21X-METER-FAULT
+  persona: statusnotification-2.1
+  deviceModel: { SampledDataCtrlr: { TxUpdatedInterval: 1 } }
+steps:
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started } }
+  - charge: { duration: 2s }
+  - expect:
+      sent: TransactionEvent
+      from: step
+      payload: { triggerReason: MeterValuePeriodic }
+      save: { before: '$.payload.meterValue[0].sampledValue[0].value' }
+  # The register rolls back (down to 0 at most), as a faulty meter's would.
+  - inject: { type: meterRollback, wh: 100000 }
+  - expect:
+      sent: TransactionEvent
+      from: step
+      payload:
+        triggerReason: MeterValuePeriodic
+        meterValue: [{ sampledValue: [{ value: { $lt: '{{before}}' } }, {}] }]
+      within: 3s
+  # Ten years behind, in every timestamp of the event.
+  - inject: { type: clockDrift, ms: -315569520000 }
+  - expect:
+      sent: TransactionEvent
+      from: step
+      payload:
+        triggerReason: MeterValuePeriodic
+        timestamp: { $regex: '^20[01]\d-' }
+        meterValue: [{ timestamp: { $regex: '^20[01]\d-' } }]
+      within: 3s

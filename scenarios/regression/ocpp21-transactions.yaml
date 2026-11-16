@@ -82,3 +82,205 @@ steps:
       within: 10s
       payload: { triggerReason: TxResumed, transactionInfo: { transactionId: '{{tx}}' } }
   - expectNo: { sent: TransactionEvent, payload: { eventType: Ended }, within: 1s }
+---
+# The OCPP 2.0.1 transactions (E) scenarios (ocpp201-transactions.yaml) on a 2.1 station (T102):
+# 2.1 keeps 2.0.1's behaviour here. The station reports availability with the
+# StatusNotification these scenarios expect (statusnotification-2.1), and every
+# frame is checked against OCA's 2.1 schemas.
+name: 2.1 TC_E_01_CS and TC_E_06_CS Start at PowerPathClosed, stop locally
+station: { id: REG21X-TX, persona: statusnotification-2.1 }
+steps:
+  - presentCard: { idToken: TAG-1, type: ISO14443, result: authorized }
+  - expect: { sent: Authorize, payload: { idToken: { idToken: TAG-1, type: ISO14443 } } }
+  - plugIn: { ev: compact-40kwh }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Started
+        triggerReason: CablePluggedIn
+        seqNo: 0
+        idToken: { idToken: TAG-1 }
+        evse: { id: 1, connectorId: 1 }
+        transactionInfo: { chargingState: Charging }
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - expectConnector: { status: Occupied, chargingState: Charging, transactionId: '{{tx}}' }
+  - presentCard: { idToken: TAG-1, result: stopping }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Ended
+        triggerReason: StopAuthorized
+        seqNo: 1
+        transactionInfo: { transactionId: '{{tx}}', stoppedReason: Local }
+  - unplug: {}
+  - expect: { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Available } }
+---
+name: 2.1 TC_E_09_CS and TC_E_15_CS Start at EVConnected, stop by unplugging after a local stop
+station:
+  id: REG21X-EVCONN
+  persona: statusnotification-2.1
+  deviceModel: { TxCtrlr: { TxStartPoint: EVConnected, TxStopPoint: EVConnected } }
+steps:
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        {
+          eventType: Started,
+          triggerReason: CablePluggedIn,
+          transactionInfo: { chargingState: EVConnected },
+        }
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Updated, triggerReason: Authorized, idToken: { idToken: TAG-1 } }
+  - presentCard: { idToken: TAG-1, result: stopping }
+  - expect:
+      { sent: TransactionEvent, payload: { eventType: Updated, triggerReason: StopAuthorized } }
+  - expectConnector: { powerW: 0 }
+  - unplug: {}
+  - expect:
+      sent: TransactionEvent
+      payload:
+        {
+          eventType: Ended,
+          triggerReason: EVCommunicationLost,
+          transactionInfo: { stoppedReason: Local },
+        }
+---
+name: 2.1 TC_E_10_CS and TC_E_05_CS Start at Authorized, end without a cable in time
+station:
+  id: REG21X-AUTH
+  persona: statusnotification-2.1
+  deviceModel: { TxCtrlr: { TxStartPoint: Authorized, EVConnectionTimeOut: 2 } }
+steps:
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - expect: { sent: TransactionEvent, payload: { eventType: Started, triggerReason: Authorized } }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        {
+          eventType: Ended,
+          triggerReason: EVConnectTimeout,
+          transactionInfo: { stoppedReason: Timeout },
+        }
+      within: 5s
+---
+name: 2.1 TC_E_16_CS Deauthorized by the CSMS, and TC_E_17_CS EV side disconnect
+station: { id: REG21X-DEAUTH, persona: statusnotification-2.1 }
+steps:
+  - csmsReply:
+      action: TransactionEvent
+      payload: { idTokenInfo: { status: Blocked } }
+      times: 1
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  - expect: { sent: TransactionEvent, payload: { eventType: Started } }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        {
+          eventType: Ended,
+          triggerReason: Deauthorized,
+          transactionInfo: { stoppedReason: DeAuthorized },
+        }
+  - unplug: {}
+  - presentCard: { idToken: TAG-2, evse: 2, result: authorized }
+  - plugIn: { evse: 2 }
+  - expect: { sent: TransactionEvent, payload: { eventType: Started, evse: { id: 2 } } }
+  - unplug: { evse: 2 }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Ended
+        triggerReason: EVCommunicationLost
+        transactionInfo: { stoppedReason: EVDisconnected }
+---
+name: 2.1 TC_E_29_CS to TC_E_34_CS Check transaction status
+station: { id: REG21X-STATUSQ, persona: statusnotification-2.1 }
+steps:
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  # Wait for the answer, so nothing is left in the queue.
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started }
+      answer: {}
+      save: { tx: $.payload.transactionInfo.transactionId }
+  - csmsCall:
+      action: GetTransactionStatus
+      payload: { transactionId: '{{tx}}' }
+      answer: { ongoingIndicator: true, messagesInQueue: false }
+  - csmsCall:
+      action: GetTransactionStatus
+      payload: { transactionId: unknown-transaction }
+      answer: { ongoingIndicator: false, messagesInQueue: false }
+  - csmsCall:
+      action: GetTransactionStatus
+      payload: {}
+      answer: { messagesInQueue: false, ongoingIndicator: { $exists: false } }
+---
+name: 2.1 TC_E_43_CS and TC_E_44_CS A transaction during an offline period
+station:
+  id: REG21X-OFFLINE
+  persona: statusnotification-2.1
+  deviceModel: { AuthCtrlr: { OfflineTxForUnknownIdEnabled: true } }
+steps:
+  - offline: { mode: clean }
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  - wait: 1s
+  - presentCard: { idToken: TAG-1, result: stopping }
+  - expectStation: { queuedMessages: 2 }
+  - online: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, offline: true, seqNo: 0 }
+      within: 15s
+  - expect: { sent: TransactionEvent, payload: { eventType: Ended, offline: true, seqNo: 1 } }
+---
+name: 2.1 TC_E_42_CS Retry a failed transaction message
+station:
+  id: REG21X-RETRY
+  persona: statusnotification-2.1
+  deviceModel:
+    OCPPCommCtrlr:
+      { 'MessageAttempts:TransactionEvent': 3, 'MessageAttemptInterval:TransactionEvent': 1 }
+steps:
+  - csmsReply: { action: TransactionEvent, error: InternalError, times: 1 }
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  # The first attempt gets a CALLERROR; the same event goes again a second later.
+  - expect: { sent: TransactionEvent, payload: { eventType: Started, seqNo: 0 } }
+  - expect: { sent: TransactionEvent, payload: { eventType: Started, seqNo: 0 }, within: 5s }
+  - expectStation: { queuedMessages: 0 }
+---
+name: 2.1 Periodic and clock-aligned meter values
+station:
+  id: REG21X-METER
+  persona: statusnotification-2.1
+  deviceModel:
+    SampledDataCtrlr: { TxUpdatedInterval: 1, TxEndedInterval: 1 }
+    AlignedDataCtrlr: { Interval: 2, SendDuringIdle: true }
+steps:
+  - expect: { sent: MeterValues, payload: { evseId: 1 }, within: 5s }
+  - presentCard: { idToken: TAG-1, result: authorized }
+  - plugIn: {}
+  - expect:
+      {
+        sent: TransactionEvent,
+        payload: { eventType: Updated, triggerReason: MeterValuePeriodic },
+        within: 3s,
+      }
+  - expect:
+      {
+        sent: TransactionEvent,
+        payload: { eventType: Updated, triggerReason: MeterValueClock },
+        within: 5s,
+      }
+  - presentCard: { idToken: TAG-1, result: stopping }
+  - expect:
+      sent: TransactionEvent
+      payload:
+        eventType: Ended
+        meterValue: { $contains: { sampledValue: [{ context: Transaction.End }] } }

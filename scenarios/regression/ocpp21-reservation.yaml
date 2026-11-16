@@ -1,0 +1,216 @@
+# The OCPP 2.0.1 reservation (H) scenarios (ocpp201-reservation.yaml) on a 2.1 station (T102):
+# 2.1 keeps 2.0.1's behaviour here. The station reports availability with the
+# StatusNotification these scenarios expect (statusnotification-2.1), and every
+# frame is checked against OCA's 2.1 schemas.
+name: 2.1 TC_H_01_CS and TC_H_02_CS A reserved EVSE takes only its token, which uses the reservation
+station: { id: REG21X-RES-1, persona: statusnotification-2.1 }
+steps:
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        {
+          id: 1,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: TAG-R, type: ISO14443 },
+          evseId: 1,
+        }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Reserved } }
+  - presentCard: { idToken: TAG-X, result: rejected }
+  - presentCard: { idToken: TAG-R, result: authorized }
+  - expect: { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Available } }
+  - plugIn: {}
+  - expect:
+      sent: TransactionEvent
+      payload: { eventType: Started, reservationId: 1, idToken: { idToken: TAG-R } }
+  - expectStation: { reservations: [] }
+---
+name: 2.1 TC_H_03_CS, TC_H_04_CS, TC_H_05_CS and TC_H_06_CS ReserveNow on an EVSE that is not Available
+station: { id: REG21X-RES-BUSY, persona: statusnotification-2.1 }
+steps:
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        {
+          id: 1,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: TAG-1, type: ISO14443 },
+          evseId: 1,
+        }
+      answer: { status: Accepted }
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        {
+          id: 2,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: TAG-2, type: ISO14443 },
+          evseId: 1,
+        }
+      answer: { status: Occupied }
+  - plugIn: { evse: 2 }
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        {
+          id: 3,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: TAG-3, type: ISO14443 },
+          evseId: 2,
+        }
+      answer: { status: Occupied }
+  - unplug: { evse: 2 }
+  - fault: { evse: 2, errorCode: GroundFailure }
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        {
+          id: 4,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: TAG-4, type: ISO14443 },
+          evseId: 2,
+        }
+      answer: { status: Faulted }
+  - clearFault: { evse: 2 }
+  - csmsCall:
+      action: ChangeAvailability
+      payload: { operationalStatus: Inoperative, evse: { id: 2 } }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Unavailable } }
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        {
+          id: 5,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: TAG-5, type: ISO14443 },
+          evseId: 2,
+        }
+      answer: { status: Unavailable }
+---
+name: 2.1 TC_H_07_CS A reservation that is not used expires
+station: { id: REG21X-RES-EXPIRE, persona: statusnotification-2.1 }
+steps:
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        {
+          id: 7,
+          expiryDateTime: '{{now+2s}}',
+          idToken: { idToken: TAG-R, type: ISO14443 },
+          evseId: 2,
+        }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Reserved } }
+  - expect:
+      sent: ReservationStatusUpdate
+      payload: { reservationId: 7, reservationUpdateStatus: Expired }
+      within: 5s
+  - expect: { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Available } }
+---
+name: 2.1 TC_H_22_CS, TC_H_23_CS and TC_H_17_CS Configured to reject, replace and cancel
+station:
+  id: REG21X-RES-CONF
+  persona: statusnotification-2.1
+  deviceModel: { ReservationCtrlr: { Enabled: false } }
+steps:
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        {
+          id: 1,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: TAG-1, type: ISO14443 },
+          evseId: 1,
+        }
+      answer: { status: Rejected }
+  - csmsCall:
+      action: SetVariables
+      payload:
+        setVariableData:
+          [
+            {
+              component: { name: ReservationCtrlr },
+              variable: { name: Enabled },
+              attributeValue: 'true',
+            },
+          ]
+      answer: { setVariableResult: [{ attributeStatus: Accepted }] }
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        {
+          id: 1,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: TAG-1, type: ISO14443 },
+          evseId: 1,
+        }
+      answer: { status: Accepted }
+  # The same id moves the reservation (H01.FR.02).
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        {
+          id: 1,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: TAG-1, type: ISO14443 },
+          evseId: 2,
+        }
+      answer: { status: Accepted }
+  - expectStation: { reservations: [{ reservationId: 1, connectorId: 2 }] }
+  - csmsCall:
+      { action: CancelReservation, payload: { reservationId: 1 }, answer: { status: Accepted } }
+  - csmsCall:
+      { action: CancelReservation, payload: { reservationId: 1 }, answer: { status: Rejected } }
+  - expectStation: { reservations: [] }
+---
+name: 2.1 TC_H_19_CS A token of the reservation's group uses it
+station: { id: REG21X-RES-GROUP, persona: statusnotification-2.1 }
+steps:
+  - csmsReply:
+      action: Authorize
+      payload:
+        { idTokenInfo: { status: Accepted, groupIdToken: { idToken: GROUP-1, type: Central } } }
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        id: 19
+        expiryDateTime: '{{now+30m}}'
+        idToken: { idToken: TAG-R, type: ISO14443 }
+        groupIdToken: { idToken: GROUP-1, type: Central }
+        evseId: 1
+      answer: { status: Accepted }
+  - presentCard: { idToken: TAG-G, result: authorized }
+  - expectStation: { reservations: [] }
+---
+name: 2.1 TC_H_08_CS, TC_H_09_CS and TC_H_13_CS Reservations without an EVSE
+station: { id: REG21X-RES-ANY, persona: statusnotification-2.1 }
+steps:
+  - csmsCall:
+      action: ReserveNow
+      payload: { id: 1, expiryDateTime: '{{now+30m}}', idToken: { idToken: TAG-1, type: ISO14443 } }
+      answer: { status: Accepted }
+  # Two EVSEs, two reservations: both EVSEs show Reserved (H01.FR.20).
+  - csmsCall:
+      action: ReserveNow
+      payload: { id: 2, expiryDateTime: '{{now+30m}}', idToken: { idToken: TAG-2, type: ISO14443 } }
+      answer: { status: Accepted }
+  - expect: { sent: StatusNotification, payload: { evseId: 1, connectorStatus: Reserved } }
+  - expect: { sent: StatusNotification, payload: { evseId: 2, connectorStatus: Reserved } }
+  - csmsCall:
+      action: ReserveNow
+      payload: { id: 3, expiryDateTime: '{{now+30m}}', idToken: { idToken: TAG-3, type: ISO14443 } }
+      answer: { status: Occupied }
+  - csmsCall:
+      action: ReserveNow
+      payload:
+        {
+          id: 4,
+          expiryDateTime: '{{now+30m}}',
+          idToken: { idToken: TAG-4, type: ISO14443 },
+          connectorType: cCCS2,
+        }
+      answer: { status: Rejected }
+  - presentCard: { idToken: TAG-X, evse: 2, result: rejected }
+  - presentCard: { idToken: TAG-2, evse: 2, result: authorized }
+  - expectStation: { reservations: [{ reservationId: 1, connectorId: 0 }] }

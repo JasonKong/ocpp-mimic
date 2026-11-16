@@ -1632,6 +1632,13 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         } else {
           const waiting = authorizations.get(connectorId);
           authorizations.delete(connectorId);
+          // 2.1: a reservation was used, but no transaction came of it (H03.FR.11).
+          if (v21 && waiting?.reservationId !== undefined) {
+            void sendIfOnline('ReservationStatusUpdate', {
+              reservationId: waiting.reservationId,
+              reservationUpdateStatus: 'NoTransaction',
+            });
+          }
           if (waiting !== undefined) {
             hint({
               kind: 'start-failed',
@@ -2134,6 +2141,18 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
           }
         },
       };
+      // 2.1: a vendor trigger listed in CustomizationCtrlr.CustomTriggers sends the
+      // persona's message for it, a DataTransfer named after it (F06.FR.18, .19).
+      if (request.requestedMessage === 'CustomTrigger') {
+        const name = request.customTrigger;
+        const listed = dmValue('CustomizationCtrlr', 'CustomTriggers').split(',');
+        if (!v21 || name === undefined || !listed.includes(name))
+          return { status: 'NotImplemented' };
+        later(commandDelay('TriggerMessage'), () => {
+          void sendIfOnline('DataTransfer', { vendorId: 'ocpp-mimic', messageId: name });
+        });
+        return { status: 'Accepted' };
+      }
       const send = senders[request.requestedMessage];
       if (send === undefined) return { status: 'NotImplemented' };
       // The answer goes first, then the message (F06.FR.04).
