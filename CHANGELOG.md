@@ -4,7 +4,9 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 
 ## [Unreleased]
 
-The first release, 0.1.0. It collects milestones M1 to M8 of the [design](docs/design.md).
+## [0.1.0] - 2026-11-17
+
+The first release, 0.1.0. It collects milestones M1 to M8 of the [design](https://github.com/JasonKong/ocpp-mimic/blob/main/docs/design.md).
 
 ### Added
 

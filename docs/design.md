@@ -1501,6 +1501,11 @@ v0.1.0 is released from a tag by the release workflow. From the release's artifa
 
 The critical path is T113 → T115 → T116 → T117 → T119 → T122. The release cannot be tagged without T114.
 
+**Acceptance (T122)**
+
+- `tools/prepare-release.mjs 0.1.0` opens the changelog's 0.1.0 section; the merge commit on main is tagged `v0.1.0`, which runs the release workflow.
+- `.github/workflows/acceptance.yml` (by hand, with the version) checks the published release from its artifacts alone. The npm job downloads the tarball from the GitHub Release on `ubuntu-latest` and `macos-latest` and runs `tools/smoke-package.sh` with every example and the smoke plan's full two minutes. The image job pulls `ghcr.io/jasonkong/ocpp-mimic:<version>` on `ubuntu-latest` and `ubuntu-24.04-arm` and runs `tools/smoke-image.sh`, then `tools/accept-image.sh`: the samples, every example scenario, and the smoke plan against the CSMS in a second container sharing its network. Only the test scripts come from the repository, at the release's tag.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
