@@ -1505,6 +1505,25 @@ M8 确定（#267）。M1 到 M7 做出了模拟器；M8 把它变成别人可以
 - `tools/prepare-release.mjs 0.1.0` 开出变更日志的 0.1.0 一节；在 main 的合并提交上打 `v0.1.0` tag，触发发布工作流。
 - `.github/workflows/acceptance.yml`（手动运行，输入版本号）只用发布产物检查已发布的版本。npm job 在 `ubuntu-latest` 和 `macos-latest` 上从 GitHub Release 下载 tarball，运行 `tools/smoke-package.sh`，包括全部示例场景和完整两分钟的冒烟压测。镜像 job 在 `ubuntu-latest` 和 `ubuntu-24.04-arm` 上拉取 `ghcr.io/jasonkong/ocpp-mimic:<版本>`，运行 `tools/smoke-image.sh`，再运行 `tools/accept-image.sh`：复制示例、运行全部示例场景，并让冒烟压测对着共享网络的另一个容器里的 CSMS 运行。只有测试脚本取自仓库，且是该版本 tag 下的版本。
 
+**已验收（T122）**
+
+M8 的出口标准 G8 已由 v0.1.0 达成（tag 打在 main 的 5d960fa 上）：
+
+- **由工作流发布。** 发布运行（[44013456469](https://github.com/JasonKong/ocpp-mimic/actions/runs/44013456469)）依次通过了 CI 检查、tag 检查、包的冒烟测试、带 provenance 的 linux/amd64 和 linux/arm64 镜像构建，以及两个架构上的镜像冒烟测试，然后创建了 [GitHub Release](https://github.com/JasonKong/ocpp-mimic/releases/tag/v0.1.0)，附带 `ocpp-mimic-0.1.0.tgz` 和 `ocpp-mimic.tgz`（各 497 kB）。`ghcr.io/jasonkong/ocpp-mimic:0.1.0` 无需登录即可拉取。
+- **只用发布产物。** 验收运行（[44015264585](https://github.com/JasonKong/ocpp-mimic/actions/runs/44015264585)）在四个 runner 上全部通过。每个都跑了手册的快速开始、全部 7 个示例场景和完整两分钟的 100 桩冒烟压测，所有阈值都满足：
+
+| | npm 包，ubuntu-latest | npm 包，macos-latest | 镜像，linux/amd64 | 镜像，linux/arm64 |
+| --- | --- | --- | --- | --- |
+| 快速开始（版本、Web UI、通过 API 的一次会话） | 通过 | 通过 | 通过，带 API 令牌 | 通过，带 API 令牌 |
+| 示例场景 | 7/7 | 7/7 | 7/7 | 7/7 |
+| 冒烟压测，100 桩，2 分钟 | 通过 | 通过 | 通过：411 个会话（107.5%），事件循环 p99 1.3 ms，RSS 201 MB | 通过：411 个会话（107.5%），事件循环 p99 1.3 ms，RSS 200 MB |
+
+- **另外手动检查。** 在开发用的 Mac 上从 `releases/latest/download/ocpp-mimic.tgz` 安装，示例场景也都通过。第一次验收运行（44014856730）的 npm 任务还没开始测试就失败了：`actions/setup-node` 会根据 `packageManager` 启用 pnpm 缓存，而这些任务只用 npm。修复（`package-manager-cache: false`）就在本次改动里。
+- **M8 没有做的。**
+  - npm 仓库：所有者添加 `NPM_TOKEN` secret 后，发布工作流就会发布到那里；在那之前从 GitHub Release 安装。
+  - `SECURITY.md` 提到的私密漏洞报告是仓库设置，需要所有者开启。
+- **后续问题**：[#283](https://github.com/JasonKong/ocpp-mimic/issues/283)，能量倍率下的出发时间判断，截图时发现。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。
