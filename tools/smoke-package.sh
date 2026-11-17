@@ -5,7 +5,7 @@
 # the API, and a short load plan.
 # Usage: tools/smoke-package.sh <ocpp-mimic-x.y.z.tgz>
 # SMOKE_LOAD_DURATION (default 30s) sets how long the load plan runs; the
-# plan's own duration is 2m.
+# plan's own duration is 2m. SMOKE_EXAMPLES=all runs every example scenario.
 set -euo pipefail
 tarball=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 work=$(mktemp -d)
@@ -26,7 +26,11 @@ test "$("$bin" --version)" = "$version"
 echo "== samples and an example scenario"
 cd "$work"
 "$bin" samples samples > /dev/null
-"$bin" run samples/examples/local-card-session.yaml --personas samples/personas
+if [ "${SMOKE_EXAMPLES:-one}" = all ]; then
+  "$bin" run samples/examples --personas samples/personas
+else
+  "$bin" run samples/examples/local-card-session.yaml --personas samples/personas
+fi
 
 echo "== csms and serve"
 csms_port=19100

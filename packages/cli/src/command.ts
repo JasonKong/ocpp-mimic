@@ -322,7 +322,8 @@ const OPTIONS = {
 type OptionName = keyof typeof OPTIONS;
 type Values = ReturnType<typeof parseArgs<{ options: typeof OPTIONS }>>['values'];
 
-const COMMANDS = {
+/** Each command and the options it takes. */
+export const COMMANDS = {
   serve: [
     'port',
     'host',

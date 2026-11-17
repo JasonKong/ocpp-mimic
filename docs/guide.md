@@ -25,39 +25,35 @@ ocpp-mimic is source-available under the [Business Source License 1.1](../LICENS
 
 ## 1. Install and first start
 
-### Requirements
+### Install
 
-- **Node.js 24.** The repository's `.nvmrc` names it; `fnm use` or `nvm use` in the repository switches to it. An older Node fails at once with errors such as `does not provide an export named 'parseArgs'`.
-- **pnpm 12**, as named in `package.json`'s `packageManager` field. `corepack enable` installs the right version.
-- For the CitrineOS scenarios only: Docker.
+Pick one of three ways.
 
-### Build
+**From a release**, the quickest. You need Node.js 24 or later. Each [GitHub Release](https://github.com/JasonKong/ocpp-mimic/releases) carries the npm package:
+
+```bash
+npm install --global https://github.com/JasonKong/ocpp-mimic/releases/latest/download/ocpp-mimic.tgz
+ocpp-mimic --version
+ocpp-mimic samples scenarios
+```
+
+`ocpp-mimic samples <dir>` copies the sample personas, example scenarios, scenario templates, load plans, import mappings and logs into `<dir>`, keeping files that are already there. With `scenarios` as the directory, the paths in this guide (`scenarios/personas`, `scenarios/examples`, `scenarios/load`, ...) work as written. On a Node.js older than 24 the command says which version it needs. A specific version installs from its own release, as `.../releases/download/v0.1.0/ocpp-mimic-0.1.0.tgz`.
+
+**In Docker**: see [Running in Docker](#running-in-docker) below.
+
+**From source**, to change ocpp-mimic or to follow `main`. You need Node.js 24 (the repository's `.nvmrc`; `fnm use` or `nvm use` switches to it) and pnpm 12 (`corepack enable` installs the version `package.json` names):
 
 ```bash
 git clone https://github.com/JasonKong/ocpp-mimic.git
 cd ocpp-mimic
 pnpm install
 pnpm build
-```
-
-The command line tool is then `packages/cli/dist/main.js`. The examples in this guide call it `ocpp-mimic`; define that name in your shell from the repository root:
-
-```bash
 alias ocpp-mimic="node $PWD/packages/cli/dist/main.js"
 ```
 
+The clone's `scenarios/` already holds the samples, along with the regression suite and the CitrineOS and SteVe scenarios (those need Docker). `pnpm pack:release` builds the package a release publishes, `release/ocpp-mimic-<version>.tgz`, which `npm install --global` installs. [CONTRIBUTING.md](../CONTRIBUTING.md) explains how changes are made.
+
 `ocpp-mimic --help` lists every command and option, and `ocpp-mimic --version` prints the version.
-
-### Installing the package instead
-
-`pnpm pack:release` builds `release/ocpp-mimic-<version>.tgz`, the package a release publishes. It holds the command, the Web UI, the built-in personas and the samples, and installs with npm alone:
-
-```bash
-npm install --global ./release/ocpp-mimic-0.1.0.tgz
-ocpp-mimic samples ./samples
-```
-
-`ocpp-mimic samples <dir>` copies the sample personas, example scenarios, load plans, import mappings and logs into `<dir>`; files already there are kept. Where this guide names `scenarios/personas` or `scenarios/examples`, use `<dir>/personas` and `<dir>/examples` instead. On a Node.js older than 24 the command says which version it needs.
 
 ### Running in Docker
 
@@ -96,7 +92,7 @@ You need two processes: a CSMS for the stations to connect to, and the engine th
 
 5. On connector 1, pick an EV such as `compact-40kwh`, click **Plug in**, type a card id such as `TAG-001` and click **Present card**. A transaction starts and meter values begin to flow. Open the **Sessions** tab to watch the session.
 
-`pnpm serve` builds and starts the engine in one step, without the sample personas.
+In a clone, `pnpm serve` builds and starts the engine in one step, without the sample personas.
 
 ### Keeping stations across restarts
 
@@ -187,6 +183,8 @@ Above the station view, the **Fleet** card counts stations per persona or per gr
 
 Selecting a station opens its view, with **Station** and **Sessions** tabs.
 
+![The station list on the left, the fleet overview and the view of an OCPP 2.1 station with a session running](images/station-view.png)
+
 The header shows the id, version, persona, CSMS URL, connection state and, when it is not 1, the energy multiplier. Its buttons:
 
 | Button | Effect |
@@ -228,6 +226,8 @@ The **message log** at the bottom lists every frame in and out, with a short sum
 
 ### Sessions view
 
+![The Sessions tab of a station: the session list, the header with its start timeline, the energy panel with its chart, the vehicle card and the price card](images/sessions-view.png)
+
 The **Sessions** tab lists the station's charging sessions, newest first: number, start source (Card, Remote start, No authorization, Payment), energy or the reason it failed, EVSE, token and time. The address `#/stations/<id>/sessions/<n>` links straight to a session.
 
 A session shows:
@@ -235,7 +235,7 @@ A session shows:
 - **Header**: the start source, token and its type, remoteStartId (2.x), transaction id, start and duration, why a start failed, the stop reason, transaction limits and payment settlement (2.1). Below it, the **start timeline**: each frame from the first request until the transaction ran, with the time each step took. Click a step to open the frame and its answer.
 - **Energy panel**: delivered energy, power and SoC as reported, charging and suspended time, the time to the target as a third party would estimate it from the reported values, per-phase current and voltage, and the chart of reported and offered power and SoC. For a finished session: the total, peak power, SoC range and stop reason.
 - **Vehicle card**: twelve facts about the car (battery capacity, SoC, target, departure time, maximum power, phases, ...), each with what the station reported, what can only be estimated, and what the OCPP version cannot carry at all.
-- **Price card**: the CSMS's cost (2.0.1 and 2.1 send one; 1.6 has no cost messages), the station's own cost (2.1 with tariffs), and the **reference price** ocpp-mimic computes from the reported values with your tariff, with each item naming the frames it used. It says whether the costs match to the cent. **Edit the reference tariff** changes it: a fixed fee, a price per kWh with an optional off-peak price and its hours, a price per charging minute and per idle minute, a minimum and maximum cost, and one tax rate.
+- **Price card**: the CSMS's cost (2.0.1 and 2.1 send one; 1.6 has no cost messages), the station's own cost (2.1 with tariffs), and the **reference price** ocpp-mimic computes from the reported values with your tariff, with each item naming the frames it used. It says whether the costs match to the cent. OCPP 2.0.1 sends the CSMS's cost without a currency, so the card shows it in the reference tariff's currency: to compare them, give the built-in CSMS (`--tariff`) and the price card the same tariff. **Edit the reference tariff** changes it: a fixed fee, a price per kWh with an optional off-peak price and its hours, a price per charging minute and per idle minute, a minimum and maximum cost, and one tax rate.
 - **Session log**: the session's frames, each CALL with its answer and response time, filterable by action, direction, errors only, and log lines. Picking a meter value row marks its moment on the chart, and clicking the chart selects the nearest row. **Export JSONL** downloads the session's frames.
 
 **CSMS view / Show truth.** By default the panels show only what a CSMS could know from the frames. **Show truth** adds the EV model's real values beside them: the exact SoC, energy, power and time until full. An estimate that is off by more than 5 minutes or 10 % is highlighted.
@@ -388,7 +388,7 @@ The engine notices when a station's CSMS is the built-in one (it asks `GET /api/
 
 ### The reference tariff
 
-`--tariff` and the Web UI's price card use the same tariff format, an OCPP 2.1 TariffType as JSON. `scenarios/load/tariff.json` is an example:
+`--tariff` and the Web UI's price card use the same tariff format, an OCPP 2.1 TariffType as JSON. The engine starts with this reference tariff until you set your own; `scenarios/load/tariff.json`, which the load plans use, is another example, in EUR:
 
 ```json
 {
@@ -450,7 +450,7 @@ ocpp-mimic run my-tests/ --csms ws://127.0.0.1:8081 --var APP=http://127.0.0.1:3
 
 Each scenario prints PASS, FAIL (a step failed; the rest are skipped) or ERROR (an invalid file, a timeout, an engine failure), with the failing step's expected and actual values. The exit code is 0 when every scenario passed, 1 when any failed, and 2 for usage errors and files that do not validate. Every frame is checked against the Open Charge Alliance's JSON schemas; a violation fails the scenario unless it sets `checkSchemas: false`.
 
-Example scenarios are in `scenarios/examples/`; `scenarios/regression/` is the suite CI runs against the built-in CSMS, and `scenarios/citrineos/` and `scenarios/steve/` run against those CSMSs.
+Example scenarios are in `scenarios/examples/`, and all of them run against the built-in CSMS; `scenarios/templates/` holds starting points for testing your own CSMS and app. `scenarios/regression/` is the suite CI runs against the built-in CSMS, and `scenarios/citrineos/` and `scenarios/steve/` run against those CSMSs.
 
 ### Scenario fields
 
@@ -532,7 +532,7 @@ It takes `method`, `url`, `headers`, `basicAuth`, `json`, `expect` (`status`, `j
 
 ### Testing your own CSMS
 
-1. Write scenarios with `csms:` set to your CSMS, or keep `builtin` and pass `--csms` when running.
+1. Write scenarios with `csms:` set to your CSMS, or keep `builtin` and pass `--csms` when running. `scenarios/templates/app-triggered-start.yaml` is a starting point.
 2. Allow the address: `--allow-csms ws://my-csms.test:8180/`.
 3. Make the CSMS know the stations and cards the scenarios use, for example with `http` steps against its API at the start of the scenario.
 4. Run with `--junit` in CI.
@@ -899,7 +899,7 @@ curl -s $API/stations/SIM-100/sessions
 | `ocpp-mimic import <file>...` | Convert and mask logs |
 | `ocpp-mimic replay <log>` | Replay a log against a CSMS |
 | `ocpp-mimic calibrate <log>...` | Derive a persona from logs |
-| `ocpp-mimic samples <dir>` | Copy the samples into a directory to edit |
+| `ocpp-mimic samples <dir>` | Copy the samples and templates into a directory to edit |
 
 Options of `serve`:
 

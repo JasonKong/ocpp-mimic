@@ -23,7 +23,6 @@ describe('scenario files', () => {
   it('validates every reference example', async () => {
     const files = await findScenarioFiles([EXAMPLES]);
     expect(files.map((f) => f.slice(EXAMPLES.length))).toEqual([
-      'app-triggered-start.yaml',
       'fault.yaml',
       'local-card-session.yaml',
       'ocpp201-sessions.yaml',
@@ -40,12 +39,12 @@ describe('scenario files', () => {
         const scenario = document.scenario;
         expect(scenario).toBeDefined();
         if (scenario === undefined) continue;
-        // The app template takes APP_API from --var.
-        expect(variableProblems(scenario, ['APP_API']), document.label).toEqual([]);
+        // Examples run as they are: no variable needs --var.
+        expect(variableProblems(scenario), document.label).toEqual([]);
         scenarios++;
       }
     }
-    expect(scenarios).toBe(8);
+    expect(scenarios).toBe(7);
   });
 
   it('validates every scenario file in the repository', async () => {

@@ -25,6 +25,7 @@ The first release, 0.1.0. It collects milestones M1 to M8 of the [design](docs/d
 - **API token** (`--api-token`, `OCPP_MIMIC_API_TOKEN`) for the engine's API, `/metrics`, the events WebSocket and the Web UI, and for the built-in CSMS's control API (`csms --api-token`; `serve --csms-api-token` for remote starts through it). A server that listens beyond loopback without a token warns at start.
 - **npm package** `ocpp-mimic`: one install with the CLI, the Web UI, the built-in personas, the OCA schemas, the test PKI and the samples; `ocpp-mimic samples <dir>` copies the samples to edit; the command names the Node.js version it needs on an older one.
 - **Docker image** `ghcr.io/jasonkong/ocpp-mimic` for linux/amd64 and linux/arm64, running `serve` by default with its store in `/data`, and `docs/examples/docker-compose.yml` with the engine and the built-in CSMS.
+- **User guide checks**: every YAML and JSON example in both guides is validated, and every option they name must exist for its command. The install section starts from a release.
 - **Versions**: version 0.1.0 in `--version`, both `/api/health` answers and OTLP's `service.version`; this changelog.
 
 ### Fixed

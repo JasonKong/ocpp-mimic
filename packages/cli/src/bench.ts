@@ -17,6 +17,23 @@ import { writeHeapSnapshot } from 'node:v8';
 import { createEngine, resolveEv, type Engine, type FleetEvent } from '@ocpp-mimic/engine';
 
 /** The built CLI (from src/ and dist/ alike), which runs the CSMS child. */
+/** The options of `pnpm bench` (bench-main.ts). */
+export const BENCH_OPTIONS = {
+  stations: { type: 'string' },
+  duration: { type: 'string' },
+  rate: { type: 'string' },
+  persona: { type: 'string' },
+  charging: { type: 'string' },
+  'csms-delay': { type: 'string' },
+  sample: { type: 'string' },
+  out: { type: 'string' },
+  store: { type: 'string' },
+  'record-limit': { type: 'string' },
+  tariff: { type: 'string' },
+  'heap-snapshot': { type: 'boolean' },
+  help: { type: 'boolean', short: 'h' },
+} as const;
+
 export const CLI_MAIN = fileURLToPath(new URL('../dist/main.js', import.meta.url));
 export const BENCH_PERSONAS = fileURLToPath(
   new URL('../../../scenarios/personas/', import.meta.url),

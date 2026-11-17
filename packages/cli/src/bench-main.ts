@@ -5,7 +5,7 @@
  */
 import { parseArgs } from 'node:util';
 import { parseDuration } from '@ocpp-mimic/core';
-import { DEFAULT_BENCH, runBench, type BenchOptions } from './bench.js';
+import { BENCH_OPTIONS, DEFAULT_BENCH, runBench, type BenchOptions } from './bench.js';
 
 const USAGE = `Usage: pnpm bench [options]
 
@@ -30,23 +30,7 @@ function fail(message: string): never {
   process.exit(2);
 }
 
-const { values } = parseArgs({
-  options: {
-    stations: { type: 'string' },
-    duration: { type: 'string' },
-    rate: { type: 'string' },
-    persona: { type: 'string' },
-    charging: { type: 'string' },
-    'csms-delay': { type: 'string' },
-    sample: { type: 'string' },
-    out: { type: 'string' },
-    store: { type: 'string' },
-    'record-limit': { type: 'string' },
-    tariff: { type: 'string' },
-    'heap-snapshot': { type: 'boolean' },
-    help: { type: 'boolean', short: 'h' },
-  },
-});
+const { values } = parseArgs({ options: BENCH_OPTIONS });
 if (values.help) {
   console.log(USAGE);
   process.exit(0);

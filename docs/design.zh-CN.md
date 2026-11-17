@@ -1465,6 +1465,7 @@ M8 确定（#267）。M1 到 M7 做出了模拟器；M8 把它变成别人可以
 - `docs/guide.md` 和 `docs/guide.zh-CN.md` 随每个用户可见的改动一起更新（`CLAUDE.md` 里的工作流规则）。
 - 一个测试读取英文手册：其中属于 persona、场景、压测计划、使用模型或资费的 YAML 和 JSON 代码块用 core 的校验器检查，提到的每个 `--option` 都必须是对应命令真实存在的选项。
 - 安装一节改为先讲 npm 包和镜像；从源码构建移到面向贡献者的一节。桩列表、桩视图和 Sessions 视图的截图取自一个只有合成桩的演示环境。
+- 已实现（T120）：`packages/cli/src/guide.test.ts` 读取两份手册。每个 YAML 或 JSON 代码块都必须属于已知的类型并按该类型校验通过：persona（与内置 persona 一起解析）、场景、步骤列表、压测计划、使用模型、资费、批量模板或日志行；未知类型的代码块会失败，这样新加的示例都会被检查。手册提到的每个 `--option` 都必须属于某个 ocpp-mimic 命令、`pnpm bench`（其选项移到了 `BENCH_OPTIONS`）或少数几个其他工具的选项；在 `ocpp-mimic <命令>` 那一行里，还必须属于该命令（`COMMANDS` 已导出）。安装一节先讲从发布版本安装，地址为 `releases/latest/download/ocpp-mimic.tgz`（发布时会另附一个不带版本号的 tarball），然后是 Docker，最后是从源码构建；`ocpp-mimic samples scenarios` 把示例放到手册路径所指的位置。`docs/images/` 里有两张用无头 Chrome 从合成桩演示环境截取的图。
 
 **许可证和声明**
 

@@ -27,39 +27,35 @@ ocpp-mimic 以 [Business Source License 1.1](../LICENSE) 公开源码：试用�
 
 ## 1. 安装和首次启动
 
-### 环境要求
+### 安装
 
-- **Node.js 24。** 仓库的 `.nvmrc` 写明了版本；在仓库目录里执行 `fnm use` 或 `nvm use` 切换。Node 版本太旧会在启动时直接报错，例如 `does not provide an export named 'parseArgs'`。
-- **pnpm 12**，版本见 `package.json` 的 `packageManager` 字段。执行 `corepack enable` 会安装对应版本。
-- 只有跑 CitrineOS 场景时需要 Docker。
+三种方式任选其一。
 
-### 构建
+**从发布版本安装**，最快。需要 Node.js 24 或更高版本。每个 [GitHub Release](https://github.com/JasonKong/ocpp-mimic/releases) 都附带 npm 包：
+
+```bash
+npm install --global https://github.com/JasonKong/ocpp-mimic/releases/latest/download/ocpp-mimic.tgz
+ocpp-mimic --version
+ocpp-mimic samples scenarios
+```
+
+`ocpp-mimic samples <目录>` 把示例 persona、示例场景、场景模板、压测计划、导入映射和日志复制到 `<目录>`，已有的文件保留不动。目录用 `scenarios` 时，本手册里的路径（`scenarios/personas`、`scenarios/examples`、`scenarios/load` 等）可以直接使用。Node.js 低于 24 时，命令会说明需要哪个版本。指定版本可以从对应的发布安装，例如 `.../releases/download/v0.1.0/ocpp-mimic-0.1.0.tgz`。
+
+**在 Docker 里运行**：见下面的[在 Docker 里运行](#在-docker-里运行)。
+
+**从源码构建**，用于修改 ocpp-mimic 或跟随 `main`。需要 Node.js 24（仓库的 `.nvmrc`；用 `fnm use` 或 `nvm use` 切换）和 pnpm 12（`corepack enable` 会安装 `package.json` 指定的版本）：
 
 ```bash
 git clone https://github.com/JasonKong/ocpp-mimic.git
 cd ocpp-mimic
 pnpm install
 pnpm build
-```
-
-命令行工具是 `packages/cli/dist/main.js`。本手册的示例把它写作 `ocpp-mimic`；在仓库根目录里给 shell 定义这个名字：
-
-```bash
 alias ocpp-mimic="node $PWD/packages/cli/dist/main.js"
 ```
 
+克隆下来的 `scenarios/` 里已经有示例，还有回归套件以及 CitrineOS 和 SteVe 场景（这些需要 Docker）。`pnpm pack:release` 构建发布时提供的包 `release/ocpp-mimic-<版本>.tgz`，可以用 `npm install --global` 安装。[CONTRIBUTING.md](../CONTRIBUTING.md) 说明如何参与修改。
+
 `ocpp-mimic --help` 列出所有命令和选项，`ocpp-mimic --version` 打印版本号。
-
-### 改用安装包
-
-`pnpm pack:release` 构建出 `release/ocpp-mimic-<版本>.tgz`，也就是发布时提供的包。它包含命令本身、Web UI、内置 persona 和示例，只用 npm 就能安装：
-
-```bash
-npm install --global ./release/ocpp-mimic-0.1.0.tgz
-ocpp-mimic samples ./samples
-```
-
-`ocpp-mimic samples <目录>` 把示例 persona、示例场景、压测计划、导入映射和日志复制到 `<目录>`，已有的文件保留不动。本手册里提到 `scenarios/personas` 或 `scenarios/examples` 的地方，改用 `<目录>/personas` 和 `<目录>/examples`。Node.js 低于 24 时，命令会说明需要哪个版本。
 
 ### 在 Docker 里运行
 
@@ -98,7 +94,7 @@ docker run --rm -p 127.0.0.1:7300:7300 -e OCPP_MIMIC_API_TOKEN -v ocpp-mimic-dat
 
 5. 在 1 号连接器上选一辆 EV（如 `compact-40kwh`），点 **Plug in**，输入卡号（如 `TAG-001`），点 **Present card**。交易开始，电表值开始上报。打开 **Sessions** 标签页可以看这次会话。
 
-`pnpm serve` 会一步完成构建和启动引擎，但不加载示例 persona。
+在克隆的仓库里，`pnpm serve` 会一步完成构建和启动引擎，但不加载示例 persona。
 
 ### 重启后保留桩
 
@@ -189,6 +185,8 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 
 选中一个桩就打开它的视图，分 **Station** 和 **Sessions** 两个标签页。
 
+![左侧是桩列表，上方是 Fleet 总览，右侧是一个正在充电的 OCPP 2.1 桩的视图](images/station-view.png)
+
 顶部显示 id、版本、persona、CSMS URL、连接状态，倍率不为 1 时还显示能量倍率。按钮：
 
 | 按钮 | 作用 |
@@ -230,6 +228,8 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 
 ### Sessions 视图
 
+![桩的 Sessions 标签页：会话列表、带启动时间线的头部、带曲线的电量面板、车辆卡片和价格卡片](images/sessions-view.png)
+
 **Sessions** 标签页按时间倒序列出桩的充电会话：编号、启动方式（Card、Remote start、No authorization、Payment）、电量或失败原因、EVSE、卡号和时间。地址 `#/stations/<id>/sessions/<n>` 可以直接链接到某个会话。
 
 一个会话显示：
@@ -237,7 +237,7 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 - **头部**：启动方式、卡号及类型、remoteStartId（2.x）、交易 id、开始时间和时长、启动失败的原因、停止原因、交易限值和支付结算（2.1）。下面是**启动时间线**：从第一个请求到交易开始的每一帧，以及每一步耗时。点某一步可以打开对应的帧和应答。
 - **电量面板**：按上报值显示的已充电量、功率和 SoC，充电和暂停时长，第三方根据上报值估算的到达目标所需时间，各相电流和电压，以及上报功率、提供功率和 SoC 的曲线图。已结束的会话还会显示总量、峰值功率、SoC 区间和停止原因。
 - **车辆卡片**：关于车辆的十二项信息（电池容量、SoC、目标、出发时间、最大功率、相数……），每项注明桩上报了什么、什么只能估算、什么是当前 OCPP 版本根本无法携带的。
-- **价格卡片**：CSMS 的费用（2.0.1 和 2.1 会发；1.6 没有费用消息）、桩自己算的费用（2.1 有资费时），以及 ocpp-mimic 用你设的资费根据上报值算出的**参考价格**，每一项都列出所用的帧，并说明几者是否精确到分一致。**Edit the reference tariff** 修改参考资费：固定费用、每 kWh 价格（可选加一个谷时价及其时段）、每充电分钟和每空闲分钟的价格、最低和最高费用，以及一个税率。
+- **价格卡片**：CSMS 的费用（2.0.1 和 2.1 会发；1.6 没有费用消息）、桩自己算的费用（2.1 有资费时），以及 ocpp-mimic 用你设的资费根据上报值算出的**参考价格**，每一项都列出所用的帧，并说明几者是否精确到分一致。OCPP 2.0.1 发送的 CSMS 费用不带币种，所以卡片按参考资费的币种显示它：要对比时，给内置 CSMS（`--tariff`）和价格卡片设同一份资费。**Edit the reference tariff** 修改参考资费：固定费用、每 kWh 价格（可选加一个谷时价及其时段）、每充电分钟和每空闲分钟的价格、最低和最高费用，以及一个税率。
 - **会话日志**：会话的帧，每个 CALL 带着它的应答和响应时间，可按 action、方向、只看错误、日志行筛选。选中一行电表值会在曲线上标出对应时刻，点曲线会选中最近的一行。**Export JSONL** 下载这次会话的帧。
 
 **CSMS view / Show truth。** 默认情况下面板只显示 CSMS 能从帧里知道的信息。**Show truth** 会在旁边加上 EV 模型的真实值：准确的 SoC、电量、功率和充满所需时间。估算偏差超过 5 分钟或 10% 时会高亮提示。
@@ -390,7 +390,7 @@ curl -s -X POST http://127.0.0.1:9100/api/stations/SIM-001/call \
 
 ### 参考资费
 
-`--tariff` 和 Web UI 价格卡片用同一种资费格式：JSON 形式的 OCPP 2.1 TariffType。示例见 `scenarios/load/tariff.json`：
+`--tariff` 和 Web UI 价格卡片用同一种资费格式：JSON 形式的 OCPP 2.1 TariffType。在你设置自己的资费之前，引擎使用下面这份参考资费；压测计划用的 `scenarios/load/tariff.json` 是另一个例子，币种为 EUR：
 
 ```json
 {
@@ -452,7 +452,7 @@ ocpp-mimic run my-tests/ --csms ws://127.0.0.1:8081 --var APP=http://127.0.0.1:3
 
 每个场景输出 PASS、FAIL（某一步失败，后面的步骤跳过）或 ERROR（文件无效、超时、引擎故障），失败时给出该步骤的期望值和实际值。全部通过时退出码为 0，有失败为 1，用法错误或文件校验不通过为 2。每一帧都会用开放充电联盟（OCA）的 JSON schema 校验；有违规就判场景失败，除非场景设了 `checkSchemas: false`。
 
-示例场景在 `scenarios/examples/`；`scenarios/regression/` 是 CI 对内置 CSMS 跑的回归套件，`scenarios/citrineos/` 和 `scenarios/steve/` 分别针对这两个 CSMS。
+示例场景在 `scenarios/examples/`，全部都能对内置 CSMS 运行；`scenarios/templates/` 是测试你自己的 CSMS 和应用时的起点。`scenarios/regression/` 是 CI 对内置 CSMS 跑的回归套件，`scenarios/citrineos/` 和 `scenarios/steve/` 分别针对这两个 CSMS。
 
 ### 场景字段
 
@@ -534,7 +534,7 @@ ocpp-mimic run my-tests/ --csms ws://127.0.0.1:8081 --var APP=http://127.0.0.1:3
 
 ### 测试你自己的 CSMS
 
-1. 场景里把 `csms:` 设为你的 CSMS，或保持 `builtin`，运行时传 `--csms`。
+1. 场景里把 `csms:` 设为你的 CSMS，或保持 `builtin`，运行时传 `--csms`。可以从 `scenarios/templates/app-triggered-start.yaml` 改起。
 2. 放行地址：`--allow-csms ws://my-csms.test:8180/`。
 3. 让 CSMS 认识场景用到的桩和卡，例如在场景开头用 `http` 步骤调用它的 API 创建。
 4. 在 CI 里加 `--junit` 运行。
@@ -901,7 +901,7 @@ curl -s $API/stations/SIM-100/sessions
 | `ocpp-mimic import <文件>...` | 转换并脱敏日志 |
 | `ocpp-mimic replay <日志>` | 对 CSMS 回放日志 |
 | `ocpp-mimic calibrate <日志>...` | 从日志推导 persona |
-| `ocpp-mimic samples <目录>` | 把示例复制到一个目录里修改 |
+| `ocpp-mimic samples <目录>` | 把示例和模板复制到一个目录里修改 |
 
 `serve` 的选项：
 
