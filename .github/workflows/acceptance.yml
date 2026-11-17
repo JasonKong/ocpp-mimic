@@ -32,6 +32,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
+          # Only npm and the release's tarball here: no pnpm cache from packageManager.
+          package-manager-cache: false
       - name: Download the package from the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
