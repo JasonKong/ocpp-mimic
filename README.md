@@ -5,15 +5,33 @@ An OCPP charge point simulator: a headless engine runs many virtual charge point
 - **[User guide](docs/guide.md)** ([中文版](docs/guide.zh-CN.md)): installing, the Web UI, personas, scenarios, the built-in CSMS, OCPP 2.1 features, load tests, logs and the API.
 - **[Design](docs/design.md)** ([中文版](docs/design.zh-CN.md)): how it works and why, milestone by milestone.
 
-> Status: M1 to M7 are done:
+> Status: M1 to M8 are done, and [0.1.0](https://github.com/JasonKong/ocpp-mimic/releases/tag/v0.1.0) is the first release:
 >
 > - OCPP 1.6J with every feature profile and the Security Whitepaper; scenarios and CI; fault injection.
 > - Scale: 1,000 stations on one machine, load tests, metrics, log import, replay and calibration.
 > - OCPP 2.0.1 (M5), checked against CitrineOS.
 > - Charging sessions in the Web UI (M6).
 > - OCPP 2.1 (M7): tariffs and the station's own cost, ad hoc payment, ISO 15118-20 vehicle data and the 2.1 smart charging features, checked against the built-in CSMS and CitrineOS.
->
-> Next is M8, a first release (version 0.1.0, an npm package and a Docker image); see "M8 Release" in the design.
+> - A release (M8): an npm package and a Docker image, an API token, the Business Source License 1.1.
+
+## Install
+
+With Node.js 24 or later, from the latest release:
+
+```bash
+npm install --global https://github.com/JasonKong/ocpp-mimic/releases/latest/download/ocpp-mimic.tgz
+ocpp-mimic samples scenarios
+ocpp-mimic run scenarios/examples --personas scenarios/personas
+```
+
+Or with Docker, for linux/amd64 and linux/arm64:
+
+```bash
+export OCPP_MIMIC_API_TOKEN="$(openssl rand -hex 24)"
+docker run --rm -p 127.0.0.1:7300:7300 -e OCPP_MIMIC_API_TOKEN ghcr.io/jasonkong/ocpp-mimic:0.1.0
+```
+
+The [user guide](docs/guide.md) starts from there. The rest of this page is for working on ocpp-mimic itself.
 
 ## Requirements
 

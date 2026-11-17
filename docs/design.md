@@ -1506,6 +1506,25 @@ The critical path is T113 → T115 → T116 → T117 → T119 → T122. The rele
 - `tools/prepare-release.mjs 0.1.0` opens the changelog's 0.1.0 section; the merge commit on main is tagged `v0.1.0`, which runs the release workflow.
 - `.github/workflows/acceptance.yml` (by hand, with the version) checks the published release from its artifacts alone. The npm job downloads the tarball from the GitHub Release on `ubuntu-latest` and `macos-latest` and runs `tools/smoke-package.sh` with every example and the smoke plan's full two minutes. The image job pulls `ghcr.io/jasonkong/ocpp-mimic:<version>` on `ubuntu-latest` and `ubuntu-24.04-arm` and runs `tools/smoke-image.sh`, then `tools/accept-image.sh`: the samples, every example scenario, and the smoke plan against the CSMS in a second container sharing its network. Only the test scripts come from the repository, at the release's tag.
 
+**Accepted (T122)**
+
+M8's exit criterion G8 is met with v0.1.0, tagged on main 5d960fa:
+
+- **Released by the workflow.** The release run ([44013456469](https://github.com/JasonKong/ocpp-mimic/actions/runs/44013456469)) passed the CI checks, the tag check, the package's smoke test, the image build for linux/amd64 and linux/arm64 with provenance, and the image smoke test on both architectures. It then created the [GitHub Release](https://github.com/JasonKong/ocpp-mimic/releases/tag/v0.1.0) with `ocpp-mimic-0.1.0.tgz` and `ocpp-mimic.tgz` (497 kB each). `ghcr.io/jasonkong/ocpp-mimic:0.1.0` pulls without logging in.
+- **From the artifacts alone.** The acceptance run ([44015264585](https://github.com/JasonKong/ocpp-mimic/actions/runs/44015264585)) passed on all four runners. Each ran the guide's quick start, all 7 example scenarios and the 100-station smoke plan for its full two minutes, and every threshold held:
+
+| | npm package, ubuntu-latest | npm package, macos-latest | image, linux/amd64 | image, linux/arm64 |
+| --- | --- | --- | --- | --- |
+| Quick start (version, Web UI, a session through the API) | pass | pass | pass, with an API token | pass, with an API token |
+| Example scenarios | 7 of 7 | 7 of 7 | 7 of 7 | 7 of 7 |
+| Smoke plan, 100 stations, 2 min | pass | pass | pass: 411 sessions (107.5 %), loop p99 1.3 ms, RSS 201 MB | pass: 411 sessions (107.5 %), loop p99 1.3 ms, RSS 200 MB |
+
+- **Also checked by hand.** The package installs from `releases/latest/download/ocpp-mimic.tgz` on the development Mac, and its examples pass there. The first acceptance run (44014856730) failed in its npm jobs before testing anything, because `actions/setup-node` enables the pnpm cache from `packageManager`, and those jobs use npm only. The fix (`package-manager-cache: false`) is in this change.
+- **Not done in M8.**
+  - The npm registry: the release workflow publishes there once the owner adds an `NPM_TOKEN` secret. Until then the package installs from the GitHub Release.
+  - Private vulnerability reporting, which `SECURITY.md` names, is a repository setting for the owner to turn on.
+- **Follow-up**: [#283](https://github.com/JasonKong/ocpp-mimic/issues/283), the departure check under an energy multiplier, found while taking the screenshots.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
