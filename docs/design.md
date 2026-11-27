@@ -1525,6 +1525,23 @@ M8's exit criterion G8 is met with v0.1.0, tagged on main 5d960fa:
   - Private vulnerability reporting, which `SECURITY.md` names, is a repository setting for the owner to turn on.
 - **Follow-up**: [#283](https://github.com/JasonKong/ocpp-mimic/issues/283), the departure check under an energy multiplier, found while taking the screenshots.
 
+## M9 Demo
+
+Decided for M9 (#288, #289) after a replay prototype: what people want to see is not a recording but the simulator answering what they do. M9 adds a Demo page to the Web UI. There one picks the OCPP version and how sessions start, plugs cars in and out, starts several at once and watches them fill up, while every OCPP message is shown crossing the wire. The page drives the real engine and the built-in CSMS, so what it shows is what the stations send.
+
+**Exit criterion G9**
+
+`ocpp-mimic demo` starts the built-in CSMS and the engine. On its Demo page, for 1.6, 2.0.1 and 2.1 and for each way of starting (plug in and charge, card, app, valet), cars plug in, start together, fill up to SuspendedEV and leave, checked in a browser.
+
+**Ways to start a session**
+
+- Card and app (remote start) existed. Two are added, as chargers in the field offer them:
+  - **Free vend**, plug in and charge, as at home: on 1.6 through ocpp-mimic's vendor keys `FreeVendEnabled` and `FreeVendIdTag` (1.6 has no standard key for it); on 2.x through `AuthCtrlr.Enabled` false, with an empty `NoAuthorization` token as the standard describes.
+  - **Valet**: a CSMS behaviour, not a station's. The CSMS starts a session (with no driver, usually free) whenever an EV is plugged in: on 1.6 Preparing, on 2.x Occupied.
+- An app also stops sessions, so the built-in CSMS gets a remote stop.
+- Dual-port chargers are common: generic personas with two ports.
+- Implemented (T123): on 1.6, `plugIn` authorizes with `FreeVendIdTag` as a `noAuth` session when `FreeVendEnabled` is true and the connector is neither reserved nor in a transaction. The keys come from `VENDOR_CONFIG_KEYS`, which every 1.6 station lists after the standard keys. On 2.x, `plugIn` authorizes with `{ idToken: '', type: 'NoAuthorization' }` when `AuthCtrlr.Enabled` is false, before the start point is evaluated; before, such a station waited for a card. The built-in CSMS keeps an auto start token per chargeBoxId (`setAutoStart`, or `auto-start` in the control API, which, unlike the commands, works before the station connects). After answering a StatusNotification, or 2.1's NotifyEvent on Connector.AvailabilityState, it sends the station its `remote-start` once per plug-in, and forgets the plug-in when the connector reports another state. `remote-stop` sends RemoteStopTransaction or RequestStopTransaction. The engine relays `auto-start` and a connector's `remote-stop` (by the transaction id in the snapshot) to the built-in CSMS through `controlVia`, like remote starts. `generic-dual-1.6`, `generic-dual-2.0.1` and `generic-dual-2.1` extend the generic personas with `connectors: 2`.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
@@ -1828,7 +1845,9 @@ flowchart TB
   G7{{"Exit: every 2.1 scenario for the covered blocks passes against the built-in CSMS and CitrineOS in CI"}}
   M8["<b>M8 · Release</b><br/>Version 0.1.0 and a changelog; one npm package and a Docker image from a release workflow<br/>API token; license and third-party notices; a user guide with checked examples"]
   G8{{"Exit: v0.1.0 from a tag; the package and the image run the quick start, the examples and the smoke plan on clean runners"}}
-  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7 --> M8 --> G8
+  M9["<b>M9 · Demo</b><br/>Free vend, valet auto start, remote stop, dual-port personas<br/>An interactive Demo page: versions, ways to start, cars in and out, messages on the wire"]
+  G9{{"Exit: ocpp-mimic demo; every version and way to start works on the Demo page in a browser"}}
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7 --> M8 --> G8 --> M9 --> G9
 ```
 
 Each phase ends with an exit criterion; the next phase starts once it is met. The M4 thresholds are set in "M4 scale" and can be adjusted to real needs.

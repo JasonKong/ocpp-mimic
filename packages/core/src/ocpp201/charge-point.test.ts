@@ -1891,6 +1891,35 @@ describe('a 2.0.1 station: faults', () => {
 describe('a 2.0.1 station: authorization', () => {
   const tag = (idToken: string) => ({ idToken, type: 'ISO14443' });
 
+  it('starts on the cable alone with AuthCtrlr.Enabled false, as a NoAuthorization token', async () => {
+    const { cp, calls, boot, settle, events } = setup({
+      deviceModel: { AuthCtrlr: { Enabled: false } },
+    });
+    await boot();
+    cp.plugIn(1);
+    await settle();
+    expect(calls('Authorize')).toHaveLength(0);
+    expect(events()).toEqual(['Started CablePluggedIn']);
+    expect(calls('TransactionEvent')[0]?.payload).toMatchObject({
+      idToken: { idToken: '', type: 'NoAuthorization' },
+      evse: { id: 1, connectorId: 1 },
+      transactionInfo: { chargingState: 'Charging' },
+    });
+    cp.unplug(1);
+    await settle();
+    expect(events()).toEqual([
+      'Started CablePluggedIn',
+      'Ended EVCommunicationLost EVDisconnected',
+    ]);
+
+    // With authorization on, the default, the cable alone starts nothing.
+    const on = setup();
+    await on.boot();
+    on.cp.plugIn(1);
+    await on.settle();
+    expect(on.calls('TransactionEvent')).toHaveLength(0);
+  });
+
   it('authorizes from the Local Authorization List without the CSMS, also offline', async () => {
     const { cp, calls, csmsCall, present, boot } = setup();
     await boot();

@@ -1,0 +1,11 @@
+# generic-1.6 with two connectors: a dual-port AC charge point, each port
+# offering 7.36 kW. OCPP 1.6 numbers them connectorId 1 and 2; 0 is the
+# charge point as a whole.
+persona: generic-dual-1.6
+extends: generic-1.6
+description: Generic OCPP 1.6J dual-port AC charge point
+boot:
+  chargePointVendor: ocpp-mimic
+  chargePointModel: Generic-Dual-AC
+  firmwareVersion: 0.0.0
+connectors: 2

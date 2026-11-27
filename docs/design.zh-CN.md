@@ -1524,6 +1524,23 @@ M8 的出口标准 G8 已由 v0.1.0 达成（tag 打在 main 的 5d960fa 上）�
   - `SECURITY.md` 提到的私密漏洞报告是仓库设置，需要所有者开启。
 - **后续问题**：[#283](https://github.com/JasonKong/ocpp-mimic/issues/283)，能量倍率下的出发时间判断，截图时发现。
 
+## M9 演示
+
+M9 在做过一个回放原型之后确定（#288、#289）：大家想看的不是一段录像，而是模拟器对自己的操作作出回应。M9 在 Web UI 里加一个演示页：选 OCPP 版本和会话的启动方式，插枪拔枪，让几辆车同时开始，看着它们充满，同时每条 OCPP 消息在线路上的往来都显示出来。页面驱动的是真实的引擎和内置 CSMS，所以它显示的就是桩真正发出的消息。
+
+**出口标准 G9**
+
+`ocpp-mimic demo` 启动内置 CSMS 和引擎。在它的演示页上，1.6、2.0.1 和 2.1 各自配合每种启动方式（即插即充、刷卡、App、valet），车能插枪、一起开始、充到 SuspendedEV 再离开，在浏览器里检查通过。
+
+**会话的启动方式**
+
+- 刷卡和 App（远程启动）原来就有。再加两种，和现场的充电桩一样：
+  - **免认证（free vend）**，即插即充，家用常见：1.6 用 ocpp-mimic 的厂商配置键 `FreeVendEnabled` 和 `FreeVendIdTag`（1.6 没有对应的标准配置键）；2.x 用 `AuthCtrlr.Enabled` 为 false，按标准的写法带一个空的 `NoAuthorization` token。
+  - **Valet**：这是 CSMS 的行为，不是桩的。每当有车插枪（1.6 的 Preparing，2.x 的 Occupied），CSMS 就启动一个会话（不关联司机，通常免费）。
+- App 也要能结束会话，所以内置 CSMS 增加远程停止。
+- 双口桩很常见：增加双口的 generic persona。
+- 已实现（T123）：1.6 的 `plugIn` 在 `FreeVendEnabled` 为 true、连接器没有预约也没有交易时，用 `FreeVendIdTag` 授权，会话来源记为 `noAuth`。这两个键来自 `VENDOR_CONFIG_KEYS`，每个 1.6 桩都在标准键之后列出它们。2.x 的 `plugIn` 在 `AuthCtrlr.Enabled` 为 false 时先用 `{ idToken: '', type: 'NoAuthorization' }` 授权，再判断开始点；以前这样的桩会一直等刷卡。内置 CSMS 按 chargeBoxId 保存自动启动的 token（`setAutoStart`，或控制 API 的 `auto-start`；它和其他命令不同，桩连上之前就能设置）。CSMS 应答 StatusNotification（或 2.1 针对 Connector.AvailabilityState 的 NotifyEvent）之后，每次插枪发一次 `remote-start`；连接器报告其他状态后就不再记着这次插枪。`remote-stop` 发 RemoteStopTransaction 或 RequestStopTransaction。引擎通过 `controlVia` 把 `auto-start` 和连接器的 `remote-stop`（用快照里的交易 id）转给内置 CSMS，和远程启动一样。`generic-dual-1.6`、`generic-dual-2.0.1` 和 `generic-dual-2.1` 在 generic persona 的基础上设 `connectors: 2`。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。
@@ -1827,7 +1844,9 @@ flowchart TB
   G7{{"出口：覆盖的功能块的每个 2.1 场景在 CI 里对内置 CSMS 和 CitrineOS 通过"}}
   M8["<b>M8 · 发布</b><br/>版本 0.1.0 和变更日志；发布工作流构建的 npm 包和 Docker 镜像<br/>API 令牌；许可证和第三方声明；示例经过检查的使用手册"]
   G8{{"出口：从 tag 发布 v0.1.0；包和镜像在干净的 runner 上跑通快速开始、示例场景和冒烟压测"}}
-  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7 --> M8 --> G8
+  M9["<b>M9 · 演示</b><br/>免认证即插即充、valet 自动启动、远程停止、双口 persona<br/>交互式演示页：版本、启动方式、车辆进出、线路上的消息"]
+  G9{{"出口：ocpp-mimic demo；每个版本和每种启动方式都能在浏览器的演示页里跑通"}}
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7 --> M8 --> G8 --> M9 --> G9
 ```
 
 每个阶段以一条出口标准收尾，达标后再进入下一阶段。M4 的具体阈值见「M4 规模」，可以按实际需求调整。

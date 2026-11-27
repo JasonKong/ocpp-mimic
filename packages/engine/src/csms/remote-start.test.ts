@@ -119,4 +119,89 @@ describe('the built-in CSMS control API', () => {
       ).status,
     ).toBe(400);
   });
+
+  it('starts a session on every plug-in for an auto start (valet) station, and stops one remotely', async () => {
+    const builtin = await startBuiltinCsms();
+    csmss.push(builtin);
+    engine = createEngine({ port: 0, backoff: { initialDelayMs: 20, maxDelayMs: 100, jitter: 0 } });
+    const { url } = await engine.start();
+    const call = async (method: string, path: string, body?: unknown) => {
+      const res = await fetch(`${url}${path}`, {
+        method,
+        ...(body !== undefined && {
+          body: JSON.stringify(body),
+          headers: { 'content-type': 'application/json' },
+        }),
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- loosely typed JSON keeps the assertions short
+      return { status: res.status, body: (await res.json()) as Record<string, any> };
+    };
+    const sessions = async (id: string) =>
+      ((await call('GET', `/api/stations/${id}/sessions`)).body.sessions ?? []) as {
+        state: string;
+        source: string;
+        idToken?: { idToken: string };
+      }[];
+
+    // The CSMS keeps the setting for a station that has not connected yet.
+    const control = builtin.url.replace(/^ws/, 'http').replace(/\/ocpp$/, '');
+    const early = await fetch(`${control}/api/stations/V21/auto-start`, {
+      method: 'POST',
+      body: JSON.stringify({ idToken: { idToken: 'VALET-21', type: 'Central' } }),
+    });
+    expect(await early.json()).toEqual({
+      autoStart: { idToken: { idToken: 'VALET-21', type: 'Central' } },
+    });
+
+    const stations = [
+      ['V16', 'generic-1.6', 'RemoteStopTransaction'],
+      ['V201', 'generic-2.0.1', 'RequestStopTransaction'],
+      // 2.1 reports the plug-in with a NotifyEvent instead of StatusNotification.
+      ['V21', 'generic-2.1', 'RequestStopTransaction'],
+    ] as const;
+    for (const [id, persona] of stations) {
+      expect(
+        (await call('POST', '/api/stations', { id, persona, csmsUrl: builtin.url })).status,
+      ).toBe(201);
+    }
+    for (const [id] of stations) {
+      await until(async () => (await call('GET', `/api/stations/${id}`)).body.csms === 'builtin');
+    }
+    for (const id of ['V16', 'V201']) {
+      expect(
+        await call('POST', `/api/stations/${id}/auto-start`, { idToken: { idToken: 'VALET' } }),
+      ).toEqual({ status: 200, body: { autoStart: { idToken: { idToken: 'VALET' } } } });
+    }
+
+    for (const [id, , stopAction] of stations) {
+      expect((await call('POST', `/api/stations/${id}/connectors/1/remote-stop`)).status).toBe(409);
+      await call('POST', `/api/stations/${id}/connectors/1/plug`, {});
+      await until(async () => (await sessions(id))[0]?.state === 'running');
+      expect((await sessions(id))[0]).toMatchObject({
+        source: 'remote',
+        idToken: { idToken: id === 'V21' ? 'VALET-21' : 'VALET' },
+      });
+      expect(await call('POST', `/api/stations/${id}/connectors/1/remote-stop`)).toMatchObject({
+        status: 200,
+        body: { action: stopAction, status: 'Accepted' },
+      });
+      await until(async () => (await sessions(id))[0]?.state === 'finished');
+      // Each plug-in starts again; one plug-in starts once.
+      await call('POST', `/api/stations/${id}/connectors/1/unplug`);
+      await call('POST', `/api/stations/${id}/connectors/1/plug`, {});
+      await until(async () => (await sessions(id)).length === 2);
+      await until(async () => (await sessions(id))[0]?.state === 'running');
+    }
+
+    // Off again: a plug-in starts nothing.
+    expect(await call('POST', '/api/stations/V16/auto-start', { idToken: null })).toEqual({
+      status: 200,
+      body: { autoStart: null },
+    });
+    await call('POST', '/api/stations/V16/connectors/1/unplug');
+    await call('POST', '/api/stations/V16/connectors/1/plug', {});
+    await sleep(800);
+    expect(await sessions('V16')).toHaveLength(2);
+    expect((await call('POST', '/api/stations/V16/auto-start', { idToken: 'X' })).status).toBe(400);
+  });
 });

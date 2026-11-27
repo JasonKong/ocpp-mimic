@@ -154,6 +154,21 @@ The station id is appended to the CSMS URL: a station `SIM-001` with CSMS URL `w
 
 **Simulated time.** Timestamps are always real time. A station's **energy multiplier** (default 1) makes energy and SoC grow that many times faster, so a full charge can take minutes instead of hours. The Web UI shows times left in wall-clock time and marks the multiplier.
 
+### How a session starts
+
+Sessions start in the four ways chargers in the field start them:
+
+| Start | OCPP 1.6 | OCPP 2.0.1 and 2.1 | Ends with |
+| --- | --- | --- | --- |
+| **Card** | Authorize, then StartTransaction once the cable is in | Authorize, then TransactionEvent Started | The same card, or unplugging |
+| **App** (remote start) | The CSMS sends RemoteStartTransaction | The CSMS sends RequestStartTransaction | A remote stop from the CSMS, or unplugging |
+| **Plug in and charge** (free vend, as at home) | Configuration key `FreeVendEnabled` true: plugging in starts with `FreeVendIdTag` (default `FreeVend`), without Authorize | Device Model `AuthCtrlr.Enabled` false: plugging in starts with an empty token of type `NoAuthorization` | Unplugging |
+| **Valet** (the CSMS starts on plug-in) | The built-in CSMS's [auto start](#control-api): Preparing is answered with RemoteStartTransaction | Occupied is answered with RequestStartTransaction | A remote stop from the CSMS, or unplugging |
+
+`FreeVendEnabled` and `FreeVendIdTag` are ocpp-mimic's own vendor keys, the way many chargers offer free vending: GetConfiguration lists them and ChangeConfiguration changes them. Valet is something the CSMS does, not the station: the station is an ordinary one that accepts remote starts, and the CSMS starts a session (usually free, with no driver) whenever an EV is plugged in.
+
+When the EV is full it stops drawing power: the connector goes to SuspendedEV (1.6) or the charging state to SuspendedEV (2.x), and the session stays open, with the car still occupying the bay, until it is stopped or unplugged.
+
 ## 3. The Web UI
 
 `ocpp-mimic serve` serves the Web UI on the same port as its API (default <http://127.0.0.1:7300>). `load --port <n>` serves it too, so you can watch a load test. When the engine has an [API token](#listening-beyond-this-machine-the-api-token), the UI asks for it first. The UI only calls the engine's API; everything it does can also be done with [the API](#12-engine-http-api) or in a scenario.
@@ -253,6 +268,7 @@ Built in (`packages/engine/personas/`):
 | `generic-1.6` | 1.6 | One AC connector offering 7.36 kW, every feature profile, spec-default behaviour, three EV profiles |
 | `generic-2.0.1` | 2.0.1 | One EVSE offering 7.36 kW, the covered 2.0.1 profiles, the same EV profiles |
 | `generic-2.1` | 2.1 | `generic-2.0.1` as a 2.1 station; availability reported with NotifyEvent |
+| `generic-dual-1.6`, `generic-dual-2.0.1`, `generic-dual-2.1` | 1.6, 2.0.1, 2.1 | The generic personas with two ports (connectors 1 and 2 on 1.6, EVSEs 1 and 2 on 2.x), each offering 7.36 kW |
 
 Samples in `scenarios/personas/` (load them with `--personas scenarios/personas`):
 
@@ -370,6 +386,8 @@ The CSMS process serves a small HTTP API on its WebSocket port. Scenarios reach 
 | --- | --- |
 | `GET /api/health` | `{ "service": "ocpp-mimic-csms", "protocols": [...] }` |
 | `POST /api/stations/<id>/remote-start` | `{ "evseId": 1, "idToken": { "idToken": "TAG-001", "type": "Central" } }`: RemoteStartTransaction or RequestStartTransaction; answers with the station's answer |
+| `POST /api/stations/<id>/remote-stop` | `{ "transactionId": 3 }` (a number on 1.6, a string on 2.x): RemoteStopTransaction or RequestStopTransaction |
+| `POST /api/stations/<id>/auto-start` | `{ "idToken": { "idToken": "VALET", "type": "Central" } }`: valet. Whenever an EV is plugged in at the station (1.6 Preparing, 2.x Occupied), the CSMS starts a session with this token, once per plug-in. `{ "idToken": null }` turns it off. The station need not be connected yet |
 | `POST /api/stations/<id>/call` | `{ "action": "Reset", "payload": { "type": "Soft" } }`: any CSMS command of the station's version |
 | `POST /api/stations/<id>/default-tariff` | 2.1: SetDefaultTariff with the reference tariff or `tariff`, on `evseId` (default 0, every EVSE) |
 | `POST /api/stations/<id>/transaction-limit` | 2.1: `{ "transactionLimit": { "maxEnergy": 5000 }, "transactionId": "..." }`, sent with the next TransactionEvent answer |
@@ -384,7 +402,7 @@ curl -s -X POST http://127.0.0.1:9100/api/stations/SIM-001/call \
   -d '{"action":"TriggerMessage","payload":{"requestedMessage":"Heartbeat"}}'
 ```
 
-The engine notices when a station's CSMS is the built-in one (it asks `GET /api/health` on CSMS addresses on this machine), so the Web UI's remote start and `POST /api/stations/<id>/remote-start` on the engine go through it. For any other CSMS they answer 409.
+The engine notices when a station's CSMS is the built-in one (it asks `GET /api/health` on CSMS addresses on this machine), so the Web UI's remote start and the engine's `remote-start`, `remote-stop` and `auto-start` requests go through it. For any other CSMS they answer 409.
 
 ### The reference tariff
 
@@ -849,6 +867,7 @@ Stations:
 | `POST /api/stations/<id>/security-events` | `{ "type": ..., "techInfo": ... }`: report a security event |
 | `GET`, `PATCH /api/stations/<id>/device-model` | 2.x: list variables; set one with `{ component, variable, value }` |
 | `POST /api/stations/<id>/remote-start` | Through the built-in CSMS: `{ evseId, idToken: { idToken, type } }` |
+| `POST /api/stations/<id>/auto-start` | Through the built-in CSMS: `{ idToken: { idToken, type } }` starts a session on every plug-in (valet); `{ idToken: null }` stops that |
 | `POST /api/stations/<id>/vat-number` | 2.1: `{ vatNumber, evseId }` |
 
 Connectors (`<n>` is the connector, or the EVSE on 2.x):
@@ -858,6 +877,7 @@ Connectors (`<n>` is the connector, or the EVSE on 2.x):
 | `POST .../connectors/<n>/plug` | `{ "ev": "compact-40kwh" }` (a name or an inline profile; optional) |
 | `POST .../connectors/<n>/unplug` | |
 | `POST .../connectors/<n>/id-tag` | `{ "idTag": "TAG-001", "type": "ISO14443" }` (type on 2.x) |
+| `POST .../connectors/<n>/remote-stop` | Through the built-in CSMS: stops the connector's transaction, as an app would |
 | `POST .../connectors/<n>/ev-suspend`, `ev-resume` | |
 | `POST`, `DELETE .../connectors/<n>/fault` | `{ errorCode, info, vendorErrorCode }` |
 | `POST .../connectors/<n>/ev-needs` | 2.x: `{ targetSoc, departureMinutes, minimumSoc }` |

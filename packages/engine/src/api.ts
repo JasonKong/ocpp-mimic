@@ -28,7 +28,7 @@ import {
   type WebPaymentLimits,
   type ReferenceTariff,
 } from '@ocpp-mimic/core';
-import { probeCsms, remoteStartVia } from './csms/probe.js';
+import { controlVia, probeCsms } from './csms/probe.js';
 import { resolveEv } from './evs.js';
 import { exportLog } from './logs/export.js';
 import type { Fleet, StationSnapshot, VirtualStation } from './fleet.js';
@@ -378,14 +378,48 @@ const WEB_PAYMENT_ERRORS: Record<
 };
 
 function connectorAction(
-  fn: (station: VirtualStation, connectorId: number, body: Record<string, unknown>) => unknown,
+  fn: (
+    station: VirtualStation,
+    connectorId: number,
+    body: Record<string, unknown>,
+    context: Context,
+  ) => unknown,
 ): Handler {
   return async (request, context) => {
     const station = stationOf(context, request.params[0]);
     const connectorId = connectorIdOf(station, request.params[1]);
-    const result = await fn(station, connectorId, await request.body());
+    const result = await fn(station, connectorId, await request.body(), context);
     return result ?? station.snapshot();
   };
+}
+
+/**
+ * Sends a command to the station's CSMS through its control API, when that
+ * CSMS is ocpp-mimic's built-in one (409 otherwise); answers with its answer.
+ */
+async function viaBuiltinCsms(
+  station: VirtualStation,
+  context: Context,
+  command: string,
+  what: string,
+  body: object,
+): Promise<unknown> {
+  const csmsUrl = station.definition.csmsUrl;
+  if ((station.snapshot().csms ?? (await probeCsms(csmsUrl))) !== 'builtin') {
+    throw new HttpError(
+      409,
+      `the station's CSMS is not ocpp-mimic's built-in CSMS: ${what} must come from that CSMS`,
+    );
+  }
+  const answer = await controlVia(csmsUrl, station.id, command, body, context.csmsApiToken);
+  if (answer.status !== 200) {
+    const message = (answer.body as { error?: unknown } | undefined)?.error;
+    throw new HttpError(
+      502,
+      `the built-in CSMS answered ${answer.status}: ${String(message ?? '')}`,
+    );
+  }
+  return answer.body;
 }
 
 const routes: Route[] = [
@@ -848,30 +882,41 @@ const routes: Route[] = [
     if (evseId !== undefined && !(Number.isInteger(evseId) && Number(evseId) > 0)) {
       throw new HttpError(400, '"evseId" must be a whole number from 1');
     }
-    const csmsUrl = station.definition.csmsUrl;
-    if ((station.snapshot().csms ?? (await probeCsms(csmsUrl))) !== 'builtin') {
-      throw new HttpError(
-        409,
-        "the station's CSMS is not ocpp-mimic's built-in CSMS: a remote start must come from that CSMS",
-      );
+    return viaBuiltinCsms(station, context, 'remote-start', 'a remote start', {
+      idToken: { idToken: idToken as string, ...(typeof type === 'string' && { type }) },
+      ...(evseId !== undefined && { evseId: Number(evseId) }),
+    });
+  }),
+
+  route(
+    'POST',
+    '/api/stations/:param/connectors/:param/remote-stop',
+    connectorAction(async (station, connectorId, _body, context) => {
+      // The app stops the session on the connector, by the transaction id the CSMS knows.
+      const transactionId = station
+        .snapshot()
+        .connectors.find((c) => c.connectorId === connectorId)?.transactionId;
+      if (transactionId === undefined) {
+        throw new HttpError(409, `no transaction the CSMS knows of on connector ${connectorId}`);
+      }
+      return viaBuiltinCsms(station, context, 'remote-stop', 'a remote stop', { transactionId });
+    }),
+  ),
+
+  route('POST', '/api/stations/:param/auto-start', async (request, context) => {
+    // Valet: the built-in CSMS starts a session whenever an EV is plugged in.
+    const station = stationOf(context, request.params[0]);
+    const body = await request.body();
+    const token = body.idToken;
+    if (
+      token !== null &&
+      (typeof token !== 'object' ||
+        typeof (token as Record<string, unknown>).idToken !== 'string' ||
+        (token as Record<string, unknown>).idToken === '')
+    ) {
+      throw new HttpError(400, '"idToken" needs an idToken string, or is null to stop');
     }
-    const answer = await remoteStartVia(
-      csmsUrl,
-      station.id,
-      {
-        idToken: { idToken: idToken as string, ...(typeof type === 'string' && { type }) },
-        ...(evseId !== undefined && { evseId: Number(evseId) }),
-      },
-      context.csmsApiToken,
-    );
-    if (answer.status !== 200) {
-      const message = (answer.body as { error?: unknown } | undefined)?.error;
-      throw new HttpError(
-        502,
-        `the built-in CSMS answered ${answer.status}: ${String(message ?? '')}`,
-      );
-    }
-    return answer.body;
+    return viaBuiltinCsms(station, context, 'auto-start', 'an auto start', { idToken: token });
   }),
 
   route('GET', '/api/tariff', (_request, context) => ({ tariff: sessionsOf(context).tariff() })),

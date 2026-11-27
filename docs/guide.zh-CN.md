@@ -156,6 +156,21 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 
 **模拟时间。** 时间戳始终是真实时间。桩的**能量倍率**（默认 1）让电量和 SoC 按倍数加快增长，原本几小时的充电几分钟就能充满。Web UI 显示剩余时间时换算成实际时间，并标出倍率。
 
+### 会话怎样开始
+
+会话的四种启动方式，和现场的充电桩一样：
+
+| 启动方式 | OCPP 1.6 | OCPP 2.0.1 和 2.1 | 怎样结束 |
+| --- | --- | --- | --- |
+| **刷卡** | 先 Authorize，插上枪后发 StartTransaction | 先 Authorize，再发 TransactionEvent Started | 刷同一张卡，或拔枪 |
+| **App**（远程启动） | CSMS 发 RemoteStartTransaction | CSMS 发 RequestStartTransaction | CSMS 远程停止，或拔枪 |
+| **即插即充**（免认证，家用常见） | 配置键 `FreeVendEnabled` 为 true：插枪就用 `FreeVendIdTag`（默认 `FreeVend`）开始，不发 Authorize | Device Model 的 `AuthCtrlr.Enabled` 为 false：插枪就用类型为 `NoAuthorization` 的空 token 开始 | 拔枪 |
+| **Valet**（CSMS 在插枪时启动） | 内置 CSMS 的[自动启动](#控制-api)：收到 Preparing 就发 RemoteStartTransaction | 收到 Occupied 就发 RequestStartTransaction | CSMS 远程停止，或拔枪 |
+
+`FreeVendEnabled` 和 `FreeVendIdTag` 是 ocpp-mimic 自己的厂商配置键，很多充电桩也用这种方式提供免认证充电：GetConfiguration 会列出它们，ChangeConfiguration 可以修改。Valet 是 CSMS 的行为，不是桩的：桩就是普通的桩，接受远程启动；每当有车插枪，CSMS 就启动一个会话（通常免费、不关联司机）。
+
+车充满后不再取电：1.6 的连接器状态变成 SuspendedEV，2.x 的充电状态变成 SuspendedEV。会话不会结束，车仍然占着车位，直到被停止或拔枪。
+
 ## 3. Web UI
 
 `ocpp-mimic serve` 在 API 的同一端口上提供 Web UI（默认 <http://127.0.0.1:7300>）。`load --port <n>` 也会提供，方便观察压测。引擎设了 [API 令牌](#在本机以外监听api-令牌)时，UI 会先询问令牌。UI 只调用引擎的 API；它能做的事都可以通过 [API](#12-引擎-http-api) 或场景完成。
@@ -255,6 +270,7 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 | `generic-1.6` | 1.6 | 一个 7.36 kW 交流连接器，全部功能 profile，按规范默认行为，三个 EV 配置 |
 | `generic-2.0.1` | 2.0.1 | 一个 7.36 kW 的 EVSE，已覆盖的 2.0.1 功能，同样的 EV 配置 |
 | `generic-2.1` | 2.1 | 作为 2.1 桩的 `generic-2.0.1`；连接器可用性用 NotifyEvent 上报 |
+| `generic-dual-1.6`、`generic-dual-2.0.1`、`generic-dual-2.1` | 1.6、2.0.1、2.1 | 双口版的 generic persona（1.6 是连接器 1 和 2，2.x 是 EVSE 1 和 2），每个口 7.36 kW |
 
 `scenarios/personas/` 里的示例（用 `--personas scenarios/personas` 加载）：
 
@@ -372,6 +388,8 @@ CSMS 进程在 WebSocket 端口上同时提供一个小型 HTTP API。场景里�
 | --- | --- |
 | `GET /api/health` | `{ "service": "ocpp-mimic-csms", "protocols": [...] }` |
 | `POST /api/stations/<id>/remote-start` | `{ "evseId": 1, "idToken": { "idToken": "TAG-001", "type": "Central" } }`：发送 RemoteStartTransaction 或 RequestStartTransaction，返回桩的应答 |
+| `POST /api/stations/<id>/remote-stop` | `{ "transactionId": 3 }`（1.6 是数字，2.x 是字符串）：发送 RemoteStopTransaction 或 RequestStopTransaction |
+| `POST /api/stations/<id>/auto-start` | `{ "idToken": { "idToken": "VALET", "type": "Central" } }`：valet 模式。每当有车在该桩插枪（1.6 的 Preparing，2.x 的 Occupied），CSMS 就用这个 token 启动会话，每次插枪启动一次。`{ "idToken": null }` 关闭。桩不需要已经连上 |
 | `POST /api/stations/<id>/call` | `{ "action": "Reset", "payload": { "type": "Soft" } }`：发送该桩版本的任意 CSMS 命令 |
 | `POST /api/stations/<id>/default-tariff` | 2.1：用参考资费或 `tariff` 发送 SetDefaultTariff，作用于 `evseId`（默认 0，即所有 EVSE） |
 | `POST /api/stations/<id>/transaction-limit` | 2.1：`{ "transactionLimit": { "maxEnergy": 5000 }, "transactionId": "..." }`，随下一个 TransactionEvent 应答下发 |
@@ -386,7 +404,7 @@ curl -s -X POST http://127.0.0.1:9100/api/stations/SIM-001/call \
   -d '{"action":"TriggerMessage","payload":{"requestedMessage":"Heartbeat"}}'
 ```
 
-引擎能识别桩连的是不是内置 CSMS（对本机上的 CSMS 地址请求 `GET /api/health`），所以 Web UI 的远程启动和引擎的 `POST /api/stations/<id>/remote-start` 会经由它发出。连其他 CSMS 时这两者回复 409。
+引擎能识别桩连的是不是内置 CSMS（对本机上的 CSMS 地址请求 `GET /api/health`），所以 Web UI 的远程启动，以及引擎的 `remote-start`、`remote-stop` 和 `auto-start` 请求会经由它发出。连其他 CSMS 时它们回复 409。
 
 ### 参考资费
 
@@ -851,6 +869,7 @@ ocpp-mimic csms --tls-cert packages/engine/test-pki/server.crt --tls-key package
 | `POST /api/stations/<id>/security-events` | `{ "type": ..., "techInfo": ... }`：上报一个安全事件 |
 | `GET`、`PATCH /api/stations/<id>/device-model` | 2.x：列出变量；用 `{ component, variable, value }` 设置一个变量 |
 | `POST /api/stations/<id>/remote-start` | 经由内置 CSMS：`{ evseId, idToken: { idToken, type } }` |
+| `POST /api/stations/<id>/auto-start` | 经由内置 CSMS：`{ idToken: { idToken, type } }` 让每次插枪都启动会话（valet）；`{ idToken: null }` 关闭 |
 | `POST /api/stations/<id>/vat-number` | 2.1：`{ vatNumber, evseId }` |
 
 连接器（`<n>` 是连接器编号，2.x 上是 EVSE 编号）：
@@ -860,6 +879,7 @@ ocpp-mimic csms --tls-cert packages/engine/test-pki/server.crt --tls-key package
 | `POST .../connectors/<n>/plug` | `{ "ev": "compact-40kwh" }`（名字或内联配置；可省略） |
 | `POST .../connectors/<n>/unplug` | |
 | `POST .../connectors/<n>/id-tag` | `{ "idTag": "TAG-001", "type": "ISO14443" }`（type 用于 2.x） |
+| `POST .../connectors/<n>/remote-stop` | 经由内置 CSMS：像 App 那样结束该连接器上的交易 |
 | `POST .../connectors/<n>/ev-suspend`、`ev-resume` | |
 | `POST`、`DELETE .../connectors/<n>/fault` | `{ errorCode, info, vendorErrorCode }` |
 | `POST .../connectors/<n>/ev-needs` | 2.x：`{ targetSoc, departureMinutes, minimumSoc }` |

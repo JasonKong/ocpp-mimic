@@ -168,6 +168,46 @@ export interface BuiltinCsmsOptions {
   installTariff?: boolean;
 }
 
+/** The token the CSMS starts sessions with when it starts them on plug-in. */
+export interface AutoStartToken {
+  idToken: string;
+  /** 2.x IdTokenType type; default Central. */
+  type?: string;
+}
+
+/**
+ * The connector states a station call reports: StatusNotification (1.6 and
+ * 2.x) and 2.1's NotifyEvent on Connector.AvailabilityState. `id` is the 1.6
+ * connectorId or the 2.x evseId.
+ */
+export function reportedStatuses(
+  ocpp: OcppVersion,
+  action: string,
+  payload: JsonObject,
+): { id: number; status: string }[] {
+  if (action === 'StatusNotification') {
+    const id = Number(ocpp === '1.6' ? payload.connectorId : payload.evseId);
+    const status = ocpp === '1.6' ? payload.status : payload.connectorStatus;
+    return Number.isInteger(id) && id > 0 && typeof status === 'string' ? [{ id, status }] : [];
+  }
+  if (action !== 'NotifyEvent' || !Array.isArray(payload.eventData)) return [];
+  return (payload.eventData as JsonObject[]).flatMap((event) => {
+    const component = event.component as JsonObject | undefined;
+    const variable = event.variable as JsonObject | undefined;
+    const id = Number((component?.evse as JsonObject | undefined)?.id);
+    if (
+      component?.name !== 'Connector' ||
+      variable?.name !== 'AvailabilityState' ||
+      !Number.isInteger(id) ||
+      id < 1 ||
+      typeof event.actualValue !== 'string'
+    ) {
+      return [];
+    }
+    return [{ id, status: event.actualValue }];
+  });
+}
+
 /** What `GET /api/health` of the built-in CSMS answers with. */
 export const BUILTIN_CSMS_SERVICE = 'ocpp-mimic-csms';
 
@@ -249,6 +289,12 @@ export interface BuiltinCsms {
    */
   setReply(chargeBoxId: string, action: string, reply: CsmsReply, times?: number): void;
   clearReplies(): void;
+  /**
+   * Starts a session remotely, with this token, whenever an EV is plugged in
+   * at the station (as a valet car park's CSMS does); undefined stops that.
+   * The station need not be connected yet.
+   */
+  setAutoStart(chargeBoxId: string, idToken: AutoStartToken | undefined): void;
   stats(): BuiltinCsmsStats;
   stop(): Promise<void>;
 }
@@ -392,6 +438,8 @@ interface ConnectionContext {
   pricing?: { tariff: ReferenceTariff; everyMs: number };
   /** Sees each CALL the CSMS sent with its answer, to keep what it set. */
   observe: (chargeBoxId: string, action: string, payload: JsonObject, answer: Frame) => void;
+  /** Sees each station CALL a handler answered, once the answer is on its way. */
+  answered?: (connection: BuiltinCsmsConnection, action: string, payload: JsonObject) => void;
 }
 
 function createConnection(
@@ -653,6 +701,7 @@ function createConnection(
           id: frame.id,
           payload: totalCost === undefined ? reply : { ...reply, totalCost },
         });
+        context.answered?.(connection, frame.action, frame.payload);
       }
     } catch (error) {
       answer({
@@ -868,6 +917,10 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       [...protocols].find((protocol) => messageSetForSubprotocol(protocol) !== undefined) ?? false,
   });
   let remoteStartIds = 0;
+  /** Stations the CSMS starts sessions on as EVs are plugged in (setAutoStart). */
+  const autoStarts = new Map<string, AutoStartToken>();
+  /** `${chargeBoxId} ${id}` of connectors started that way, until they report another state. */
+  const autoStarted = new Set<string>();
   /** The control API's commands, `POST /api/stations/:id/<command>`. */
   const commands: Record<string, ControlCommand> = {
     // Starts a session as a third-party app would (M6).
@@ -904,6 +957,20 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       return relay(connection, action, payload, {
         ...(connection.ocpp !== '1.6' && { remoteStartId }),
       });
+    },
+    // Stops a session as a third-party app would, by its transaction id.
+    'remote-stop': (connection, body) => {
+      const id = body.transactionId;
+      if (connection.ocpp === '1.6') {
+        if (!Number.isInteger(id)) {
+          return [400, { error: '"transactionId" must be a whole number on OCPP 1.6' }];
+        }
+        return relay(connection, 'RemoteStopTransaction', { transactionId: Number(id) });
+      }
+      if (typeof id !== 'string' || id === '') {
+        return [400, { error: `"transactionId" must be a string on OCPP ${connection.ocpp}` }];
+      }
+      return relay(connection, 'RequestStopTransaction', { transactionId: id });
     },
     // Any command of the station's version, as a CSMS operator would send it.
     call: (connection, body) => {
@@ -999,6 +1066,54 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       );
     },
   };
+  /** Control API settings, `POST /api/stations/:id/<setting>`: for any station, connected or not. */
+  const settings: Record<
+    string,
+    (chargeBoxId: string, body: Record<string, unknown>) => ControlAnswer
+  > = {
+    // `{ idToken: { idToken, type? } }` starts sessions on plug-in; `{ idToken: null }` stops that.
+    'auto-start': (chargeBoxId, body) => {
+      if (body.idToken === null) {
+        autoStarts.delete(chargeBoxId);
+        return [200, { autoStart: null }];
+      }
+      const token = body.idToken as Record<string, unknown> | undefined;
+      if (
+        typeof token?.idToken !== 'string' ||
+        token.idToken === '' ||
+        (token.type !== undefined && typeof token.type !== 'string')
+      ) {
+        return [400, { error: '"idToken" needs an idToken string, or is null to stop' }];
+      }
+      const idToken: AutoStartToken = {
+        idToken: token.idToken,
+        ...(typeof token.type === 'string' && { type: token.type }),
+      };
+      autoStarts.set(chargeBoxId, idToken);
+      return [200, { autoStart: { idToken } }];
+    },
+  };
+  /**
+   * Auto start: an EV plugged in (1.6 Preparing, 2.x Occupied) gets one
+   * remote start per plug-in, sent after the station has its answer.
+   */
+  const answered: ConnectionContext['answered'] = (connection, action, payload) => {
+    const token = autoStarts.get(connection.chargeBoxId);
+    const plugged = connection.ocpp === '1.6' ? 'Preparing' : 'Occupied';
+    for (const { id, status } of reportedStatuses(connection.ocpp, action, payload)) {
+      const key = `${connection.chargeBoxId} ${id}`;
+      if (status !== plugged) {
+        autoStarted.delete(key);
+        continue;
+      }
+      if (token === undefined || autoStarted.has(key)) continue;
+      autoStarted.add(key);
+      setTimeout(
+        () => void commands['remote-start']?.(connection, { idToken: { ...token }, evseId: id }),
+        (options.responseDelay?.maxMs ?? 0) + 100,
+      ).unref();
+    }
+  };
   const only21 = (connection: BuiltinCsmsConnection): ControlAnswer => [
     404,
     { error: `${connection.chargeBoxId} speaks OCPP ${connection.ocpp}, not 2.1` },
@@ -1048,7 +1163,8 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     }
     const match = /^\/api\/stations\/([^/]+)\/([a-z-]+)$/.exec(url.pathname);
     const command = match === null ? undefined : commands[match[2] ?? ''];
-    if (req.method !== 'POST' || match === null || command === undefined) {
+    const setting = match === null ? undefined : settings[match[2] ?? ''];
+    if (req.method !== 'POST' || match === null || (command ?? setting) === undefined) {
       json(404, { error: 'not found' });
       return;
     }
@@ -1071,8 +1187,12 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
           json(400, { error: 'the body must be a JSON object' });
           return;
         }
+        if (setting !== undefined) {
+          json(...setting(chargeBoxId, body));
+          return;
+        }
         const connection = connections.get(chargeBoxId);
-        if (connection === undefined) {
+        if (connection === undefined || command === undefined) {
           json(404, { error: `${chargeBoxId} is not connected` });
           return;
         }
@@ -1108,6 +1228,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     },
     keepFrames: options.keepFrames ?? true,
     observe,
+    answered,
     ...(options.tariff !== undefined && {
       pricing: { tariff: options.tariff, everyMs: options.costUpdatedEveryMs ?? 60_000 },
     }),
@@ -1209,6 +1330,10 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     },
     clearReplies() {
       overrides.clear();
+    },
+    setAutoStart(chargeBoxId, idToken) {
+      if (idToken === undefined) autoStarts.delete(chargeBoxId);
+      else autoStarts.set(chargeBoxId, { ...idToken });
     },
     stats() {
       return { ...stats, callsReceived: { ...stats.callsReceived } };

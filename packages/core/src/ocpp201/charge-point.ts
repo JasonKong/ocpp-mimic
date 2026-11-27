@@ -3641,6 +3641,22 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       pluggedAtOf.set(connectorId, now());
       stopTimer(connectTimers.get(connectorId));
       connectTimers.delete(connectorId);
+      if (
+        dmValue('AuthCtrlr', 'Enabled') === 'false' &&
+        !authorizations.has(connectorId) &&
+        !transactions.has(connectorId) &&
+        findConnector(station, connectorId)?.reservationId === undefined
+      ) {
+        // Without authorization the cable is enough: the token is NoAuthorization, empty.
+        const idToken: IdTokenType = { idToken: '', type: 'NoAuthorization' };
+        authorizations.set(connectorId, { idToken });
+        hint({
+          kind: 'authorized',
+          evseId: connectorId,
+          idToken: tokenRef(idToken),
+          source: 'noAuth',
+        });
+      }
       evaluate(connectorId, 'CablePluggedIn');
     },
 
