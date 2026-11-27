@@ -116,6 +116,14 @@ export interface CsmsCommand {
   apiToken?: string;
 }
 
+export interface DemoCommand {
+  kind: 'demo';
+  /** The engine's port, for its API and the Web UI. */
+  port: number;
+  /** The built-in CSMS's port. */
+  csmsPort: number;
+}
+
 export interface LoadCommand {
   kind: 'load';
   /** The load plan file. */
@@ -147,6 +155,7 @@ export type Command =
   | CalibrateCommand
   | SamplesCommand
   | LoadCommand
+  | DemoCommand
   | { kind: 'version' }
   | { kind: 'help' }
   | { kind: 'error'; message: string };
@@ -169,6 +178,8 @@ Commands:
   load <plan>            Run a load plan and judge its thresholds
   samples <dir>          Copy the sample personas, scenarios, load plans,
                          import mappings and logs into <dir> to edit
+  demo                   Start the built-in CSMS and the engine together and
+                         open the Web UI's interactive Demo page
 
 Options for serve:
   --port <number>        Port for the HTTP API (default ${DEFAULT_PORT})
@@ -241,6 +252,10 @@ Options for serve, run, load and replay:
   --allow-csms <prefix>  Also allow CSMS URLs starting with <prefix>; repeat
                          for more (default: ${DEFAULT_ALLOWED_CSMS.slice(0, 2).join(', ')}, ...)
 
+Options for demo (both listen on 127.0.0.1 only):
+  --port <number>        Port for the engine and the Web UI (default ${DEFAULT_PORT})
+  --csms-port <number>   Port for the built-in CSMS (default ${DEFAULT_CSMS_PORT})
+
 Options for csms (stations connect to ws://<host>:<port>/ocpp/<id>):
   --port <number>        Port to listen on (default ${DEFAULT_CSMS_PORT})
   --host <host>          Interface to bind (default 127.0.0.1)
@@ -271,6 +286,7 @@ Options for csms (stations connect to ws://<host>:<port>/ocpp/<id>):
 
 const OPTIONS = {
   port: { type: 'string' },
+  'csms-port': { type: 'string' },
   host: { type: 'string' },
   store: { type: 'string' },
   personas: { type: 'string', multiple: true },
@@ -368,6 +384,7 @@ export const COMMANDS = {
     'allow-csms',
   ],
   samples: [],
+  demo: ['port', 'csms-port'],
   load: [
     'csms',
     'duration',
@@ -430,6 +447,14 @@ export function parseCommand(argv: readonly string[]): Command {
     }
     if (rest.length > 0) return error(`Unexpected argument: ${rest[0]}`);
     if (command === 'csms') return parseCsms(values);
+    if (command === 'demo') {
+      const port = parsePort(values.port, DEFAULT_PORT);
+      if (port === undefined) return error(`Invalid port: ${values.port}`);
+      const csmsPort = parsePort(values['csms-port'], DEFAULT_CSMS_PORT);
+      if (csmsPort === undefined) return error(`Invalid port: ${values['csms-port']}`);
+      if (csmsPort === port && port !== 0) return error('--port and --csms-port must differ');
+      return { kind: 'demo', port, csmsPort };
+    }
 
     const port = parsePort(values.port, DEFAULT_PORT);
     if (port === undefined) return error(`Invalid port: ${values.port}`);

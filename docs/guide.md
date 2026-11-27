@@ -94,6 +94,14 @@ You need two processes: a CSMS for the stations to connect to, and the engine th
 
 In a clone, `pnpm serve` builds and starts the engine in one step, without the sample personas.
 
+### The quickest look: the demo
+
+```bash
+ocpp-mimic demo
+```
+
+This starts the built-in CSMS and the engine in one process, on 127.0.0.1 only, and prints the address of the [Demo page](#demo-page): <http://127.0.0.1:7300/#/demo>. Ctrl-C stops both. `--port` and `--csms-port` change the ports (default 7300 and 9100).
+
 ### Keeping stations across restarts
 
 By default the engine keeps nothing: stopping it forgets every station. `serve --store <file>` keeps stations, their configuration or Device Model, transactions, local lists, charging profiles, tariffs and sessions in a SQLite file, and restarts them when the engine starts again.
@@ -256,6 +264,18 @@ A session shows:
 **CSMS view / Show truth.** By default the panels show only what a CSMS could know from the frames. **Show truth** adds the EV model's real values beside them: the exact SoC, energy, power and time until full. An estimate that is off by more than 5 minutes or 10 % is highlighted.
 
 **Remote start.** When the station is connected to the built-in CSMS, the Sessions tab has a remote start form (EVSE, token and type): the built-in CSMS sends RemoteStartTransaction (1.6) or RequestStartTransaction (2.x). With any other CSMS, a remote start has to come from that CSMS.
+
+### Demo page
+
+**Demo** in the header (or `#/demo`) shows a small car park to play with, for showing what OCPP does rather than for testing. It is easiest with [`ocpp-mimic demo`](#the-quickest-look-the-demo); with `serve`, start the built-in CSMS too.
+
+1. Choose the **OCPP version** (1.6J, 2.0.1 or 2.1), **how sessions start** ([plug in and charge, RFID card, app or valet](#how-a-session-starts)), 1 to 3 **charge points** with a **single or dual** port each, and the **battery speed** (the [energy multiplier](#2-concepts); ×300 fills most cars in a minute or two).
+2. **Build the car park**. It creates the stations `DEMO-1` to `DEMO-3`, tagged `demo`, from the generic personas, against the CSMS given (default `ws://127.0.0.1:9100/ocpp`). Building again deletes the `demo` stations first. Plug in and charge sets the station's free vend setting; valet turns on the built-in CSMS's auto start for each station, and the other ways turn it off.
+3. Each bay has a car of its own, from a 25 kWh city car to a 75 kWh SUV, at different charge levels. **Plug in** a car. Then, by the way chosen: it starts by itself, **Tap card**, **Start in app**, or the CSMS starts it. **Tap card to stop**, **Stop in app** and **Unplug** end it. **Plug in every car**, **Tap every card** or **Start every car in the app**, and **Unplug every car** act on every bay at once.
+4. A bay shows the station's own status (for 2.x with the charging state), the car's charge level, power and the energy it took. When the car is full, the station reports SuspendedEV, the power drops to 0 and the bay is marked **Full**, with how long the car has stayed in the bay since. The session stays open until the car is unplugged or the session is stopped.
+5. Every OCPP message flies between its charge point and the CSMS as it happens, and **OCPP messages** lists them, newest first; click one to see its payload.
+
+The page remembers the setup in the browser and picks up the car park when it is opened again. App and valet need ocpp-mimic's built-in CSMS; with another CSMS the page says so.
 
 ## 4. Personas and EV profiles
 
@@ -920,6 +940,7 @@ curl -s $API/stations/SIM-100/sessions
 | `ocpp-mimic replay <log>` | Replay a log against a CSMS |
 | `ocpp-mimic calibrate <log>...` | Derive a persona from logs |
 | `ocpp-mimic samples <dir>` | Copy the samples and templates into a directory to edit |
+| `ocpp-mimic demo` | The built-in CSMS and the engine together, for the Demo page; `--port` (default 7300) and `--csms-port` (default 9100), on 127.0.0.1 only |
 
 Options of `serve`:
 

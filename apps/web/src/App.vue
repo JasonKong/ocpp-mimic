@@ -20,6 +20,7 @@ import {
 } from './api.js';
 import { formatRoute, parseRoute } from './sessions.js';
 import SessionsView from './components/SessionsView.vue';
+import DemoView from './components/DemoView.vue';
 import DeviceModelBrowser from './components/DeviceModelBrowser.vue';
 import FleetOverview from './components/FleetOverview.vue';
 import MessageLog from './components/MessageLog.vue';
@@ -50,6 +51,16 @@ const live = ref(false);
 const MAX_RECORDS = 1000;
 let events: EventsConnection | undefined;
 
+/** The page: the stations, or the interactive demo (#/demo). */
+const DEMO_HASH = '#/demo';
+const view = ref<'stations' | 'demo'>(location.hash === DEMO_HASH ? 'demo' : 'stations');
+function showView(next: 'stations' | 'demo') {
+  view.value = next;
+  if (next === 'demo') history.replaceState(null, '', DEMO_HASH);
+  else if (selectedId.value === undefined) history.replaceState(null, '', location.pathname);
+  else syncRoute();
+}
+
 /** The selected station's tab, its sessions and the open one (#/stations/<id>/sessions/<n>). */
 const tab = ref<'station' | 'sessions'>('station');
 const sessions = ref<SessionSummary[]>([]);
@@ -67,7 +78,7 @@ let detailStale = false;
 
 function syncRoute() {
   const id = selectedId.value;
-  if (id === undefined) return;
+  if (id === undefined || view.value === 'demo') return;
   const hash = formatRoute({
     stationId: id,
     sessions: tab.value === 'sessions',
@@ -180,7 +191,12 @@ async function remoteStart(request: { idToken: string; type?: string; evseId?: n
 
 /** Opens what the address names, when it names a known station. */
 async function applyRoute() {
+  if (location.hash === DEMO_HASH) {
+    view.value = 'demo';
+    return;
+  }
   const route = parseRoute(location.hash);
+  if (route !== undefined) view.value = 'stations';
   if (route === undefined) return;
   // The tab first, so selecting the station keeps the address and loads its sessions.
   tab.value = route.sessions ? 'sessions' : 'station';
@@ -389,6 +405,10 @@ onUnmounted(() => {
   <div class="app">
     <header class="bar">
       <h1>ocpp-mimic</h1>
+      <nav class="views" aria-label="Pages">
+        <button :class="{ on: view === 'stations' }" @click="showView('stations')">Stations</button>
+        <button :class="{ on: view === 'demo' }" @click="showView('demo')">Demo</button>
+      </nav>
       <span class="live" :class="{ on: live }">{{ live ? 'live' : 'reconnecting…' }}</span>
     </header>
     <form v-if="needsToken" class="token" @submit.prevent="saveToken">
@@ -407,7 +427,8 @@ onUnmounted(() => {
     <p v-if="error && !needsToken" class="error" role="alert">
       {{ error }} <button class="link" @click="error = undefined">dismiss</button>
     </p>
-    <main>
+    <DemoView v-if="view === 'demo'" />
+    <main v-else>
       <StationList
         :stations="stationList"
         :personas="personas"
@@ -487,7 +508,24 @@ h1 {
   margin: 0;
   font-size: 20px;
 }
+.views {
+  display: flex;
+  gap: 2px;
+}
+.views button {
+  border: none;
+  background: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+.views button.on {
+  background: var(--selected);
+  color: var(--ink);
+  font-weight: 600;
+}
 .live {
+  margin-left: auto;
   font-size: 12px;
   color: var(--muted);
 }
