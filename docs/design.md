@@ -1602,6 +1602,69 @@ M9's exit criterion G9 is met on main 25aa1ae, against `ocpp-mimic demo`:
   - These runs found the three allocation bugs that #299 fixed before it merged.
 - **CI**: green on #290, #291 and #297 to #301. The last run had 853 unit tests and 218 regression scenarios.
 
+## M10 Payments
+
+Decided for M10 after M9: a CSMS like Invisible Urban's takes the driver's money itself. It holds an amount on the driver's card before a session (a Stripe PaymentIntent with manual capture, 50 by default), captures the actual price after it, and re-charges in full when the price outgrew the hold. The price is a tariff of energy, charging time, a connection fee and an idle fee, counted from SuspendedEV. OCPP carries none of this money: on 1.6 the CSMS prices from meter values and statuses alone. M10 adds a simulated payment provider to the built-in CSMS, so the Demo page shows where the money is at each step and who moved it, next to the 2.1 payments the station handles itself (the terminal and the QR code). Nothing reaches a real payment provider. Cards are a made-up brand and last four digits. Refunds, invoices, payouts and currency conversion stay out.
+
+**Exit criterion G10**
+
+On the Demo page against `ocpp-mimic demo`, for each way of starting and each test outcome of the driver's card (approve, decline, requires action, capture fails), on every version that has it:
+
+- a decline keeps the session from starting;
+- a session that starts is held, priced while it runs, including idle time after the grace period, and captured, released or failed as designed;
+- every captured amount equals the session's reference price to the cent;
+- each over-hold policy (re-charge, increment, stop at the hold) behaves as designed;
+- the 2.1 terminal and QR code payments show their hold and settlement.
+
+This is checked in a browser and by tests.
+
+**Simulated payment provider in the built-in CSMS**
+
+- **Payment settings per site**:
+  - the tariff (the reference tariff: fixed fee, energy, charging time, idle time, tax, minimum and maximum cost, time-of-day energy prices; NZD by default);
+  - the hold amount (50);
+  - what happens when the price outgrows the hold: `recharge` by default, which cancels the hold and charges the whole price at the end as Invisible Urban does; `increment`, which raises the hold as the price nears it; or `stop`, which ends the session at the hold through maxCost;
+  - a minimum energy below which nothing is charged (0 Wh);
+  - an idle grace period before idle time is priced (0 minutes, as Invisible Urban).
+- **Driver accounts**: an idToken (app user, RFID card, EVCCID) has a card with a test outcome: `approve`, `decline`, `requires-action` (like 3-D Secure) or `fail-capture`. An unknown token has a test card that approves.
+- **A payment per session**: pending, held (and incremented), then captured, released (below the minimum energy, or a price of 0) or failed (the capture failed: a debt). A decline at the hold is `declined` and the session does not start.
+- **Pricing**: the running price comes from meter values and statuses on 1.6 and 2.x. 2.x stations also get it in TransactionEvent answers and CostUpdated, as before; 1.6 has no cost messages. Holds, increments, captures and releases are payment events, kept apart from OCPP frames.
+
+**Money flow by way of starting**
+
+| Way | Held | When the hold is declined | At the end |
+| --- | --- | --- | --- |
+| App | Before the remote start | No remote start; the app shows the decline or asks for confirmation | Captured by the CSMS |
+| RFID card, Autocharge | When answering Authorize | Authorize is answered Invalid, so the station does not start | Captured by the CSMS |
+| Free vend | No | — | Not charged; the energy is recorded |
+| Valet | No | — | Billed to the site's account at 0, marked paid (as Invisible Urban) |
+| Bank card (2.1) | By the station's terminal (AuthorizationAmount) | The terminal declines | The station's NotifySettlement; the CSMS shows it and does not charge again |
+| QR code (2.1) | When the web page is paid | The page declines; no NotifyWebPaymentStarted | Captured by the CSMS |
+
+**Interfaces and the Demo page**
+
+- **Control API**, relayed by the engine:
+  - `PUT /api/sites/<id>/payments` for the settings;
+  - `PUT /api/accounts/<idToken>` for a card and its outcome;
+  - `GET /api/sites/<id>/payments` for each session's hold, running price (energy, time and idle items), state and captured amount, and the payment events.
+- **Setup**: payments on or off, the tariff, the hold and the over-hold policy, the grace period.
+- **Bays**: the running price against the hold; once full, the idle fee as it grows. Each car's test outcome is picked from a menu.
+- **Site manager**:
+  - a payments panel listing each session's method, hold, price items, state and captured amount, and today's revenue;
+  - the payment events, apart from the OCPP messages;
+  - the driver's notices, such as "full: idle fees start in N minutes".
+
+**Tasks**
+
+| Task | Issue | Scope |
+| --- | --- | --- |
+| T130 | #305 | The payment model in the built-in CSMS: settings, accounts, the payment state machine, pricing with the grace period on 1.6 and 2.x, the control API and the engine relay |
+| T131 | #306 | Payments by way of starting: holds decide starts; free vend and valet are not charged; the 2.1 terminal and QR code money flow |
+| T132 | #307 | The Demo page: payment settings, prices in the bays, the payments panel, test outcomes |
+| T133 | #308 | M10 acceptance |
+
+0.2.0 is released before M10; the payments go into 0.3.0.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
@@ -1907,7 +1970,9 @@ flowchart TB
   G8{{"Exit: v0.1.0 from a tag; the package and the image run the quick start, the examples and the smoke plan on clean runners"}}
   M9["<b>M9 · Demo</b><br/>Free vend, valet auto start, remote stop, dual-port personas<br/>An interactive Demo page: versions, ways to start, cars in and out, messages on the wire"]
   G9{{"Exit: ocpp-mimic demo; every version and way to start works on the Demo page in a browser"}}
-  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7 --> M8 --> G8 --> M9 --> G9
+  M10["<b>M10 · Payments</b><br/>A simulated payment provider in the built-in CSMS: holds, captures, idle fees<br/>Payments by way of starting; a payments panel on the Demo page"]
+  G10{{"Exit: every way to start and card outcome holds, prices and captures as designed, to the cent, on the Demo page"}}
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7 --> M8 --> G8 --> M9 --> G9 --> M10 --> G10
 ```
 
 Each phase ends with an exit criterion; the next phase starts once it is met. The M4 thresholds are set in "M4 scale" and can be adjusted to real needs.
