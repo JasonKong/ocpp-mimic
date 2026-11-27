@@ -5,7 +5,7 @@ An OCPP charge point simulator: a headless engine runs many virtual charge point
 - **[User guide](docs/guide.md)** ([中文版](docs/guide.zh-CN.md)): installing, the Web UI, personas, scenarios, the built-in CSMS, OCPP 2.1 features, load tests, logs and the API.
 - **[Design](docs/design.md)** ([中文版](docs/design.zh-CN.md)): how it works and why, milestone by milestone.
 
-> Status: M1 to M8 are done, and [0.1.0](https://github.com/JasonKong/ocpp-mimic/releases/tag/v0.1.0) is the first release:
+> Status: M1 to M9 are done, and [0.1.0](https://github.com/JasonKong/ocpp-mimic/releases/tag/v0.1.0) is the first release (M9 is not released yet):
 >
 > - OCPP 1.6J with every feature profile and the Security Whitepaper; scenarios and CI; fault injection.
 > - Scale: 1,000 stations on one machine, load tests, metrics, log import, replay and calibration.
@@ -13,6 +13,7 @@ An OCPP charge point simulator: a headless engine runs many virtual charge point
 > - Charging sessions in the Web UI (M6).
 > - OCPP 2.1 (M7): tariffs and the station's own cost, ad hoc payment, ISO 15118-20 vehicle data and the 2.1 smart charging features, checked against the built-in CSMS and CitrineOS.
 > - A release (M8): an npm package and a Docker image, an API token, the Business Source License 1.1.
+> - A demo (M9): `ocpp-mimic demo` and the Web UI's Demo page, a charging site to play with: seven ways to start a session, single and dual charge points sharing a supply, and the built-in CSMS's site load management.
 
 ## Install
 
