@@ -39,7 +39,10 @@ export interface ConnectorSnapshot {
   idTag?: string;
   energyWh: number;
   powerW: number;
+  /** What the connector offers now, in W: its rating under its limits and its share of the supply. */
+  offeredW?: number;
   ev?: { name?: string; soc: number; profile: EvProfile };
+  /** Its own Smart Charging limit (TxProfile or TxDefaultProfile), in W. */
   limitW?: number;
   /** 2.1: what the EVSE's display shows now (I01 to I06). */
   display?: { at: string; kind: string; text: string };
@@ -596,6 +599,12 @@ export const api = {
   /** Has the built-in CSMS stop the connector's transaction, as an app would. */
   remoteStop: (id: string, c: number) =>
     request<{ action: string; status: string }>('POST', `${connector(id, c)}/remote-stop`),
+  /** Site load management through the built-in CSMS of the site's stations. */
+  setSite: (id: string, site: { capacityW: number; stations: string[]; minimumW?: number }) =>
+    request<SiteState>('PUT', `/api/sites/${encodeURIComponent(id)}`, site),
+  site: (id: string) => request<SiteState>('GET', `/api/sites/${encodeURIComponent(id)}`),
+  deleteSite: (id: string) =>
+    request<{ deleted: string }>('DELETE', `/api/sites/${encodeURIComponent(id)}`),
   /** Valet: the built-in CSMS starts a session with this token on every plug-in; null stops that. */
   autoStart: (id: string, idToken: SessionIdToken | null) =>
     request<{ autoStart: { idToken: SessionIdToken } | null }>(
@@ -604,6 +613,26 @@ export const api = {
       { idToken },
     ),
 };
+
+/** A site the built-in CSMS shares between its sessions (site load management). */
+export interface SiteState {
+  id: string;
+  capacityW: number;
+  stations: string[];
+  minimumW: number;
+  allocatedW: number;
+  measuredW: number;
+  sessions: {
+    stationId: string;
+    evseId: number;
+    transactionId: number | string;
+    measuredW?: number;
+    limitW?: number;
+    evSuspended: boolean;
+    state: 'charging' | 'ev-suspended' | 'waiting';
+  }[];
+  sent: { at: string; stationId: string; evseId: number; limitW: number; status: string }[];
+}
 
 /** Where a session's frames export as the recorder's JSONL. */
 export const sessionFramesUrl = (id: string, n: number) =>

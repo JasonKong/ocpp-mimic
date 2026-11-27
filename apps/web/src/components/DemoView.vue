@@ -7,6 +7,7 @@ import {
   type FrameRecord,
   type OcppVersion,
   type PersonaInfo,
+  type SiteState,
   type StationSnapshot,
 } from '../api.js';
 import {
@@ -17,6 +18,7 @@ import {
   chargerLabel,
   clockText,
   createPortTracker,
+  DEMO_SITE_ID,
   DEMO_SPEEDS,
   DEMO_TAG,
   DEMO_VERSIONS,
@@ -25,6 +27,7 @@ import {
   MAX_CHARGERS,
   normalizeSetup,
   siteTotals,
+  stackedAreas,
   START_MODES,
   VALET_TOKEN,
   type BayView,
@@ -32,6 +35,7 @@ import {
   type DemoCar,
   type DemoSetup,
   type FrameLabel,
+  type PowerSample,
 } from '../demo.js';
 
 const STORAGE_KEY = 'ocpp-mimic.demo';
@@ -61,6 +65,11 @@ const personas = ref<PersonaInfo[]>([]);
 const busy = ref(false);
 const error = ref<string | undefined>();
 const now = ref(Date.now());
+/** The site in the built-in CSMS, the limit being dragged, and the power over time. */
+const siteState = ref<SiteState | undefined>();
+const liveCapacityKW = ref(0);
+const samples = ref<PowerSample[]>([]);
+const MAX_SAMPLES = 150;
 
 /** Bays where a session ran since the car was plugged in, and when each car became full. */
 const hadTransaction = reactive(new Set<string>());
@@ -260,13 +269,61 @@ async function build() {
         });
       }
     }
+    const ids = definitions.map((d) => d.id);
+    // The site's capacity is the CSMS's to share; without one there is no site.
+    siteState.value = undefined;
+    samples.value = [];
+    if (next.capacityKW !== null) {
+      siteState.value = await api.setSite(DEMO_SITE_ID, {
+        capacityW: next.capacityKW * 1000,
+        stations: ids,
+      });
+      liveCapacityKW.value = next.capacityKW;
+    } else {
+      await api.deleteSite(DEMO_SITE_ID).catch(() => {
+        // There was no site, or the CSMS is not the built-in one.
+      });
+    }
     built.value = next;
     remember(next);
-    const ids = definitions.map((d) => d.id);
     events?.subscribe(ids);
     await load(ids);
   });
   busy.value = false;
+}
+
+/** A new site limit, as a grid operator might set one: the CSMS re-allocates at once. */
+async function applyCapacity() {
+  const current = built.value;
+  if (current === undefined || current.capacityKW === null) return;
+  const capacityKW = liveCapacityKW.value;
+  await guard(async () => {
+    siteState.value = await api.setSite(DEMO_SITE_ID, {
+      capacityW: capacityKW * 1000,
+      stations: [...stations.keys()],
+    });
+    built.value = { ...current, capacityKW };
+    setup.capacityKW = capacityKW;
+    remember(built.value);
+  });
+}
+
+async function refreshSite() {
+  if (built.value?.capacityKW === null || built.value === undefined) return;
+  try {
+    siteState.value = await api.site(DEMO_SITE_ID);
+  } catch {
+    // The site is gone (the CSMS restarted); the panel shows what it last knew.
+  }
+}
+
+function samplePower() {
+  if (stations.size === 0) return;
+  const byCharger: Record<string, number> = {};
+  for (const station of stations.values()) {
+    byCharger[station.id] = station.connectors.reduce((sum, c) => sum + c.powerW, 0);
+  }
+  samples.value = [...samples.value, { at: Date.now(), byCharger }].slice(-MAX_SAMPLES);
 }
 
 const plug = (bay: Bay) => guard(() => api.plug(bay.stationId, bay.connectorId, bay.car.profile));
@@ -324,6 +381,7 @@ const PHASE_TEXT: Record<BayView['phase'], string> = {
   full: 'Full',
   suspended: 'Paused',
   finished: 'Session ended',
+  waiting: 'Waiting for power',
   fault: 'Fault',
   unavailable: 'Unavailable',
 };
@@ -343,6 +401,7 @@ function waitingText(bay: Bay): string | undefined {
     }
   }
   if (bay.view.phase === 'finished') return 'Unplug to free the bay';
+  if (bay.view.phase === 'waiting') return 'The site limit leaves it nothing yet';
   if (bay.view.phase === 'full') {
     const since = fullSince.get(bay.key);
     return since === undefined ? 'Full' : `Still in the bay for ${clockText(now.value - since)}`;
@@ -366,6 +425,50 @@ function pedestal(index: number, count: number) {
   const bottom = index === count - 1 ? 108 : 120;
   return { y: top, height: bottom - top };
 }
+
+/** The limit slider goes up to every connector at its most (or the limit, if higher). */
+const chartMaxW = computed(() =>
+  Math.max(siteMaxW.value, (built.value?.capacityKW ?? 0) * 1000, 1000),
+);
+/** The chart's top: room above the limit and the highest power it shows. */
+const chartTopW = computed(() => {
+  const peak = samples.value.reduce(
+    (most, sample) =>
+      Math.max(
+        most,
+        Object.values(sample.byCharger).reduce((a, b) => a + b, 0),
+      ),
+    0,
+  );
+  const capacity = (built.value?.capacityKW ?? 0) * 1000;
+  return Math.max(capacity * 1.25, peak * 1.1, 1000);
+});
+const CHART_W = 260;
+const CHART_H = 96;
+const CHARGER_COLOURS = ['#2563eb', '#059669', '#d97706', '#7c3aed', '#dc2626', '#0891b2'];
+const colourOf = (stationId: string) =>
+  CHARGER_COLOURS[chargers.value.findIndex((c) => c.station.id === stationId) % 6] ?? '#6b7280';
+const areas = computed(() =>
+  stackedAreas(
+    samples.value,
+    chargers.value.map((c) => c.station.id),
+    CHART_W,
+    CHART_H,
+    chartTopW.value,
+  ),
+);
+const limitY = computed(() => {
+  const capacity = (built.value?.capacityKW ?? 0) * 1000;
+  return CHART_H - (Math.min(capacity, chartTopW.value) / chartTopW.value) * CHART_H;
+});
+/** The limit the CSMS gave a connector's session, in W, when it gave one. */
+function limitOf(bay: Bay): number | undefined {
+  const station = stations.get(bay.stationId);
+  return station?.connectors.find((c) => c.connectorId === bay.connectorId)?.limitW;
+}
+const portMaxOf = (bay: Bay) =>
+  chargers.value.find((c) => c.station.id === bay.stationId)?.offeredW ?? DEFAULT_OFFERED_W;
+const pct = (w: number, of: number) => `${Math.max(0, Math.min(100, (w / of) * 100))}%`;
 
 const csmsLine = computed(() => {
   switch (built.value?.mode) {
@@ -413,7 +516,15 @@ onMounted(async () => {
     },
     () => {},
   );
-  clock = setInterval(() => (now.value = Date.now()), 1000);
+  let ticks = 0;
+  clock = setInterval(() => {
+    now.value = Date.now();
+    ticks += 1;
+    if (ticks % 2 === 0) {
+      samplePower();
+      void refreshSite();
+    }
+  }, 1000);
   await guard(async () => {
     personas.value = (await api.personas()).personas;
     // Pick up a site built earlier, when its stations are still there.
@@ -421,9 +532,11 @@ onMounted(async () => {
     const { stations: tagged } = await api.stationSummaries({ tag: DEMO_TAG });
     if (previous === undefined || tagged.length === 0) return;
     built.value = previous;
+    if (previous.capacityKW !== null) liveCapacityKW.value = previous.capacityKW;
     const ids = tagged.map((s) => s.id);
     events?.subscribe(ids);
     await load(ids);
+    await refreshSite();
   });
 });
 
@@ -508,6 +621,27 @@ onUnmounted(() => {
               {{ s === 1 ? 'Real time' : `×${s}` }}
             </option>
           </select>
+        </label>
+        <label class="label">
+          Site capacity
+          <input
+            v-model.number="setup.capacityKW"
+            class="capacity-input"
+            type="number"
+            min="0"
+            step="0.5"
+            :disabled="setup.capacityKW === null"
+            aria-label="Site capacity in kW"
+          />
+          kW
+        </label>
+        <label class="label">
+          <input
+            type="checkbox"
+            :checked="setup.capacityKW === null"
+            @change="setup.capacityKW = setup.capacityKW === null ? 22 : null"
+          />
+          No limit
         </label>
         <label class="label csms-field">
           CSMS
@@ -705,7 +839,11 @@ onUnmounted(() => {
           <div class="metrics">
             <div class="metric">
               <span>Site power</span>
-              <strong>{{ kw(totals.powerW) }} kW</strong>
+              <strong>
+                {{ kw(totals.powerW) }}
+                <small v-if="built.capacityKW !== null">/ {{ built.capacityKW }}</small>
+                kW
+              </strong>
             </div>
             <div class="metric">
               <span>Energy delivered</span>
@@ -725,6 +863,61 @@ onUnmounted(() => {
               </strong>
             </div>
           </div>
+          <div v-if="built.capacityKW !== null" class="capacity-box">
+            <label class="limit-row">
+              <span>Site limit</span>
+              <strong>{{ liveCapacityKW.toFixed(1) }} kW</strong>
+            </label>
+            <input
+              v-model.number="liveCapacityKW"
+              type="range"
+              min="0"
+              :max="Math.ceil(chartMaxW / 1000)"
+              step="0.5"
+              aria-label="Site limit in kW"
+              @change="applyCapacity"
+            />
+            <div class="gauge" :title="`${kw(totals.powerW)} of ${built.capacityKW} kW`">
+              <span
+                class="gauge-fill"
+                :class="{ over: totals.powerW > built.capacityKW * 1000 + 50 }"
+                :style="{ width: pct(totals.powerW, Math.max(built.capacityKW * 1000, 1)) }"
+              />
+            </div>
+            <span class="muted">
+              The CSMS shares it between the sessions with smart charging
+              <template v-if="siteState"> · {{ kw(siteState.allocatedW) }} kW given out </template>
+            </span>
+          </div>
+          <h4>Power over time</h4>
+          <svg
+            class="chart"
+            :viewBox="`0 0 ${CHART_W} ${CHART_H}`"
+            role="img"
+            aria-label="The site's power over time, by charge point, with the site limit"
+          >
+            <path
+              v-for="area in areas"
+              :key="area.id"
+              :d="area.d"
+              :fill="colourOf(area.id)"
+              fill-opacity="0.55"
+            />
+            <line
+              v-if="built.capacityKW !== null"
+              x1="0"
+              :x2="CHART_W"
+              :y1="limitY"
+              :y2="limitY"
+              class="limit-line"
+            />
+          </svg>
+          <div class="legend">
+            <span v-for="c in chargers" :key="c.station.id">
+              <i :style="{ background: colourOf(c.station.id) }" />{{ c.label }}
+            </span>
+            <span v-if="built.capacityKW !== null"><i class="limit-key" />Site limit</span>
+          </div>
           <h4>Power by connector</h4>
           <ul class="loads">
             <li v-for="bay in bays" :key="bay.key">
@@ -733,17 +926,42 @@ onUnmounted(() => {
                 <span
                   class="load-fill"
                   :class="'phase-' + bay.view.phase"
-                  :style="{
-                    width: `${Math.min(100, (bay.view.powerW / (chargers.find((c) => c.station.id === bay.stationId)?.offeredW ?? DEFAULT_OFFERED_W)) * 100)}%`,
-                  }"
+                  :style="{ width: pct(bay.view.powerW, portMaxOf(bay)) }"
+                />
+                <span
+                  v-if="limitOf(bay) !== undefined"
+                  class="limit-mark"
+                  :style="{ left: pct(limitOf(bay) ?? 0, portMaxOf(bay)) }"
                 />
               </span>
-              <span class="kw">{{ kw(bay.view.powerW) }} kW</span>
+              <span class="kw">
+                {{ kw(bay.view.powerW) }}
+                <template v-if="limitOf(bay) !== undefined">
+                  / {{ kw(limitOf(bay) ?? 0) }}
+                </template>
+                kW
+              </span>
             </li>
           </ul>
           <p class="muted capacity">
-            Up to {{ kw(siteMaxW) }} kW if every connector draws its most.
+            Up to {{ kw(siteMaxW) }} kW if every connector draws its most<template
+              v-if="built.capacityKW !== null"
+              >; the marks are the limits the CSMS set</template
+            >.
           </p>
+          <template v-if="siteState && siteState.sent.length > 0">
+            <h4>Limits sent</h4>
+            <ol class="sent">
+              <li v-for="(entry, i) in siteState.sent.slice(0, 6)" :key="i">
+                <span class="time">{{ timeOf(entry.at) }}</span>
+                {{ chargerLabel(entry.stationId) }} · {{ entry.evseId }} →
+                <strong>{{ kw(entry.limitW) }} kW</strong>
+                <span class="chip" :class="entry.status === 'Accepted' ? 'good' : 'bad'">
+                  {{ entry.status }}
+                </span>
+              </li>
+            </ol>
+          </template>
           <p class="csms-line">
             <span class="muted">CSMS</span> <code>{{ built.csmsUrl }}</code>
             <br />
@@ -1251,6 +1469,86 @@ onUnmounted(() => {
   font-weight: 400;
   color: var(--muted);
 }
+.capacity-input {
+  width: 72px;
+}
+.capacity-box {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px dashed var(--border);
+}
+.limit-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+.gauge {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--hover);
+  overflow: hidden;
+}
+.gauge-fill {
+  display: block;
+  height: 100%;
+  background: var(--good);
+  transition: width 0.8s ease;
+}
+.gauge-fill.over {
+  background: var(--bad);
+}
+.chart {
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  background: var(--hover);
+}
+.limit-line {
+  stroke: var(--bad);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.legend i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 4px;
+  border-radius: 2px;
+  vertical-align: -1px;
+}
+.legend i.limit-key {
+  height: 0;
+  border-top: 2px dashed var(--bad);
+  border-radius: 0;
+}
+.limit-mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ink);
+}
+.sent {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+.load-fill.phase-waiting {
+  background: var(--warn);
+}
 .loads {
   list-style: none;
   margin: 0;
@@ -1260,16 +1558,19 @@ onUnmounted(() => {
 }
 .loads li {
   display: grid;
-  grid-template-columns: 70px 1fr 56px;
+  grid-template-columns: 64px 1fr 92px;
   gap: 8px;
   align-items: center;
   font-size: 12px;
 }
 .load-bar {
+  position: relative;
   height: 8px;
   border-radius: 4px;
   background: var(--hover);
-  overflow: hidden;
+}
+.load-fill {
+  border-radius: 4px;
 }
 .load-fill {
   display: block;
