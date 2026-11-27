@@ -2,7 +2,8 @@
 # Installs a packed ocpp-mimic tarball into a temporary prefix and checks what
 # a new user does first: the version, the samples, an example scenario, the
 # built-in CSMS and the engine with its Web UI, a station charging through
-# the API, and a short load plan.
+# the API, the demo (valet and a site's load management), and a short load
+# plan.
 # Usage: tools/smoke-package.sh <ocpp-mimic-x.y.z.tgz>
 # SMOKE_LOAD_DURATION (default 30s) sets how long the load plan runs; the
 # plan's own duration is 2m. SMOKE_EXAMPLES=all runs every example scenario.
@@ -60,6 +61,36 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 curl -sf "$api/api/stations/SMOKE-1/sessions" | grep -q '"state":"running"'
+
+echo "== demo"
+demo_port=17400
+demo_csms_port=19200
+"$bin" demo --port "$demo_port" --csms-port "$demo_csms_port" > "$work/demo.log" 2>&1 &
+pids+=($!)
+demo="http://127.0.0.1:$demo_port"
+for _ in $(seq 1 100); do grep -q "Demo page:  $demo/#/demo" "$work/demo.log" && break; sleep 0.2; done
+grep -q "Demo page:  $demo/#/demo" "$work/demo.log"
+curl -sf "$demo/" | grep -q '<div id="app"'
+curl -sf -X POST "$demo/api/stations" -H 'content-type: application/json' \
+  -d "{\"id\":\"DEMO-SMOKE\",\"persona\":\"generic-dual-1.6\",\"csmsUrl\":\"ws://127.0.0.1:$demo_csms_port/ocpp\"}" > /dev/null
+for _ in $(seq 1 50); do
+  curl -sf "$demo/api/stations/DEMO-SMOKE" | grep -q '"csms":"builtin"' && break
+  sleep 0.2
+done
+# Valet: the CSMS starts a session on each plug-in, and shares the site's 8 kW between them.
+curl -sf -X POST "$demo/api/stations/DEMO-SMOKE/auto-start" -H 'content-type: application/json' \
+  -d '{"idToken":{"idToken":"VALET"}}' | grep -q '"VALET"'
+curl -sf -X PUT "$demo/api/sites/smoke" -H 'content-type: application/json' \
+  -d '{"capacityW":8000,"stations":["DEMO-SMOKE"]}' | grep -q '"capacityW":8000'
+for c in 1 2; do
+  curl -sf -X POST "$demo/api/stations/DEMO-SMOKE/connectors/$c/plug" -H 'content-type: application/json' \
+    -d '{"ev":"compact-40kwh"}' > /dev/null
+done
+for _ in $(seq 1 50); do
+  curl -sf "$demo/api/sites/smoke" | grep -q '"allocatedW":8000' && break
+  sleep 0.2
+done
+curl -sf "$demo/api/sites/smoke" | grep -q '"allocatedW":8000'
 
 echo "== load"
 "$bin" load samples/load/smoke-100.yaml --personas samples/personas \

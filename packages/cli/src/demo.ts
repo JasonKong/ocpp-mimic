@@ -17,7 +17,7 @@ export interface RunningDemo {
 }
 
 export async function startDemo(
-  command: Omit<DemoCommand, 'kind'> & { webRoot?: string },
+  command: Omit<DemoCommand, 'kind' | 'host'> & { host?: string; webRoot?: string },
 ): Promise<RunningDemo> {
   // It keeps no frames, so a demo left running stays small.
   const csms = await startBuiltinCsms({
@@ -25,9 +25,11 @@ export async function startDemo(
     host: '127.0.0.1',
     keepFrames: false,
   });
+  // The CSMS stays on loopback: only the engine, in this process, talks to it.
   const engine = createEngine({
     port: command.port,
-    host: '127.0.0.1',
+    host: command.host ?? '127.0.0.1',
+    ...(command.apiToken !== undefined && { apiToken: command.apiToken }),
     ...(command.webRoot !== undefined && { webRoot: command.webRoot }),
   });
   let engineUrl: string;
