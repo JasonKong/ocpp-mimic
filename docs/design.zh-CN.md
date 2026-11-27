@@ -1572,6 +1572,35 @@ M9 在做过一个回放原型之后确定（#288、#289）：大家想看的不
 
   - 已实现（T129）：演示页提供七种启动方式，并注明各自的常见场所：免认证、RFID 卡、App、valet、银行卡和二维码（只有 2.1 有；版本不支持时退回到刷卡），以及 Autocharge。银行卡使用桩的支付终端（`presentPaymentCard`、`stopPayment`）；二维码读取桩的支付 URL，交给内置 CSMS 核验（经新的引擎接口调用 `web-payment`，演示桩使用已知的 `WebPaymentsCtrlr.SharedSecret`），再用 `DirectPayment` 类型的 token 远程启动会话。`generic-2.1` 增加 `Payment` 和 `WebPayments`。Autocharge 是桩的行为开关 `autocharge`，配合 EV 配置的 `evccid`：插枪时桩像刷卡一样提交 EVCCID（1.6 作为 idTag，2.0.1 为 MacAddress，2.1 为 EVCCID），由 CSMS 的 Authorize 决定；充电桩把 API 对象存在常量里，插枪时可以调用它。ISO 15118 合同证书方式的 Plug & Charge 仍不在范围内。
 
+**验收通过（M9）**
+
+M9 的出口标准 G9 在 main 25aa1ae 上、对 `ocpp-mimic demo` 达成：
+
+- **每种启动方式，在每个支持它的版本上。** 通过演示页使用的引擎 API 跑了 17 种组合：免认证、RFID 卡、App、valet 和 Autocharge 在 1.6、2.0.1、2.1 上各一次，加上 2.1 的银行卡和二维码。每次都是：
+  - 一台双口桩插上两辆车，两辆都开始充电；
+  - 一辆充到 SuspendedEV；
+  - 另一辆按该方式的结束办法停止（同一张卡、远程停止、支付终端），或者拔枪；
+  - 两辆都拔枪后连接器回到 Available；
+  - 每个会话记录了正确的来源：免认证是 noAuth，刷卡和 Autocharge 是 local，App 和 valet 是 remote，银行卡和二维码是 payment。
+
+  17 种全部通过。
+- **在浏览器里**，演示页配置为 CP-1 双口、CP-2 单口、CP-3 双口，五辆车同时插枪并开始充电，覆盖了：
+  - 1.6 和 2.0.1 的免认证；
+  - 1.6 的刷卡；
+  - 2.1 的 App；
+  - 2.0.1 的 valet；
+  - 2.1 的银行卡和二维码；
+  - 1.6 和 2.1 的 Autocharge（每辆车自己的 MAC 地址分别作为 idTag 和 EVCCID 类型的 token）。
+
+  车充到 Full 后一直留着，直到拔枪。
+- **在浏览器里检查站点负载管理。**
+  - 22 kW 时五个会话各 4.4 kW。
+  - 把限值拖到 11 kW，几秒内重新分配：五条 SetChargingProfile 全部 Accepted。
+  - 5 kW 时三个会话充电、两个以 SuspendedEVSE 等待功率，每辆车充满后名额转给一辆等待的车。
+  - 限值总和最高 4,998 W，没有超过容量。
+  - 这些测试发现的三个分配问题，已在 #299 合并前修好。
+- **CI**：#290、#291 和 #297 到 #301 全绿。最后一次运行有 853 个单元测试和 218 个回归场景。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。

@@ -1573,6 +1573,35 @@ After the first Demo page the user asked for a site: charge points defined one b
 
   - Implemented (T129): the Demo page offers seven ways to start, each with where it is used: free vend, RFID card, app, valet, bank card and QR code (2.1 only; a version without one falls back to the card), and Autocharge. The bank card uses the station's payment terminal (`presentPaymentCard`, `stopPayment`); the QR code reads the station's payment URL, has the built-in CSMS check it (`web-payment`, through the new engine route, with the demo stations' known `WebPaymentsCtrlr.SharedSecret`) and starts the session remotely with a `DirectPayment` token. `generic-2.1` gains `Payment` and `WebPayments`. Autocharge is a station behaviour switch, `autocharge`, with an EV profile's `evccid`: on plug-in the station presents the EVCCID as a card would (1.6 idTag, 2.0.1 MacAddress, 2.1 EVCCID), so the CSMS's Authorize decides; the charge points now keep their API object in a constant so plug-in can call it. Plug & Charge with ISO 15118 contract certificates stays out of scope.
 
+**Accepted (M9)**
+
+M9's exit criterion G9 is met on main 25aa1ae, against `ocpp-mimic demo`:
+
+- **Every way to start, on every version that has it.** Seventeen combinations ran through the engine API the Demo page uses: free vend, RFID card, app, valet and Autocharge on 1.6, 2.0.1 and 2.1, plus bank card and QR code on 2.1. In each:
+  - two cars were plugged into a dual charge point and both started;
+  - one filled up to SuspendedEV;
+  - the other was stopped the way its mode stops (the same card, a remote stop, the payment terminal) or by unplugging;
+  - both were unplugged and their connectors were Available again;
+  - each session was recorded with its source: noAuth for free vend, local for card and Autocharge, remote for app and valet, payment for bank card and QR code.
+
+  17 of 17 passed.
+- **In the browser**, on the Demo page with CP-1 dual, CP-2 single and CP-3 dual, five cars were plugged in and started together for:
+  - free vend on 1.6 and 2.0.1;
+  - RFID card on 1.6;
+  - app on 2.1;
+  - valet on 2.0.1;
+  - bank card and QR code on 2.1;
+  - Autocharge on 1.6 and 2.1 (each car's own MAC as its idTag, or as an EVCCID token).
+
+  Cars filled to Full and stayed until they were unplugged.
+- **Site load management in the browser.**
+  - At 22 kW, five sessions got 4.4 kW each.
+  - Dragging the limit to 11 kW re-allocated within seconds: five SetChargingProfile messages, all Accepted.
+  - At 5 kW, three sessions charged and two waited for power in SuspendedEVSE, and each full car's place passed to a waiting one.
+  - The limits never added up to more than 4,998 W.
+  - These runs found the three allocation bugs that #299 fixed before it merged.
+- **CI**: green on #290, #291 and #297 to #301. The last run had 853 unit tests and 218 regression scenarios.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
