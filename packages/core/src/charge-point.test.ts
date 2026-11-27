@@ -1025,6 +1025,25 @@ describe('smart charging', () => {
     expect(await h.csmsCall('ClearChargingProfile', { id: 1 })).toEqual({ status: 'Unknown' });
   });
 
+  it('holds a session in SuspendedEVSE while its limit is 0, and resumes when it rises', async () => {
+    const h = setup();
+    await h.boot();
+    await h.startSession(1);
+    const mark = h.frames.length;
+    await h.csmsCall('SetChargingProfile', {
+      connectorId: 1,
+      csChargingProfiles: txProfile(1, [[0, 0]], 'W'),
+    });
+    expect(power(h)).toBe(0);
+    expect(h.statuses(mark)).toEqual(['1:SuspendedEVSE']);
+    await h.csmsCall('SetChargingProfile', {
+      connectorId: 1,
+      csChargingProfiles: txProfile(1, [[0, 2000]], 'W'),
+    });
+    expect(power(h)).toBe(2000);
+    expect(h.statuses(mark)).toEqual(['1:SuspendedEVSE', '1:Charging']);
+  });
+
   it('follows the schedule periods over time, in amperes too', async () => {
     const h = setup();
     await h.boot();

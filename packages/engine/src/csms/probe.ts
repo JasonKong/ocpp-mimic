@@ -77,3 +77,25 @@ export async function controlVia(
   });
   return { status: res.status, body: (await res.json()) as unknown };
 }
+
+/** A site request (`PUT`, `GET`, `DELETE /api/sites/<id>`) to the built-in CSMS's control API. */
+export async function siteVia(
+  csmsUrl: string,
+  method: 'PUT' | 'GET' | 'DELETE',
+  siteId: string,
+  body?: object,
+  apiToken?: string,
+): Promise<{ status: number; body: unknown }> {
+  const origin = localControlOrigin(csmsUrl);
+  if (origin === undefined) throw new Error('the site does not use a CSMS on this machine');
+  const res = await fetch(`${origin}/api/sites/${encodeURIComponent(siteId)}`, {
+    method,
+    headers: {
+      ...(body !== undefined && { 'content-type': 'application/json' }),
+      ...(apiToken !== undefined && { authorization: `Bearer ${apiToken}` }),
+    },
+    ...(body !== undefined && { body: JSON.stringify(body) }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  return { status: res.status, body: (await res.json()) as unknown };
+}

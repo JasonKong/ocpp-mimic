@@ -412,6 +412,8 @@ CSMS 进程在 WebSocket 端口上同时提供一个小型 HTTP API。场景里�
 | `POST /api/stations/<id>/remote-stop` | `{ "transactionId": 3 }`（1.6 是数字，2.x 是字符串）：发送 RemoteStopTransaction 或 RequestStopTransaction |
 | `POST /api/stations/<id>/auto-start` | `{ "idToken": { "idToken": "VALET", "type": "Central" } }`：valet 模式。每当有车在该桩插枪（1.6 的 Preparing，2.x 的 Occupied），CSMS 就用这个 token 启动会话，每次插枪启动一次。`{ "idToken": null }` 关闭。桩不需要已经连上 |
 | `POST /api/stations/<id>/call` | `{ "action": "Reset", "payload": { "type": "Soft" } }`：发送该桩版本的任意 CSMS 命令 |
+| `PUT /api/sites/<id>` | `{ "capacityW": 22000, "stations": ["CP-1", "CP-2"], "minimumW": 1380 }`：一个站点，CSMS 在它的会话之间分配容量（见下文）；同 id 的站点会被替换 |
+| `GET`、`DELETE /api/sites/<id>` | 站点及其会话、各会话的限值和实测功率、已下发的限值；或者删除站点并清除它下发的限值 |
 | `POST /api/stations/<id>/default-tariff` | 2.1：用参考资费或 `tariff` 发送 SetDefaultTariff，作用于 `evseId`（默认 0，即所有 EVSE） |
 | `POST /api/stations/<id>/transaction-limit` | 2.1：`{ "transactionLimit": { "maxEnergy": 5000 }, "transactionId": "..." }`，随下一个 TransactionEvent 应答下发 |
 | `POST /api/stations/<id>/driver-tariff` | 2.1：`{ "tariff": {...} }`，随 Authorize 应答下发；`null` 表示取消 |
@@ -426,6 +428,17 @@ curl -s -X POST http://127.0.0.1:9100/api/stations/SIM-001/call \
 ```
 
 引擎能识别桩连的是不是内置 CSMS（对本机上的 CSMS 地址请求 `GET /api/health`），所以 Web UI 的远程启动，以及引擎的 `remote-start`、`remote-stop` 和 `auto-start` 请求会经由它发出。连其他 CSMS 时它们回复 409。
+
+### 站点负载管理
+
+站点就是一个有容量的电网接入点，以及接在它后面的桩。内置 CSMS 像 CSMS 或能源管理系统那样，用智能充电在站点正在进行的会话之间分配容量：
+
+- 每个会话平分。会话实际取用的功率明显低于它的限值时（按它上报的 Power.Active.Import，低于限值的 90% 且少 300 W 以上），只需要比实际取用多一点，其余的转给别人。处于 SuspendedEV 的车（比如已经充满）保留最低功率。
+- 每个会话至少得到 `minimumW`（默认 1380 W，即单相 6 A）。容量不够让每个会话都得到最低功率时，有些会话先停在 0，直到有功率空出来：先是已充满的车（SuspendedEV），这样它们不会让正在充电的车等待，然后是最晚开始的会话。停在 0 的充电中车辆显示 SuspendedEVSE。
+- 限值通过 SetChargingProfile 下发，是针对该会话交易、以 W 为单位的 TxProfile（profile id 为 9000 加连接器或 EVSE 编号）。限值变化超过 5% 且 250 W 时才下发，并且先发调低的、再发调高的。如果不发较小的下调会让总和超过容量，这些下调也会下发，所以限值总和不会超过站点容量。
+- 会话开始或结束、车开始或停止取电、收到电表值，以及站点设置变化时，CSMS 都会重新分配。
+
+CSMS 从电表值得知每个会话的取用功率，所以桩要上报 Power.Active.Import：1.6 把它加进 `MeterValuesSampledData`，2.x 加进 `SampledDataCtrlr.TxUpdatedMeasurands`。没有这个值时，CSMS 仍会平分容量、释放暂停车辆的份额，但无法把功率下降的车空出的部分转给别人。桩自己的电源上限（`power.stationW`）在这些限值之内照样生效。
 
 ### 参考资费
 
@@ -891,6 +904,8 @@ ocpp-mimic csms --tls-cert packages/engine/test-pki/server.crt --tls-key package
 | `GET`、`PATCH /api/stations/<id>/device-model` | 2.x：列出变量；用 `{ component, variable, value }` 设置一个变量 |
 | `POST /api/stations/<id>/remote-start` | 经由内置 CSMS：`{ evseId, idToken: { idToken, type } }` |
 | `POST /api/stations/<id>/auto-start` | 经由内置 CSMS：`{ idToken: { idToken, type } }` 让每次插枪都启动会话（valet）；`{ idToken: null }` 关闭 |
+| `PUT /api/sites/<id>` | 经由所列桩的内置 CSMS：`{ capacityW, stations, minimumW }`，即[站点负载管理](#站点负载管理) |
+| `GET`、`DELETE /api/sites/<id>` | 通过本引擎设置的站点：查看它的分配，或删除它 |
 | `POST /api/stations/<id>/vat-number` | 2.1：`{ vatNumber, evseId }` |
 
 连接器（`<n>` 是连接器编号，2.x 上是 EVSE 编号）：
