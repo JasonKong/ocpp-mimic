@@ -2137,6 +2137,15 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
       if (authorized.has(connectorId)) {
         clearPrepare(connectorId);
         later(timing.startTransactionDelayMs, () => beginTransaction(connectorId));
+      } else if (
+        configBool(config, 'FreeVendEnabled') &&
+        !transactions.has(connectorId) &&
+        findConnector(station, connectorId)?.reservationId === undefined
+      ) {
+        // Free vending: the cable is enough; the transaction carries FreeVendIdTag.
+        const idTag = configValue(config, 'FreeVendIdTag') || 'FreeVend';
+        log(`connector ${connectorId}: free vend as ${idTag}`);
+        authorizeConnector(connectorId, idTag, 'noAuth');
       }
     },
 

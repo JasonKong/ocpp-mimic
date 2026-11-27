@@ -103,6 +103,23 @@ export const STANDARD_CONFIG_KEYS: Readonly<Record<string, ConfigKeyDefinition>>
   WebSocketPingInterval: { type: 'integer', readonly: false, value: '30', minimum: 0 },
 };
 
+/**
+ * ocpp-mimic's own vendor keys, which GetConfiguration lists after the
+ * standard ones. FreeVendEnabled is free vending, as chargers for homes and
+ * private car parks offer it: plugging in starts a transaction with
+ * FreeVendIdTag, without a card or an Authorize.
+ */
+export const VENDOR_CONFIG_KEYS: Readonly<Record<string, ConfigKeyDefinition>> = {
+  FreeVendEnabled: { type: 'boolean', readonly: false, value: 'false' },
+  FreeVendIdTag: {
+    type: 'string',
+    readonly: false,
+    value: 'FreeVend',
+    minLength: 1,
+    maxLength: 20,
+  },
+};
+
 export interface CreateConfigOptions {
   numberOfConnectors: number;
   /** Extra or replaced key definitions, for example from a persona. */
@@ -119,6 +136,7 @@ export function createConfig(options: CreateConfigOptions): ConfigState {
       readonly: true,
       value: String(options.numberOfConnectors),
     },
+    ...VENDOR_CONFIG_KEYS,
     ...options.definitions,
   };
   const values = Object.fromEntries(

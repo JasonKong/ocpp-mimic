@@ -329,6 +329,45 @@ describe('local sessions', () => {
     expect(h.frames).toHaveLength(before);
   });
 
+  it('starts on the cable alone with FreeVendEnabled, as FreeVendIdTag and without Authorize', async () => {
+    const h = setup({ config: { FreeVendEnabled: 'true', FreeVendIdTag: 'HOME' } });
+    await h.boot();
+    expect(
+      await h.csmsCall('GetConfiguration', { key: ['FreeVendEnabled', 'FreeVendIdTag'] }),
+    ).toMatchObject({
+      configurationKey: [
+        { key: 'FreeVendEnabled', readonly: false, value: 'true' },
+        { key: 'FreeVendIdTag', readonly: false, value: 'HOME' },
+      ],
+    });
+    h.cp.plugIn(1);
+    await h.advance(1000);
+    expect(h.calls('Authorize')).toHaveLength(0);
+    expect(h.lastCall('StartTransaction')?.payload).toMatchObject({
+      connectorId: 1,
+      idTag: 'HOME',
+    });
+    h.cp.unplug(1);
+    await h.advance(1000);
+    expect(h.lastCall('StopTransaction')?.payload).toMatchObject({ reason: 'EVDisconnected' });
+
+    // Off, the default, the cable alone starts nothing until the CSMS turns it on.
+    const off = setup();
+    await off.boot();
+    off.cp.plugIn(1);
+    await off.advance(5000);
+    expect(off.calls('StartTransaction')).toHaveLength(0);
+    expect(
+      await off.csmsCall('ChangeConfiguration', { key: 'FreeVendEnabled', value: 'true' }),
+    ).toEqual({ status: 'Accepted' });
+    off.cp.plugIn(2);
+    await off.advance(1000);
+    expect(off.lastCall('StartTransaction')?.payload).toMatchObject({
+      connectorId: 2,
+      idTag: 'FreeVend',
+    });
+  });
+
   it('authorizes a card, starts when plugged in, samples, and stops with the same card', async () => {
     const h = setup({ config: { MeterValueSampleInterval: '60' } });
     await h.boot();

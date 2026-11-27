@@ -4,6 +4,15 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 
 ## [Unreleased]
 
+### Added
+
+- **Ways to start a session**: free vending on 1.6 with ocpp-mimic's vendor keys `FreeVendEnabled` and `FreeVendIdTag` (plugging in starts, without a card); the built-in CSMS's auto start for valet stations (a session on every plug-in) and remote stop, as `auto-start` and `remote-stop` in its control API and `POST /api/stations/<id>/auto-start` and `POST .../connectors/<n>/remote-stop` on the engine.
+- **Personas**: `generic-dual-1.6`, `generic-dual-2.0.1` and `generic-dual-2.1`, the generic personas with two ports.
+
+### Changed
+
+- A 2.x station with `AuthCtrlr.Enabled` false starts a transaction when an EV is plugged in, with an empty `NoAuthorization` token, instead of waiting for a card.
+
 ## [0.1.0] - 2026-11-17
 
 The first release, 0.1.0. It collects milestones M1 to M8 of the [design](https://github.com/JasonKong/ocpp-mimic/blob/main/docs/design.md).

@@ -1,0 +1,10 @@
+# generic-2.1 with two EVSEs of one connector each: a dual-port AC charging
+# station, each port offering 7.36 kW.
+persona: generic-dual-2.1
+extends: generic-2.1
+description: Generic OCPP 2.1 dual-port AC charging station
+boot:
+  vendorName: ocpp-mimic
+  model: Generic-Dual-2.1
+  firmwareVersion: 0.0.0
+connectors: 2

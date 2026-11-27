@@ -47,6 +47,9 @@ describe('persona registry', () => {
       'generic-1.6',
       'generic-2.0.1',
       'generic-2.1',
+      'generic-dual-1.6',
+      'generic-dual-2.0.1',
+      'generic-dual-2.1',
       'vendorX-fw2.5',
     ]);
     // generic-2.1 is generic-2.0.1 with the 2.1 version.
@@ -54,6 +57,14 @@ describe('persona registry', () => {
       ocpp: '2.1',
       options: { ocpp: '2.1', boot: { model: 'Generic-AC-2.1' }, connectors: 1 },
     });
+    // The dual-port personas are the generic ones with two ports.
+    for (const [id, ocpp] of [
+      ['generic-dual-1.6', '1.6'],
+      ['generic-dual-2.0.1', '2.0.1'],
+      ['generic-dual-2.1', '2.1'],
+    ] as const) {
+      expect(registry.get(id), id).toMatchObject({ ocpp, options: { connectors: 2 } });
+    }
     expect(registry.get('vendorX-fw2.5')?.options).toMatchObject({
       boot: {
         chargePointVendor: 'VendorX',

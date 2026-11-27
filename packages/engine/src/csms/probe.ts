@@ -44,21 +44,35 @@ export interface RemoteStartRequest {
 }
 
 /** Has the built-in CSMS send a remote start to the station; resolves with its HTTP answer. */
-export async function remoteStartVia(
+export function remoteStartVia(
   csmsUrl: string,
   stationId: string,
   request: RemoteStartRequest,
   apiToken?: string,
 ): Promise<{ status: number; body: unknown }> {
+  return controlVia(csmsUrl, stationId, 'remote-start', request, apiToken);
+}
+
+/**
+ * Sends a command (`remote-start`, `remote-stop`, `auto-start`, ...) to the
+ * built-in CSMS's control API for a station; resolves with its HTTP answer.
+ */
+export async function controlVia(
+  csmsUrl: string,
+  stationId: string,
+  command: string,
+  body: object,
+  apiToken?: string,
+): Promise<{ status: number; body: unknown }> {
   const origin = localControlOrigin(csmsUrl);
   if (origin === undefined) throw new Error('the station does not use a CSMS on this machine');
-  const res = await fetch(`${origin}/api/stations/${encodeURIComponent(stationId)}/remote-start`, {
+  const res = await fetch(`${origin}/api/stations/${encodeURIComponent(stationId)}/${command}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       ...(apiToken !== undefined && { authorization: `Bearer ${apiToken}` }),
     },
-    body: JSON.stringify(request),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
   });
   return { status: res.status, body: (await res.json()) as unknown };
