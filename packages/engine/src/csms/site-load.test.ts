@@ -3,6 +3,7 @@ import { createEngine, type Engine } from '../engine.js';
 import { startBuiltinCsms, type BuiltinCsms } from './builtin-csms.js';
 import {
   allocate,
+  createSiteLoad,
   parseSite,
   siteLimitRequest,
   worthSending,
@@ -111,6 +112,38 @@ describe('sharing a site between sessions', () => {
     });
     expect(parseSite({ capacityW: -1, stations: ['A'] })).toMatch(/capacityW/);
     expect(parseSite({ capacityW: 1000, stations: [] })).toMatch(/stations/);
+  });
+});
+
+describe('following sessions from the stations', () => {
+  it('keeps a full car suspended when the limit of 0 it was given shows as SuspendedEVSE', async () => {
+    const sent: unknown[] = [];
+    const load = createSiteLoad({
+      settleMs: 0,
+      station: () => ({
+        ocpp: '1.6',
+        call: (_action, payload) => {
+          sent.push(payload);
+          return Promise.resolve({ ok: true, status: 'Accepted' });
+        },
+      }),
+    });
+    load.setSite('s', { capacityW: 1500, stations: ['A', 'B'] });
+    load.observe('A', 'StartTransaction', { connectorId: 1 }, { transactionId: 1 });
+    load.observe('B', 'StartTransaction', { connectorId: 1 }, { transactionId: 2 });
+    load.observe('A', 'StatusNotification', { connectorId: 1, status: 'SuspendedEV' }, {});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const stateOf = (id: string) => load.site('s')?.sessions.find((x) => x.stationId === id);
+    expect(stateOf('A')).toMatchObject({ evSuspended: true, limitW: 0 });
+    expect(stateOf('B')).toMatchObject({ evSuspended: false, limitW: 1500 });
+    // Its station now reports SuspendedEVSE; the car is still full and stays behind B.
+    load.observe('A', 'StatusNotification', { connectorId: 1, status: 'SuspendedEVSE' }, {});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(stateOf('A')).toMatchObject({ evSuspended: true, limitW: 0 });
+    expect(stateOf('B')).toMatchObject({ limitW: 1500 });
+    load.observe('A', 'StatusNotification', { connectorId: 1, status: 'Charging' }, {});
+    expect(stateOf('A')?.evSuspended).toBe(false);
+    load.stop();
   });
 });
 

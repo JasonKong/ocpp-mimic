@@ -176,6 +176,17 @@ export interface SiteLoadOptions {
 const isObject = (value: unknown): value is JsonObject =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+/**
+ * Whether a status (1.6) or charging state (2.x) says the EV takes no power:
+ * SuspendedEV yes, Charging no. Anything else, SuspendedEVSE above all (which
+ * the CSMS's own limit of 0 causes), says nothing about the EV.
+ */
+function evSuspendedBy(state: unknown): boolean | undefined {
+  if (state === 'SuspendedEV') return true;
+  if (state === 'Charging') return false;
+  return undefined;
+}
+
 /** The last Power.Active.Import in a list of meter values, in W. */
 function powerIn(meterValue: unknown): number | undefined {
   if (!Array.isArray(meterValue)) return undefined;
@@ -332,8 +343,9 @@ export function createSiteLoad(options: SiteLoadOptions): SiteLoad {
         if (session !== undefined) touched = sessions.delete(sessionKey(session));
       } else if (action === 'StatusNotification' && v16) {
         const session = sessions.get(keyOf(Number(payload.connectorId)));
-        if (session !== undefined && (payload.status === 'SuspendedEV') !== session.evSuspended) {
-          session.evSuspended = payload.status === 'SuspendedEV';
+        const suspended = evSuspendedBy(payload.status);
+        if (session !== undefined && suspended !== undefined && suspended !== session.evSuspended) {
+          session.evSuspended = suspended;
           touched = true;
         }
       } else if (action === 'MeterValues' && v16) {
@@ -363,10 +375,10 @@ export function createSiteLoad(options: SiteLoadOptions): SiteLoad {
             touched = true;
           }
           if (session !== undefined) {
-            if (typeof info.chargingState === 'string') {
-              const suspended = info.chargingState === 'SuspendedEV';
-              if (suspended !== session.evSuspended) touched = true;
+            const suspended = evSuspendedBy(info.chargingState);
+            if (suspended !== undefined && suspended !== session.evSuspended) {
               session.evSuspended = suspended;
+              touched = true;
             }
             const power = powerIn(payload.meterValue);
             if (power !== undefined) {
