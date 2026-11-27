@@ -291,7 +291,7 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 | `generic-1.6` | 1.6 | 一个 7.36 kW 交流连接器，全部功能 profile，按规范默认行为，三个 EV 配置 |
 | `generic-2.0.1` | 2.0.1 | 一个 7.36 kW 的 EVSE，已覆盖的 2.0.1 功能，同样的 EV 配置 |
 | `generic-2.1` | 2.1 | 作为 2.1 桩的 `generic-2.0.1`；连接器可用性用 NotifyEvent 上报 |
-| `generic-dual-1.6`、`generic-dual-2.0.1`、`generic-dual-2.1` | 1.6、2.0.1、2.1 | 双口版的 generic persona（1.6 是连接器 1 和 2，2.x 是 EVSE 1 和 2），每个口 7.36 kW |
+| `generic-dual-1.6`、`generic-dual-2.0.1`、`generic-dual-2.1` | 1.6、2.0.1、2.1 | 双口版的 generic persona（1.6 是连接器 1 和 2，2.x 是 EVSE 1 和 2），每个口最多 7.36 kW，两口共用一路 11.04 kW 的电源：两辆车同时充时各 5.52 kW，只有一辆时 7.36 kW |
 
 `scenarios/personas/` 里的示例（用 `--personas scenarios/personas` 加载）：
 
@@ -345,7 +345,7 @@ faults:
 | `description` | 说明文字，显示在 Web UI 里 |
 | `boot` | BootNotification 字段（必填）。1.6：`chargePointVendor`、`chargePointModel`、`firmwareVersion` 等；2.x：chargingStation 块，即 `vendorName`、`model`、`serialNumber`、`firmwareVersion` |
 | `connectors` | 连接器数量（1.6），或每个只有一个连接器的 EVSE 数量（2.x）（必填） |
-| `power` | `offeredW`：每个连接器提供的功率（默认 7360）；`evW`：允许时车辆取用的功率（默认等于提供功率） |
+| `power` | `offeredW`：每个连接器提供的功率（默认 7360）；`evW`：允许时车辆取用的功率（默认等于提供功率）；`stationW`：各连接器共用的一路电源，像双口桩那样（默认没有）。正在充电的连接器平分它，车没用掉的部分（功率下降、限值更低）转给其他连接器 |
 | `features` | 1.6：功能 profile（Core、FirmwareManagement、RemoteTrigger、LocalAuthListManagement、Reservation、SmartCharging）。2.x：Core、AdvancedSecurity、LocalAuthListManagement、SmartCharging、Reservation，2.1 还有 TariffAndCost、Payment、WebPayments。桩没有声明的功能，其消息一律回复 NotSupported |
 | `config` | 1.6：配置项默认值 |
 | `deviceModel` | 2.x：Device Model 取值，组件 → 变量 → 值（自定义变量可以写成对象，含 `actual`、`mutability`、`dataType`、`unit`、`valuesList` 等） |

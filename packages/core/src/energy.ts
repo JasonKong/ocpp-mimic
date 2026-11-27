@@ -35,6 +35,11 @@ export interface EnergyOptions {
   offeredW: number;
   /** Power drawn without an EV when allowed, in W. */
   evPowerW: number;
+  /**
+   * What the station supplies across all its connectors, in W: one supply
+   * that the charging connectors share by demand. Undefined: no shared cap.
+   */
+  stationW?: number;
   /** Energy advances this many times faster than real time. */
   multiplier: number;
   /** connectorId → energy register in Wh, from a saved state. */
@@ -60,6 +65,11 @@ export interface Energy {
    * accepts, or the fixed power without an EV.
    */
   update(connectorId: number, running: boolean, limitW: number | undefined): void;
+  /**
+   * A limit on the whole station (a station-wide charging profile), shared by
+   * demand like the station's supply; undefined lifts it.
+   */
+  setStationLimit(limitW: number | undefined): void;
   /** Plugs in an EV; throws a RangeError for an unusable profile, before anything changes. */
   plugEv(connectorId: number, ev: PluggedEv): void;
   /**
@@ -93,6 +103,10 @@ export function createEnergy(options: EnergyOptions): Energy {
       meters.set(connectorId, createMeter({ now: now(), offeredW, energyWh }));
     }
   }
+  /** What the station last asked of each connector: whether it may draw, and its own limit. */
+  const requests = new Map<number, { running: boolean; limitW: number | undefined }>();
+  let stationLimitW: number | undefined;
+  let rebalanceTimer: TimerHandle | undefined;
   /** Plugged-in EVs; `drawing` says whether the meter's power currently flows into the battery. */
   const evs = new Map<number, { name?: string; state: EvState; drawing: boolean }>();
   const fullTimers = new Map<number, TimerHandle>();
@@ -161,6 +175,73 @@ export function createEnergy(options: EnergyOptions): Energy {
     );
   }
 
+  /** A connector's own cap: the station's rating, under its own limit. */
+  const capOf = (connectorId: number) =>
+    Math.max(0, Math.min(offeredW, requests.get(connectorId)?.limitW ?? Infinity));
+
+  /** What the station shares between its connectors, when anything caps it as a whole. */
+  function sharedW(): number | undefined {
+    const total = Math.min(options.stationW ?? Infinity, stationLimitW ?? Infinity);
+    return Number.isFinite(total) ? Math.max(0, total) : undefined;
+  }
+
+  /** Offers a connector `offered` and lets it draw what it takes of that, if running. */
+  function apply(connectorId: number, offered: number): void {
+    const current = sync(connectorId);
+    if (current.offeredW !== offered) meters.set(connectorId, { ...current, offeredW: offered });
+    const running = requests.get(connectorId)?.running ?? false;
+    const ev = evs.get(connectorId);
+    const power = ev === undefined ? Math.min(evPowerW, offered) : evDrawW(ev.state, offered);
+    setPower(connectorId, running ? power : 0);
+  }
+
+  /**
+   * Shares the station's supply (or its station-wide limit) between the
+   * charging connectors, as a dual charger's firmware does: equal shares, and
+   * what a car does not take of its share (tapering, a lower limit) goes to
+   * the others. A connector that takes less than its share keeps its own cap,
+   * since an EV takes less and less as it fills; one that would take more gets
+   * the share. While some are held back, the shares are worked out again
+   * every simulated minute, so power a tapering car gives up passes on.
+   */
+  function rebalance(): void {
+    timers.stop(rebalanceTimer);
+    rebalanceTimer = undefined;
+    const total = sharedW();
+    const ids = [...meters.keys()];
+    if (total === undefined) {
+      for (const id of ids) apply(id, capOf(id));
+      return;
+    }
+    for (const id of ids) sync(id);
+    const demandOf = (id: number) => {
+      const ev = evs.get(id);
+      return ev === undefined ? Math.min(evPowerW, capOf(id)) : evDrawW(ev.state, capOf(id));
+    };
+    let left = total;
+    let open = ids.filter((id) => requests.get(id)?.running === true);
+    const offered = new Map<number, number>(ids.map((id) => [id, capOf(id)]));
+    let heldBack = false;
+    while (open.length > 0) {
+      const share = left / open.length;
+      const under = open.filter((id) => demandOf(id) <= share);
+      if (under.length === 0) {
+        for (const id of open) offered.set(id, Math.min(capOf(id), share));
+        heldBack = true;
+        break;
+      }
+      for (const id of under) left -= demandOf(id);
+      open = open.filter((id) => demandOf(id) > share);
+    }
+    for (const id of ids) apply(id, offered.get(id) ?? 0);
+    if (heldBack) {
+      rebalanceTimer = timers.later(Math.max(1000, Math.ceil(60_000 / multiplier)), () => {
+        rebalanceTimer = undefined;
+        rebalance();
+      });
+    }
+  }
+
   return {
     meter,
     sync,
@@ -178,16 +259,16 @@ export function createEnergy(options: EnergyOptions): Energy {
     }),
     setPower,
     update(connectorId, running, limitW) {
-      const ev = evs.get(connectorId);
-      // The limit in force becomes the power offered (and Power.Offered).
-      const current = sync(connectorId);
-      const offered = Math.max(0, Math.min(offeredW, limitW ?? Infinity));
-      if (current.offeredW !== offered) meters.set(connectorId, { ...current, offeredW: offered });
-      if (ev === undefined) {
-        setPower(connectorId, running ? Math.min(evPowerW, offered) : 0);
-        return;
-      }
-      setPower(connectorId, running ? evDrawW(ev.state, offered) : 0);
+      requests.set(connectorId, { running, limitW });
+      // The limit in force becomes the power offered (and Power.Offered). Without a
+      // shared cap each connector is on its own, which keeps big fleets cheap.
+      if (sharedW() === undefined) apply(connectorId, capOf(connectorId));
+      else rebalance();
+    },
+    setStationLimit(limitW) {
+      if (limitW === stationLimitW) return;
+      stationLimitW = limitW;
+      rebalance();
     },
     plugEv(connectorId, ev) {
       const state = createEv(ev.profile);

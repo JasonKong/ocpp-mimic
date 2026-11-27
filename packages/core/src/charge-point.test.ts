@@ -31,6 +31,7 @@ interface SetupOptions {
   timing?: Partial<ChargePointTiming>;
   behaviour?: Partial<ChargePointBehaviour>;
   energyMultiplier?: number;
+  stationPowerW?: number;
   firmware?: Partial<FirmwareSettings>;
   transfer?: FileTransfer;
   certificates?: ChargePointOptions['certificates'];
@@ -126,6 +127,7 @@ function setup(options: SetupOptions = {}) {
     ...(options.restore !== undefined && { restore: options.restore }),
     ...(options.behaviour !== undefined && { behaviour: options.behaviour }),
     ...(options.energyMultiplier !== undefined && { energyMultiplier: options.energyMultiplier }),
+    ...(options.stationPowerW !== undefined && { stationPowerW: options.stationPowerW }),
     ...(options.firmware !== undefined && { firmware: options.firmware }),
     ...(options.transfer !== undefined && { transfer: options.transfer }),
   });
@@ -1068,6 +1070,28 @@ describe('smart charging', () => {
     await h.settle();
     expect(await stop).toBe('stopping');
     expect(h.cp.snapshot().chargingProfiles.map((p) => p.purpose)).toEqual(['TxDefaultProfile']);
+  });
+
+  it("shares a dual charger's supply: half each, and all of a connector once a car is full", async () => {
+    const h = setup({ stationPowerW: 11_040, energyMultiplier: 60 });
+    await h.boot();
+    const small = { capacityKWh: 5, initialSoc: 70, maxPowerW: 7400, phases: 1 as const };
+    const big = { capacityKWh: 75, initialSoc: 20, maxPowerW: 11000, phases: 3 as const };
+    for (const [connectorId, profile, idTag] of [
+      [1, small, 'TAG-1'],
+      [2, big, 'TAG-2'],
+    ] as const) {
+      const result = h.cp.presentIdTag(connectorId, idTag);
+      await h.settle();
+      expect(await result).toBe('authorized');
+      h.cp.plugIn(connectorId, { profile });
+    }
+    await h.advance(1000);
+    expect([power(h, 1), power(h, 2)]).toEqual([5520, 5520]);
+    // Three simulated hours later the small car is full; the big one gets a whole connector.
+    await h.advance(3 * 60_000);
+    expect(h.cp.snapshot().connectors.map((c) => c.status)).toEqual(['SuspendedEV', 'Charging']);
+    expect([power(h, 1), power(h, 2)]).toEqual([0, 7360]);
   });
 
   it('shares a ChargePointMaxProfile between the charging connectors', async () => {

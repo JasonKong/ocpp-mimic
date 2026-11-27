@@ -1,5 +1,6 @@
 # generic-2.0.1 with two EVSEs of one connector each: a dual-port AC charging
-# station, each port offering 7.36 kW.
+# station. Each port offers up to 7.36 kW; the two share one 11.04 kW supply,
+# so with two cars charging each gets 5.52 kW, and one alone gets 7.36 kW.
 persona: generic-dual-2.0.1
 extends: generic-2.0.1
 description: Generic OCPP 2.0.1 dual-port AC charging station
@@ -8,3 +9,6 @@ boot:
   model: Generic-Dual-2.0.1
   firmwareVersion: 0.0.0
 connectors: 2
+power:
+  offeredW: 7360
+  stationW: 11040

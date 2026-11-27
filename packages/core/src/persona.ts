@@ -88,7 +88,7 @@ const timingFields = {
 const commonFields = {
   extends: string(),
   description: string(),
-  power: object({}, { offeredW: number(), evW: number() }),
+  power: object({}, { offeredW: number(), evW: number(), stationW: number() }),
   firmware: object(
     {},
     {
@@ -236,12 +236,20 @@ export type PersonaChargePointOptions = Pick<
 > & {
   offeredPowerW?: number;
   evPowerW?: number;
+  stationPowerW?: number;
 };
 
 /** The parts of a 2.0.1 station's options a persona decides. */
 export type Persona201Options = Pick<
   ChargePoint201Options,
-  'boot' | 'connectors' | 'timing' | 'offeredPowerW' | 'evPowerW' | 'ocpp' | 'connectorStatus'
+  | 'boot'
+  | 'connectors'
+  | 'timing'
+  | 'offeredPowerW'
+  | 'evPowerW'
+  | 'stationPowerW'
+  | 'ocpp'
+  | 'connectorStatus'
 > & {
   features: readonly string[];
   deviceModel?: DeviceModelOverrides;
@@ -364,6 +372,9 @@ export function personaToOptions(definition: PersonaDefinition): PersonaChargePo
     timing: timingFrom(definition),
     ...(definition.power?.offeredW !== undefined && { offeredPowerW: definition.power.offeredW }),
     ...(definition.power?.evW !== undefined && { evPowerW: definition.power.evW }),
+    ...(definition.power?.stationW !== undefined && {
+      stationPowerW: definition.power.stationW,
+    }),
     ...(definition.firmware !== undefined && { firmware: firmwareFrom(definition.firmware) }),
   };
 }
@@ -382,6 +393,9 @@ export function persona201ToOptions(definition: Persona201Definition): Persona20
     ...(definition.deviceModel !== undefined && { deviceModel: definition.deviceModel }),
     ...(definition.power?.offeredW !== undefined && { offeredPowerW: definition.power.offeredW }),
     ...(definition.power?.evW !== undefined && { evPowerW: definition.power.evW }),
+    ...(definition.power?.stationW !== undefined && {
+      stationPowerW: definition.power.stationW,
+    }),
     ...(definition.firmware !== undefined && { firmware: firmwareFrom(definition.firmware) }),
   };
 }

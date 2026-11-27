@@ -108,8 +108,8 @@ export interface PersonaInfo {
   features?: string[];
   description?: string;
   connectors: number;
-  /** offeredW: what each connector offers, in W. */
-  power?: { offeredW?: number };
+  /** offeredW: what each connector offers; stationW: one supply its connectors share (W). */
+  power?: { offeredW?: number; stationW?: number };
   faults: FaultInfo[];
   evs: Record<string, EvProfile>;
   warnings: string[];

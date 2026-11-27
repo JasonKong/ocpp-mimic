@@ -125,12 +125,15 @@ interface Charger {
   label: string;
   /** What each connector offers at most, in W. */
   offeredW: number;
+  /** One supply the connectors share, in W, when the charge point has one. */
+  stationW?: number;
   bays: Bay[];
 }
 
 const DEFAULT_OFFERED_W = 7360;
-const offeredOf = (station: StationSnapshot) =>
-  personas.value.find((p) => p.id === station.persona)?.power?.offeredW ?? DEFAULT_OFFERED_W;
+const powerOf = (station: StationSnapshot) =>
+  personas.value.find((p) => p.id === station.persona)?.power;
+const offeredOf = (station: StationSnapshot) => powerOf(station)?.offeredW ?? DEFAULT_OFFERED_W;
 
 const chargers = computed<Charger[]>(() => {
   let index = 0;
@@ -140,6 +143,7 @@ const chargers = computed<Charger[]>(() => {
       station,
       label: chargerLabel(station.id),
       offeredW: offeredOf(station),
+      ...((w) => (w === undefined ? {} : { stationW: w }))(powerOf(station)?.stationW),
       bays: station.connectors.map((connector) => {
         const key = `${station.id}/${connector.connectorId}`;
         const bay: Bay = {
@@ -164,7 +168,10 @@ const longestFullMs = computed(() => {
 });
 /** The power a connector could take, for the manager's bars. */
 const siteMaxW = computed(() =>
-  chargers.value.reduce((sum, c) => sum + c.offeredW * c.bays.length, 0),
+  chargers.value.reduce(
+    (sum, c) => sum + Math.min(c.offeredW * c.bays.length, c.stationW ?? Infinity),
+    0,
+  ),
 );
 
 /** Keeps what the bays need beyond a snapshot: whether a session ran, and since when a car is full. */
@@ -554,6 +561,9 @@ onUnmounted(() => {
               <span class="muted">
                 {{ charger.bays.length === 2 ? 'Dual port' : 'Single port' }} ·
                 {{ kw(charger.offeredW) }} kW per port
+                <template v-if="charger.stationW !== undefined">
+                  · {{ kw(charger.stationW) }} kW shared
+                </template>
               </span>
               <span class="dot" :class="{ on: charger.station.connected }">
                 {{ connectionText(charger.station) }}
