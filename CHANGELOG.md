@@ -8,7 +8,8 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 
 - **Ways to start a session**: free vending on 1.6 with ocpp-mimic's vendor keys `FreeVendEnabled` and `FreeVendIdTag` (plugging in starts, without a card); the built-in CSMS's auto start for valet stations (a session on every plug-in) and remote stop, as `auto-start` and `remote-stop` in its control API and `POST /api/stations/<id>/auto-start` and `POST .../connectors/<n>/remote-stop` on the engine.
 - **Personas**: `generic-dual-1.6`, `generic-dual-2.0.1` and `generic-dual-2.1`, the generic personas with two ports.
-- **Demo page** in the Web UI (`#/demo`): pick the OCPP version, how sessions start and the chargers, then plug cars in and out, start them together and watch them fill up while the OCPP messages fly between the stations and the CSMS. `ocpp-mimic demo` starts the built-in CSMS and the engine for it in one process.
+- **Demo page** in the Web UI (`#/demo`): set up a charging site (its OCPP version, how sessions start and its single and dual charge points), then plug cars in and out, start them together and watch them fill up while the OCPP messages fly between the stations and the CSMS, and a site manager panel adds up power, energy and the cars charging or full. `ocpp-mimic demo` starts the built-in CSMS and the engine for it in one process.
+- **API**: `GET /api/personas` reports each persona's `power`.
 
 ### Changed
 

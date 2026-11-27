@@ -6,6 +6,7 @@ import {
   type EventsConnection,
   type FrameRecord,
   type OcppVersion,
+  type PersonaInfo,
   type StationSnapshot,
 } from '../api.js';
 import {
@@ -13,17 +14,21 @@ import {
   bayView,
   carFor,
   cardFor,
+  chargerLabel,
   clockText,
   createPortTracker,
-  DEFAULT_SETUP,
   DEMO_SPEEDS,
   DEMO_TAG,
   DEMO_VERSIONS,
   demoStations,
   frameLabel,
+  MAX_CHARGERS,
+  normalizeSetup,
+  siteTotals,
   START_MODES,
   VALET_TOKEN,
   type BayView,
+  type ChargerPorts,
   type DemoCar,
   type DemoSetup,
   type FrameLabel,
@@ -34,7 +39,7 @@ const STORAGE_KEY = 'ocpp-mimic.demo';
 function stored(): DemoSetup | undefined {
   try {
     const text = localStorage.getItem(STORAGE_KEY);
-    return text === null ? undefined : { ...DEFAULT_SETUP, ...(JSON.parse(text) as DemoSetup) };
+    return text === null ? undefined : normalizeSetup(JSON.parse(text));
   } catch {
     return undefined;
   }
@@ -46,11 +51,13 @@ function remember(value: DemoSetup) {
     // Without storage the page still works; it only forgets the setup on reload.
   }
 }
+const copy = (value: DemoSetup): DemoSetup => ({ ...value, chargers: [...value.chargers] });
 
-/** The settings being chosen, and the ones the car park was built with. */
-const setup = reactive<DemoSetup>({ ...(stored() ?? DEFAULT_SETUP) });
+/** The settings being chosen, and the ones the site was built with. */
+const setup = reactive<DemoSetup>(stored() ?? normalizeSetup(undefined));
 const built = ref<DemoSetup | undefined>();
 const stations = reactive(new Map<string, StationSnapshot>());
+const personas = ref<PersonaInfo[]>([]);
 const busy = ref(false);
 const error = ref<string | undefined>();
 const now = ref(Date.now());
@@ -90,18 +97,24 @@ let clock: ReturnType<typeof setInterval> | undefined;
 const mode = computed(() => START_MODES.find((m) => m.id === setup.mode) ?? START_MODES[0]);
 const builtMode = computed(() => START_MODES.find((m) => m.id === built.value?.mode));
 const changed = computed(
-  () =>
-    built.value === undefined ||
-    (['ocpp', 'mode', 'chargers', 'ports', 'speed', 'csmsUrl'] as const).some(
-      (key) => built.value?.[key] !== setup[key],
-    ),
+  () => built.value === undefined || JSON.stringify(built.value) !== JSON.stringify(copy(setup)),
 );
+
+function addCharger() {
+  if (setup.chargers.length < MAX_CHARGERS) setup.chargers.push('dual');
+}
+function removeCharger(index: number) {
+  if (setup.chargers.length > 1) setup.chargers.splice(index, 1);
+}
+function setPorts(index: number, ports: ChargerPorts) {
+  setup.chargers[index] = ports;
+}
 
 interface Bay {
   key: string;
   stationId: string;
   connectorId: number;
-  /** Counts every bay of the car park from 0, for its car and its card. */
+  /** Counts every bay of the site from 0, for its car and its card. */
   index: number;
   car: DemoCar;
   view: BayView;
@@ -109,8 +122,15 @@ interface Bay {
 
 interface Charger {
   station: StationSnapshot;
+  label: string;
+  /** What each connector offers at most, in W. */
+  offeredW: number;
   bays: Bay[];
 }
+
+const DEFAULT_OFFERED_W = 7360;
+const offeredOf = (station: StationSnapshot) =>
+  personas.value.find((p) => p.id === station.persona)?.power?.offeredW ?? DEFAULT_OFFERED_W;
 
 const chargers = computed<Charger[]>(() => {
   let index = 0;
@@ -118,6 +138,8 @@ const chargers = computed<Charger[]>(() => {
     .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
     .map((station) => ({
       station,
+      label: chargerLabel(station.id),
+      offeredW: offeredOf(station),
       bays: station.connectors.map((connector) => {
         const key = `${station.id}/${connector.connectorId}`;
         const bay: Bay = {
@@ -134,6 +156,16 @@ const chargers = computed<Charger[]>(() => {
     }));
 });
 const bays = computed(() => chargers.value.flatMap((c) => c.bays));
+const totals = computed(() => siteTotals([...stations.values()]));
+/** How long the car that became full first has stayed in its bay. */
+const longestFullMs = computed(() => {
+  const since = [...fullSince.values()];
+  return since.length === 0 ? undefined : now.value - Math.min(...since);
+});
+/** The power a connector could take, for the manager's bars. */
+const siteMaxW = computed(() =>
+  chargers.value.reduce((sum, c) => sum + c.offeredW * c.bays.length, 0),
+);
 
 /** Keeps what the bays need beyond a snapshot: whether a session ran, and since when a car is full. */
 function track(station: StationSnapshot) {
@@ -187,10 +219,6 @@ async function guard(work: () => Promise<unknown>) {
   }
 }
 
-function watchStations(ids: string[]) {
-  events?.subscribe(ids);
-}
-
 async function load(ids: string[]) {
   const snapshots = await Promise.all(ids.map((id) => api.station(id)));
   stations.clear();
@@ -200,11 +228,11 @@ async function load(ids: string[]) {
   }
 }
 
-/** Deletes the demo stations and builds the car park the setup describes. */
+/** Deletes the demo stations and builds the site the setup describes. */
 async function build() {
   busy.value = true;
   await guard(async () => {
-    const next: DemoSetup = { ...setup };
+    const next = copy(setup);
     await api.deleteStations({ tag: DEMO_TAG });
     stations.clear();
     hadTransaction.clear();
@@ -228,20 +256,16 @@ async function build() {
     built.value = next;
     remember(next);
     const ids = definitions.map((d) => d.id);
-    watchStations(ids);
+    events?.subscribe(ids);
     await load(ids);
   });
   busy.value = false;
 }
 
-async function act(work: () => Promise<unknown>) {
-  await guard(work);
-}
-
-const plug = (bay: Bay) => act(() => api.plug(bay.stationId, bay.connectorId, bay.car.profile));
-const unplug = (bay: Bay) => act(() => api.unplug(bay.stationId, bay.connectorId));
+const plug = (bay: Bay) => guard(() => api.plug(bay.stationId, bay.connectorId, bay.car.profile));
+const unplug = (bay: Bay) => guard(() => api.unplug(bay.stationId, bay.connectorId));
 async function tapCard(bay: Bay) {
-  await act(async () => {
+  await guard(async () => {
     const station = stations.get(bay.stationId);
     const type = station?.ocpp === '1.6' ? undefined : 'ISO14443';
     const { result } = await api.idTag(bay.stationId, bay.connectorId, cardFor(bay.index), type);
@@ -251,7 +275,7 @@ async function tapCard(bay: Bay) {
   });
 }
 async function appStart(bay: Bay) {
-  await act(async () => {
+  await guard(async () => {
     const answer = await api.remoteStart(
       bay.stationId,
       { idToken: appUserFor(bay.index), type: 'Central' },
@@ -261,7 +285,7 @@ async function appStart(bay: Bay) {
   });
 }
 async function appStop(bay: Bay) {
-  await act(async () => {
+  await guard(async () => {
     const answer = await api.remoteStop(bay.stationId, bay.connectorId);
     if (answer.status !== 'Accepted') error.value = `${answer.action}: ${answer.status}`;
   });
@@ -314,9 +338,7 @@ function waitingText(bay: Bay): string | undefined {
   if (bay.view.phase === 'finished') return 'Unplug to free the bay';
   if (bay.view.phase === 'full') {
     const since = fullSince.get(bay.key);
-    return since === undefined
-      ? 'Full'
-      : `Full, still in the bay for ${clockText(now.value - since)}`;
+    return since === undefined ? 'Full' : `Still in the bay for ${clockText(now.value - since)}`;
   }
   return undefined;
 }
@@ -324,13 +346,19 @@ function waitingText(bay: Bay): string | undefined {
 const versionLabel = (ocpp: OcppVersion) => (ocpp === '1.6' ? '1.6J' : ocpp);
 const portName = (ocpp: OcppVersion) => (ocpp === '1.6' ? 'Connector' : 'EVSE');
 const kw = (w: number) => (w / 1000).toFixed(1);
-const modelOf = (station: StationSnapshot) => station.persona;
 const connectionText = (station: StationSnapshot) =>
   station.connected
     ? station.registration === 'Accepted'
       ? 'online'
       : station.registration
     : 'connecting…';
+
+/** The pedestal runs down the whole charge point: rounded at its top and bottom only. */
+function pedestal(index: number, count: number) {
+  const top = index === 0 ? 4 : -8;
+  const bottom = index === count - 1 ? 108 : 120;
+  return { y: top, height: bottom - top };
+}
 
 const csmsLine = computed(() => {
   switch (built.value?.mode) {
@@ -379,14 +407,15 @@ onMounted(async () => {
     () => {},
   );
   clock = setInterval(() => (now.value = Date.now()), 1000);
-  // Pick up a car park built earlier, when its stations are still there.
   await guard(async () => {
+    personas.value = (await api.personas()).personas;
+    // Pick up a site built earlier, when its stations are still there.
     const previous = stored();
     const { stations: tagged } = await api.stationSummaries({ tag: DEMO_TAG });
     if (previous === undefined || tagged.length === 0) return;
     built.value = previous;
     const ids = tagged.map((s) => s.id);
-    watchStations(ids);
+    events?.subscribe(ids);
     await load(ids);
   });
 });
@@ -399,8 +428,12 @@ onUnmounted(() => {
 
 <template>
   <section class="demo">
-    <div class="setup" aria-label="Car park setup">
+    <div class="setup" aria-label="Site setup">
       <div class="row">
+        <label class="label">
+          Site
+          <input v-model.trim="setup.site" class="site-name" aria-label="Site name" />
+        </label>
         <span class="label">OCPP version</span>
         <div class="segmented" role="radiogroup" aria-label="OCPP version">
           <button
@@ -431,33 +464,36 @@ onUnmounted(() => {
         </div>
       </div>
       <p class="summary">{{ mode?.summary }}</p>
-      <div class="row">
+      <div class="row chargers-row">
         <span class="label">Charge points</span>
-        <div class="segmented" role="radiogroup" aria-label="Charge points">
+        <div v-for="(ports, i) in setup.chargers" :key="i" class="charger-chip">
+          <strong>CP-{{ i + 1 }}</strong>
+          <div class="segmented small" role="radiogroup" :aria-label="`Ports on CP-${i + 1}`">
+            <button
+              v-for="p in ['single', 'dual'] as const"
+              :key="p"
+              role="radio"
+              :aria-checked="ports === p"
+              :class="{ on: ports === p }"
+              @click="setPorts(i, p)"
+            >
+              {{ p === 'single' ? 'Single' : 'Dual' }}
+            </button>
+          </div>
           <button
-            v-for="n in [1, 2, 3]"
-            :key="n"
-            role="radio"
-            :aria-checked="setup.chargers === n"
-            :class="{ on: setup.chargers === n }"
-            @click="setup.chargers = n"
+            v-if="setup.chargers.length > 1"
+            class="remove"
+            :aria-label="`Remove CP-${i + 1}`"
+            @click="removeCharger(i)"
           >
-            {{ n }}
+            ✕
           </button>
         </div>
-        <span class="label">Ports each</span>
-        <div class="segmented" role="radiogroup" aria-label="Ports on each charge point">
-          <button
-            v-for="n in [1, 2] as const"
-            :key="n"
-            role="radio"
-            :aria-checked="setup.ports === n"
-            :class="{ on: setup.ports === n }"
-            @click="setup.ports = n"
-          >
-            {{ n === 1 ? 'Single' : 'Dual' }}
-          </button>
-        </div>
+        <button v-if="setup.chargers.length < MAX_CHARGERS" @click="addCharger">
+          Add a charge point
+        </button>
+      </div>
+      <div class="row">
         <label class="label">
           Battery speed
           <select v-model.number="setup.speed" aria-label="Battery speed">
@@ -466,16 +502,12 @@ onUnmounted(() => {
             </option>
           </select>
         </label>
-      </div>
-      <div class="row">
         <label class="label csms-field">
           CSMS
           <input v-model.trim="setup.csmsUrl" spellcheck="false" aria-label="CSMS address" />
         </label>
         <button class="primary" :disabled="busy || setup.csmsUrl === ''" @click="build">
-          {{
-            built ? (changed ? 'Rebuild with these settings' : 'Start again') : 'Build the car park'
-          }}
+          {{ built ? (changed ? 'Rebuild with these settings' : 'Start again') : 'Build the site' }}
         </button>
       </div>
     </div>
@@ -507,84 +539,86 @@ onUnmounted(() => {
         <button :disabled="!bays.some((b) => b.view.plugged)" @click="unplugAll">
           Unplug every car
         </button>
-        <span class="muted">
-          {{ builtMode?.label }} · OCPP {{ versionLabel(built.ocpp) }} ·
-          {{ built.speed === 1 ? 'real time' : `batteries ×${built.speed}` }}
-        </span>
       </div>
 
-      <div class="stage" :style="{ '--rows': chargers.length }">
+      <div class="site">
+        <h3 class="area-title" style="grid-column: 1; grid-row: 1">Charging area</h3>
+        <h3 class="area-title manager-title" style="grid-row: 1">Site manager</h3>
         <template v-for="(charger, row) in chargers" :key="charger.station.id">
-          <article class="charger" :style="{ gridRow: row + 1 }">
+          <article class="charger" :style="{ gridRow: row + 2 }">
             <header>
-              <strong>{{ charger.station.id }}</strong>
+              <strong>{{ charger.label }}</strong>
               <span class="badge" :class="'v-' + charger.station.ocpp.replace(/\./g, '')">
                 {{ versionLabel(charger.station.ocpp) }}
               </span>
-              <span class="muted">{{ modelOf(charger.station) }}</span>
+              <span class="muted">
+                {{ charger.bays.length === 2 ? 'Dual port' : 'Single port' }} ·
+                {{ kw(charger.offeredW) }} kW per port
+              </span>
               <span class="dot" :class="{ on: charger.station.connected }">
                 {{ connectionText(charger.station) }}
               </span>
             </header>
-            <div class="bays">
-              <div
-                v-for="bay in charger.bays"
-                :key="bay.key"
-                class="bay"
-                :class="'phase-' + bay.view.phase"
+            <div
+              v-for="(bay, i) in charger.bays"
+              :key="bay.key"
+              class="bay-row"
+              :class="'phase-' + bay.view.phase"
+            >
+              <svg
+                class="scene"
+                viewBox="0 0 280 112"
+                role="img"
+                :aria-label="`${charger.label} ${portName(charger.station.ocpp)} ${bay.connectorId}: ${PHASE_TEXT[bay.view.phase]}`"
               >
+                <rect
+                  x="8"
+                  :y="pedestal(i, charger.bays.length).y"
+                  width="40"
+                  :height="pedestal(i, charger.bays.length).height"
+                  rx="6"
+                  class="pedestal"
+                />
+                <rect v-if="i === 0" x="16" y="12" width="24" height="14" rx="2" class="screen" />
+                <circle cx="28" cy="64" r="10" class="socket" />
+                <text x="28" y="68.5" text-anchor="middle" class="socket-label">
+                  {{ bay.connectorId }}
+                </text>
+                <rect x="96" y="8" width="178" height="96" rx="6" class="bay-lines" />
+                <path
+                  v-if="bay.view.plugged"
+                  d="M 38 64 C 70 64, 86 84, 122 80"
+                  class="cable"
+                  :class="{ flowing: bay.view.phase === 'charging' }"
+                />
+                <g v-if="bay.view.plugged" class="car" transform="translate(118 40)">
+                  <path
+                    d="M 6 40 L 6 28 Q 8 22 18 20 L 40 8 Q 46 5 56 5 L 98 5 Q 108 5 116 14 L 128 22 Q 140 24 142 32 L 142 40 Z"
+                    :fill="bay.car.colour"
+                  />
+                  <path d="M 44 11 L 58 9 L 74 9 L 74 20 L 34 20 Z" class="window" />
+                  <path d="M 80 9 L 98 9 Q 106 9 112 16 L 116 20 L 80 20 Z" class="window" />
+                  <circle cx="34" cy="42" r="9" class="wheel" />
+                  <circle cx="112" cy="42" r="9" class="wheel" />
+                  <circle cx="34" cy="42" r="3.5" class="hub" />
+                  <circle cx="112" cy="42" r="3.5" class="hub" />
+                  <path
+                    v-if="bay.view.phase === 'charging'"
+                    d="M 74 22 L 66 33 L 72 33 L 68 42 L 79 29 L 72 29 Z"
+                    class="bolt"
+                  />
+                  <g v-if="bay.view.phase === 'full'" class="full-mark">
+                    <rect x="52" y="-14" width="44" height="16" rx="8" />
+                    <text x="74" y="-2.5" text-anchor="middle">FULL</text>
+                  </g>
+                </g>
+                <text v-else x="185" y="60" text-anchor="middle" class="empty-text">Empty bay</text>
+              </svg>
+              <div class="bay-info">
                 <div class="bay-head">
                   <span>{{ portName(charger.station.ocpp) }} {{ bay.connectorId }}</span>
                   <code class="status">{{ bay.view.status }}</code>
                 </div>
-                <svg
-                  class="scene"
-                  viewBox="0 0 240 96"
-                  role="img"
-                  :aria-label="`${bay.car.name}: ${PHASE_TEXT[bay.view.phase]}`"
-                >
-                  <!-- The port on the pedestal. -->
-                  <rect x="4" y="10" width="26" height="76" rx="5" class="pedestal" />
-                  <rect x="9" y="17" width="16" height="11" rx="2" class="screen" />
-                  <circle cx="17" cy="44" r="5" class="socket" />
-                  <!-- The parking bay. -->
-                  <rect x="70" y="8" width="164" height="84" rx="6" class="bay-lines" />
-                  <template v-if="bay.view.plugged">
-                    <path
-                      d="M 17 44 C 40 44, 46 66, 84 62"
-                      class="cable"
-                      :class="{ flowing: bay.view.phase === 'charging' }"
-                    />
-                  </template>
-                  <g
-                    v-if="bay.view.plugged || bay.view.phase !== 'empty'"
-                    class="car"
-                    :transform="'translate(82 26)'"
-                  >
-                    <path
-                      d="M 6 40 L 6 28 Q 8 22 18 20 L 40 8 Q 46 5 56 5 L 98 5 Q 108 5 116 14 L 128 22 Q 140 24 142 32 L 142 40 Z"
-                      :fill="bay.car.colour"
-                    />
-                    <path d="M 44 11 L 58 9 L 74 9 L 74 20 L 34 20 Z" class="window" />
-                    <path d="M 80 9 L 98 9 Q 106 9 112 16 L 116 20 L 80 20 Z" class="window" />
-                    <circle cx="34" cy="42" r="9" class="wheel" />
-                    <circle cx="112" cy="42" r="9" class="wheel" />
-                    <circle cx="34" cy="42" r="3.5" class="hub" />
-                    <circle cx="112" cy="42" r="3.5" class="hub" />
-                    <path
-                      v-if="bay.view.phase === 'charging'"
-                      d="M 74 22 L 66 33 L 72 33 L 68 42 L 79 29 L 72 29 Z"
-                      class="bolt"
-                    />
-                    <g v-if="bay.view.phase === 'full'" class="full-mark">
-                      <rect x="52" y="-14" width="44" height="16" rx="8" />
-                      <text x="74" y="-2.5" text-anchor="middle">FULL</text>
-                    </g>
-                  </g>
-                  <text v-else x="152" y="54" text-anchor="middle" class="empty-text">
-                    Empty bay
-                  </text>
-                </svg>
                 <div v-if="bay.view.soc !== undefined" class="battery">
                   <div class="soc">
                     <div
@@ -603,7 +637,7 @@ onUnmounted(() => {
                 </div>
                 <p class="phase">
                   <strong>{{ PHASE_TEXT[bay.view.phase] }}</strong>
-                  <template v-if="bay.view.phase !== 'empty'"> · {{ bay.car.name }}</template>
+                  <template v-if="bay.view.plugged"> · {{ bay.car.name }}</template>
                   <span v-if="waitingText(bay)" class="muted"> — {{ waitingText(bay) }}</span>
                 </p>
                 <div class="actions">
@@ -637,7 +671,7 @@ onUnmounted(() => {
               </div>
             </div>
           </article>
-          <div class="lane" :style="{ gridRow: row + 1 }" aria-hidden="true">
+          <div class="lane" :style="{ gridRow: row + 2 }" aria-hidden="true">
             <span class="track up" />
             <span class="track down" />
             <span
@@ -650,10 +684,61 @@ onUnmounted(() => {
             </span>
           </div>
         </template>
-        <aside class="csms" :style="{ gridRow: `1 / span ${chargers.length}` }">
-          <strong>CSMS</strong>
-          <code>{{ built.csmsUrl }}</code>
-          <p>{{ csmsLine }}</p>
+        <aside class="manager" :style="{ gridRow: `2 / span ${chargers.length}` }">
+          <header>
+            <strong>{{ built.site }}</strong>
+            <span class="muted">
+              {{ builtMode?.label }} · OCPP {{ versionLabel(built.ocpp) }} ·
+              {{ built.speed === 1 ? 'real time' : `batteries ×${built.speed}` }}
+            </span>
+          </header>
+          <div class="metrics">
+            <div class="metric">
+              <span>Site power</span>
+              <strong>{{ kw(totals.powerW) }} kW</strong>
+            </div>
+            <div class="metric">
+              <span>Energy delivered</span>
+              <strong>{{ (totals.energyWh / 1000).toFixed(1) }} kWh</strong>
+            </div>
+            <div class="metric">
+              <span>Charging</span>
+              <strong>{{ totals.charging }} of {{ bays.length }}</strong>
+            </div>
+            <div class="metric">
+              <span>Full, still parked</span>
+              <strong>
+                {{ totals.full }}
+                <small v-if="longestFullMs !== undefined">
+                  · up to {{ clockText(longestFullMs) }}
+                </small>
+              </strong>
+            </div>
+          </div>
+          <h4>Power by connector</h4>
+          <ul class="loads">
+            <li v-for="bay in bays" :key="bay.key">
+              <span class="who"> {{ chargerLabel(bay.stationId) }} · {{ bay.connectorId }} </span>
+              <span class="load-bar">
+                <span
+                  class="load-fill"
+                  :class="'phase-' + bay.view.phase"
+                  :style="{
+                    width: `${Math.min(100, (bay.view.powerW / (chargers.find((c) => c.station.id === bay.stationId)?.offeredW ?? DEFAULT_OFFERED_W)) * 100)}%`,
+                  }"
+                />
+              </span>
+              <span class="kw">{{ kw(bay.view.powerW) }} kW</span>
+            </li>
+          </ul>
+          <p class="muted capacity">
+            Up to {{ kw(siteMaxW) }} kW if every connector draws its most.
+          </p>
+          <p class="csms-line">
+            <span class="muted">CSMS</span> <code>{{ built.csmsUrl }}</code>
+            <br />
+            {{ csmsLine }}
+          </p>
         </aside>
       </div>
 
@@ -669,7 +754,7 @@ onUnmounted(() => {
             >
               <span class="time">{{ timeOf(item.at) }}</span>
               <span class="who">
-                {{ item.stationId }}
+                {{ chargerLabel(item.stationId) }}
                 <template v-if="item.port !== undefined">
                   · {{ portName(stations.get(item.stationId)?.ocpp ?? '1.6') }} {{ item.port }}
                 </template>
@@ -694,8 +779,8 @@ onUnmounted(() => {
       </section>
     </template>
     <p v-else-if="!busy" class="placeholder">
-      Choose a version and how sessions start, then build the car park. The stations are real
-      ocpp-mimic stations: every message below goes over the wire to the CSMS.
+      Name the site, choose a version and how sessions start, add its charge points, then build it.
+      The stations are real ocpp-mimic stations: every message below goes over the wire to the CSMS.
     </p>
   </section>
 </template>
@@ -725,8 +810,11 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
 }
+.site-name {
+  width: 160px;
+}
 .csms-field input {
-  width: 260px;
+  width: 240px;
   max-width: 60vw;
   font-family: ui-monospace, monospace;
 }
@@ -748,6 +836,10 @@ onUnmounted(() => {
   background: none;
   padding: 5px 12px;
 }
+.segmented.small button {
+  padding: 2px 8px;
+  font-size: 12px;
+}
 .segmented button + button {
   border-left: 1px solid var(--border);
 }
@@ -763,6 +855,21 @@ onUnmounted(() => {
 }
 .segmented button.v-21.on {
   background: var(--v21);
+}
+.charger-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 13px;
+}
+.charger-chip .remove {
+  border: none;
+  background: none;
+  padding: 0 4px;
+  color: var(--muted);
 }
 .bulk {
   display: flex;
@@ -797,12 +904,23 @@ onUnmounted(() => {
   color: var(--muted);
 }
 
-/* The car park: charge points on the left, the CSMS on the right, the wire between. */
-.stage {
+/* The site: the charging area on the left, the site manager on the right, the wire between. */
+.site {
   display: grid;
-  grid-template-columns: minmax(0, auto) minmax(120px, 1fr) 170px;
+  grid-template-columns: minmax(0, auto) minmax(90px, 1fr) minmax(240px, 300px);
   gap: 12px 0;
   align-items: stretch;
+}
+.area-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.manager-title {
+  grid-column: 3;
 }
 .charger {
   grid-column: 1;
@@ -810,13 +928,14 @@ onUnmounted(() => {
   border-radius: 8px;
   padding: 10px 12px;
   display: grid;
-  gap: 8px;
+  gap: 0;
 }
 .charger header {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  margin-bottom: 4px;
 }
 .badge {
   font-size: 11px;
@@ -851,43 +970,16 @@ onUnmounted(() => {
 .dot.on::before {
   background: var(--good);
 }
-.bays {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-.bay {
-  width: 270px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px;
+.bay-row {
   display: grid;
-  gap: 6px;
-  transition: border-color 0.3s;
-}
-.bay.phase-charging {
-  border-color: var(--good);
-}
-.bay.phase-full {
-  border-color: var(--accent);
-}
-.bay.phase-fault {
-  border-color: var(--bad);
-}
-.bay-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.status {
-  font-size: 11px;
-  color: var(--ink);
+  grid-template-columns: 280px minmax(220px, 1fr);
+  gap: 12px;
+  align-items: center;
 }
 .scene {
-  width: 100%;
-  height: auto;
+  width: 280px;
+  height: 112px;
+  display: block;
 }
 .pedestal {
   fill: var(--hover);
@@ -897,12 +989,29 @@ onUnmounted(() => {
   fill: var(--v201-bg);
 }
 .socket {
+  fill: var(--bg);
+  stroke: var(--ink);
+  stroke-width: 2;
+}
+.socket-label {
   fill: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
 }
 .bay-lines {
   fill: none;
   stroke: var(--border);
   stroke-dasharray: 6 5;
+  transition: stroke 0.3s;
+}
+.phase-charging .bay-lines {
+  stroke: var(--good);
+}
+.phase-full .bay-lines {
+  stroke: var(--accent);
+}
+.phase-fault .bay-lines {
+  stroke: var(--bad);
 }
 .cable {
   fill: none;
@@ -947,6 +1056,22 @@ onUnmounted(() => {
 .empty-text {
   fill: var(--muted);
   font-size: 12px;
+}
+.bay-info {
+  display: grid;
+  gap: 5px;
+  padding: 6px 0;
+}
+.bay-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.status {
+  font-size: 11px;
+  color: var(--ink);
 }
 .battery {
   display: grid;
@@ -1069,25 +1194,97 @@ onUnmounted(() => {
     opacity: 0;
   }
 }
-.csms {
+
+.manager {
   grid-column: 3;
+  align-self: start;
+  position: sticky;
+  top: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 12px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 6px;
-  text-align: center;
+  display: grid;
+  gap: 10px;
 }
-.csms code {
-  font-size: 11px;
-  word-break: break-all;
+.manager header {
+  display: grid;
+  gap: 2px;
+}
+.manager h4 {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.metric {
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--hover);
+}
+.metric span {
+  font-size: 12px;
   color: var(--muted);
 }
-.csms p {
+.metric strong {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.metric small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.loads {
+  list-style: none;
   margin: 0;
-  font-size: 13px;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.loads li {
+  display: grid;
+  grid-template-columns: 70px 1fr 56px;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+.load-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--hover);
+  overflow: hidden;
+}
+.load-fill {
+  display: block;
+  height: 100%;
+  background: var(--good);
+  transition: width 0.8s ease;
+}
+.load-fill.phase-full {
+  background: var(--accent);
+}
+.kw {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.capacity {
+  margin: 0;
+  font-size: 12px;
+}
+.csms-line {
+  margin: 0;
+  font-size: 12px;
+}
+.csms-line code {
+  font-size: 11px;
+  word-break: break-all;
 }
 
 .feed h2 {
@@ -1159,27 +1356,40 @@ onUnmounted(() => {
   overflow: auto;
 }
 
-@media (max-width: 900px) {
-  .stage {
+@media (max-width: 1080px) {
+  .site {
     grid-template-columns: 1fr;
   }
+  .area-title,
+  .manager-title,
   .charger,
-  .csms {
-    grid-column: 1;
+  .manager {
+    grid-column: 1 !important;
     grid-row: auto !important;
   }
-  .lane {
+  .manager {
+    position: static;
+  }
+  .lane,
+  .manager-title {
     display: none;
   }
-  .bay {
+}
+@media (max-width: 620px) {
+  .bay-row {
+    grid-template-columns: 1fr;
+  }
+  .scene {
     width: 100%;
+    height: auto;
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .cable.flowing {
     animation: none;
   }
-  .fill {
+  .fill,
+  .load-fill {
     transition: none;
   }
 }

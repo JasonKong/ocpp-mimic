@@ -269,15 +269,16 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 
 ### 演示页
 
-页头的 **Demo**（或地址 `#/demo`）是一个可以动手操作的小停车场，用来展示 OCPP 的工作过程，而不是做测试。用 `ocpp-mimic demo` 启动最方便；用 `serve` 的话，还要另外启动内置 CSMS。
+页头的 **Demo**（或地址 `#/demo`）是一个可以动手操作的小充电站点，用来展示 OCPP 的工作过程，而不是做测试。用 `ocpp-mimic demo` 启动最方便；用 `serve` 的话，还要另外启动内置 CSMS。
 
-1. 选择 **OCPP 版本**（1.6J、2.0.1 或 2.1）、**会话的启动方式**（[即插即充、RFID 卡、App 或 valet](#会话怎样开始)）、1 到 3 台**充电桩**，每台**单口或双口**，以及**电池速度**（即能量倍率；×300 时大多数车一两分钟就能充满）。
-2. 点 **Build the car park**。它用 generic persona 创建桩 `DEMO-1` 到 `DEMO-3`，打上 `demo` 标签，连到填写的 CSMS（默认 `ws://127.0.0.1:9100/ocpp`）。再次构建时会先删除带 `demo` 标签的桩。即插即充会打开桩的免认证设置；valet 会为每个桩打开内置 CSMS 的自动启动，其他方式则把它关掉。
-3. 每个车位有自己的车，从 25 kWh 的小车到 75 kWh 的 SUV，初始电量各不相同。点 **Plug in** 插枪。之后按所选方式开始：自动开始、点 **Tap card** 刷卡、点 **Start in app** 用 App 启动，或者由 CSMS 启动。**Tap card to stop**、**Stop in app** 和 **Unplug** 结束会话。**Plug in every car**、**Tap every card** 或 **Start every car in the app**，以及 **Unplug every car** 会同时作用于所有车位。
+1. 设置**站点**：名称、**OCPP 版本**（1.6J、2.0.1 或 2.1）、**会话的启动方式**（[即插即充、RFID 卡、App 或 valet](#会话怎样开始)）、站点的**充电桩**（最多添加 6 台，每台**单口**或**双口**），以及**电池速度**（即能量倍率；×300 时大多数车一两分钟就能充满）。
+2. 点 **Build the site**。它用 generic persona（双口桩用 `generic-dual-*`）创建桩 `DEMO-CP-1`、`DEMO-CP-2`……（显示为 CP-1、CP-2……），打上 `demo` 标签，连到填写的 CSMS（默认 `ws://127.0.0.1:9100/ocpp`）。再次构建时会先删除带 `demo` 标签的桩。即插即充会打开桩的免认证设置；valet 会为每个桩打开内置 CSMS 的自动启动，其他方式则把它关掉。
+3. 左侧的**充电区**把每台充电桩画成一根立柱；双口桩有两个插座，标着 1 和 2，各自接到自己的车位。每个车位有自己的车，从 25 kWh 的小车到 75 kWh 的 SUV，初始电量各不相同。点 **Plug in** 插枪。之后按所选方式开始：自动开始、点 **Tap card** 刷卡、点 **Start in app** 用 App 启动，或者由 CSMS 启动。**Tap card to stop**、**Stop in app** 和 **Unplug** 结束会话。**Plug in every car**、**Tap every card** 或 **Start every car in the app**，以及 **Unplug every car** 会同时作用于所有车位。
 4. 车位上显示桩自己上报的状态（2.x 同时显示充电状态），以及车的电量、功率和已充入的电量。车充满后，桩上报 SuspendedEV，功率降为 0，车位标记为 **Full**，并显示车充满后又在车位上停了多久。会话会一直保持，直到拔枪或会话被停止。
-5. 每条 OCPP 消息发生时，都会在对应的充电桩和 CSMS 之间飞过；**OCPP messages** 按从新到旧列出它们，点开一条可以看它的内容。
+5. 右侧的**站点管理**汇总整个站点：当前功率、站点建好以来的总供电量、正在充电的车数、已充满但仍占位的车数（以及最长占位时间），还有每个连接器的功率和它最多能提供的功率。
+6. 每条 OCPP 消息发生时，都会在对应的充电桩和站点管理这一侧之间飞过；**OCPP messages** 按从新到旧列出它们，并标出属于哪台桩、哪个连接器，点开一条可以看它的内容。
 
-页面会在浏览器里记住设置，再次打开时接着显示原来的停车场。App 和 valet 需要 ocpp-mimic 的内置 CSMS；连其他 CSMS 时页面会给出提示。
+页面会在浏览器里记住设置，再次打开时接着显示原来的站点。App 和 valet 需要 ocpp-mimic 的内置 CSMS；连其他 CSMS 时页面会给出提示。
 
 ## 4. Persona 和 EV 配置
 

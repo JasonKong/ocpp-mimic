@@ -4,7 +4,13 @@
  * bay looks from a station snapshot. DemoView.vue draws it and drives the
  * engine's API; everything on the wire comes from the real stations.
  */
-import type { ConnectorSnapshot, EvProfile, FrameRecord, OcppVersion } from './api.js';
+import type {
+  ConnectorSnapshot,
+  EvProfile,
+  FrameRecord,
+  OcppVersion,
+  StationSnapshot,
+} from './api.js';
 
 export type StartMode = 'free-vend' | 'card' | 'app' | 'valet';
 
@@ -45,26 +51,53 @@ export const DEMO_VERSIONS: readonly OcppVersion[] = ['1.6', '2.0.1', '2.1'];
 /** Energy multipliers on offer: how many times faster than real time the batteries fill. */
 export const DEMO_SPEEDS: readonly number[] = [1, 60, 300, 1200];
 
+/** A charge point of the site: one port or two. */
+export type ChargerPorts = 'single' | 'dual';
+
+/** How many charge points a demo site can have. */
+export const MAX_CHARGERS = 6;
+
 export interface DemoSetup {
+  /** The site's name, shown on the manager panel. */
+  site: string;
   ocpp: OcppVersion;
   mode: StartMode;
-  /** Charge points in the car park, 1 to 3. */
-  chargers: number;
-  /** Ports on each, 1 or 2. */
-  ports: 1 | 2;
+  /** The site's charge points, in order: CP-1, CP-2, ... */
+  chargers: ChargerPorts[];
   /** Energy multiplier. */
   speed: number;
   csmsUrl: string;
 }
 
 export const DEFAULT_SETUP: DemoSetup = {
+  site: 'Demo site',
   ocpp: '1.6',
   mode: 'free-vend',
-  chargers: 2,
-  ports: 2,
+  chargers: ['dual', 'single', 'dual'],
   speed: 300,
   csmsUrl: 'ws://127.0.0.1:9100/ocpp',
 };
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** A setup from storage, with defaults for whatever is missing or from an older page. */
+export function normalizeSetup(value: unknown): DemoSetup {
+  if (!isObject(value)) return { ...DEFAULT_SETUP, chargers: [...DEFAULT_SETUP.chargers] };
+  const pick = <T>(ok: (v: unknown) => boolean, v: unknown, fallback: T): T =>
+    ok(v) ? (v as T) : fallback;
+  const chargers = Array.isArray(value.chargers)
+    ? value.chargers.filter((c): c is ChargerPorts => c === 'single' || c === 'dual')
+    : [];
+  return {
+    site: pick((v) => typeof v === 'string' && v.trim() !== '', value.site, DEFAULT_SETUP.site),
+    ocpp: pick((v) => DEMO_VERSIONS.includes(v as OcppVersion), value.ocpp, DEFAULT_SETUP.ocpp),
+    mode: pick((v) => START_MODES.some((m) => m.id === v), value.mode, DEFAULT_SETUP.mode),
+    chargers: chargers.length > 0 ? chargers.slice(0, MAX_CHARGERS) : [...DEFAULT_SETUP.chargers],
+    speed: pick((v) => DEMO_SPEEDS.includes(v as number), value.speed, DEFAULT_SETUP.speed),
+    csmsUrl: pick((v) => typeof v === 'string' && v !== '', value.csmsUrl, DEFAULT_SETUP.csmsUrl),
+  };
+}
 
 /** Demo stations carry this tag; building again deletes only them. */
 export const DEMO_TAG = 'demo';
@@ -75,11 +108,13 @@ export const cardFor = (bay: number) => `CARD-${String(bay + 1).padStart(4, '0')
 export const appUserFor = (bay: number) => `APP-USER-${String(bay + 1).padStart(2, '0')}`;
 
 /** The generic personas that come with ocpp-mimic, with one port or two. */
-export function demoPersona(ocpp: OcppVersion, ports: 1 | 2): string {
-  return ports === 2 ? `generic-dual-${ocpp}` : `generic-${ocpp}`;
+export function demoPersona(ocpp: OcppVersion, ports: ChargerPorts): string {
+  return ports === 'dual' ? `generic-dual-${ocpp}` : `generic-${ocpp}`;
 }
 
-export const demoStationId = (index: number) => `DEMO-${index + 1}`;
+/** Station ids keep the demo's prefix, so they stay clear of other stations; labels drop it. */
+export const demoStationId = (index: number) => `DEMO-CP-${index + 1}`;
+export const chargerLabel = (stationId: string) => stationId.replace(/^DEMO-/, '');
 
 /** What POST /api/stations takes for a demo station. */
 export interface DemoStationDefinition {
@@ -98,9 +133,9 @@ const METER_INTERVAL_S = 10;
 /** The stations for a setup; free vend is the station's own setting, valet is the CSMS's. */
 export function demoStations(setup: DemoSetup): DemoStationDefinition[] {
   const freeVend = setup.mode === 'free-vend';
-  return Array.from({ length: setup.chargers }, (_, i) => ({
+  return setup.chargers.map((ports, i) => ({
     id: demoStationId(i),
-    persona: demoPersona(setup.ocpp, setup.ports),
+    persona: demoPersona(setup.ocpp, ports),
     csmsUrl: setup.csmsUrl,
     tags: [DEMO_TAG],
     energyMultiplier: setup.speed,
@@ -118,6 +153,32 @@ export function demoStations(setup: DemoSetup): DemoStationDefinition[] {
           },
         }),
   }));
+}
+
+/** What the site manager sees at a glance, from the stations' snapshots. */
+export interface SiteTotals {
+  /** Power drawn now, in W. */
+  powerW: number;
+  /** Energy delivered since the stations were built (their meters start at 0), in Wh. */
+  energyWh: number;
+  /** Connectors whose car is taking power. */
+  charging: number;
+  /** Connectors in a transaction whose car is full. */
+  full: number;
+}
+
+export function siteTotals(stations: readonly StationSnapshot[]): SiteTotals {
+  const totals: SiteTotals = { powerW: 0, energyWh: 0, charging: 0, full: 0 };
+  for (const station of stations) {
+    for (const connector of station.connectors) {
+      totals.powerW += connector.powerW;
+      totals.energyWh += connector.energyWh;
+      const phase = bayView(connector, station.ocpp).phase;
+      if (phase === 'charging') totals.charging += 1;
+      if (phase === 'full') totals.full += 1;
+    }
+  }
+  return totals;
 }
 
 /** A made-up car for each bay; different sizes and charge levels so they fill at different times. */
@@ -237,9 +298,6 @@ export interface FrameLabel {
   /** The answer's status, when it has one (Accepted, Rejected, Invalid, ...). */
   status?: string;
 }
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /** The status an answer carries, wherever its action keeps it. */
 function answerStatus(payload: unknown): string | undefined {

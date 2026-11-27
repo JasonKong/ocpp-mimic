@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { ConnectorSnapshot, FrameRecord } from './api.js';
+import type { ConnectorSnapshot, FrameRecord, StationSnapshot } from './api.js';
 import {
   bayView,
   carFor,
+  chargerLabel,
   clockText,
   createPortTracker,
   DEFAULT_SETUP,
@@ -10,6 +11,9 @@ import {
   demoPersona,
   demoStations,
   frameLabel,
+  MAX_CHARGERS,
+  normalizeSetup,
+  siteTotals,
   START_MODES,
 } from './demo.js';
 
@@ -43,20 +47,31 @@ const frame = (patch: Partial<FrameRecord>): FrameRecord => ({
   ...patch,
 });
 
-describe('the demo car park', () => {
-  it('builds generic stations for the version and ports, tagged as the demo', () => {
-    expect(demoPersona('1.6', 1)).toBe('generic-1.6');
-    expect(demoPersona('2.1', 2)).toBe('generic-dual-2.1');
-    const stations = demoStations({ ...DEFAULT_SETUP, ocpp: '2.0.1', mode: 'card', chargers: 3 });
-    expect(stations.map((s) => s.id)).toEqual(['DEMO-1', 'DEMO-2', 'DEMO-3']);
+describe('the demo site', () => {
+  it('builds one generic station per charge point, single or dual, tagged as the demo', () => {
+    expect(demoPersona('1.6', 'single')).toBe('generic-1.6');
+    expect(demoPersona('2.1', 'dual')).toBe('generic-dual-2.1');
+    const stations = demoStations({
+      ...DEFAULT_SETUP,
+      ocpp: '2.0.1',
+      mode: 'card',
+      chargers: ['dual', 'single', 'dual'],
+    });
+    expect(stations.map((s) => s.id)).toEqual(['DEMO-CP-1', 'DEMO-CP-2', 'DEMO-CP-3']);
+    expect(stations.map((s) => s.persona)).toEqual([
+      'generic-dual-2.0.1',
+      'generic-2.0.1',
+      'generic-dual-2.0.1',
+    ]);
     expect(stations[0]).toEqual({
-      id: 'DEMO-1',
+      id: 'DEMO-CP-1',
       persona: 'generic-dual-2.0.1',
       csmsUrl: DEFAULT_SETUP.csmsUrl,
       tags: ['demo'],
       energyMultiplier: DEFAULT_SETUP.speed,
       deviceModel: { SampledDataCtrlr: { TxUpdatedInterval: 10 } },
     });
+    expect(chargerLabel('DEMO-CP-2')).toBe('CP-2');
   });
 
   it('turns free vend on in the station: a 1.6 vendor key, or 2.x without authorization', () => {
@@ -75,6 +90,60 @@ describe('the demo car park', () => {
     const [valet] = demoStations({ ...DEFAULT_SETUP, ocpp: '1.6', mode: 'valet' });
     expect(valet?.config).toEqual({ MeterValueSampleInterval: '10' });
     expect(START_MODES.map((m) => m.id)).toEqual(['free-vend', 'card', 'app', 'valet']);
+  });
+
+  it('reads a stored setup, keeping what is valid and defaulting the rest', () => {
+    expect(normalizeSetup(undefined)).toEqual(DEFAULT_SETUP);
+    // The first Demo page stored a count of chargers and their ports.
+    expect(normalizeSetup({ ocpp: '2.1', mode: 'app', chargers: 2, ports: 2, speed: 60 })).toEqual({
+      ...DEFAULT_SETUP,
+      ocpp: '2.1',
+      mode: 'app',
+      speed: 60,
+    });
+    expect(
+      normalizeSetup({
+        site: '  ',
+        ocpp: '3.0',
+        mode: 'magic',
+        chargers: ['single', 'triple', 'dual', 'dual', 'dual', 'dual', 'dual', 'dual'],
+        speed: 7,
+        csmsUrl: 'ws://127.0.0.1:9300/ocpp',
+      }),
+    ).toEqual({
+      ...DEFAULT_SETUP,
+      chargers: ['single', 'dual', 'dual', 'dual', 'dual', 'dual'],
+      csmsUrl: 'ws://127.0.0.1:9300/ocpp',
+    });
+    expect(MAX_CHARGERS).toBe(6);
+  });
+
+  it('adds up the site: power, energy since the build, charging and full cars', () => {
+    const station = (ocpp: '1.6' | '2.0.1', connectors: ConnectorSnapshot[]) =>
+      ({ id: 'X', ocpp, connectors }) as unknown as StationSnapshot;
+    expect(
+      siteTotals([
+        station('1.6', [
+          connector({
+            plugged: true,
+            status: 'Charging',
+            transactionId: 1,
+            powerW: 5000,
+            energyWh: 1200,
+            ev: ev(60),
+          }),
+          connector({
+            connectorId: 2,
+            plugged: true,
+            status: 'SuspendedEV',
+            transactionId: 2,
+            energyWh: 3000,
+            ev: ev(100),
+          }),
+        ]),
+        station('2.0.1', [connector({ status: 'Available', energyWh: 800 })]),
+      ]),
+    ).toEqual({ powerW: 5000, energyWh: 5000, charging: 1, full: 1 });
   });
 
   it('gives each bay its own car, round the list', () => {
