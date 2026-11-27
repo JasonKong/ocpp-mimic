@@ -12,39 +12,77 @@ import type {
   StationSnapshot,
 } from './api.js';
 
-export type StartMode = 'free-vend' | 'card' | 'app' | 'valet';
+export type StartMode = 'free-vend' | 'card' | 'app' | 'valet' | 'payment' | 'qr' | 'autocharge';
 
 export interface StartModeInfo {
   id: StartMode;
   label: string;
   /** What happens, in one sentence. */
   summary: string;
+  /** Where it is used. */
+  where: string;
+  /** The OCPP versions that have it; every version when absent. */
+  versions?: readonly OcppVersion[];
 }
 
 export const START_MODES: readonly StartModeInfo[] = [
   {
     id: 'free-vend',
-    label: 'Plug in and charge',
+    label: 'Free vend',
     summary:
-      'Like a home charger: plugging in starts the session, with no card and no app (free vend).',
+      'Plug in and charge: the cable is enough, with no card and no app (not ISO 15118 Plug & Charge).',
+    where: 'Home chargers, private bays, free workplace charging',
   },
   {
     id: 'card',
     label: 'RFID card',
     summary: 'The driver taps a card: the station asks the CSMS (Authorize), then starts.',
+    where: 'Workplaces, fleets, public AC with roaming cards',
   },
   {
     id: 'app',
     label: 'App',
     summary: 'The driver starts and stops in an app: the CSMS sends the station a remote start.',
+    where: 'Public AC and DC, residential car parks',
   },
   {
     id: 'valet',
     label: 'Valet',
     summary:
       'The CSMS starts a session whenever a car is plugged in, with no driver, as in a valet car park.',
+    where: 'Hotels, valet and dealership car parks',
+  },
+  {
+    id: 'payment',
+    label: 'Bank card',
+    summary:
+      "The driver pays with a bank card at the charge point's payment terminal: no account, no app.",
+    where: 'Public fast charging (required on new public chargers in the EU)',
+    versions: ['2.1'],
+  },
+  {
+    id: 'qr',
+    label: 'QR code',
+    summary:
+      "The driver scans the charge point's QR code and pays on a web page; the CSMS then starts the session.",
+    where: 'Public AC and DC for drivers without an account',
+    versions: ['2.1'],
+  },
+  {
+    id: 'autocharge',
+    label: 'Autocharge',
+    summary:
+      'The car identifies itself by its MAC address (EVCCID) as it is plugged in: no card, no app.',
+    where: 'DC fast charging networks, fleets',
   },
 ];
+
+/** Whether a way of starting exists in an OCPP version. */
+export const modeAvailable = (mode: StartMode, ocpp: OcppVersion) =>
+  START_MODES.find((m) => m.id === mode)?.versions?.includes(ocpp) ?? true;
+
+/** The shared secret of the demo stations' QR codes, so the CSMS can check them. */
+export const DEMO_WEB_PAYMENT_SECRET = 'demo-web-payment-secret';
 
 export const DEMO_VERSIONS: readonly OcppVersion[] = ['1.6', '2.0.1', '2.1'];
 
@@ -95,10 +133,16 @@ export function normalizeSetup(value: unknown): DemoSetup {
   const chargers = Array.isArray(value.chargers)
     ? value.chargers.filter((c): c is ChargerPorts => c === 'single' || c === 'dual')
     : [];
+  const ocpp = pick(
+    (v) => DEMO_VERSIONS.includes(v as OcppVersion),
+    value.ocpp,
+    DEFAULT_SETUP.ocpp,
+  );
+  const mode = pick((v) => START_MODES.some((m) => m.id === v), value.mode, DEFAULT_SETUP.mode);
   return {
     site: pick((v) => typeof v === 'string' && v.trim() !== '', value.site, DEFAULT_SETUP.site),
-    ocpp: pick((v) => DEMO_VERSIONS.includes(v as OcppVersion), value.ocpp, DEFAULT_SETUP.ocpp),
-    mode: pick((v) => START_MODES.some((m) => m.id === v), value.mode, DEFAULT_SETUP.mode),
+    ocpp,
+    mode: modeAvailable(mode, ocpp) ? mode : DEFAULT_SETUP.mode,
     chargers: chargers.length > 0 ? chargers.slice(0, MAX_CHARGERS) : [...DEFAULT_SETUP.chargers],
     speed: pick((v) => DEMO_SPEEDS.includes(v as number), value.speed, DEFAULT_SETUP.speed),
     csmsUrl: pick((v) => typeof v === 'string' && v !== '', value.csmsUrl, DEFAULT_SETUP.csmsUrl),
@@ -170,6 +214,9 @@ export function demoStations(setup: DemoSetup): DemoStationDefinition[] {
               TxUpdatedMeasurands: MEASURANDS,
             },
             ...(freeVend && { AuthCtrlr: { Enabled: false } }),
+            ...(setup.ocpp === '2.1' && {
+              WebPaymentsCtrlr: { SharedSecret: DEMO_WEB_PAYMENT_SECRET },
+            }),
           },
         }),
   }));
@@ -212,32 +259,68 @@ export const DEMO_CARS: readonly DemoCar[] = [
   {
     name: 'Hatchback',
     colour: '#2563eb',
-    profile: { capacityKWh: 40, initialSoc: 70, maxPowerW: 7400, phases: 1 },
+    profile: {
+      capacityKWh: 40,
+      initialSoc: 70,
+      maxPowerW: 7400,
+      phases: 1,
+      evccid: '0A1B2C3D4E01',
+    },
   },
   {
     name: 'Sedan',
     colour: '#dc2626',
-    profile: { capacityKWh: 60, initialSoc: 45, maxPowerW: 11000, phases: 3 },
+    profile: {
+      capacityKWh: 60,
+      initialSoc: 45,
+      maxPowerW: 11000,
+      phases: 3,
+      evccid: '0A1B2C3D4E02',
+    },
   },
   {
     name: 'City car',
     colour: '#d97706',
-    profile: { capacityKWh: 25, initialSoc: 55, maxPowerW: 7400, phases: 1 },
+    profile: {
+      capacityKWh: 25,
+      initialSoc: 55,
+      maxPowerW: 7400,
+      phases: 1,
+      evccid: '0A1B2C3D4E03',
+    },
   },
   {
     name: 'SUV',
     colour: '#059669',
-    profile: { capacityKWh: 75, initialSoc: 35, maxPowerW: 11000, phases: 3 },
+    profile: {
+      capacityKWh: 75,
+      initialSoc: 35,
+      maxPowerW: 11000,
+      phases: 3,
+      evccid: '0A1B2C3D4E04',
+    },
   },
   {
     name: 'Van',
     colour: '#7c3aed',
-    profile: { capacityKWh: 50, initialSoc: 25, maxPowerW: 7400, phases: 1 },
+    profile: {
+      capacityKWh: 50,
+      initialSoc: 25,
+      maxPowerW: 7400,
+      phases: 1,
+      evccid: '0A1B2C3D4E05',
+    },
   },
   {
     name: 'Estate',
     colour: '#0891b2',
-    profile: { capacityKWh: 64, initialSoc: 60, maxPowerW: 11000, phases: 3 },
+    profile: {
+      capacityKWh: 64,
+      initialSoc: 60,
+      maxPowerW: 11000,
+      phases: 3,
+      evccid: '0A1B2C3D4E06',
+    },
   },
 ];
 

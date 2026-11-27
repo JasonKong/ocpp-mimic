@@ -49,6 +49,11 @@ export interface EvProfile {
   controlMode?: (typeof EV_CONTROL_MODES)[number];
   /** `iso15118-20`: the SoC (percent) the EV needs at least; none when absent. */
   minimumSoc?: number;
+  /**
+   * The EV's EVCCID: its MAC address as it tells it over DIN 70121 or ISO
+   * 15118, which a station with autocharge on uses as its token.
+   */
+  evccid?: string;
 }
 
 /** Whether the EV speaks ISO 15118 (-2 or -20) and so tells its charging needs. */
@@ -92,6 +97,9 @@ export function evProfileProblems(profile: EvProfile): string[] {
   if (!(taper >= 0 && taper <= target)) problems.push('taperSoc must be between 0 and targetSoc');
   if (!(profile.initialSoc >= 0 && profile.initialSoc <= 100)) {
     problems.push('initialSoc must be between 0 and 100');
+  }
+  if (profile.evccid !== undefined && !/^[0-9A-Fa-f]{12}$/.test(profile.evccid)) {
+    problems.push('evccid must be a MAC address of 12 hexadecimal digits');
   }
   if (
     profile.departureMinutes !== undefined &&

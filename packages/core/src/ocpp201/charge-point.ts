@@ -3602,7 +3602,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   // Powering up is a security event, sent once the CSMS has accepted the boot.
   security.securityEvent('StartupOfTheDevice');
 
-  return {
+  const chargePoint: ChargePoint201 = {
     ocpp,
 
     connected() {
@@ -3663,6 +3663,19 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       stopTimer(connectTimers.get(connectorId));
       connectTimers.delete(connectorId);
       if (
+        behaviour.autocharge &&
+        ev?.profile.evccid !== undefined &&
+        !authorizations.has(connectorId) &&
+        !transactions.has(connectorId)
+      ) {
+        // Autocharge: the EV's EVCCID is its token (2.1 EVCCID, 2.0.1 MacAddress).
+        log(`connector ${connectorId}: autocharge as ${ev.profile.evccid}`);
+        void chargePoint.presentIdTag(
+          connectorId,
+          ev.profile.evccid,
+          v21 ? 'EVCCID' : 'MacAddress',
+        );
+      } else if (
         dmValue('AuthCtrlr', 'Enabled') === 'false' &&
         !authorizations.has(connectorId) &&
         !transactions.has(connectorId) &&
@@ -4065,4 +4078,5 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
     connectionFailed: () => security.connectionFailed(),
   };
+  return chargePoint;
 }

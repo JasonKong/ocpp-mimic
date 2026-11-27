@@ -164,16 +164,19 @@ The station id is appended to the CSMS URL: a station `SIM-001` with CSMS URL `w
 
 ### How a session starts
 
-Sessions start in the four ways chargers in the field start them:
+Sessions start in the ways chargers in the field start them:
 
-| Start | OCPP 1.6 | OCPP 2.0.1 and 2.1 | Ends with |
-| --- | --- | --- | --- |
-| **Card** | Authorize, then StartTransaction once the cable is in | Authorize, then TransactionEvent Started | The same card, or unplugging |
-| **App** (remote start) | The CSMS sends RemoteStartTransaction | The CSMS sends RequestStartTransaction | A remote stop from the CSMS, or unplugging |
-| **Plug in and charge** (free vend, as at home) | Configuration key `FreeVendEnabled` true: plugging in starts with `FreeVendIdTag` (default `FreeVend`), without Authorize | Device Model `AuthCtrlr.Enabled` false: plugging in starts with an empty token of type `NoAuthorization` | Unplugging |
-| **Valet** (the CSMS starts on plug-in) | The built-in CSMS's [auto start](#control-api): Preparing is answered with RemoteStartTransaction | Occupied is answered with RequestStartTransaction | A remote stop from the CSMS, or unplugging |
+| Start | OCPP 1.6 | OCPP 2.0.1 and 2.1 | Ends with | Used at |
+| --- | --- | --- | --- | --- |
+| **Free vend** (plug in and charge) | Configuration key `FreeVendEnabled` true: plugging in starts with `FreeVendIdTag` (default `FreeVend`), without Authorize | Device Model `AuthCtrlr.Enabled` false: plugging in starts with an empty token of type `NoAuthorization` | Unplugging | Home chargers, private bays, free workplace charging |
+| **RFID card** | Authorize, then StartTransaction once the cable is in | Authorize, then TransactionEvent Started | The same card, or unplugging | Workplaces, fleets, public AC with roaming cards |
+| **App** (remote start) | The CSMS sends RemoteStartTransaction | The CSMS sends RequestStartTransaction | A remote stop from the CSMS, or unplugging | Public AC and DC, residential car parks |
+| **Valet** (the CSMS starts on plug-in) | The built-in CSMS's [auto start](#control-api): Preparing is answered with RemoteStartTransaction | Occupied is answered with RequestStartTransaction | A remote stop from the CSMS, or unplugging | Hotels, valet and dealership car parks |
+| **Bank card** at the charge point | — | 2.1 with the `Payment` feature: the payment terminal authorizes the card (C18); TransactionEvent with a `DirectPayment` token | Stopping at the terminal, then NotifySettlement | Public fast charging |
+| **QR code** (web payment) | — | 2.1 with `WebPayments`: the driver pays on the page behind the QR code, the CSMS sends NotifyWebPaymentStarted, then RequestStartTransaction with a `DirectPayment` token (C25) | A remote stop, or unplugging | Public AC and DC for drivers without an account |
+| **Autocharge** | The station switch `autocharge`: the EV's `evccid` (MAC address) is its idTag | Its token: type MacAddress on 2.0.1, EVCCID on 2.1 | Unplugging | DC fast charging networks, fleets |
 
-`FreeVendEnabled` and `FreeVendIdTag` are ocpp-mimic's own vendor keys, the way many chargers offer free vending: GetConfiguration lists them and ChangeConfiguration changes them. Valet is something the CSMS does, not the station: the station is an ordinary one that accepts remote starts, and the CSMS starts a session (usually free, with no driver) whenever an EV is plugged in.
+Free vend is not ISO 15118 Plug & Charge, where the EV proves who it is with a contract certificate; ocpp-mimic does not model that. `FreeVendEnabled` and `FreeVendIdTag` are ocpp-mimic's own vendor keys, the way many chargers offer free vending: GetConfiguration lists them and ChangeConfiguration changes them. Valet is something the CSMS does, not the station: the station is an ordinary one that accepts remote starts, and the CSMS starts a session (usually free, with no driver) whenever an EV is plugged in.
 
 When the EV is full it stops drawing power: the connector goes to SuspendedEV (1.6) or the charging state to SuspendedEV (2.x), and the session stays open, with the car still occupying the bay, until it is stopped or unplugged.
 
@@ -222,6 +225,7 @@ Below the header:
 - **Inject**: pick a fault type and give its parameters as `key=value` pairs, for example `off=10s` for a power loss. Active injections are listed with a **Clear** link. See [Fault injection](#8-fault-injection).
 - **Refuse remote starts**: answer every remote start with Rejected.
 - **Lock the cable while charging**: a locked cable cannot be unplugged until the transaction ends or the CSMS unlocks it.
+- **Autocharge**: an EV whose profile has an `evccid` (its MAC address) is identified by it as it is plugged in, as if it presented a card with that id: the idTag on 1.6, a MacAddress token on 2.0.1, an EVCCID token on 2.1.
 - **Energy ×**: the energy multiplier.
 
 Each connector (each EVSE on a 2.x station) has a card with its status, charging state (2.x), transaction id, power, energy, SoC and, when a limit is in force, the limit. Its controls:
@@ -269,9 +273,9 @@ A session shows:
 
 **Demo** in the header (or `#/demo`) shows a small charging site to play with, for showing what OCPP does rather than for testing. It is easiest with [`ocpp-mimic demo`](#the-quickest-look-the-demo); with `serve`, start the built-in CSMS too.
 
-1. Set up the **site**: its name, the **OCPP version** (1.6J, 2.0.1 or 2.1), **how sessions start** ([plug in and charge, RFID card, app or valet](#how-a-session-starts)), its **charge points** (add up to six, each **single** or **dual** port), the **site capacity** (default 22 kW, or **No limit**) and the **battery speed** (the [energy multiplier](#2-concepts); ×300 fills most cars in a minute or two).
-2. **Build the site**. It creates the stations `DEMO-CP-1`, `DEMO-CP-2`, ... (shown as CP-1, CP-2, ...), tagged `demo`, from the generic personas (`generic-dual-*` for a dual charge point), against the CSMS given (default `ws://127.0.0.1:9100/ocpp`). Building again deletes the `demo` stations first. Plug in and charge sets the station's free vend setting; valet turns on the built-in CSMS's auto start for each station, and the other ways turn it off. With a capacity, the stations report the power they draw and the built-in CSMS [manages the site's load](#site-load-management).
-3. The **charging area** on the left shows each charge point as one pedestal; a dual one has two sockets, marked 1 and 2, each cabled to its own bay. Each bay has a car of its own, from a 25 kWh city car to a 75 kWh SUV, at different charge levels. **Plug in** a car. Then, by the way chosen: it starts by itself, **Tap card**, **Start in app**, or the CSMS starts it. **Tap card to stop**, **Stop in app** and **Unplug** end it. **Plug in every car**, **Tap every card** or **Start every car in the app**, and **Unplug every car** act on every bay at once.
+1. Set up the **site**: its name, the **OCPP version** (1.6J, 2.0.1 or 2.1), **how sessions start** ([free vend, RFID card, app, valet, bank card, QR code or Autocharge](#how-a-session-starts); bank card and QR code are 2.1 only), its **charge points** (add up to six, each **single** or **dual** port), the **site capacity** (default 22 kW, or **No limit**) and the **battery speed** (the [energy multiplier](#2-concepts); ×300 fills most cars in a minute or two).
+2. **Build the site**. It creates the stations `DEMO-CP-1`, `DEMO-CP-2`, ... (shown as CP-1, CP-2, ...), tagged `demo`, from the generic personas (`generic-dual-*` for a dual charge point), against the CSMS given (default `ws://127.0.0.1:9100/ocpp`). Building again deletes the `demo` stations first. Free vend sets the station's free vend setting, Autocharge its `autocharge` switch; valet turns on the built-in CSMS's auto start for each station, and the other ways turn it off. 2.1 stations get a known QR code secret, so the CSMS can check the payments. With a capacity, the stations report the power they draw and the built-in CSMS [manages the site's load](#site-load-management).
+3. The **charging area** on the left shows each charge point as one pedestal; a dual one has two sockets, marked 1 and 2, each cabled to its own bay. Each bay has a car of its own, from a 25 kWh city car to a 75 kWh SUV, at different charge levels. **Plug in** a car. Then, by the way chosen: it starts by itself (free vend, Autocharge), **Tap card**, **Start in app**, **Pay by card**, **Scan the QR code and pay**, or the CSMS starts it (valet). **Tap card to stop**, **Stop in app**, **Stop at the terminal**, **Stop on the web page** and **Unplug** end it. **Plug in every car**, the start for every car (**Tap every card**, **Start every car in the app**, **Pay for every car**, **Scan every QR code**), and **Unplug every car** act on every bay at once.
 4. A bay shows the station's own status (for 2.x with the charging state), the car's charge level, power and the energy it took. When the car is full, the station reports SuspendedEV, the power drops to 0 and the bay is marked **Full**, with how long the car has stayed in the bay since. The session stays open until the car is unplugged or the session is stopped.
 5. The **site manager** on the right adds the site up: its power now (against the capacity), the energy delivered since it was built, how many cars are charging, how many are full but still parked (and the longest stay). With a capacity it also shows:
    - the **site limit**, which you can drag to a new value while cars charge, as a grid operator might set one: the CSMS re-allocates within seconds;
@@ -294,7 +298,7 @@ Built in (`packages/engine/personas/`):
 | --- | --- | --- |
 | `generic-1.6` | 1.6 | One AC connector offering 7.36 kW, every feature profile, spec-default behaviour, three EV profiles |
 | `generic-2.0.1` | 2.0.1 | One EVSE offering 7.36 kW, the covered 2.0.1 profiles, the same EV profiles |
-| `generic-2.1` | 2.1 | `generic-2.0.1` as a 2.1 station; availability reported with NotifyEvent |
+| `generic-2.1` | 2.1 | `generic-2.0.1` as a 2.1 station; availability reported with NotifyEvent; a payment terminal (`Payment`) and a dynamic QR code (`WebPayments`) |
 | `generic-dual-1.6`, `generic-dual-2.0.1`, `generic-dual-2.1` | 1.6, 2.0.1, 2.1 | The generic personas with two ports (connectors 1 and 2 on 1.6, EVSEs 1 and 2 on 2.x), each up to 7.36 kW, sharing one 11.04 kW supply: 5.52 kW each with two cars charging, 7.36 kW for one alone |
 
 Samples in `scenarios/personas/` (load them with `--personas scenarios/personas`):
@@ -374,6 +378,7 @@ Fields every persona can have:
 | `departureMinutes` | ISO 15118: departure time, in minutes after plugging in |
 | `controlMode` | ISO 15118-20: `ScheduledControl` (default) or `DynamicControl` |
 | `minimumSoc` | ISO 15118-20: the minimum SoC the driver needs |
+| `evccid` | The EV's MAC address, 12 hexadecimal digits, as it tells it over DIN 70121 or ISO 15118: a station with the **Autocharge** switch on identifies the EV by it |
 
 The API and scenarios also take an EV profile inline instead of a name.
 
@@ -543,7 +548,7 @@ Station actions:
 | `offline` | `mode`: `clean` or `half-open` | Simulated outage |
 | `online` | | End the outage |
 | `stopStation`, `startStation` | | Disconnect or reconnect |
-| `setBehaviour` | `refuseRemoteStart`, `cableLock` | Test switches |
+| `setBehaviour` | `refuseRemoteStart`, `cableLock`, `autocharge` | Test switches |
 | `inject`, `clearInjections` | `type`, parameters, `for` | Fault injection |
 | `wait` | a duration | Pause |
 | `charge` | `connector`, `duration` | Wait, and fail unless a transaction runs at the start and the end |
@@ -900,7 +905,7 @@ Stations:
 | `GET`, `DELETE /api/stations/<id>` | One station's state; delete it |
 | `POST /api/stations/<id>/{start,stop,online}` | Start, stop, end an outage |
 | `POST /api/stations/<id>/offline` | `{ "mode": "clean" \| "half-open" }` |
-| `PATCH /api/stations/<id>/behaviour` | `{ "refuseRemoteStart": true, "cableLock": false }` |
+| `PATCH /api/stations/<id>/behaviour` | `{ "refuseRemoteStart": true, "cableLock": false, "autocharge": true }` |
 | `PATCH /api/stations/<id>/energy-multiplier` | `{ "energyMultiplier": 60 }` |
 | `PATCH /api/stations/<id>/usage` | `{ "enabled": true }` |
 | `GET`, `POST`, `DELETE /api/stations/<id>/injections` | Fault injections |
@@ -908,6 +913,7 @@ Stations:
 | `GET`, `PATCH /api/stations/<id>/device-model` | 2.x: list variables; set one with `{ component, variable, value }` |
 | `POST /api/stations/<id>/remote-start` | Through the built-in CSMS: `{ evseId, idToken: { idToken, type } }` |
 | `POST /api/stations/<id>/auto-start` | Through the built-in CSMS: `{ idToken: { idToken, type } }` starts a session on every plug-in (valet); `{ idToken: null }` stops that |
+| `POST /api/stations/<id>/web-payment` | 2.1, through the built-in CSMS: `{ url, sharedSecret }`, the payment page behind the station's QR code (see the CSMS's `web-payment`) |
 | `PUT /api/sites/<id>` | Through the built-in CSMS of the listed stations: `{ capacityW, stations, minimumW }`, [site load management](#site-load-management) |
 | `GET`, `DELETE /api/sites/<id>` | A site set through this engine: its allocation, or remove it |
 | `POST /api/stations/<id>/vat-number` | 2.1: `{ vatNumber, evseId }` |

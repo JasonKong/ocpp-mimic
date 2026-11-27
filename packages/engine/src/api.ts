@@ -941,6 +941,18 @@ const routes: Route[] = [
     }),
   ),
 
+  route('POST', '/api/stations/:param/web-payment', async (request, context) => {
+    // 2.1: the payment page behind the station's QR code (C25), played by the built-in CSMS.
+    const station = stationOf(context, request.params[0]);
+    const body = await request.body();
+    const url = stringField(body, 'url', true);
+    const sharedSecret = stringField(body, 'sharedSecret');
+    return viaBuiltinCsms(station, context, 'web-payment', 'a web payment', {
+      url,
+      ...(sharedSecret !== undefined && { sharedSecret }),
+    });
+  }),
+
   route('POST', '/api/stations/:param/auto-start', async (request, context) => {
     // Valet: the built-in CSMS starts a session whenever an EV is plugged in.
     const station = stationOf(context, request.params[0]);

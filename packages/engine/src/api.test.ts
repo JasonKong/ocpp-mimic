@@ -569,7 +569,11 @@ describe('engine API', () => {
 
     const patched = await api('PATCH', '/api/stations/SIM-1/behaviour', { cableLock: true });
     expect(patched.status).toBe(200);
-    expect(patched.body?.behaviour).toEqual({ refuseRemoteStart: false, cableLock: true });
+    expect(patched.body?.behaviour).toEqual({
+      refuseRemoteStart: false,
+      cableLock: true,
+      autocharge: false,
+    });
     expect((await api('PATCH', '/api/stations/SIM-1/behaviour', { lock: true })).status).toBe(400);
     expect((await api('PATCH', '/api/stations/SIM-1/behaviour', { cableLock: 'yes' })).status).toBe(
       400,
