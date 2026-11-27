@@ -122,6 +122,10 @@ export interface DemoCommand {
   port: number;
   /** The built-in CSMS's port. */
   csmsPort: number;
+  /** Where the engine listens (default 127.0.0.1); the CSMS stays on loopback. */
+  host: string;
+  /** Required on the engine's API; main falls back to OCPP_MIMIC_API_TOKEN. */
+  apiToken?: string;
 }
 
 export interface LoadCommand {
@@ -252,9 +256,13 @@ Options for serve, run, load and replay:
   --allow-csms <prefix>  Also allow CSMS URLs starting with <prefix>; repeat
                          for more (default: ${DEFAULT_ALLOWED_CSMS.slice(0, 2).join(', ')}, ...)
 
-Options for demo (both listen on 127.0.0.1 only):
+Options for demo (the CSMS listens on 127.0.0.1 only):
   --port <number>        Port for the engine and the Web UI (default ${DEFAULT_PORT})
   --csms-port <number>   Port for the built-in CSMS (default ${DEFAULT_CSMS_PORT})
+  --host <host>          Interface the engine binds (default 127.0.0.1), e.g.
+                         0.0.0.0 in a container
+  --api-token <token>    Require Authorization: Bearer <token> on the engine's
+                         API and Web UI (default: OCPP_MIMIC_API_TOKEN)
 
 Options for csms (stations connect to ws://<host>:<port>/ocpp/<id>):
   --port <number>        Port to listen on (default ${DEFAULT_CSMS_PORT})
@@ -384,7 +392,7 @@ export const COMMANDS = {
     'allow-csms',
   ],
   samples: [],
-  demo: ['port', 'csms-port'],
+  demo: ['port', 'csms-port', 'host', 'api-token'],
   load: [
     'csms',
     'duration',
@@ -453,7 +461,15 @@ export function parseCommand(argv: readonly string[]): Command {
       const csmsPort = parsePort(values['csms-port'], DEFAULT_CSMS_PORT);
       if (csmsPort === undefined) return error(`Invalid port: ${values['csms-port']}`);
       if (csmsPort === port && port !== 0) return error('--port and --csms-port must differ');
-      return { kind: 'demo', port, csmsPort };
+      return {
+        kind: 'demo',
+        port,
+        csmsPort,
+        host: values.host ?? '127.0.0.1',
+        ...(tokenOptions(values).apiToken !== undefined && {
+          apiToken: tokenOptions(values).apiToken,
+        }),
+      };
     }
 
     const port = parsePort(values.port, DEFAULT_PORT);

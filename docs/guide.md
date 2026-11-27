@@ -66,6 +66,12 @@ docker run --rm -p 127.0.0.1:7300:7300 -e OCPP_MIMIC_API_TOKEN -v ocpp-mimic-dat
 
 Any other command works the same way, for example `docker run --rm ghcr.io/jasonkong/ocpp-mimic --version`, or scenarios from the current directory with `docker run --rm -v "$PWD:/work" -w /work ghcr.io/jasonkong/ocpp-mimic run scenarios/ --junit report.xml`.
 
+The demo runs in the image too. Its CSMS stays inside the container, and `--host 0.0.0.0` lets the published port reach the engine:
+
+```bash
+docker run --rm -p 127.0.0.1:7300:7300 -e OCPP_MIMIC_API_TOKEN ghcr.io/jasonkong/ocpp-mimic demo --host 0.0.0.0
+```
+
 [`docs/examples/docker-compose.yml`](examples/docker-compose.yml) starts the engine and the built-in CSMS together. The CSMS shares the engine's network, so stations reach it at `ws://127.0.0.1:9100/ocpp` and remote starts from the Web UI work. Only the Web UI's port is published, and only on 127.0.0.1.
 
 Inside a container, a CSMS on your machine is not on loopback. Allow its address, for example `--allow-csms ws://host.docker.internal:8180/`; on Linux, also pass `--add-host host.docker.internal:host-gateway` to `docker run`. `docker build -t ocpp-mimic .` builds the image from a clone.
@@ -100,7 +106,7 @@ In a clone, `pnpm serve` builds and starts the engine in one step, without the s
 ocpp-mimic demo
 ```
 
-This starts the built-in CSMS and the engine in one process, on 127.0.0.1 only, and prints the address of the [Demo page](#demo-page): <http://127.0.0.1:7300/#/demo>. Ctrl-C stops both. `--port` and `--csms-port` change the ports (default 7300 and 9100).
+This starts the built-in CSMS and the engine in one process, on 127.0.0.1, and prints the address of the [Demo page](#demo-page): <http://127.0.0.1:7300/#/demo>. Ctrl-C stops both. `--port` and `--csms-port` change the ports (default 7300 and 9100); `--host` lets the engine listen beyond this machine, as in a [container](#running-in-docker), with an API token.
 
 ### Keeping stations across restarts
 
@@ -270,6 +276,8 @@ A session shows:
 **Remote start.** When the station is connected to the built-in CSMS, the Sessions tab has a remote start form (EVSE, token and type): the built-in CSMS sends RemoteStartTransaction (1.6) or RequestStartTransaction (2.x). With any other CSMS, a remote start has to come from that CSMS.
 
 ### Demo page
+
+![The Demo page: a site of three charge points under an 11 kW limit, the charging area with a full car, and the site manager with the power over time and the limits the CSMS sent](images/demo-view.png)
 
 **Demo** in the header (or `#/demo`) shows a small charging site to play with, for showing what OCPP does rather than for testing. It is easiest with [`ocpp-mimic demo`](#the-quickest-look-the-demo); with `serve`, start the built-in CSMS too.
 
@@ -968,7 +976,7 @@ curl -s $API/stations/SIM-100/sessions
 | `ocpp-mimic replay <log>` | Replay a log against a CSMS |
 | `ocpp-mimic calibrate <log>...` | Derive a persona from logs |
 | `ocpp-mimic samples <dir>` | Copy the samples and templates into a directory to edit |
-| `ocpp-mimic demo` | The built-in CSMS and the engine together, for the Demo page; `--port` (default 7300) and `--csms-port` (default 9100), on 127.0.0.1 only |
+| `ocpp-mimic demo` | The built-in CSMS and the engine together, for the Demo page; `--port` (default 7300), `--csms-port` (default 9100), `--host` for the engine (default 127.0.0.1; the CSMS stays on loopback) and `--api-token` (default `OCPP_MIMIC_API_TOKEN`) |
 
 Options of `serve`:
 

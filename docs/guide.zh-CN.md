@@ -68,6 +68,12 @@ docker run --rm -p 127.0.0.1:7300:7300 -e OCPP_MIMIC_API_TOKEN -v ocpp-mimic-dat
 
 其他命令用法相同，例如 `docker run --rm ghcr.io/jasonkong/ocpp-mimic --version`，或者运行当前目录里的场景：`docker run --rm -v "$PWD:/work" -w /work ghcr.io/jasonkong/ocpp-mimic run scenarios/ --junit report.xml`。
 
+演示也能在镜像里运行。它的 CSMS 留在容器内部，`--host 0.0.0.0` 让发布出来的端口能访问到引擎：
+
+```bash
+docker run --rm -p 127.0.0.1:7300:7300 -e OCPP_MIMIC_API_TOKEN ghcr.io/jasonkong/ocpp-mimic demo --host 0.0.0.0
+```
+
 [`docs/examples/docker-compose.yml`](examples/docker-compose.yml) 同时启动引擎和内置 CSMS。CSMS 共享引擎的网络，桩用 `ws://127.0.0.1:9100/ocpp` 就能连上它，Web UI 的远程启动也能用。只对外发布 Web UI 的端口，而且只在 127.0.0.1 上。
 
 在容器里，你本机上的 CSMS 不在环回地址上。放行它的地址，例如 `--allow-csms ws://host.docker.internal:8180/`；在 Linux 上还要给 `docker run` 加 `--add-host host.docker.internal:host-gateway`。在克隆的仓库里用 `docker build -t ocpp-mimic .` 构建镜像。
@@ -102,7 +108,7 @@ docker run --rm -p 127.0.0.1:7300:7300 -e OCPP_MIMIC_API_TOKEN -v ocpp-mimic-dat
 ocpp-mimic demo
 ```
 
-它在一个进程里同时启动内置 CSMS 和引擎，只监听 127.0.0.1，并打印[演示页](#演示页)的地址：<http://127.0.0.1:7300/#/demo>。按 Ctrl-C 两者一起停止。`--port` 和 `--csms-port` 可以改端口（默认 7300 和 9100）。
+它在一个进程里同时启动内置 CSMS 和引擎，监听 127.0.0.1，并打印[演示页](#演示页)的地址：<http://127.0.0.1:7300/#/demo>。按 Ctrl-C 两者一起停止。`--port` 和 `--csms-port` 可以改端口（默认 7300 和 9100）；`--host` 让引擎在本机以外监听（比如在[容器](#在-docker-里运行)里），这时要配 API 令牌。
 
 ### 重启后保留桩
 
@@ -272,6 +278,8 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 **远程启动。** 桩连的是内置 CSMS 时，Sessions 标签页有一个远程启动表单（EVSE、卡号和类型）：内置 CSMS 发送 RemoteStartTransaction（1.6）或 RequestStartTransaction（2.x）。连其他 CSMS 时，远程启动必须由那个 CSMS 发起。
 
 ### 演示页
+
+![演示页：限值 11 kW 的三台充电桩站点，充电区里有一辆已充满的车，站点管理里有功率曲线和 CSMS 下发的限值](images/demo-view.png)
 
 页头的 **Demo**（或地址 `#/demo`）是一个可以动手操作的小充电站点，用来展示 OCPP 的工作过程，而不是做测试。用 `ocpp-mimic demo` 启动最方便；用 `serve` 的话，还要另外启动内置 CSMS。
 
@@ -970,7 +978,7 @@ curl -s $API/stations/SIM-100/sessions
 | `ocpp-mimic replay <日志>` | 对 CSMS 回放日志 |
 | `ocpp-mimic calibrate <日志>...` | 从日志推导 persona |
 | `ocpp-mimic samples <目录>` | 把示例和模板复制到一个目录里修改 |
-| `ocpp-mimic demo` | 同时启动内置 CSMS 和引擎，供演示页使用；`--port`（默认 7300）和 `--csms-port`（默认 9100），只监听 127.0.0.1 |
+| `ocpp-mimic demo` | 同时启动内置 CSMS 和引擎，供演示页使用；`--port`（默认 7300）、`--csms-port`（默认 9100）、引擎的 `--host`（默认 127.0.0.1；CSMS 始终只在环回地址上）和 `--api-token`（默认取 `OCPP_MIMIC_API_TOKEN`） |
 
 `serve` 的选项：
 

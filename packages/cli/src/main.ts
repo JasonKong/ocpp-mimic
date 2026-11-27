@@ -127,11 +127,14 @@ switch (command.kind) {
     break;
   }
   case 'demo': {
+    const { apiToken } = tokenFromEnvironment(command.apiToken, API_TOKEN_ENV);
     let demo: Awaited<ReturnType<typeof startDemo>>;
     try {
       demo = await startDemo({
         port: command.port,
         csmsPort: command.csmsPort,
+        host: command.host,
+        ...(apiToken !== undefined && { apiToken }),
         ...(existsSync(WEB_ROOT) && { webRoot: WEB_ROOT }),
       });
     } catch (error) {
@@ -139,6 +142,8 @@ switch (command.kind) {
       process.exit(1);
     }
     console.log(demoBanner(demo, 'ws://127.0.0.1:9100/ocpp'));
+    const exposed = exposedWithoutTokenWarning('The demo', command.host, apiToken);
+    if (exposed !== undefined) console.warn(exposed);
     if (!existsSync(WEB_ROOT)) console.log('Web UI not built; run `pnpm build` to serve it here.');
     const shutdown = () => {
       void demo.stop().finally(() => process.exit(0));

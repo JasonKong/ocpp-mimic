@@ -173,19 +173,33 @@ describe('parseCommand', () => {
   });
 
   it('starts the demo on the engine and CSMS ports, which must differ', () => {
-    expect(parseCommand(['demo'])).toEqual({ kind: 'demo', port: 7300, csmsPort: 9100 });
+    expect(parseCommand(['demo'])).toEqual({
+      kind: 'demo',
+      port: 7300,
+      csmsPort: 9100,
+      host: '127.0.0.1',
+    });
     expect(parseCommand(['demo', '--port', '8300', '--csms-port', '9300'])).toEqual({
       kind: 'demo',
       port: 8300,
       csmsPort: 9300,
+      host: '127.0.0.1',
+    });
+    // In a container: the engine on every interface, with a token.
+    expect(parseCommand(['demo', '--host', '0.0.0.0', '--api-token', 's3cret'])).toEqual({
+      kind: 'demo',
+      port: 7300,
+      csmsPort: 9100,
+      host: '0.0.0.0',
+      apiToken: 's3cret',
     });
     expect(parseCommand(['demo', '--csms-port', '7300'])).toMatchObject({
       kind: 'error',
       message: '--port and --csms-port must differ',
     });
-    expect(parseCommand(['demo', '--host', '0.0.0.0'])).toMatchObject({
+    expect(parseCommand(['demo', '--store', 'x.db'])).toMatchObject({
       kind: 'error',
-      message: '--host is an option of serve and csms',
+      message: '--store is an option of serve',
     });
   });
 

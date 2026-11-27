@@ -53,6 +53,15 @@ describe('ocpp-mimic demo', () => {
     });
   });
 
+  it('asks for the API token when it has one, as in a container', async () => {
+    demo = await startDemo({ port: 0, csmsPort: 0, host: '127.0.0.1', apiToken: 'demo-token' });
+    expect((await fetch(`${demo.engineUrl}/api/stations`)).status).toBe(401);
+    const authorized = await fetch(`${demo.engineUrl}/api/stations`, {
+      headers: { authorization: 'Bearer demo-token' },
+    });
+    expect(authorized.status).toBe(200);
+  });
+
   it('says where the page is, and the CSMS address when it is not the page default', () => {
     const running: RunningDemo = {
       csmsUrl: 'ws://127.0.0.1:9100/ocpp',
