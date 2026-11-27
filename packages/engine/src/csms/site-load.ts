@@ -4,7 +4,8 @@
  * running sessions with smart charging, as a CSMS or an energy manager does.
  * Each session gets a TxProfile in W; equal shares, what a car does not take
  * passes to the others, every session gets at least a minimum (6 A on one
- * phase), and sessions that cannot get it wait at 0, the latest first.
+ * phase), and sessions that cannot get it wait at 0: full cars first, then
+ * the latest.
  */
 import type { JsonObject, OcppVersion } from '@ocpp-mimic/core';
 
@@ -53,10 +54,12 @@ function demandOf(session: SessionLoad, minimumW: number): number {
 }
 
 /**
- * The limit for each session (by sessionKey). The earliest sessions that fit
- * the capacity at the minimum each are admitted; the rest get 0. Admitted
- * sessions share the capacity by water-filling: equal shares, a session that
- * needs less than its share gets what it needs, the others split the rest.
+ * The limit for each session (by sessionKey). Sessions whose car takes power
+ * come first, then cars in SuspendedEV (a full car must not keep a charging
+ * one waiting), each group earliest first; as many as fit the capacity at the
+ * minimum each are admitted, the rest get 0. Admitted sessions share the
+ * capacity by water-filling: equal shares, a session that needs less than its
+ * share gets what it needs, the others split the rest.
  */
 export function allocate(
   capacityW: number,
@@ -65,7 +68,10 @@ export function allocate(
 ): Map<string, number> {
   const limits = new Map<string, number>();
   const ordered = [...sessions].sort(
-    (a, b) => a.startedAt - b.startedAt || sessionKey(a).localeCompare(sessionKey(b)),
+    (a, b) =>
+      Number(a.evSuspended) - Number(b.evSuspended) ||
+      a.startedAt - b.startedAt ||
+      sessionKey(a).localeCompare(sessionKey(b)),
   );
   const fits = minimumW > 0 ? Math.floor(Math.max(0, capacityW) / minimumW) : ordered.length;
   const admitted = ordered.slice(0, fits);

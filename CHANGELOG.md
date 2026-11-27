@@ -10,7 +10,7 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 - **Personas**: `generic-dual-1.6`, `generic-dual-2.0.1` and `generic-dual-2.1`, the generic personas with two ports.
 - **Demo page** in the Web UI (`#/demo`): set up a charging site (its OCPP version, how sessions start and its single and dual charge points), then plug cars in and out, start them together and watch them fill up while the OCPP messages fly between the stations and the CSMS, and a site manager panel adds up power, energy and the cars charging or full. `ocpp-mimic demo` starts the built-in CSMS and the engine for it in one process.
 - **API**: `GET /api/personas` reports each persona's `power`.
-- **Site load management** in the built-in CSMS: a site's capacity is shared between its sessions with smart charging (equal shares, what a car does not take passed on, at least 6 A each, the latest waiting at 0), as TxProfiles in W. `PUT`, `GET` and `DELETE /api/sites/<id>` on its control API and on the engine.
+- **Site load management** in the built-in CSMS: a site's capacity is shared between its sessions with smart charging (equal shares, what a car does not take passed on, at least 6 A each; full cars, then the latest, wait at 0 when that does not fit), as TxProfiles in W. `PUT`, `GET` and `DELETE /api/sites/<id>` on its control API and on the engine.
 - **Shared supply**: a persona's `power.stationW` is one supply the connectors share, as on a dual charger: equal shares, and what a car does not take goes to the others. `generic-dual-*` share 11.04 kW between two 7.36 kW ports.
 
 ### Changed

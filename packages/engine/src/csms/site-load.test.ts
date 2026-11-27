@@ -62,6 +62,18 @@ describe('sharing a site between sessions', () => {
     expect(allocate(1000, [session(1)])).toEqual(new Map([['S 1', 0]]));
   });
 
+  it('admits cars that take power before a full one, which waits at 0 when room runs out', () => {
+    // Room for two minimums: the full car started first, but the two charging cars go ahead.
+    const full = session(1, { evSuspended: true });
+    expect(allocate(3000, [full, session(2), session(3)])).toEqual(
+      new Map([
+        ['S 2', 1500],
+        ['S 3', 1500],
+        ['S 1', 0],
+      ]),
+    );
+  });
+
   it('sends a new limit only when it moves enough, and always to or from 0', () => {
     expect(worthSending(undefined, 4000)).toBe(true);
     expect(worthSending(4000, 4100)).toBe(false);
@@ -193,26 +205,31 @@ describe('the built-in CSMS managing a site', () => {
       await until(async () => (await limitOf('L2')).limitW === 8000 - 1380);
       expect((await limitOf('L1')).limitW).toBe(1380);
 
-      // Less capacity than two minimums: the later session waits at 0, in SuspendedEVSE.
+      // Room for one minimum only: the charging car gets it all, the suspended one waits at 0,
+      // in SuspendedEVSE.
       await call('PUT', '/api/sites/yard', { capacityW: 2000, stations: ['L1', 'L2'] });
-      await until(async () => (await limitOf('L2')).limitW === 0);
-      const waiting = await limitOf('L2');
-      expect(ocpp === '1.6' ? waiting.status : waiting.chargingState).toBe('SuspendedEVSE');
+      await until(async () => (await limitOf('L1')).limitW === 0);
+      await until(async () => (await limitOf('L2')).limitW === 2000);
+      const waiting = await limitOf('L1');
+      // 1.6 reports the EVSE's suspension first; 2.x keeps the EV's own (SuspendedEV).
+      expect(ocpp === '1.6' ? waiting.status : waiting.chargingState).toBe(
+        ocpp === '1.6' ? 'SuspendedEVSE' : 'SuspendedEV',
+      );
       expect(waiting.powerW).toBe(0);
 
       const site = await call('GET', '/api/sites/yard');
-      // Only one minimum fits: the first session keeps it and the rest of the capacity goes unused.
-      expect(site.body).toMatchObject({ capacityW: 2000, allocatedW: 1380 });
+      expect(site.body).toMatchObject({ capacityW: 2000, allocatedW: 2000 });
       expect(site.body.sessions).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ stationId: 'L1', state: 'ev-suspended' }),
-          expect.objectContaining({ stationId: 'L2', limitW: 0, state: 'waiting' }),
+          expect.objectContaining({ stationId: 'L1', limitW: 0, state: 'waiting' }),
+          expect.objectContaining({ stationId: 'L2', limitW: 2000, state: 'charging' }),
         ]),
       );
       expect(site.body.sent[0]).toMatchObject({ status: 'Accepted' });
 
       // Removing the site clears its limits.
       expect((await call('DELETE', '/api/sites/yard')).status).toBe(200);
+      await until(async () => (await limitOf('L1')).limitW === undefined);
       await until(async () => (await limitOf('L2')).limitW === undefined);
       expect((await call('GET', '/api/sites/yard')).status).toBe(404);
     });

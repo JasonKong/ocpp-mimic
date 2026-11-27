@@ -432,7 +432,7 @@ The engine notices when a station's CSMS is the built-in one (it asks `GET /api/
 A site is a grid connection with a capacity and the stations behind it. The built-in CSMS shares the capacity between the site's running sessions with smart charging, as a CSMS or an energy manager does:
 
 - Each session gets an equal share. A session that clearly takes less than its limit (under 90 % of it and 300 W below, by the Power.Active.Import it reports) needs only a little more than it draws, and the rest goes to the others. A car in SuspendedEV, for example a full one, keeps the minimum.
-- Every session gets at least `minimumW` (default 1380 W, 6 A on one phase). When the capacity cannot give every session the minimum, the latest sessions wait at 0: the station shows SuspendedEVSE until power frees up.
+- Every session gets at least `minimumW` (default 1380 W, 6 A on one phase). When the capacity cannot give every session the minimum, some wait at 0 until power frees up: first full cars (SuspendedEV), so they never keep a charging car waiting, then the latest sessions. A charging car waiting at 0 shows SuspendedEVSE.
 - The limits go out as SetChargingProfile, a TxProfile in W for the session's transaction (profile id 9000 + the connector or EVSE), and only when a limit moves by more than 5 % and 250 W.
 - The CSMS re-allocates when a session starts or ends, when a car stops or starts taking power, when meter values come in, and when the site changes.
 
