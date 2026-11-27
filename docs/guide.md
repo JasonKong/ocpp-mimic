@@ -289,7 +289,7 @@ Built in (`packages/engine/personas/`):
 | `generic-1.6` | 1.6 | One AC connector offering 7.36 kW, every feature profile, spec-default behaviour, three EV profiles |
 | `generic-2.0.1` | 2.0.1 | One EVSE offering 7.36 kW, the covered 2.0.1 profiles, the same EV profiles |
 | `generic-2.1` | 2.1 | `generic-2.0.1` as a 2.1 station; availability reported with NotifyEvent |
-| `generic-dual-1.6`, `generic-dual-2.0.1`, `generic-dual-2.1` | 1.6, 2.0.1, 2.1 | The generic personas with two ports (connectors 1 and 2 on 1.6, EVSEs 1 and 2 on 2.x), each offering 7.36 kW |
+| `generic-dual-1.6`, `generic-dual-2.0.1`, `generic-dual-2.1` | 1.6, 2.0.1, 2.1 | The generic personas with two ports (connectors 1 and 2 on 1.6, EVSEs 1 and 2 on 2.x), each up to 7.36 kW, sharing one 11.04 kW supply: 5.52 kW each with two cars charging, 7.36 kW for one alone |
 
 Samples in `scenarios/personas/` (load them with `--personas scenarios/personas`):
 
@@ -343,7 +343,7 @@ Fields every persona can have:
 | `description` | Free text, shown in the Web UI |
 | `boot` | BootNotification fields (required). 1.6: `chargePointVendor`, `chargePointModel`, `firmwareVersion`, ...; 2.x: the chargingStation block, `vendorName`, `model`, `serialNumber`, `firmwareVersion` |
 | `connectors` | Number of connectors (1.6) or EVSEs with one connector each (2.x) (required) |
-| `power` | `offeredW`: what each connector offers (default 7360); `evW`: what an EV draws when allowed (default: everything offered) |
+| `power` | `offeredW`: what each connector offers (default 7360); `evW`: what an EV draws when allowed (default: everything offered); `stationW`: one supply the connectors share, as on a dual charger (default: none). Charging connectors get equal shares of it, and what a car does not take (tapering, a lower limit) goes to the others |
 | `features` | 1.6: feature profiles (Core, FirmwareManagement, RemoteTrigger, LocalAuthListManagement, Reservation, SmartCharging). 2.x: Core, AdvancedSecurity, LocalAuthListManagement, SmartCharging, Reservation, and on 2.1 also TariffAndCost, Payment, WebPayments. A message of a profile the station does not advertise gets NotSupported |
 | `config` | 1.6: configuration key defaults |
 | `deviceModel` | 2.x: Device Model values, component → variable → value (or an object with `actual`, `mutability`, `dataType`, `unit`, `valuesList`, ... for a variable of your own) |

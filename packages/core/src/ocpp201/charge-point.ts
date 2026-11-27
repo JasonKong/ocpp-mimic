@@ -205,6 +205,8 @@ export interface ChargePoint201Options {
   offeredPowerW?: number;
   /** Power drawn without an EV when allowed, in W. Default: everything offered. */
   evPowerW?: number;
+  /** What the station supplies across all its EVSEs, in W, shared by them. Default: no shared cap. */
+  stationPowerW?: number;
   send: (text: string) => void;
   /** Asks the transport to drop the connection and reconnect after `downtimeMs`. */
   restart?: (downtimeMs: number) => void;
@@ -561,6 +563,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     connectorIds: connectors(station).map((c) => c.connectorId),
     offeredW,
     evPowerW: options.evPowerW ?? offeredW,
+    ...(options.stationPowerW !== undefined && { stationW: options.stationPowerW }),
     multiplier: checkedMultiplier(
       options.restore?.energyMultiplier ?? options.energyMultiplier ?? 1,
     ),
@@ -1014,6 +1017,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
   }
 
   function updatePower(connectorId: number): void {
+    energy.setStationLimit(stationLimitW());
     energy.update(connectorId, mayCharge(connectorId), profileLimitW(connectorId));
   }
 
@@ -1139,27 +1143,42 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
   /**
    * The Smart Charging limit on an EVSE now, in W: its TxProfile or
-   * TxDefaultProfile, and its share of the ChargingStationMaxProfile, which
-   * the EVSEs with a transaction split equally. Undefined without profiles.
+   * TxDefaultProfile, plus what local generation adds. Undefined without one.
+   * The ChargingStationMaxProfile is the station's (stationLimitW), which the
+   * EVSEs share by demand.
    */
   function profileLimitW(connectorId: number): number | undefined {
     if (chargingProfiles.length === 0) return undefined;
     const conversion = energy.conversion(connectorId);
-    const {
-      own,
-      station: total,
-      localGeneration,
-    } = limits201(chargingProfiles, connectorId, now(), txInfo(connectorId), priorityEvses);
+    const { own, localGeneration } = limits201(
+      chargingProfiles,
+      connectorId,
+      now(),
+      txInfo(connectorId),
+      priorityEvses,
+    );
     let watts = own.limit === undefined ? undefined : toWatts(own.limit, conversion);
-    if (total.limit !== undefined) {
-      const share = toWatts(total.limit, conversion) / Math.max(1, transactions.size);
-      watts = watts === undefined ? share : Math.min(watts, share);
-    }
     // Local generation adds to a limit, never makes one (K08.FR.04, K04.FR.05).
     if (watts !== undefined && localGeneration.limit !== undefined) {
       watts += toWatts(localGeneration.limit, conversion);
     }
     return watts;
+  }
+
+  /** The ChargingStationMaxProfile's limit now, in W (amperes on a three-phase supply). */
+  function stationLimitW(): number | undefined {
+    if (chargingProfiles.length === 0) return undefined;
+    const evseId = connectors(station)[0]?.connectorId ?? 1;
+    const { station: total } = limits201(
+      chargingProfiles,
+      evseId,
+      now(),
+      txInfo(evseId),
+      priorityEvses,
+    );
+    return total.limit === undefined
+      ? undefined
+      : toWatts(total.limit, { voltageV: 230, phases: 3 });
   }
 
   /** Re-evaluates every EVSE at the next moment a limit changes. */

@@ -246,6 +246,11 @@ export interface ChargePointOptions {
   offeredPowerW?: number;
   /** Power the EV draws when allowed, in W. Default: everything offered. */
   evPowerW?: number;
+  /**
+   * What the charge point supplies across all its connectors, in W, as one
+   * supply shared by its connectors (a dual charger). Default: no shared cap.
+   */
+  stationPowerW?: number;
   /** Sends a text frame over the connection. */
   send: (text: string) => void;
   /** Asks the transport to drop the connection and reconnect after `downtimeMs` (reset). */
@@ -512,6 +517,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
     connectorIds: connectors(station).map((c) => c.connectorId),
     offeredW,
     evPowerW,
+    ...(options.stationPowerW !== undefined && { stationW: options.stationPowerW }),
     multiplier: checkedMultiplier(
       options.restore?.energyMultiplier ?? options.energyMultiplier ?? 1,
     ),
@@ -1186,20 +1192,18 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
 
   /**
    * The Smart Charging limit on a connector now, in W: its TxProfile or
-   * TxDefaultProfile, and its share of the ChargePointMaxProfile, which the
-   * connectors with a transaction split equally. Undefined without profiles.
+   * TxDefaultProfile. Undefined without one. The ChargePointMaxProfile is
+   * the station's (stationLimitW), which the connectors share by demand.
    */
   function profileLimitW(connectorId: number): number | undefined {
-    const at = now();
-    const conversion = conversionFor(connectorId);
-    const own = connectorLimit(chargingProfiles, connectorId, at, txInfo(connectorId));
-    let watts = own.limit === undefined ? undefined : toWatts(own.limit, conversion);
-    const total = stationLimit(chargingProfiles, at).limit;
-    if (total !== undefined) {
-      const share = toWatts(total, conversion) / Math.max(1, transactions.size);
-      watts = watts === undefined ? share : Math.min(watts, share);
-    }
-    return watts;
+    const own = connectorLimit(chargingProfiles, connectorId, now(), txInfo(connectorId));
+    return own.limit === undefined ? undefined : toWatts(own.limit, conversionFor(connectorId));
+  }
+
+  /** The ChargePointMaxProfile's limit now, in W (amperes on a three-phase supply). */
+  function stationLimitW(): number | undefined {
+    const total = stationLimit(chargingProfiles, now()).limit;
+    return total === undefined ? undefined : toWatts(total, { voltageV: 230, phases: 3 });
   }
 
   /** Re-evaluates every connector at the next moment a limit changes. */
@@ -1402,7 +1406,8 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
       connector.plugged &&
       !connector.evSuspended &&
       !connector.evseSuspended;
-    // The Smart Charging limit becomes the power offered (and Power.Offered).
+    // The Smart Charging limits become the power offered (and Power.Offered).
+    energy.setStationLimit(stationLimitW());
     energy.update(connectorId, running, profileLimitW(connectorId));
   }
 

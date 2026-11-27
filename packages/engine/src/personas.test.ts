@@ -63,7 +63,10 @@ describe('persona registry', () => {
       ['generic-dual-2.0.1', '2.0.1'],
       ['generic-dual-2.1', '2.1'],
     ] as const) {
-      expect(registry.get(id), id).toMatchObject({ ocpp, options: { connectors: 2 } });
+      expect(registry.get(id), id).toMatchObject({
+        ocpp,
+        options: { connectors: 2, offeredPowerW: 7360, stationPowerW: 11040 },
+      });
     }
     expect(registry.get('vendorX-fw2.5')?.options).toMatchObject({
       boot: {
