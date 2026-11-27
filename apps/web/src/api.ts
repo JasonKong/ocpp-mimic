@@ -165,6 +165,12 @@ export interface NewStation {
   /** More than 1: `id` holds a counter such as SIM-{001} and the stations are created in bulk. */
   count?: number;
   group?: string;
+  tags?: string[];
+  energyMultiplier?: number;
+  /** 1.6 configuration values. */
+  config?: Record<string, string>;
+  /** 2.x Device Model values by component and variable. */
+  deviceModel?: Record<string, Record<string, string | number | boolean>>;
 }
 
 /** What a fleet list shows of a station. */
@@ -509,8 +515,18 @@ export const api = {
     request<StationSnapshot>('PATCH', `${station(id)}/energy-multiplier`, { energyMultiplier }),
   setBehaviour: (id: string, changes: Partial<Behaviour>) =>
     request<StationSnapshot>('PATCH', `${station(id)}/behaviour`, changes),
-  plug: (id: string, c: number, ev?: string) =>
+  /** A persona's EV by name, an EV profile of its own, or no EV. */
+  plug: (id: string, c: number, ev?: string | EvProfile) =>
     request<StationSnapshot>('POST', `${connector(id, c)}/plug`, ev !== undefined ? { ev } : {}),
+  /** Summaries of the stations with a tag. */
+  stationSummaries: (filter: { tag: string }) =>
+    request<{ stations: StationSummary[] }>(
+      'GET',
+      `/api/stations?view=summary&tag=${encodeURIComponent(filter.tag)}`,
+    ),
+  /** Deletes every station with the tag. */
+  deleteStations: (selector: { tag: string }) =>
+    request<{ deleted: number }>('DELETE', '/api/stations/bulk', selector),
   unplug: (id: string, c: number) => request<StationSnapshot>('POST', `${connector(id, c)}/unplug`),
   idTag: (id: string, c: number, idTag: string, type?: string) =>
     request<{ result: string; station: StationSnapshot }>('POST', `${connector(id, c)}/id-tag`, {
@@ -574,6 +590,16 @@ export const api = {
       'POST',
       `${station(id)}/remote-start`,
       { idToken, ...(evseId !== undefined && { evseId }) },
+    ),
+  /** Has the built-in CSMS stop the connector's transaction, as an app would. */
+  remoteStop: (id: string, c: number) =>
+    request<{ action: string; status: string }>('POST', `${connector(id, c)}/remote-stop`),
+  /** Valet: the built-in CSMS starts a session with this token on every plug-in; null stops that. */
+  autoStart: (id: string, idToken: SessionIdToken | null) =>
+    request<{ autoStart: { idToken: SessionIdToken } | null }>(
+      'POST',
+      `${station(id)}/auto-start`,
+      { idToken },
     ),
 };
 

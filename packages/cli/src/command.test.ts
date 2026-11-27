@@ -160,7 +160,7 @@ describe('parseCommand', () => {
     expect(parseCommand(['run', 'a.yaml', '--csms', 'http://x'])).toMatchObject({ kind: 'error' });
     expect(parseCommand(['run', 'a.yaml', '--port', '1'])).toEqual({
       kind: 'error',
-      message: '--port is an option of serve, csms and load',
+      message: '--port is an option of serve, csms, demo and load',
     });
     expect(parseCommand(['serve', '--delay', '1s'])).toEqual({
       kind: 'error',
@@ -169,6 +169,23 @@ describe('parseCommand', () => {
     expect(parseCommand(['serve', '--bail'])).toEqual({
       kind: 'error',
       message: '--bail is an option of run',
+    });
+  });
+
+  it('starts the demo on the engine and CSMS ports, which must differ', () => {
+    expect(parseCommand(['demo'])).toEqual({ kind: 'demo', port: 7300, csmsPort: 9100 });
+    expect(parseCommand(['demo', '--port', '8300', '--csms-port', '9300'])).toEqual({
+      kind: 'demo',
+      port: 8300,
+      csmsPort: 9300,
+    });
+    expect(parseCommand(['demo', '--csms-port', '7300'])).toMatchObject({
+      kind: 'error',
+      message: '--port and --csms-port must differ',
+    });
+    expect(parseCommand(['demo', '--host', '0.0.0.0'])).toMatchObject({
+      kind: 'error',
+      message: '--host is an option of serve and csms',
     });
   });
 

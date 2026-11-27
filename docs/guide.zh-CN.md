@@ -96,6 +96,14 @@ docker run --rm -p 127.0.0.1:7300:7300 -e OCPP_MIMIC_API_TOKEN -v ocpp-mimic-dat
 
 在克隆的仓库里，`pnpm serve` 会一步完成构建和启动引擎，但不加载示例 persona。
 
+### 最快的体验方式：演示
+
+```bash
+ocpp-mimic demo
+```
+
+它在一个进程里同时启动内置 CSMS 和引擎，只监听 127.0.0.1，并打印[演示页](#演示页)的地址：<http://127.0.0.1:7300/#/demo>。按 Ctrl-C 两者一起停止。`--port` 和 `--csms-port` 可以改端口（默认 7300 和 9100）。
+
 ### 重启后保留桩
 
 默认情况下引擎什么都不保存：停掉它，所有桩就没了。`serve --store <文件>` 把桩及其配置或 Device Model、交易、本地列表、充电配置文件（charging profile）、资费和会话存进一个 SQLite 文件，下次启动引擎时自动恢复并启动这些桩。
@@ -258,6 +266,18 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 **CSMS view / Show truth。** 默认情况下面板只显示 CSMS 能从帧里知道的信息。**Show truth** 会在旁边加上 EV 模型的真实值：准确的 SoC、电量、功率和充满所需时间。估算偏差超过 5 分钟或 10% 时会高亮提示。
 
 **远程启动。** 桩连的是内置 CSMS 时，Sessions 标签页有一个远程启动表单（EVSE、卡号和类型）：内置 CSMS 发送 RemoteStartTransaction（1.6）或 RequestStartTransaction（2.x）。连其他 CSMS 时，远程启动必须由那个 CSMS 发起。
+
+### 演示页
+
+页头的 **Demo**（或地址 `#/demo`）是一个可以动手操作的小停车场，用来展示 OCPP 的工作过程，而不是做测试。用 `ocpp-mimic demo` 启动最方便；用 `serve` 的话，还要另外启动内置 CSMS。
+
+1. 选择 **OCPP 版本**（1.6J、2.0.1 或 2.1）、**会话的启动方式**（[即插即充、RFID 卡、App 或 valet](#会话怎样开始)）、1 到 3 台**充电桩**，每台**单口或双口**，以及**电池速度**（即能量倍率；×300 时大多数车一两分钟就能充满）。
+2. 点 **Build the car park**。它用 generic persona 创建桩 `DEMO-1` 到 `DEMO-3`，打上 `demo` 标签，连到填写的 CSMS（默认 `ws://127.0.0.1:9100/ocpp`）。再次构建时会先删除带 `demo` 标签的桩。即插即充会打开桩的免认证设置；valet 会为每个桩打开内置 CSMS 的自动启动，其他方式则把它关掉。
+3. 每个车位有自己的车，从 25 kWh 的小车到 75 kWh 的 SUV，初始电量各不相同。点 **Plug in** 插枪。之后按所选方式开始：自动开始、点 **Tap card** 刷卡、点 **Start in app** 用 App 启动，或者由 CSMS 启动。**Tap card to stop**、**Stop in app** 和 **Unplug** 结束会话。**Plug in every car**、**Tap every card** 或 **Start every car in the app**，以及 **Unplug every car** 会同时作用于所有车位。
+4. 车位上显示桩自己上报的状态（2.x 同时显示充电状态），以及车的电量、功率和已充入的电量。车充满后，桩上报 SuspendedEV，功率降为 0，车位标记为 **Full**，并显示车充满后又在车位上停了多久。会话会一直保持，直到拔枪或会话被停止。
+5. 每条 OCPP 消息发生时，都会在对应的充电桩和 CSMS 之间飞过；**OCPP messages** 按从新到旧列出它们，点开一条可以看它的内容。
+
+页面会在浏览器里记住设置，再次打开时接着显示原来的停车场。App 和 valet 需要 ocpp-mimic 的内置 CSMS；连其他 CSMS 时页面会给出提示。
 
 ## 4. Persona 和 EV 配置
 
@@ -922,6 +942,7 @@ curl -s $API/stations/SIM-100/sessions
 | `ocpp-mimic replay <日志>` | 对 CSMS 回放日志 |
 | `ocpp-mimic calibrate <日志>...` | 从日志推导 persona |
 | `ocpp-mimic samples <目录>` | 把示例和模板复制到一个目录里修改 |
+| `ocpp-mimic demo` | 同时启动内置 CSMS 和引擎，供演示页使用；`--port`（默认 7300）和 `--csms-port`（默认 9100），只监听 127.0.0.1 |
 
 `serve` 的选项：
 

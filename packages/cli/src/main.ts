@@ -10,6 +10,7 @@ import {
 } from '@ocpp-mimic/engine';
 import { USAGE, parseCommand } from './command.js';
 import { startCsmsCommand } from './csms.js';
+import { demoBanner, startDemo } from './demo.js';
 import { runImportCommand } from './import.js';
 import { runLoadCommand } from './load.js';
 import { runReplayCommand } from './replay.js';
@@ -120,6 +121,27 @@ switch (command.kind) {
         .stop()
         .then((text) => console.log(text))
         .finally(() => process.exit(0));
+    };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+    break;
+  }
+  case 'demo': {
+    let demo: Awaited<ReturnType<typeof startDemo>>;
+    try {
+      demo = await startDemo({
+        port: command.port,
+        csmsPort: command.csmsPort,
+        ...(existsSync(WEB_ROOT) && { webRoot: WEB_ROOT }),
+      });
+    } catch (error) {
+      console.error(`Could not start the demo: ${(error as Error).message}`);
+      process.exit(1);
+    }
+    console.log(demoBanner(demo, 'ws://127.0.0.1:9100/ocpp'));
+    if (!existsSync(WEB_ROOT)) console.log('Web UI not built; run `pnpm build` to serve it here.');
+    const shutdown = () => {
+      void demo.stop().finally(() => process.exit(0));
     };
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);

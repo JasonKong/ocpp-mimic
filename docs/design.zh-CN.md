@@ -1541,6 +1541,15 @@ M9 在做过一个回放原型之后确定（#288、#289）：大家想看的不
 - 双口桩很常见：增加双口的 generic persona。
 - 已实现（T123）：1.6 的 `plugIn` 在 `FreeVendEnabled` 为 true、连接器没有预约也没有交易时，用 `FreeVendIdTag` 授权，会话来源记为 `noAuth`。这两个键来自 `VENDOR_CONFIG_KEYS`，每个 1.6 桩都在标准键之后列出它们。2.x 的 `plugIn` 在 `AuthCtrlr.Enabled` 为 false 时先用 `{ idToken: '', type: 'NoAuthorization' }` 授权，再判断开始点；以前这样的桩会一直等刷卡。内置 CSMS 按 chargeBoxId 保存自动启动的 token（`setAutoStart`，或控制 API 的 `auto-start`；它和其他命令不同，桩连上之前就能设置）。CSMS 应答 StatusNotification（或 2.1 针对 Connector.AvailabilityState 的 NotifyEvent）之后，每次插枪发一次 `remote-start`；连接器报告其他状态后就不再记着这次插枪。`remote-stop` 发 RemoteStopTransaction 或 RequestStopTransaction。引擎通过 `controlVia` 把 `auto-start` 和连接器的 `remote-stop`（用快照里的交易 id）转给内置 CSMS，和远程启动一样。`generic-dual-1.6`、`generic-dual-2.0.1` 和 `generic-dual-2.1` 在 generic persona 的基础上设 `connectors: 2`。
 
+**演示页**
+
+- Web UI 里单独的一页（`#/demo`），和桩列表并列。它像人一样调用引擎的 API，不增加引擎行为，所以页面能演示的内容，场景同样能做到。
+- 设置项包括版本、启动方式、1 到 3 台单口或双口的充电桩，以及能量倍率；构建时替换带 `demo` 标签的桩。每个车位分到一辆虚构的车（容量和初始 SoC 各不相同，所以充满的时间也不同）。
+- 车位按桩的快照绘制：空位、已插枪、充电中、已充满（EV 到达目标时的 SuspendedEV）、暂停、已结束、故障。车充满后，页面显示它又在车位上停了多久。
+- 消息来自引擎对演示桩的帧记录：每条变成一个胶囊，沿着充电桩和 CSMS 之间的线路飞过，同时在列表里加一行，可以展开看内容。
+- `ocpp-mimic demo` 在一个进程里、只在环回地址上运行内置 CSMS 和引擎，远程启动和 valet 不用额外设置就能用。
+- 已实现（T124）：`apps/web/src/demo.ts` 放模型（设置、桩定义、车辆、由连接器快照得出的 `bayView`、消息标签），有单元测试；`DemoView.vue` 负责绘制，它单独订阅演示桩的事件，用 CSS 动画做胶囊（减少动态效果时不显示），并把设置存在 `localStorage`，据此接着显示之前建好的停车场。免认证是桩的配置（1.6 的 `FreeVendEnabled`，2.x 的 `AuthCtrlr.Enabled`）；valet 为每个桩设置 CSMS 的自动启动，其他方式则清除它，因为 CSMS 按桩 id 保存这个设置，重建后仍然有效。2.x 没有 Finishing 状态，所以页面会记住某个车位上跑过会话，直到车离开。`App.vue` 按地址在桩列表和演示页之间切换。`packages/cli/src/demo.ts` 启动 `startBuiltinCsms`（不保留帧）和带 Web UI 的引擎，并打印页面地址。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。
