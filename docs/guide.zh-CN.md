@@ -435,7 +435,7 @@ curl -s -X POST http://127.0.0.1:9100/api/stations/SIM-001/call \
 
 - 每个会话平分。会话实际取用的功率明显低于它的限值时（按它上报的 Power.Active.Import，低于限值的 90% 且少 300 W 以上），只需要比实际取用多一点，其余的转给别人。处于 SuspendedEV 的车（比如已经充满）保留最低功率。
 - 每个会话至少得到 `minimumW`（默认 1380 W，即单相 6 A）。容量不够让每个会话都得到最低功率时，有些会话先停在 0，直到有功率空出来：先是已充满的车（SuspendedEV），这样它们不会让正在充电的车等待，然后是最晚开始的会话。停在 0 的充电中车辆显示 SuspendedEVSE。
-- 限值通过 SetChargingProfile 下发，是针对该会话交易、以 W 为单位的 TxProfile（profile id 为 9000 加连接器或 EVSE 编号），只在限值变化超过 5% 且 250 W 时才下发。
+- 限值通过 SetChargingProfile 下发，是针对该会话交易、以 W 为单位的 TxProfile（profile id 为 9000 加连接器或 EVSE 编号）。限值变化超过 5% 且 250 W 时才下发，并且先发调低的、再发调高的。如果不发较小的下调会让总和超过容量，这些下调也会下发，所以限值总和不会超过站点容量。
 - 会话开始或结束、车开始或停止取电、收到电表值，以及站点设置变化时，CSMS 都会重新分配。
 
 CSMS 从电表值得知每个会话的取用功率，所以桩要上报 Power.Active.Import：1.6 把它加进 `MeterValuesSampledData`，2.x 加进 `SampledDataCtrlr.TxUpdatedMeasurands`。没有这个值时，CSMS 仍会平分容量、释放暂停车辆的份额，但无法把功率下降的车空出的部分转给别人。桩自己的电源上限（`power.stationW`）在这些限值之内照样生效。

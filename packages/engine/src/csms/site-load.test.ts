@@ -4,6 +4,7 @@ import { startBuiltinCsms, type BuiltinCsms } from './builtin-csms.js';
 import {
   allocate,
   createSiteLoad,
+  limitsToSend,
   parseSite,
   siteLimitRequest,
   worthSending,
@@ -81,6 +82,27 @@ describe('sharing a site between sessions', () => {
     expect(worthSending(4000, 4400)).toBe(true);
     expect(worthSending(1380, 0)).toBe(true);
     expect(worthSending(0, 1380)).toBe(true);
+  });
+
+  it('also sends small cuts when skipping them would leave the site over its capacity', () => {
+    // A cut of 144 W alone is not worth a message, but with the other raised the total is 5,142 W.
+    const changes = [
+      { key: 'a', previousW: 1810, nextW: 1666 },
+      { key: 'b', previousW: 1000, nextW: 1666 },
+      { key: 'c', previousW: 1666, nextW: 1668 },
+    ];
+    expect(limitsToSend(5000, changes)).toEqual([
+      { key: 'a', nextW: 1666 },
+      { key: 'b', nextW: 1666 },
+    ]);
+    // With room to spare the small cut waits; lowered limits always come first.
+    expect(limitsToSend(6000, changes)).toEqual([{ key: 'b', nextW: 1666 }]);
+    expect(
+      limitsToSend(9000, [
+        { key: 'up', previousW: 1000, nextW: 4000 },
+        { key: 'down', previousW: 4000, nextW: 1000 },
+      ]).map((c) => c.key),
+    ).toEqual(['down', 'up']);
   });
 
   it('writes the limit as a TxProfile in W for each version, and checks a site', () => {

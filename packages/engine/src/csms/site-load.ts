@@ -95,6 +95,33 @@ export function allocate(
   return limits;
 }
 
+/**
+ * Which limits to send: those worth it (`worthSending`), and, should the ones
+ * left out keep the site above its capacity, the lowered ones among them too,
+ * the biggest drop first. Lowered limits come first in the result, so they can
+ * go out before raised ones.
+ */
+export function limitsToSend(
+  capacityW: number,
+  changes: readonly { key: string; previousW: number | undefined; nextW: number }[],
+): { key: string; nextW: number }[] {
+  const send = new Set(changes.filter((c) => worthSending(c.previousW, c.nextW)).map((c) => c.key));
+  const total = () =>
+    changes.reduce((sum, c) => sum + (send.has(c.key) ? c.nextW : (c.previousW ?? c.nextW)), 0);
+  const lowered = changes
+    .filter((c) => !send.has(c.key) && c.previousW !== undefined && c.nextW < c.previousW)
+    .sort((a, b) => (b.previousW ?? 0) - b.nextW - ((a.previousW ?? 0) - a.nextW));
+  for (const change of lowered) {
+    if (total() <= capacityW) break;
+    send.add(change.key);
+  }
+  const down = (c: (typeof changes)[number]) => c.previousW === undefined || c.nextW < c.previousW;
+  return changes
+    .filter((c) => send.has(c.key))
+    .sort((a, b) => Number(down(b)) - Number(down(a)))
+    .map(({ key, nextW }) => ({ key, nextW }));
+}
+
 /** Whether a new limit is worth a SetChargingProfile: it moved by more than 5 % and 250 W. */
 export function worthSending(previousW: number | undefined, nextW: number): boolean {
   if (previousW === undefined) return true;
@@ -248,28 +275,43 @@ export function createSiteLoad(options: SiteLoadOptions): SiteLoad {
     if (site === undefined) return;
     const running = sessionsOf(site);
     const limits = allocate(site.capacityW, running, site.minimumW);
-    await Promise.all(
-      running.map(async (session) => {
-        const limitW = limits.get(sessionKey(session)) ?? 0;
-        if (!worthSending(session.limitW, limitW)) return;
-        const station = options.station(session.stationId);
-        if (station === undefined) return;
-        session.limitW = limitW;
-        const answer = await station
-          .call('SetChargingProfile', siteLimitRequest(station.ocpp, session, limitW))
-          .catch(() => ({ ok: false, status: 'no answer' }));
-        if (!answer.ok || answer.status !== 'Accepted') delete session.limitW;
-        const history = sent.get(siteId) ?? [];
-        history.unshift({
-          at: new Date(now()).toISOString(),
-          stationId: session.stationId,
-          evseId: session.evseId,
-          limitW,
-          status: answer.status ?? (answer.ok ? 'Accepted' : 'error'),
-        });
-        sent.set(siteId, history.slice(0, 50));
-      }),
+    const toSend = limitsToSend(
+      site.capacityW,
+      running.map((s) => ({
+        key: sessionKey(s),
+        previousW: s.limitW,
+        nextW: limits.get(sessionKey(s)) ?? 0,
+      })),
     );
+    // Lowered limits first, so the site stays under its capacity while the raised ones follow.
+    const lowered = toSend.filter(
+      ({ key, nextW }) => nextW < (sessions.get(key)?.limitW ?? Infinity),
+    );
+    const raised = toSend.filter((change) => !lowered.includes(change));
+    for (const batch of [lowered, raised]) {
+      await Promise.all(batch.map(({ key, nextW }) => send(siteId, key, nextW)));
+    }
+  }
+
+  /** Sends a session its limit and notes it in the site's history. */
+  async function send(siteId: string, key: string, limitW: number): Promise<void> {
+    const session = sessions.get(key);
+    const station = session === undefined ? undefined : options.station(session.stationId);
+    if (session === undefined || station === undefined) return;
+    session.limitW = limitW;
+    const answer = await station
+      .call('SetChargingProfile', siteLimitRequest(station.ocpp, session, limitW))
+      .catch(() => ({ ok: false, status: 'no answer' }));
+    if (!answer.ok || answer.status !== 'Accepted') delete session.limitW;
+    const history = sent.get(siteId) ?? [];
+    history.unshift({
+      at: new Date(now()).toISOString(),
+      stationId: session.stationId,
+      evseId: session.evseId,
+      limitW,
+      status: answer.status ?? (answer.ok ? 'Accepted' : 'error'),
+    });
+    sent.set(siteId, history.slice(0, 50));
   }
 
   function stateOf(id: string): SiteState | undefined {
