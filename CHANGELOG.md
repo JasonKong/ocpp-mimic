@@ -4,19 +4,21 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-28
+
+Milestone M9: a demo of a charging site, more ways to start a session, chargers that share a supply, and site load management in the built-in CSMS. The [design](https://github.com/JasonKong/ocpp-mimic/blob/main/docs/design.md#m9-demo) describes them.
+
 ### Added
 
-- **Ways to start a session**: free vending on 1.6 with ocpp-mimic's vendor keys `FreeVendEnabled` and `FreeVendIdTag` (plugging in starts, without a card); the built-in CSMS's auto start for valet stations (a session on every plug-in) and remote stop, as `auto-start` and `remote-stop` in its control API and `POST /api/stations/<id>/auto-start` and `POST .../connectors/<n>/remote-stop` on the engine.
+- **Demo page** in the Web UI (`#/demo`): set up a charging site (its OCPP version, how sessions start and its single and dual charge points), then plug cars in and out, start them together and watch them fill up while the OCPP messages fly between the stations and the CSMS. A site manager panel adds up power, energy and the cars charging or full; with a site capacity it shows the limit (changeable live), power over time against it, each connector's limit and the limits the CSMS sent.
+- **`ocpp-mimic demo`** starts the built-in CSMS and the engine for the Demo page in one process; `--host` and `--api-token` run it in a container. The image and package smoke tests run it.
+- **Ways to start a session**: free vending on 1.6 with ocpp-mimic's vendor keys `FreeVendEnabled` and `FreeVendIdTag` (plugging in starts, without a card); the built-in CSMS's auto start for valet stations (a session on every plug-in) and remote stop, as `auto-start` and `remote-stop` in its control API and `POST /api/stations/<id>/auto-start` and `POST .../connectors/<n>/remote-stop` on the engine. On the Demo page: free vend, RFID card, app, valet, the bank card at the charge point and the QR code (2.1), and Autocharge.
 - **Autocharge**: an EV profile's `evccid` (its MAC address) and the station switch `autocharge`, which identifies the EV by it on plug-in (idTag on 1.6, MacAddress on 2.0.1, EVCCID on 2.1).
 - **Web payments through the engine**: `POST /api/stations/<id>/web-payment` relays the payment page behind a 2.1 station's QR code to the built-in CSMS.
-- **Demo page**: the bank card at the charge point and the QR code (2.1), and Autocharge, as ways to start; plug in and charge is now called Free vend, since Plug & Charge means ISO 15118 certificates.
-- **`ocpp-mimic demo` in a container**: `--host` for the engine (the CSMS stays on loopback) and `--api-token`; the image and package smoke tests run the demo.
-- **Personas**: `generic-2.1` (and `generic-dual-2.1`) have the payment terminal and the dynamic QR code (`Payment`, `WebPayments`).
-- **Personas**: `generic-dual-1.6`, `generic-dual-2.0.1` and `generic-dual-2.1`, the generic personas with two ports.
-- **Demo page** in the Web UI (`#/demo`): set up a charging site (its OCPP version, how sessions start and its single and dual charge points), then plug cars in and out, start them together and watch them fill up while the OCPP messages fly between the stations and the CSMS, and a site manager panel adds up power, energy and the cars charging or full; with a site capacity it shows the limit (changeable live), power over time against it, each connector's limit and the limits the CSMS sent. `ocpp-mimic demo` starts the built-in CSMS and the engine for it in one process.
-- **API**: `GET /api/personas` reports each persona's `power`.
 - **Site load management** in the built-in CSMS: a site's capacity is shared between its sessions with smart charging (equal shares, what a car does not take passed on, at least 6 A each; full cars, then the latest, wait at 0 when that does not fit), as TxProfiles in W. `PUT`, `GET` and `DELETE /api/sites/<id>` on its control API and on the engine.
-- **Shared supply**: a persona's `power.stationW` is one supply the connectors share, as on a dual charger: equal shares, and what a car does not take goes to the others. `generic-dual-*` share 11.04 kW between two 7.36 kW ports.
+- **Shared supply**: a persona's `power.stationW` is one supply the connectors share, as on a dual charger: equal shares, and what a car does not take goes to the others.
+- **Personas**: `generic-dual-1.6`, `generic-dual-2.0.1` and `generic-dual-2.1`, the generic personas with two 7.36 kW ports sharing 11.04 kW; `generic-2.1` (and so `generic-dual-2.1`) has the payment terminal and the dynamic QR code (`Payment`, `WebPayments`).
+- **API**: `GET /api/personas` reports each persona's `power`.
 
 ### Changed
 
