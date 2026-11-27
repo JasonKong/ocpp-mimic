@@ -267,15 +267,16 @@ A session shows:
 
 ### Demo page
 
-**Demo** in the header (or `#/demo`) shows a small car park to play with, for showing what OCPP does rather than for testing. It is easiest with [`ocpp-mimic demo`](#the-quickest-look-the-demo); with `serve`, start the built-in CSMS too.
+**Demo** in the header (or `#/demo`) shows a small charging site to play with, for showing what OCPP does rather than for testing. It is easiest with [`ocpp-mimic demo`](#the-quickest-look-the-demo); with `serve`, start the built-in CSMS too.
 
-1. Choose the **OCPP version** (1.6J, 2.0.1 or 2.1), **how sessions start** ([plug in and charge, RFID card, app or valet](#how-a-session-starts)), 1 to 3 **charge points** with a **single or dual** port each, and the **battery speed** (the [energy multiplier](#2-concepts); ×300 fills most cars in a minute or two).
-2. **Build the car park**. It creates the stations `DEMO-1` to `DEMO-3`, tagged `demo`, from the generic personas, against the CSMS given (default `ws://127.0.0.1:9100/ocpp`). Building again deletes the `demo` stations first. Plug in and charge sets the station's free vend setting; valet turns on the built-in CSMS's auto start for each station, and the other ways turn it off.
-3. Each bay has a car of its own, from a 25 kWh city car to a 75 kWh SUV, at different charge levels. **Plug in** a car. Then, by the way chosen: it starts by itself, **Tap card**, **Start in app**, or the CSMS starts it. **Tap card to stop**, **Stop in app** and **Unplug** end it. **Plug in every car**, **Tap every card** or **Start every car in the app**, and **Unplug every car** act on every bay at once.
+1. Set up the **site**: its name, the **OCPP version** (1.6J, 2.0.1 or 2.1), **how sessions start** ([plug in and charge, RFID card, app or valet](#how-a-session-starts)), its **charge points** (add up to six, each **single** or **dual** port) and the **battery speed** (the [energy multiplier](#2-concepts); ×300 fills most cars in a minute or two).
+2. **Build the site**. It creates the stations `DEMO-CP-1`, `DEMO-CP-2`, ... (shown as CP-1, CP-2, ...), tagged `demo`, from the generic personas (`generic-dual-*` for a dual charge point), against the CSMS given (default `ws://127.0.0.1:9100/ocpp`). Building again deletes the `demo` stations first. Plug in and charge sets the station's free vend setting; valet turns on the built-in CSMS's auto start for each station, and the other ways turn it off.
+3. The **charging area** on the left shows each charge point as one pedestal; a dual one has two sockets, marked 1 and 2, each cabled to its own bay. Each bay has a car of its own, from a 25 kWh city car to a 75 kWh SUV, at different charge levels. **Plug in** a car. Then, by the way chosen: it starts by itself, **Tap card**, **Start in app**, or the CSMS starts it. **Tap card to stop**, **Stop in app** and **Unplug** end it. **Plug in every car**, **Tap every card** or **Start every car in the app**, and **Unplug every car** act on every bay at once.
 4. A bay shows the station's own status (for 2.x with the charging state), the car's charge level, power and the energy it took. When the car is full, the station reports SuspendedEV, the power drops to 0 and the bay is marked **Full**, with how long the car has stayed in the bay since. The session stays open until the car is unplugged or the session is stopped.
-5. Every OCPP message flies between its charge point and the CSMS as it happens, and **OCPP messages** lists them, newest first; click one to see its payload.
+5. The **site manager** on the right adds the site up: its power now, the energy delivered since it was built, how many cars are charging, how many are full but still parked (and the longest stay), and the power of each connector against what it can offer.
+6. Every OCPP message flies between its charge point and the site manager's side as it happens, and **OCPP messages** lists them, newest first, with the charge point and connector each is about; click one to see its payload.
 
-The page remembers the setup in the browser and picks up the car park when it is opened again. App and valet need ocpp-mimic's built-in CSMS; with another CSMS the page says so.
+The page remembers the setup in the browser and picks up the site when it is opened again. App and valet need ocpp-mimic's built-in CSMS; with another CSMS the page says so.
 
 ## 4. Personas and EV profiles
 

@@ -442,6 +442,7 @@ const routes: Route[] = [
       connectors: persona.definition.connectors,
       ...(persona.ocpp !== '1.6' && { features: persona.options.features }),
       boot: persona.definition.boot,
+      power: persona.definition.power ?? {},
       faults: persona.definition.faults ?? [],
       evs: persona.definition.evs ?? {},
       warnings: persona.warnings,

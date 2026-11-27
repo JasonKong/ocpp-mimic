@@ -1531,7 +1531,7 @@ Decided for M9 (#288, #289) after a replay prototype: what people want to see is
 
 **Exit criterion G9**
 
-`ocpp-mimic demo` starts the built-in CSMS and the engine. On its Demo page, for 1.6, 2.0.1 and 2.1 and for each way of starting (plug in and charge, card, app, valet), cars plug in, start together, fill up to SuspendedEV and leave, checked in a browser.
+`ocpp-mimic demo` starts the built-in CSMS and the engine. On its Demo page, for 1.6, 2.0.1 and 2.1 and for each way of starting (free vend, card, app, valet, and the payment and Autocharge starts where they exist), cars plug in, start together, fill up to SuspendedEV and leave, checked in a browser. On a site with a capacity, the CSMS keeps the sessions under it with smart charging, passes a full car's share on, and re-allocates when the capacity changes; the site manager shows it.
 
 **Ways to start a session**
 
@@ -1550,6 +1550,23 @@ Decided for M9 (#288, #289) after a replay prototype: what people want to see is
 - Messages are the engine's frame records for the demo stations: each becomes a capsule that crosses the lane between its charge point and the CSMS, and a row in a list that opens the payload.
 - `ocpp-mimic demo` runs the built-in CSMS and the engine in one process on loopback, so remote starts and valet work without setup.
 - Implemented (T124): `apps/web/src/demo.ts` holds the model (the setup, station definitions, cars, `bayView` from a connector snapshot, message labels), unit-tested; `DemoView.vue` draws it with its own events subscription to the demo stations, CSS-animated capsules (none with reduced motion), and the setup kept in `localStorage`, from which it picks up a car park built earlier. Free vend is the station's configuration (1.6 `FreeVendEnabled`, 2.x `AuthCtrlr.Enabled`); valet sets the CSMS's auto start per station, and the other ways clear it, since the CSMS keeps it by station id across rebuilds. 2.x has no Finishing status, so the page remembers that a session ran on a bay until the car leaves. `App.vue` switches between the stations and the demo by the address. `packages/cli/src/demo.ts` starts `startBuiltinCsms` (keeping no frames) and the engine with the Web UI, and prints the page's address.
+
+**A site, and how its power is shared (re-planned, #292 to #296)**
+
+After the first Demo page the user asked for a site: charge points defined one by one, a dual one drawn as one pedestal with connectors 1 and 2, the charging area on the left and a site manager on the right who sees the power and how it is shared out. Power passes three levels, and before M9 ocpp-mimic modelled only the last:
+
+| Level | Decided by | Before | M9 |
+| --- | --- | --- | --- |
+| Site to charge points | The CSMS (or an energy manager) with smart charging, under the site's grid capacity | Nothing | T127: the built-in CSMS's site load management |
+| Charge point to its connectors | The charge point's firmware, from one supply | Each connector `offeredW` on its own; a ChargePointMaxProfile split equally between transactions, unused shares lost | T126: `power.stationW`, shared by demand, a station profile shared the same way |
+| Connector to car | The car (charging curve, full) | Done (M2) | — |
+
+- T125: the site in the Demo page, from what the engine already reports.
+- T126: shared supply for dual-port chargers.
+- T127: sites in the built-in CSMS: a capacity, equal shares, unused power passed on, at least 6 A per session (others wait at 0), SetChargingProfile (TxProfile in W) only when a limit moves past a threshold. The allocation is the CSMS's, so it shows on the wire.
+- T128: the site manager shows capacity, allocation against draw, power over time with the limit, and the smart charging sent; the capacity changes live.
+- T129: the payment terminal and QR code (2.1), Autocharge (the EV's MAC address as its token), and "Free vend" as the name of plug in and charge, since Plug & Charge means ISO 15118 certificates, which stay out of scope.
+- Implemented (T125): the setup is a site: a name, the version, the way to start, the speed, and a list of up to six charge points, each single or dual (`DemoSetup.chargers`), stored setups from the first page are read with defaults (`normalizeSetup`). Stations are `DEMO-CP-<n>`, shown as CP-<n>. A charge point is drawn as rows that share one pedestal (rounded only at its ends) with a numbered socket per connector, cabled to its bay; the lanes run to the site manager, which adds up `siteTotals` (power now, energy from the meters, which start at 0 on a built station, charging and full counts) and the longest stay of a full car, and shows each connector's power against its persona's `offeredW` (now in `GET /api/personas`).
 
 ## Observability and UI
 
