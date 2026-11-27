@@ -67,6 +67,8 @@ export interface DemoSetup {
   /** Energy multiplier. */
   speed: number;
   csmsUrl: string;
+  /** The site's grid capacity in kW, which the CSMS shares between sessions; null for none. */
+  capacityKW: number | null;
 }
 
 export const DEFAULT_SETUP: DemoSetup = {
@@ -76,7 +78,11 @@ export const DEFAULT_SETUP: DemoSetup = {
   chargers: ['dual', 'single', 'dual'],
   speed: 300,
   csmsUrl: 'ws://127.0.0.1:9100/ocpp',
+  capacityKW: 22,
 };
+
+/** The id of the demo's site in the built-in CSMS. */
+export const DEMO_SITE_ID = 'demo';
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -96,6 +102,14 @@ export function normalizeSetup(value: unknown): DemoSetup {
     chargers: chargers.length > 0 ? chargers.slice(0, MAX_CHARGERS) : [...DEFAULT_SETUP.chargers],
     speed: pick((v) => DEMO_SPEEDS.includes(v as number), value.speed, DEFAULT_SETUP.speed),
     csmsUrl: pick((v) => typeof v === 'string' && v !== '', value.csmsUrl, DEFAULT_SETUP.csmsUrl),
+    capacityKW:
+      value.capacityKW === null
+        ? null
+        : pick(
+            (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0,
+            value.capacityKW,
+            DEFAULT_SETUP.capacityKW,
+          ),
   };
 }
 
@@ -129,6 +143,8 @@ export interface DemoStationDefinition {
 
 /** Meter values every this many seconds, so the CSMS side moves along with the cars. */
 const METER_INTERVAL_S = 10;
+/** The power each session draws goes with them, for the CSMS's load management. */
+const MEASURANDS = 'Energy.Active.Import.Register,Power.Active.Import,SoC';
 
 /** The stations for a setup; free vend is the station's own setting, valet is the CSMS's. */
 export function demoStations(setup: DemoSetup): DemoStationDefinition[] {
@@ -143,12 +159,16 @@ export function demoStations(setup: DemoSetup): DemoStationDefinition[] {
       ? {
           config: {
             MeterValueSampleInterval: String(METER_INTERVAL_S),
+            MeterValuesSampledData: MEASURANDS,
             ...(freeVend && { FreeVendEnabled: 'true', FreeVendIdTag: 'HOME' }),
           },
         }
       : {
           deviceModel: {
-            SampledDataCtrlr: { TxUpdatedInterval: METER_INTERVAL_S },
+            SampledDataCtrlr: {
+              TxUpdatedInterval: METER_INTERVAL_S,
+              TxUpdatedMeasurands: MEASURANDS,
+            },
             ...(freeVend && { AuthCtrlr: { Enabled: false } }),
           },
         }),
@@ -231,6 +251,7 @@ export type BayPhase =
   | 'charging'
   | 'full'
   | 'suspended'
+  | 'waiting'
   | 'finished'
   | 'fault'
   | 'unavailable';
@@ -278,12 +299,14 @@ export function bayView(
   if (connector.status === 'Unavailable') return { ...view, phase: 'unavailable' };
   if (transaction) {
     if (state === 'Charging') return { ...view, phase: 'charging' };
-    if (state === 'SuspendedEV') {
-      const target = ev?.profile.targetSoc ?? 100;
-      const full = ev !== undefined && ev.soc >= target - 0.5;
+    const target = ev?.profile.targetSoc ?? 100;
+    const full = ev !== undefined && ev.soc >= target - 0.5;
+    // A full car stays full when the site then gives it nothing (SuspendedEVSE).
+    if (state === 'SuspendedEV' || (state === 'SuspendedEVSE' && full)) {
       return { ...view, phase: full ? 'full' : 'suspended' };
     }
-    if (state === 'SuspendedEVSE') return { ...view, phase: 'suspended' };
+    // The station offers nothing: a limit of 0, as when the site's power has run out.
+    if (state === 'SuspendedEVSE') return { ...view, phase: 'waiting' };
     return { ...view, phase: 'starting' };
   }
   if (!connector.plugged) return view;
@@ -376,4 +399,37 @@ export function clockText(ms: number): string {
   const s = total % 60;
   const two = (n: number) => String(n).padStart(2, '0');
   return h > 0 ? `${h}:${two(m)}:${two(s)}` : `${two(m)}:${two(s)}`;
+}
+
+/** The site's power at a moment, by charge point (station id), in W. */
+export interface PowerSample {
+  at: number;
+  byCharger: Record<string, number>;
+}
+
+/**
+ * SVG paths of the site's power over time, stacked by charge point in the
+ * order given: one closed area per charge point, from the oldest sample on
+ * the left to the newest on the right, scaled so `maxW` is the top.
+ */
+export function stackedAreas(
+  samples: readonly PowerSample[],
+  chargers: readonly string[],
+  width: number,
+  height: number,
+  maxW: number,
+): { id: string; d: string }[] {
+  if (samples.length < 2 || maxW <= 0) return [];
+  const x = (i: number) => Math.round((i / (samples.length - 1)) * width * 10) / 10;
+  const y = (w: number) => Math.round((height - (Math.min(w, maxW) / maxW) * height) * 10) / 10;
+  const below = samples.map(() => 0);
+  return chargers.map((id) => {
+    const lower = [...below];
+    samples.forEach((sample, i) => {
+      below[i] = (below[i] ?? 0) + (sample.byCharger[id] ?? 0);
+    });
+    const top = below.map((w, i) => `${x(i)},${y(w)}`);
+    const bottom = lower.map((w, i) => `${x(i)},${y(w)}`).reverse();
+    return { id, d: `M${top.join(' L')} L${bottom.join(' L')} Z` };
+  });
 }
