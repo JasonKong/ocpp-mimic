@@ -410,6 +410,8 @@ The CSMS process serves a small HTTP API on its WebSocket port. Scenarios reach 
 | `POST /api/stations/<id>/remote-stop` | `{ "transactionId": 3 }` (a number on 1.6, a string on 2.x): RemoteStopTransaction or RequestStopTransaction |
 | `POST /api/stations/<id>/auto-start` | `{ "idToken": { "idToken": "VALET", "type": "Central" } }`: valet. Whenever an EV is plugged in at the station (1.6 Preparing, 2.x Occupied), the CSMS starts a session with this token, once per plug-in. `{ "idToken": null }` turns it off. The station need not be connected yet |
 | `POST /api/stations/<id>/call` | `{ "action": "Reset", "payload": { "type": "Soft" } }`: any CSMS command of the station's version |
+| `PUT /api/sites/<id>` | `{ "capacityW": 22000, "stations": ["CP-1", "CP-2"], "minimumW": 1380 }`: a site whose capacity the CSMS shares between its sessions (see below); replaces one with the same id |
+| `GET`, `DELETE /api/sites/<id>` | The site with its sessions, their limits and measured power, and the limits sent; or remove it and clear its limits |
 | `POST /api/stations/<id>/default-tariff` | 2.1: SetDefaultTariff with the reference tariff or `tariff`, on `evseId` (default 0, every EVSE) |
 | `POST /api/stations/<id>/transaction-limit` | 2.1: `{ "transactionLimit": { "maxEnergy": 5000 }, "transactionId": "..." }`, sent with the next TransactionEvent answer |
 | `POST /api/stations/<id>/driver-tariff` | 2.1: `{ "tariff": {...} }` to send with Authorize answers; `null` removes it |
@@ -424,6 +426,17 @@ curl -s -X POST http://127.0.0.1:9100/api/stations/SIM-001/call \
 ```
 
 The engine notices when a station's CSMS is the built-in one (it asks `GET /api/health` on CSMS addresses on this machine), so the Web UI's remote start and the engine's `remote-start`, `remote-stop` and `auto-start` requests go through it. For any other CSMS they answer 409.
+
+### Site load management
+
+A site is a grid connection with a capacity and the stations behind it. The built-in CSMS shares the capacity between the site's running sessions with smart charging, as a CSMS or an energy manager does:
+
+- Each session gets an equal share. A session that clearly takes less than its limit (under 90 % of it and 300 W below, by the Power.Active.Import it reports) needs only a little more than it draws, and the rest goes to the others. A car in SuspendedEV, for example a full one, keeps the minimum.
+- Every session gets at least `minimumW` (default 1380 W, 6 A on one phase). When the capacity cannot give every session the minimum, the latest sessions wait at 0: the station shows SuspendedEVSE until power frees up.
+- The limits go out as SetChargingProfile, a TxProfile in W for the session's transaction (profile id 9000 + the connector or EVSE), and only when a limit moves by more than 5 % and 250 W.
+- The CSMS re-allocates when a session starts or ends, when a car stops or starts taking power, when meter values come in, and when the site changes.
+
+The CSMS learns what each session draws from its meter values, so the stations should report Power.Active.Import: on 1.6 add it to `MeterValuesSampledData`, on 2.x to `SampledDataCtrlr.TxUpdatedMeasurands`. Without it the CSMS still shares the capacity equally and frees a suspended car's share, but cannot pass on what a tapering car leaves. A station's own supply (`power.stationW`) still applies inside its limits.
 
 ### The reference tariff
 
@@ -889,6 +902,8 @@ Stations:
 | `GET`, `PATCH /api/stations/<id>/device-model` | 2.x: list variables; set one with `{ component, variable, value }` |
 | `POST /api/stations/<id>/remote-start` | Through the built-in CSMS: `{ evseId, idToken: { idToken, type } }` |
 | `POST /api/stations/<id>/auto-start` | Through the built-in CSMS: `{ idToken: { idToken, type } }` starts a session on every plug-in (valet); `{ idToken: null }` stops that |
+| `PUT /api/sites/<id>` | Through the built-in CSMS of the listed stations: `{ capacityW, stations, minimumW }`, [site load management](#site-load-management) |
+| `GET`, `DELETE /api/sites/<id>` | A site set through this engine: its allocation, or remove it |
 | `POST /api/stations/<id>/vat-number` | 2.1: `{ vatNumber, evseId }` |
 
 Connectors (`<n>` is the connector, or the EVSE on 2.x):

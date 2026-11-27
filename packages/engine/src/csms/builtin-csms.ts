@@ -43,6 +43,7 @@ import {
 import { hmacSha256 } from '../hmac.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { signCsr } from '../x509.js';
+import { createSiteLoad, parseSite, type SiteDefinition, type SiteState } from './site-load.js';
 
 /** Returned by a handler to answer with a CALLERROR instead of a CALLRESULT. */
 export class CallErrorReply {
@@ -208,6 +209,30 @@ export function reportedStatuses(
   });
 }
 
+/** A request body as a JSON object (at most 64 KiB), or undefined when it is not one. */
+function readBody(req: IncomingMessage): Promise<Record<string, unknown> | undefined> {
+  return new Promise((resolve) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= 64 * 1024) chunks.push(chunk);
+    });
+    req.on('end', () => {
+      try {
+        const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+        resolve(
+          typeof value === 'object' && value !== null && !Array.isArray(value)
+            ? (value as Record<string, unknown>)
+            : undefined,
+        );
+      } catch {
+        resolve(undefined);
+      }
+    });
+  });
+}
+
 /** What `GET /api/health` of the built-in CSMS answers with. */
 export const BUILTIN_CSMS_SERVICE = 'ocpp-mimic-csms';
 
@@ -295,6 +320,12 @@ export interface BuiltinCsms {
    * The station need not be connected yet.
    */
   setAutoStart(chargeBoxId: string, idToken: AutoStartToken | undefined): void;
+  /** Creates or replaces a site whose capacity the CSMS shares between its sessions. */
+  setSite(id: string, site: SiteDefinition): SiteState;
+  /** A site with its allocation, sessions and the limits sent. */
+  site(id: string): SiteState | undefined;
+  /** Removes a site and clears the limits it set; false when there was none. */
+  deleteSite(id: string): boolean;
   stats(): BuiltinCsmsStats;
   stop(): Promise<void>;
 }
@@ -438,8 +469,13 @@ interface ConnectionContext {
   pricing?: { tariff: ReferenceTariff; everyMs: number };
   /** Sees each CALL the CSMS sent with its answer, to keep what it set. */
   observe: (chargeBoxId: string, action: string, payload: JsonObject, answer: Frame) => void;
-  /** Sees each station CALL a handler answered, once the answer is on its way. */
-  answered?: (connection: BuiltinCsmsConnection, action: string, payload: JsonObject) => void;
+  /** Sees each station CALL a handler answered, with the answer, once it is on its way. */
+  answered?: (
+    connection: BuiltinCsmsConnection,
+    action: string,
+    payload: JsonObject,
+    reply: JsonObject,
+  ) => void;
 }
 
 function createConnection(
@@ -701,7 +737,7 @@ function createConnection(
           id: frame.id,
           payload: totalCost === undefined ? reply : { ...reply, totalCost },
         });
-        context.answered?.(connection, frame.action, frame.payload);
+        context.answered?.(connection, frame.action, frame.payload, reply);
       }
     } catch (error) {
       answer({
@@ -917,6 +953,27 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       [...protocols].find((protocol) => messageSetForSubprotocol(protocol) !== undefined) ?? false,
   });
   let remoteStartIds = 0;
+  /** Sites whose capacity the CSMS shares between their sessions with smart charging. */
+  const siteLoad = createSiteLoad({
+    station(chargeBoxId) {
+      const connection = connections.get(chargeBoxId);
+      if (connection === undefined) return undefined;
+      return {
+        ocpp: connection.ocpp,
+        async call(action, payload) {
+          const answer = await connection.call(action, payload, 10_000);
+          if (answer.type === MessageTypeId.CallResult) {
+            const status = answer.payload.status;
+            return { ok: true, ...(typeof status === 'string' && { status }) };
+          }
+          return {
+            ok: false,
+            status: answer.type === MessageTypeId.CallError ? answer.errorCode : 'error',
+          };
+        },
+      };
+    },
+  });
   /** Stations the CSMS starts sessions on as EVs are plugged in (setAutoStart). */
   const autoStarts = new Map<string, AutoStartToken>();
   /** `${chargeBoxId} ${id}` of connectors started that way, until they report another state. */
@@ -1097,7 +1154,8 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
    * Auto start: an EV plugged in (1.6 Preparing, 2.x Occupied) gets one
    * remote start per plug-in, sent after the station has its answer.
    */
-  const answered: ConnectionContext['answered'] = (connection, action, payload) => {
+  const answered: ConnectionContext['answered'] = (connection, action, payload, reply) => {
+    siteLoad.observe(connection.chargeBoxId, action, payload, reply);
     const token = autoStarts.get(connection.chargeBoxId);
     const plugged = connection.ocpp === '1.6' ? 'Preparing' : 'Occupied';
     for (const { id, status } of reportedStatuses(connection.ocpp, action, payload)) {
@@ -1161,6 +1219,28 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       res.writeHead(UNAUTHORIZED.status, UNAUTHORIZED.headers).end(UNAUTHORIZED.body);
       return;
     }
+    // Sites: PUT creates or replaces one, GET shows its allocation, DELETE removes it.
+    const site = /^\/api\/sites\/([^/]+)$/.exec(url.pathname);
+    if (site !== null) {
+      const siteId = decodeURIComponent(site[1] ?? '');
+      if (req.method === 'GET') {
+        const state = siteLoad.site(siteId);
+        json(state === undefined ? 404 : 200, state ?? { error: `no site ${siteId}` });
+      } else if (req.method === 'DELETE') {
+        const deleted = siteLoad.deleteSite(siteId);
+        json(deleted ? 200 : 404, deleted ? { deleted: siteId } : { error: `no site ${siteId}` });
+      } else if (req.method === 'PUT') {
+        void readBody(req).then((body) => {
+          if (body === undefined) return json(400, { error: 'the body must be a JSON object' });
+          const parsed = parseSite(body);
+          if (typeof parsed === 'string') return json(400, { error: parsed });
+          json(200, siteLoad.setSite(siteId, parsed));
+        });
+      } else {
+        json(404, { error: 'not found' });
+      }
+      return;
+    }
     const match = /^\/api\/stations\/([^/]+)\/([a-z-]+)$/.exec(url.pathname);
     const command = match === null ? undefined : commands[match[2] ?? ''];
     const setting = match === null ? undefined : settings[match[2] ?? ''];
@@ -1169,36 +1249,22 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       return;
     }
     const chargeBoxId = decodeURIComponent(match[1] ?? '');
-    let size = 0;
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => {
-      size += chunk.length;
-      if (size <= 64 * 1024) chunks.push(chunk);
-    });
-    req.on('end', () => {
-      void (async () => {
-        let body: Record<string, unknown>;
-        try {
-          const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-          if (typeof value !== 'object' || value === null || Array.isArray(value))
-            throw new Error();
-          body = value as Record<string, unknown>;
-        } catch {
-          json(400, { error: 'the body must be a JSON object' });
-          return;
-        }
-        if (setting !== undefined) {
-          json(...setting(chargeBoxId, body));
-          return;
-        }
-        const connection = connections.get(chargeBoxId);
-        if (connection === undefined || command === undefined) {
-          json(404, { error: `${chargeBoxId} is not connected` });
-          return;
-        }
-        const [status, answer] = await command(connection, body);
-        json(status, answer);
-      })();
+    void readBody(req).then(async (body) => {
+      if (body === undefined) {
+        json(400, { error: 'the body must be a JSON object' });
+        return;
+      }
+      if (setting !== undefined) {
+        json(...setting(chargeBoxId, body));
+        return;
+      }
+      const connection = connections.get(chargeBoxId);
+      if (connection === undefined || command === undefined) {
+        json(404, { error: `${chargeBoxId} is not connected` });
+        return;
+      }
+      const [status, answer] = await command(connection, body);
+      json(status, answer);
     });
   };
   const tls = options.tls;
@@ -1338,7 +1404,11 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     stats() {
       return { ...stats, callsReceived: { ...stats.callsReceived } };
     },
+    setSite: (id, site) => siteLoad.setSite(id, site),
+    site: (id) => siteLoad.site(id),
+    deleteSite: (id) => siteLoad.deleteSite(id),
     async stop() {
+      siteLoad.stop();
       for (const client of wss.clients) client.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve, reject) =>

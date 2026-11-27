@@ -28,7 +28,7 @@ import {
   type WebPaymentLimits,
   type ReferenceTariff,
 } from '@ocpp-mimic/core';
-import { controlVia, probeCsms } from './csms/probe.js';
+import { controlVia, probeCsms, siteVia } from './csms/probe.js';
 import { resolveEv } from './evs.js';
 import { exportLog } from './logs/export.js';
 import type { Fleet, StationSnapshot, VirtualStation } from './fleet.js';
@@ -420,6 +420,43 @@ async function viaBuiltinCsms(
     );
   }
   return answer.body;
+}
+
+/** Which built-in CSMS holds each site, per fleet, learnt when the site was set through here. */
+const siteCsms = new WeakMap<object, Map<string, string>>();
+const sitesOf = (context: Context) => {
+  let sites = siteCsms.get(context.fleet);
+  if (sites === undefined) {
+    sites = new Map();
+    siteCsms.set(context.fleet, sites);
+  }
+  return sites;
+};
+
+/** Answers with the CSMS's answer to a site request, its errors as HTTP errors. */
+async function relaySite(
+  context: Context,
+  csmsUrl: string,
+  method: 'PUT' | 'GET' | 'DELETE',
+  siteId: string,
+  body?: object,
+): Promise<unknown> {
+  const answer = await siteVia(csmsUrl, method, siteId, body, context.csmsApiToken);
+  if (answer.status !== 200) {
+    const message = (answer.body as { error?: unknown } | undefined)?.error;
+    throw new HttpError(
+      answer.status === 400 || answer.status === 404 ? answer.status : 502,
+      String(message ?? `the built-in CSMS answered ${answer.status}`),
+    );
+  }
+  return answer.body;
+}
+
+/** The CSMS a site was set on through this engine, or 404. */
+function siteCsmsOf(context: Context, siteId: string | undefined): string {
+  const csmsUrl = sitesOf(context).get(siteId ?? '');
+  if (csmsUrl === undefined) throw new HttpError(404, `no site ${String(siteId)}`);
+  return csmsUrl;
 }
 
 const routes: Route[] = [
@@ -918,6 +955,39 @@ const routes: Route[] = [
       throw new HttpError(400, '"idToken" needs an idToken string, or is null to stop');
     }
     return viaBuiltinCsms(station, context, 'auto-start', 'an auto start', { idToken: token });
+  }),
+
+  // Site load management: the built-in CSMS shares the site's capacity between its sessions.
+  route('PUT', '/api/sites/:param', async (request, context) => {
+    const siteId = request.params[0] ?? '';
+    const body = await request.body();
+    const ids = body.stations;
+    if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => typeof id !== 'string')) {
+      throw new HttpError(400, '"stations" must be a list of station ids');
+    }
+    const stations = (ids as string[]).map((id) => stationOf(context, id));
+    const csmsUrl = stations[0]?.definition.csmsUrl ?? '';
+    if (stations.some((s) => s.definition.csmsUrl !== csmsUrl)) {
+      throw new HttpError(400, "a site's stations must use the same CSMS");
+    }
+    if ((stations[0]?.snapshot().csms ?? (await probeCsms(csmsUrl))) !== 'builtin') {
+      throw new HttpError(
+        409,
+        "the stations' CSMS is not ocpp-mimic's built-in CSMS: load management must come from that CSMS",
+      );
+    }
+    const answer = await relaySite(context, csmsUrl, 'PUT', siteId, body);
+    sitesOf(context).set(siteId, csmsUrl);
+    return answer;
+  }),
+  route('GET', '/api/sites/:param', (request, context) =>
+    relaySite(context, siteCsmsOf(context, request.params[0]), 'GET', request.params[0] ?? ''),
+  ),
+  route('DELETE', '/api/sites/:param', async (request, context) => {
+    const siteId = request.params[0] ?? '';
+    const answer = await relaySite(context, siteCsmsOf(context, siteId), 'DELETE', siteId);
+    sitesOf(context).delete(siteId);
+    return answer;
   }),
 
   route('GET', '/api/tariff', (_request, context) => ({ tariff: sessionsOf(context).tariff() })),

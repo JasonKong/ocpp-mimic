@@ -1259,7 +1259,9 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       evSuspended: connector?.evSuspended ?? false,
       // Not allowed to charge, or a charging profile of 0 (K01).
       evseSuspended:
-        (!mayCharge(connectorId) || (profileLimitW(connectorId) ?? Infinity) <= 0) &&
+        (!mayCharge(connectorId) ||
+          (profileLimitW(connectorId) ?? Infinity) <= 0 ||
+          (stationLimitW() ?? Infinity) <= 0) &&
         connector?.evSuspended !== true,
       powerW: energy.meter(connectorId).powerW,
       evFull: ev !== undefined && !energy.canResume(connectorId),

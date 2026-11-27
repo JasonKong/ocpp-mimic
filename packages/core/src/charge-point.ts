@@ -1200,6 +1200,23 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
     return own.limit === undefined ? undefined : toWatts(own.limit, conversionFor(connectorId));
   }
 
+  /** Connectors a Smart Charging limit of 0 holds in SuspendedEVSE, until the limit rises. */
+  const heldByLimit = new Set<number>();
+
+  /** A limit of 0 on a running transaction is SuspendedEVSE: the EVSE offers nothing. */
+  function holdByLimit(connectorId: number): void {
+    const connector = findConnector(station, connectorId);
+    const zero =
+      (profileLimitW(connectorId) ?? Infinity) <= 0 || (stationLimitW() ?? Infinity) <= 0;
+    if (zero && connector?.transactionId !== undefined && !connector.evseSuspended) {
+      heldByLimit.add(connectorId);
+      applyDevice({ type: 'EvseSuspend', connectorId });
+    } else if (heldByLimit.has(connectorId) && (!zero || connector?.transactionId === undefined)) {
+      heldByLimit.delete(connectorId);
+      if (connector?.evseSuspended === true) applyDevice({ type: 'EvseResume', connectorId });
+    }
+  }
+
   /** The ChargePointMaxProfile's limit now, in W (amperes on a three-phase supply). */
   function stationLimitW(): number | undefined {
     const total = stationLimit(chargingProfiles, now()).limit;
@@ -1400,6 +1417,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
 
   /** Power the EV draws on a connector, given its transaction and suspension state. */
   function updatePower(connectorId: number): void {
+    holdByLimit(connectorId);
     const connector = findConnector(station, connectorId);
     const running =
       connector?.transactionId !== undefined &&
