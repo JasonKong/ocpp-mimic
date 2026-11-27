@@ -236,6 +236,16 @@ function inject() {
         />
         Lock the cable while charging
       </label>
+      <label
+        title="An EV that tells its EVCCID (its MAC address) is identified by it as it is plugged in"
+      >
+        <input
+          type="checkbox"
+          :checked="station.behaviour.autocharge === true"
+          @change="toggle('autocharge', $event)"
+        />
+        Autocharge
+      </label>
       <label title="Energy and SoC advance this many times faster; timestamps stay real">
         Energy ×
         <input

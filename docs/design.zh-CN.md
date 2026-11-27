@@ -1570,6 +1570,8 @@ M9 在做过一个回放原型之后确定（#288、#289）：大家想看的不
 - T129：支付终端和二维码（2.1）、Autocharge（用车的 MAC 地址作为 token），并把即插即充改名为 "Free vend"，因为 Plug & Charge 指的是 ISO 15118 证书方式，这一项仍不在范围内。
 - 已实现（T125）：设置项变成站点：名称、版本、启动方式、速度，以及最多 6 台充电桩的列表，每台单口或双口（`DemoSetup.chargers`）；第一版页面存下的设置按默认值读取（`normalizeSetup`）。桩的 id 是 `DEMO-CP-<n>`，显示为 CP-<n>。一台充电桩画成几行共用一根立柱（只在两端是圆角），每个连接器有一个带编号的插座，接线到自己的车位；消息线路通到站点管理，它用 `siteTotals` 汇总（当前功率、来自电表的电量，新建的桩电表从 0 开始，充电中和已充满的数量）以及充满车辆的最长占位时间，并把每个连接器的功率和它的 persona 的 `offeredW`（现在由 `GET /api/personas` 提供）对比显示。
 
+  - 已实现（T129）：演示页提供七种启动方式，并注明各自的常见场所：免认证、RFID 卡、App、valet、银行卡和二维码（只有 2.1 有；版本不支持时退回到刷卡），以及 Autocharge。银行卡使用桩的支付终端（`presentPaymentCard`、`stopPayment`）；二维码读取桩的支付 URL，交给内置 CSMS 核验（经新的引擎接口调用 `web-payment`，演示桩使用已知的 `WebPaymentsCtrlr.SharedSecret`），再用 `DirectPayment` 类型的 token 远程启动会话。`generic-2.1` 增加 `Payment` 和 `WebPayments`。Autocharge 是桩的行为开关 `autocharge`，配合 EV 配置的 `evccid`：插枪时桩像刷卡一样提交 EVCCID（1.6 作为 idTag，2.0.1 为 MacAddress，2.1 为 EVCCID），由 CSMS 的 Authorize 决定；充电桩把 API 对象存在常量里，插枪时可以调用它。ISO 15118 合同证书方式的 Plug & Charge 仍不在范围内。
+
 ## 观测与 UI
 
 UI 只是引擎 API 的一个客户端，所有操作都能通过 REST / WebSocket API 和 CLI 完成。

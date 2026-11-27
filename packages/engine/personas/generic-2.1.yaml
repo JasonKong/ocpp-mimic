@@ -2,6 +2,8 @@
 # on 2.0.1, and so does this persona: generic-2.0.1 with the 2.1 version.
 # Connector availability goes out as NotifyEvent, the method 2.1 prefers; set
 # `connectorStatus: StatusNotification` for a CSMS that still expects it.
+# It also has 2.1's payment terminal (Payment) and dynamic QR code (WebPayments),
+# which a CSMS that does not use them can ignore.
 persona: generic-2.1
 extends: generic-2.0.1
 ocpp: '2.1'
@@ -10,3 +12,13 @@ boot:
   vendorName: ocpp-mimic
   model: Generic-AC-2.1
   firmwareVersion: 0.0.0
+features:
+  [
+    Core,
+    AdvancedSecurity,
+    LocalAuthListManagement,
+    SmartCharging,
+    Reservation,
+    Payment,
+    WebPayments,
+  ]

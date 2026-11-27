@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import {
   api,
   connectEvents,
@@ -19,12 +19,14 @@ import {
   clockText,
   createPortTracker,
   DEMO_SITE_ID,
+  DEMO_WEB_PAYMENT_SECRET,
   DEMO_SPEEDS,
   DEMO_TAG,
   DEMO_VERSIONS,
   demoStations,
   frameLabel,
   MAX_CHARGERS,
+  modeAvailable,
   normalizeSetup,
   siteTotals,
   stackedAreas,
@@ -104,6 +106,13 @@ let events: EventsConnection | undefined;
 let clock: ReturnType<typeof setInterval> | undefined;
 
 const mode = computed(() => START_MODES.find((m) => m.id === setup.mode) ?? START_MODES[0]);
+// A way of starting the chosen version does not have falls back to a card.
+watch(
+  () => setup.ocpp,
+  (ocpp) => {
+    if (!modeAvailable(setup.mode, ocpp)) setup.mode = 'card';
+  },
+);
 const builtMode = computed(() => START_MODES.find((m) => m.id === built.value?.mode));
 const changed = computed(
   () => built.value === undefined || JSON.stringify(built.value) !== JSON.stringify(copy(setup)),
@@ -261,6 +270,7 @@ async function build() {
     // Valet is the CSMS's doing: it starts a session on every plug-in. The CSMS keeps
     // that per station id, so the other modes turn it off for ids a valet build used.
     for (const { id } of definitions) {
+      if (next.mode === 'autocharge') await api.setBehaviour(id, { autocharge: true });
       if (next.mode === 'valet') {
         await api.autoStart(id, { idToken: VALET_TOKEN, type: 'Central' });
       } else {
@@ -348,6 +358,39 @@ async function appStart(bay: Bay) {
     if (answer.status !== 'Accepted') error.value = `${answer.action}: ${answer.status}`;
   });
 }
+/** 2.1: a bank card at the charge point's payment terminal. */
+async function payByCard(bay: Bay) {
+  await guard(async () => {
+    const { result } = await api.payment(bay.stationId, bay.connectorId, { brand: 'Visa' });
+    if (result !== 'authorized') error.value = `Payment terminal: ${result}`;
+  });
+}
+const stopAtTerminal = (bay: Bay) =>
+  guard(async () => {
+    const { result } = await api.stopPayment(bay.stationId, bay.connectorId);
+    if (result === 'no-payment') error.value = 'No payment to stop';
+  });
+/**
+ * 2.1: the driver scans the QR code and pays on the web page; the CSMS checks
+ * the code, tells the station a web payment started, and starts the session.
+ */
+async function scanAndPay(bay: Bay) {
+  await guard(async () => {
+    const { url } = await api.paymentUrl(bay.stationId, bay.connectorId);
+    const checked = await api.webPayment(bay.stationId, url, DEMO_WEB_PAYMENT_SECRET);
+    if (checked.valid === false) {
+      error.value = `QR code: ${checked.reason ?? 'not valid'}`;
+      return;
+    }
+    const answer = await api.remoteStart(
+      bay.stationId,
+      { idToken: `PSP-${String(bay.index + 1).padStart(4, '0')}`, type: 'DirectPayment' },
+      bay.connectorId,
+    );
+    if (answer.status !== 'Accepted') error.value = `${answer.action}: ${answer.status}`;
+  });
+}
+
 async function appStop(bay: Bay) {
   await guard(async () => {
     const answer = await api.remoteStop(bay.stationId, bay.connectorId);
@@ -361,15 +404,30 @@ async function everyBay(pick: (bay: Bay) => boolean, work: (bay: Bay) => Promise
 }
 const plugAll = () => everyBay((b) => b.view.phase === 'empty', plug);
 const unplugAll = () => everyBay((b) => b.view.plugged, unplug);
-const startAll = () =>
-  everyBay(
-    (b) => b.view.phase === 'plugged',
-    (b) => (built.value?.mode === 'card' ? tapCard(b) : appStart(b)),
-  );
+/** The ways where the driver starts each car: what starts one. */
+const STARTERS: Partial<Record<DemoSetup['mode'], (bay: Bay) => Promise<unknown>>> = {
+  card: tapCard,
+  app: appStart,
+  payment: payByCard,
+  qr: scanAndPay,
+};
+const START_ALL_TEXT: Partial<Record<DemoSetup['mode'], string>> = {
+  card: 'Tap every card',
+  app: 'Start every car in the app',
+  payment: 'Pay for every car',
+  qr: 'Scan every QR code',
+};
+const startAll = () => {
+  const start = built.value === undefined ? undefined : STARTERS[built.value.mode];
+  return start === undefined
+    ? Promise.resolve()
+    : everyBay((b) => b.view.phase === 'plugged', start);
+};
 
 const canStartAll = computed(
   () =>
-    (built.value?.mode === 'card' || built.value?.mode === 'app') &&
+    built.value !== undefined &&
+    STARTERS[built.value.mode] !== undefined &&
     bays.value.some((b) => b.view.phase === 'plugged'),
 );
 
@@ -396,6 +454,12 @@ function waitingText(bay: Bay): string | undefined {
         return 'Waiting for the app';
       case 'valet':
         return 'The CSMS starts it';
+      case 'payment':
+        return 'Waiting for a bank card';
+      case 'qr':
+        return 'Waiting for the QR code to be paid';
+      case 'autocharge':
+        return 'The car identifies itself';
       default:
         return 'Starting by itself';
     }
@@ -480,6 +544,12 @@ const csmsLine = computed(() => {
       return 'Authorizes every card';
     case 'free-vend':
       return 'Accepts the sessions the stations start';
+    case 'payment':
+      return 'Hears the card payments and their settlement';
+    case 'qr':
+      return 'Plays the payment page behind the QR codes, then starts the sessions';
+    case 'autocharge':
+      return 'Authorizes each car by its EVCCID';
     default:
       return '';
   }
@@ -488,7 +558,7 @@ const csmsLine = computed(() => {
 /** App and valet need ocpp-mimic's built-in CSMS, which can send the remote starts. */
 const needsBuiltin = computed(
   () =>
-    (built.value?.mode === 'app' || built.value?.mode === 'valet') &&
+    (built.value?.mode === 'app' || built.value?.mode === 'valet' || built.value?.mode === 'qr') &&
     [...stations.values()].some((s) => s.connected && s.csms === 'external'),
 );
 const anyConnecting = computed(() => [...stations.values()].some((s) => !s.connected));
@@ -577,13 +647,19 @@ onUnmounted(() => {
             role="radio"
             :aria-checked="setup.mode === m.id"
             :class="{ on: setup.mode === m.id }"
+            :disabled="!modeAvailable(m.id, setup.ocpp)"
+            :title="
+              modeAvailable(m.id, setup.ocpp) ? m.where : `OCPP ${m.versions?.join(', ')} only`
+            "
             @click="setup.mode = m.id"
           >
             {{ m.label }}
           </button>
         </div>
       </div>
-      <p class="summary">{{ mode?.summary }}</p>
+      <p class="summary">
+        {{ mode?.summary }} <span class="where">Used at: {{ mode?.where }}.</span>
+      </p>
       <div class="row chargers-row">
         <span class="label">Charge points</span>
         <div v-for="(ports, i) in setup.chargers" :key="i" class="charger-chip">
@@ -670,12 +746,8 @@ onUnmounted(() => {
         <button :disabled="!bays.some((b) => b.view.phase === 'empty')" @click="plugAll">
           Plug in every car
         </button>
-        <button
-          v-if="built.mode === 'card' || built.mode === 'app'"
-          :disabled="!canStartAll"
-          @click="startAll"
-        >
-          {{ built.mode === 'card' ? 'Tap every card' : 'Start every car in the app' }}
+        <button v-if="START_ALL_TEXT[built.mode]" :disabled="!canStartAll" @click="startAll">
+          {{ START_ALL_TEXT[built.mode] }}
         </button>
         <button :disabled="!bays.some((b) => b.view.plugged)" @click="unplugAll">
           Unplug every car
@@ -798,6 +870,30 @@ onUnmounted(() => {
                     </button>
                     <button v-if="bay.view.transaction" @click="tapCard(bay)">
                       Tap card to stop
+                    </button>
+                  </template>
+                  <template v-if="built.mode === 'payment'">
+                    <button
+                      v-if="bay.view.phase === 'plugged'"
+                      class="primary"
+                      @click="payByCard(bay)"
+                    >
+                      Pay by card
+                    </button>
+                    <button v-if="bay.view.transaction" @click="stopAtTerminal(bay)">
+                      Stop at the terminal
+                    </button>
+                  </template>
+                  <template v-if="built.mode === 'qr'">
+                    <button
+                      v-if="bay.view.phase === 'plugged'"
+                      class="primary"
+                      @click="scanAndPay(bay)"
+                    >
+                      Scan the QR code and pay
+                    </button>
+                    <button v-if="bay.view.transaction" @click="appStop(bay)">
+                      Stop on the web page
                     </button>
                   </template>
                   <template v-if="built.mode === 'app'">
@@ -1050,6 +1146,13 @@ onUnmounted(() => {
   margin: -2px 0 0;
   font-size: 13px;
   color: var(--muted);
+}
+.where {
+  font-style: italic;
+}
+.segmented button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .segmented {
   display: inline-flex;

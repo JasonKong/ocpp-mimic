@@ -8,10 +8,12 @@ import {
   createPortTracker,
   DEFAULT_SETUP,
   DEMO_CARS,
+  DEMO_WEB_PAYMENT_SECRET,
   demoPersona,
   demoStations,
   frameLabel,
   MAX_CHARGERS,
+  modeAvailable,
   normalizeSetup,
   siteTotals,
   stackedAreas,
@@ -94,7 +96,28 @@ describe('the demo site', () => {
     // Valet is the CSMS's doing: the station is an ordinary one.
     const [valet] = demoStations({ ...DEFAULT_SETUP, ocpp: '1.6', mode: 'valet' });
     expect(valet?.config).not.toHaveProperty('FreeVendEnabled');
-    expect(START_MODES.map((m) => m.id)).toEqual(['free-vend', 'card', 'app', 'valet']);
+    expect(START_MODES.map((m) => m.id)).toEqual([
+      'free-vend',
+      'card',
+      'app',
+      'valet',
+      'payment',
+      'qr',
+      'autocharge',
+    ]);
+    // A 2.1 station gets a known QR code secret, which the CSMS checks payments with.
+    expect(v21?.deviceModel).toMatchObject({
+      WebPaymentsCtrlr: { SharedSecret: DEMO_WEB_PAYMENT_SECRET },
+    });
+  });
+
+  it('offers the payment terminal and the QR code on 2.1 only', () => {
+    expect(modeAvailable('payment', '2.1')).toBe(true);
+    expect(modeAvailable('qr', '1.6')).toBe(false);
+    expect(modeAvailable('autocharge', '1.6')).toBe(true);
+    // A stored 1.6 setup with a 2.1-only way of starting falls back to the default.
+    expect(normalizeSetup({ ocpp: '1.6', mode: 'qr' }).mode).toBe(DEFAULT_SETUP.mode);
+    expect(DEMO_CARS.every((car) => /^[0-9A-F]{12}$/.test(car.profile.evccid ?? ''))).toBe(true);
   });
 
   it('reads a stored setup, keeping what is valid and defaulting the rest', () => {

@@ -166,16 +166,19 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 
 ### 会话怎样开始
 
-会话的四种启动方式，和现场的充电桩一样：
+会话的启动方式，和现场的充电桩一样：
 
-| 启动方式 | OCPP 1.6 | OCPP 2.0.1 和 2.1 | 怎样结束 |
-| --- | --- | --- | --- |
-| **刷卡** | 先 Authorize，插上枪后发 StartTransaction | 先 Authorize，再发 TransactionEvent Started | 刷同一张卡，或拔枪 |
-| **App**（远程启动） | CSMS 发 RemoteStartTransaction | CSMS 发 RequestStartTransaction | CSMS 远程停止，或拔枪 |
-| **即插即充**（免认证，家用常见） | 配置键 `FreeVendEnabled` 为 true：插枪就用 `FreeVendIdTag`（默认 `FreeVend`）开始，不发 Authorize | Device Model 的 `AuthCtrlr.Enabled` 为 false：插枪就用类型为 `NoAuthorization` 的空 token 开始 | 拔枪 |
-| **Valet**（CSMS 在插枪时启动） | 内置 CSMS 的[自动启动](#控制-api)：收到 Preparing 就发 RemoteStartTransaction | 收到 Occupied 就发 RequestStartTransaction | CSMS 远程停止，或拔枪 |
+| 启动方式 | OCPP 1.6 | OCPP 2.0.1 和 2.1 | 怎样结束 | 常见场所 |
+| --- | --- | --- | --- | --- |
+| **免认证**（Free vend，即插即充） | 配置键 `FreeVendEnabled` 为 true：插枪就用 `FreeVendIdTag`（默认 `FreeVend`）开始，不发 Authorize | Device Model 的 `AuthCtrlr.Enabled` 为 false：插枪就用类型为 `NoAuthorization` 的空 token 开始 | 拔枪 | 家用桩、私人车位、免费的单位充电 |
+| **RFID 卡** | 先 Authorize，插上枪后发 StartTransaction | 先 Authorize，再发 TransactionEvent Started | 刷同一张卡，或拔枪 | 单位、车队、可刷漫游卡的公共交流桩 |
+| **App**（远程启动） | CSMS 发 RemoteStartTransaction | CSMS 发 RequestStartTransaction | CSMS 远程停止，或拔枪 | 公共交流和直流桩、住宅停车场 |
+| **Valet**（CSMS 在插枪时启动） | 内置 CSMS 的[自动启动](#控制-api)：收到 Preparing 就发 RemoteStartTransaction | 收到 Occupied 就发 RequestStartTransaction | CSMS 远程停止，或拔枪 | 酒店、代客泊车和车行停车场 |
+| **银行卡**（桩上刷卡） | — | 2.1 且有 `Payment` 功能：支付终端授权银行卡（C18）；TransactionEvent 带 `DirectPayment` 类型的 token | 在终端上停止，之后发 NotifySettlement | 公共快充 |
+| **二维码**（网页支付） | — | 2.1 且有 `WebPayments`：司机在二维码背后的页面付款，CSMS 发 NotifyWebPaymentStarted，再用 `DirectPayment` 类型的 token 发 RequestStartTransaction（C25） | 远程停止，或拔枪 | 给没有账户的司机用的公共交流和直流桩 |
+| **Autocharge** | 桩的 `autocharge` 开关：车的 `evccid`（MAC 地址）作为 idTag | 作为 token：2.0.1 是 MacAddress 类型，2.1 是 EVCCID 类型 | 拔枪 | 直流快充网络、车队 |
 
-`FreeVendEnabled` 和 `FreeVendIdTag` 是 ocpp-mimic 自己的厂商配置键，很多充电桩也用这种方式提供免认证充电：GetConfiguration 会列出它们，ChangeConfiguration 可以修改。Valet 是 CSMS 的行为，不是桩的：桩就是普通的桩，接受远程启动；每当有车插枪，CSMS 就启动一个会话（通常免费、不关联司机）。
+免认证不是 ISO 15118 的 Plug & Charge（车用合同证书证明身份），ocpp-mimic 没有模拟后者。`FreeVendEnabled` 和 `FreeVendIdTag` 是 ocpp-mimic 自己的厂商配置键，很多充电桩也用这种方式提供免认证充电：GetConfiguration 会列出它们，ChangeConfiguration 可以修改。Valet 是 CSMS 的行为，不是桩的：桩就是普通的桩，接受远程启动；每当有车插枪，CSMS 就启动一个会话（通常免费、不关联司机）。
 
 车充满后不再取电：1.6 的连接器状态变成 SuspendedEV，2.x 的充电状态变成 SuspendedEV。会话不会结束，车仍然占着车位，直到被停止或拔枪。
 
@@ -224,6 +227,7 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 - **Inject**：选一种故障类型，用 `key=value` 形式填参数，例如断电填 `off=10s`。正在生效的注入会列出来，旁边有 **Clear** 链接。见[故障注入](#8-故障注入)。
 - **Refuse remote starts**：所有远程启动都回复 Rejected。
 - **Lock the cable while charging**：锁枪后不能拔枪，直到交易结束或 CSMS 解锁。
+- **Autocharge**：EV 配置里有 `evccid`（车的 MAC 地址）时，插枪就用它来识别，就像刷了一张卡号为它的卡：1.6 作为 idTag，2.0.1 作为 MacAddress 类型的 token，2.1 作为 EVCCID 类型的 token。
 - **Energy ×**：能量倍率。
 
 每个连接器（2.x 桩上是每个 EVSE）有一张卡片，显示状态、充电状态（2.x）、交易 id、功率、电量、SoC，有限值生效时还显示限值。操作：
@@ -271,9 +275,9 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 
 页头的 **Demo**（或地址 `#/demo`）是一个可以动手操作的小充电站点，用来展示 OCPP 的工作过程，而不是做测试。用 `ocpp-mimic demo` 启动最方便；用 `serve` 的话，还要另外启动内置 CSMS。
 
-1. 设置**站点**：名称、**OCPP 版本**（1.6J、2.0.1 或 2.1）、**会话的启动方式**（[即插即充、RFID 卡、App 或 valet](#会话怎样开始)）、站点的**充电桩**（最多添加 6 台，每台**单口**或**双口**）、**站点容量**（默认 22 kW，或者勾选 **No limit**），以及**电池速度**（即能量倍率；×300 时大多数车一两分钟就能充满）。
-2. 点 **Build the site**。它用 generic persona（双口桩用 `generic-dual-*`）创建桩 `DEMO-CP-1`、`DEMO-CP-2`……（显示为 CP-1、CP-2……），打上 `demo` 标签，连到填写的 CSMS（默认 `ws://127.0.0.1:9100/ocpp`）。再次构建时会先删除带 `demo` 标签的桩。即插即充会打开桩的免认证设置；valet 会为每个桩打开内置 CSMS 的自动启动，其他方式则把它关掉。设了容量时，桩会上报取用的功率，由内置 CSMS [管理站点负载](#站点负载管理)。
-3. 左侧的**充电区**把每台充电桩画成一根立柱；双口桩有两个插座，标着 1 和 2，各自接到自己的车位。每个车位有自己的车，从 25 kWh 的小车到 75 kWh 的 SUV，初始电量各不相同。点 **Plug in** 插枪。之后按所选方式开始：自动开始、点 **Tap card** 刷卡、点 **Start in app** 用 App 启动，或者由 CSMS 启动。**Tap card to stop**、**Stop in app** 和 **Unplug** 结束会话。**Plug in every car**、**Tap every card** 或 **Start every car in the app**，以及 **Unplug every car** 会同时作用于所有车位。
+1. 设置**站点**：名称、**OCPP 版本**（1.6J、2.0.1 或 2.1）、**会话的启动方式**（[免认证、RFID 卡、App、valet、银行卡、二维码或 Autocharge](#会话怎样开始)；银行卡和二维码只有 2.1 有）、站点的**充电桩**（最多添加 6 台，每台**单口**或**双口**）、**站点容量**（默认 22 kW，或者勾选 **No limit**），以及**电池速度**（即能量倍率；×300 时大多数车一两分钟就能充满）。
+2. 点 **Build the site**。它用 generic persona（双口桩用 `generic-dual-*`）创建桩 `DEMO-CP-1`、`DEMO-CP-2`……（显示为 CP-1、CP-2……），打上 `demo` 标签，连到填写的 CSMS（默认 `ws://127.0.0.1:9100/ocpp`）。再次构建时会先删除带 `demo` 标签的桩。免认证会打开桩的免认证设置，Autocharge 会打开桩的 `autocharge` 开关；valet 会为每个桩打开内置 CSMS 的自动启动，其他方式则把它关掉。2.1 桩会设置一个已知的二维码密钥，CSMS 才能核验支付。设了容量时，桩会上报取用的功率，由内置 CSMS [管理站点负载](#站点负载管理)。
+3. 左侧的**充电区**把每台充电桩画成一根立柱；双口桩有两个插座，标着 1 和 2，各自接到自己的车位。每个车位有自己的车，从 25 kWh 的小车到 75 kWh 的 SUV，初始电量各不相同。点 **Plug in** 插枪。之后按所选方式开始：自动开始（免认证、Autocharge）、点 **Tap card** 刷卡、点 **Start in app** 用 App 启动、点 **Pay by card** 刷银行卡、点 **Scan the QR code and pay** 扫码支付，或者由 CSMS 启动（valet）。**Tap card to stop**、**Stop in app**、**Stop at the terminal**、**Stop on the web page** 和 **Unplug** 结束会话。**Plug in every car**、为每辆车启动（**Tap every card**、**Start every car in the app**、**Pay for every car**、**Scan every QR code**），以及 **Unplug every car** 会同时作用于所有车位。
 4. 车位上显示桩自己上报的状态（2.x 同时显示充电状态），以及车的电量、功率和已充入的电量。车充满后，桩上报 SuspendedEV，功率降为 0，车位标记为 **Full**，并显示车充满后又在车位上停了多久。会话会一直保持，直到拔枪或会话被停止。
 5. 右侧的**站点管理**汇总整个站点：当前功率（以及容量）、站点建好以来的总供电量、正在充电的车数、已充满但仍占位的车数（以及最长占位时间）。设了容量时还会显示：
    - **站点限值**：充电过程中可以拖动修改，就像电网运营方下调限值那样，CSMS 几秒内重新分配；
@@ -296,7 +300,7 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 | --- | --- | --- |
 | `generic-1.6` | 1.6 | 一个 7.36 kW 交流连接器，全部功能 profile，按规范默认行为，三个 EV 配置 |
 | `generic-2.0.1` | 2.0.1 | 一个 7.36 kW 的 EVSE，已覆盖的 2.0.1 功能，同样的 EV 配置 |
-| `generic-2.1` | 2.1 | 作为 2.1 桩的 `generic-2.0.1`；连接器可用性用 NotifyEvent 上报 |
+| `generic-2.1` | 2.1 | 作为 2.1 桩的 `generic-2.0.1`；连接器可用性用 NotifyEvent 上报；带支付终端（`Payment`）和动态二维码（`WebPayments`） |
 | `generic-dual-1.6`、`generic-dual-2.0.1`、`generic-dual-2.1` | 1.6、2.0.1、2.1 | 双口版的 generic persona（1.6 是连接器 1 和 2，2.x 是 EVSE 1 和 2），每个口最多 7.36 kW，两口共用一路 11.04 kW 的电源：两辆车同时充时各 5.52 kW，只有一辆时 7.36 kW |
 
 `scenarios/personas/` 里的示例（用 `--personas scenarios/personas` 加载）：
@@ -376,6 +380,7 @@ faults:
 | `departureMinutes` | ISO 15118：出发时间，单位是插枪后的分钟数 |
 | `controlMode` | ISO 15118-20：`ScheduledControl`（默认）或 `DynamicControl` |
 | `minimumSoc` | ISO 15118-20：司机需要的最低 SoC |
+| `evccid` | 车的 MAC 地址，12 位十六进制数字，即车通过 DIN 70121 或 ISO 15118 告诉桩的值：打开 **Autocharge** 开关的桩用它识别车 |
 
 API 和场景里也可以直接内联写 EV 配置，不用名字。
 
@@ -545,7 +550,7 @@ ocpp-mimic run my-tests/ --csms ws://127.0.0.1:8081 --var APP=http://127.0.0.1:3
 | `offline` | `mode`：`clean` 或 `half-open` | 模拟断线 |
 | `online` | | 结束断线 |
 | `stopStation`、`startStation` | | 断开或重新连接 |
-| `setBehaviour` | `refuseRemoteStart`、`cableLock` | 测试开关 |
+| `setBehaviour` | `refuseRemoteStart`、`cableLock`、`autocharge` | 测试开关 |
 | `inject`、`clearInjections` | `type`、参数、`for` | 故障注入 |
 | `wait` | 时长 | 暂停 |
 | `charge` | `connector`、`duration` | 等待；开始和结束时都必须有交易在进行，否则失败 |
@@ -902,7 +907,7 @@ ocpp-mimic csms --tls-cert packages/engine/test-pki/server.crt --tls-key package
 | `GET`、`DELETE /api/stations/<id>` | 查看一个桩的状态；删除它 |
 | `POST /api/stations/<id>/{start,stop,online}` | 启动、停止、结束断线 |
 | `POST /api/stations/<id>/offline` | `{ "mode": "clean" \| "half-open" }` |
-| `PATCH /api/stations/<id>/behaviour` | `{ "refuseRemoteStart": true, "cableLock": false }` |
+| `PATCH /api/stations/<id>/behaviour` | `{ "refuseRemoteStart": true, "cableLock": false, "autocharge": true }` |
 | `PATCH /api/stations/<id>/energy-multiplier` | `{ "energyMultiplier": 60 }` |
 | `PATCH /api/stations/<id>/usage` | `{ "enabled": true }` |
 | `GET`、`POST`、`DELETE /api/stations/<id>/injections` | 故障注入 |
@@ -910,6 +915,7 @@ ocpp-mimic csms --tls-cert packages/engine/test-pki/server.crt --tls-key package
 | `GET`、`PATCH /api/stations/<id>/device-model` | 2.x：列出变量；用 `{ component, variable, value }` 设置一个变量 |
 | `POST /api/stations/<id>/remote-start` | 经由内置 CSMS：`{ evseId, idToken: { idToken, type } }` |
 | `POST /api/stations/<id>/auto-start` | 经由内置 CSMS：`{ idToken: { idToken, type } }` 让每次插枪都启动会话（valet）；`{ idToken: null }` 关闭 |
+| `POST /api/stations/<id>/web-payment` | 2.1，经由内置 CSMS：`{ url, sharedSecret }`，扮演桩二维码背后的支付页面（见 CSMS 的 `web-payment`） |
 | `PUT /api/sites/<id>` | 经由所列桩的内置 CSMS：`{ capacityW, stations, minimumW }`，即[站点负载管理](#站点负载管理) |
 | `GET`、`DELETE /api/sites/<id>` | 通过本引擎设置的站点：查看它的分配，或删除它 |
 | `POST /api/stations/<id>/vat-number` | 2.1：`{ vatNumber, evseId }` |

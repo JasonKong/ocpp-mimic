@@ -331,6 +331,27 @@ describe('local sessions', () => {
     expect(h.frames).toHaveLength(before);
   });
 
+  it('identifies an EV by its EVCCID with autocharge, as if it presented a card', async () => {
+    const h = setup({ behaviour: { autocharge: true } });
+    await h.boot();
+    h.cp.plugIn(1, {
+      profile: {
+        capacityKWh: 60,
+        initialSoc: 40,
+        maxPowerW: 11000,
+        phases: 3,
+        evccid: '0A1B2C3D4E5F',
+      },
+    });
+    await h.settle();
+    await h.advance(1000);
+    expect(h.lastCall('Authorize')?.payload).toEqual({ idTag: '0A1B2C3D4E5F' });
+    expect(h.lastCall('StartTransaction')?.payload).toMatchObject({
+      connectorId: 1,
+      idTag: '0A1B2C3D4E5F',
+    });
+  });
+
   it('starts on the cable alone with FreeVendEnabled, as FreeVendIdTag and without Authorize', async () => {
     const h = setup({ config: { FreeVendEnabled: 'true', FreeVendIdTag: 'HOME' } });
     await h.boot();
@@ -2228,7 +2249,11 @@ describe('test switches', () => {
     expect(h.cp.snapshot().connectors[0]?.locked).toBe(false);
     h.cp.setBehaviour({ cableLock: true });
     expect(h.cp.snapshot().connectors[0]?.locked).toBe(true);
-    expect(h.cp.snapshot().behaviour).toEqual({ refuseRemoteStart: false, cableLock: true });
+    expect(h.cp.snapshot().behaviour).toEqual({
+      refuseRemoteStart: false,
+      cableLock: true,
+      autocharge: false,
+    });
     h.cp.setBehaviour({ cableLock: false });
     expect(h.cp.snapshot().connectors[0]?.locked).toBe(false);
     expect(h.cp.unplug(1)).toBe('unplugged');
@@ -2257,16 +2282,21 @@ describe('persistence across restarts', () => {
     const before = setup();
     before.cp.setBehaviour({ refuseRemoteStart: true });
     const saved = before.cp.persistentState();
-    expect(saved.behaviour).toEqual({ refuseRemoteStart: true, cableLock: false });
+    expect(saved.behaviour).toEqual({
+      refuseRemoteStart: true,
+      cableLock: false,
+      autocharge: false,
+    });
     expect(setup({ restore: saved }).cp.snapshot().behaviour).toEqual({
       refuseRemoteStart: true,
       cableLock: false,
+      autocharge: false,
     });
 
     const { behaviour: _dropped, ...older } = saved;
     expect(
       setup({ restore: older, behaviour: { cableLock: true } }).cp.snapshot().behaviour,
-    ).toEqual({ refuseRemoteStart: false, cableLock: true });
+    ).toEqual({ refuseRemoteStart: false, cableLock: true, autocharge: false });
   });
 
   it('ends a running transaction with PowerLoss at the time of the last save', async () => {

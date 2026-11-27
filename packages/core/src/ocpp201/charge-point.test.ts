@@ -1891,6 +1891,39 @@ describe('a 2.0.1 station: faults', () => {
 describe('a 2.0.1 station: authorization', () => {
   const tag = (idToken: string) => ({ idToken, type: 'ISO14443' });
 
+  it('identifies an EV by its EVCCID with autocharge: MacAddress on 2.0.1, EVCCID on 2.1', async () => {
+    const ev = {
+      profile: { capacityKWh: 60, initialSoc: 40, maxPowerW: 11000, phases: 3 as const },
+    };
+    const withMac = { profile: { ...ev.profile, evccid: '0A1B2C3D4E5F' } };
+    for (const [ocpp, type] of [
+      ['2.0.1', 'MacAddress'],
+      ['2.1', 'EVCCID'],
+    ] as const) {
+      const { cp, calls, boot, settle, events } = setup({
+        extra: { ocpp, behaviour: { autocharge: true } },
+      });
+      await boot();
+      cp.plugIn(1, withMac);
+      await settle();
+      expect(calls('Authorize')[0]?.payload, ocpp).toEqual({
+        idToken: { idToken: '0A1B2C3D4E5F', type },
+      });
+      // The transaction starts once the CSMS accepts the EVCCID.
+      expect(events(), ocpp).toEqual(['Started Authorized']);
+      // An EV that tells no EVCCID still needs a card.
+      cp.plugIn(2, ev);
+      await settle();
+      expect(calls('Authorize'), ocpp).toHaveLength(1);
+    }
+    // Off, the default, the EVCCID is not used.
+    const off = setup();
+    await off.boot();
+    off.cp.plugIn(1, withMac);
+    await off.settle();
+    expect(off.calls('Authorize')).toHaveLength(0);
+  });
+
   it('starts on the cable alone with AuthCtrlr.Enabled false, as a NoAuthorization token', async () => {
     const { cp, calls, boot, settle, events } = setup({
       deviceModel: { AuthCtrlr: { Enabled: false } },

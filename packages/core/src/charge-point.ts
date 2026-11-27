@@ -153,11 +153,18 @@ export interface ChargePointBehaviour {
    * unplugged; UnlockConnector or the end of the transaction releases it.
    */
   cableLock: boolean;
+  /**
+   * Autocharge: an EV that tells its EVCCID (its MAC address, `evccid` in its
+   * profile) is identified by it as it is plugged in, as if it presented a
+   * card with that id, so no card or app is needed.
+   */
+  autocharge: boolean;
 }
 
 export const DEFAULT_BEHAVIOUR: ChargePointBehaviour = {
   refuseRemoteStart: false,
   cableLock: false,
+  autocharge: false,
 };
 
 export type ChargePointEvent =
@@ -2104,7 +2111,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
 
   // ---- Public interface -------------------------------------------------
 
-  return {
+  const chargePoint: ChargePoint16 = {
     ocpp: '1.6',
 
     connected() {
@@ -2160,6 +2167,14 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
       if (authorized.has(connectorId)) {
         clearPrepare(connectorId);
         later(timing.startTransactionDelayMs, () => beginTransaction(connectorId));
+      } else if (
+        behaviour.autocharge &&
+        ev?.profile.evccid !== undefined &&
+        !transactions.has(connectorId)
+      ) {
+        // Autocharge: the EV's EVCCID is its idTag, authorized as a card would be.
+        log(`connector ${connectorId}: autocharge as ${ev.profile.evccid}`);
+        void chargePoint.presentIdTag(connectorId, ev.profile.evccid);
       } else if (
         configBool(config, 'FreeVendEnabled') &&
         !transactions.has(connectorId) &&
@@ -2456,4 +2471,5 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
       };
     },
   };
+  return chargePoint;
 }

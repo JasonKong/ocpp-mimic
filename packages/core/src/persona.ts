@@ -112,6 +112,7 @@ const commonFields = {
         departureMinutes: number(),
         controlMode: oneOf(['ScheduledControl', 'DynamicControl']),
         minimumSoc: number(),
+        evccid: string(),
       },
     ),
   ),

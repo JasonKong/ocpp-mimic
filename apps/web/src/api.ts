@@ -60,12 +60,16 @@ export interface EvProfile {
   minimumSoc?: number;
   /** Minutes after plugging in an ISO 15118 EV wants to leave. */
   departureMinutes?: number;
+  /** The EV's MAC address, which identifies it with autocharge. */
+  evccid?: string;
 }
 
 /** Test switches; see ChargePointBehaviour in core. */
 export interface Behaviour {
   refuseRemoteStart: boolean;
   cableLock: boolean;
+  /** An EV that tells its EVCCID is identified by it as it is plugged in. */
+  autocharge?: boolean;
 }
 
 export interface StationSnapshot {
@@ -599,6 +603,13 @@ export const api = {
   /** Has the built-in CSMS stop the connector's transaction, as an app would. */
   remoteStop: (id: string, c: number) =>
     request<{ action: string; status: string }>('POST', `${connector(id, c)}/remote-stop`),
+  /** 2.1: the payment page behind the QR code, as the built-in CSMS plays it (C25). */
+  webPayment: (id: string, url: string, sharedSecret?: string) =>
+    request<{ action: string; valid?: boolean; reason?: string; evseId?: number }>(
+      'POST',
+      `${station(id)}/web-payment`,
+      { url, ...(sharedSecret !== undefined && { sharedSecret }) },
+    ),
   /** Site load management through the built-in CSMS of the site's stations. */
   setSite: (id: string, site: { capacityW: number; stations: string[]; minimumW?: number }) =>
     request<SiteState>('PUT', `/api/sites/${encodeURIComponent(id)}`, site),
