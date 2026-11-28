@@ -1738,6 +1738,8 @@ Each task is checked where its problem showed, with a test or scenario that fail
 | T141 | #179 | Behaviour switches for station failures: SetNetworkProfile Failed, UnlockConnector UnlockFailed, InstallVerificationFailed, InstallCertificate and DeleteCertificate Failed, GetLog Rejected; then the CitrineOS scenarios TC_B_44, TC_G_20, TC_L_08, TC_M_05, TC_M_21 and TC_N_34 |
 | T142 | #318 | M11 acceptance |
 
+- Implemented (T134): `departureAt(pluggedAt, departureMinutes, energyMultiplier)` in `core/src/ocpp201/charging-needs.ts` gives the wall-clock departure; NotifyEVChargingNeeds on 2.0.1 and 2.1 sends it with the station's multiplier. `estimateSession(record, { energyMultiplier })` compares the ETA with it on the wall clock, from when the time to the target was worked out (the latest sample, or the EV's own report); the engine passes the station's multiplier.
+
 Changed behaviour, listed in the changelog: replays boot first by default (T137); `serve` keeps fewer records per station above 200 stations (T140); `departureMinutes` is simulated time under a multiplier (T134).
 
 Left for later: calibrating EV profiles from logs (#127), the ISO 15118-20 scheduled-control wait and ISO15118Ctrlr's 2.1 variables (#262), the security follow-ups (#92 to #96, #177, #178) and the scale and maintenance ones (#133, #176, #180).

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { advanceEv, createEv, evPowerW, msUntilFull, type EvProfile } from './ev.js';
+import { departureAt } from './ocpp201/charging-needs.js';
 import {
   capacityFromReadings,
   estimateGap,
@@ -188,6 +189,41 @@ describe('session estimates', () => {
       chargingNeeds: { ...record.chargingNeeds, departureTime: iso(T0 + 3_600_000) },
     };
     expect(estimateSession(at(soon, 2)).reachesTargetBeforeDeparture).toBe(false);
+  });
+
+  it('compares the ETA with the departure on the wall clock under an energy multiplier', () => {
+    // At energy x40 the simulated time to the target passes 40 times faster, and the EV leaves
+    // after its departureMinutes of simulated time: both are on the wall clock here.
+    const profile: EvProfile = { ...DC, targetSoc: 90, taperSoc: 75 };
+    const record = simulate(profile, 100_000, 2 * 3_600_000, 60_000, {
+      chargingNeeds: {
+        requestedEnergyTransfer: 'DC',
+        dcChargingParameters: {
+          evMaxCurrent: 125,
+          evMaxVoltage: 400,
+          evEnergyCapacity: 60_000,
+          fullSoC: 90,
+          bulkSoC: 75,
+        },
+      },
+    });
+    const leaving = (minutes: number) =>
+      at(
+        {
+          ...record,
+          chargingNeeds: { ...record.chargingNeeds, departureTime: departureAt(T0, minutes, 40) },
+        },
+        2,
+      );
+    const fourHours = estimateSession(leaving(240), { energyMultiplier: 40 });
+    // About 73 simulated minutes left: under 2 wall-clock minutes, well before 6 minutes in.
+    expect(fourHours.msToTarget).toBeGreaterThan(60 * 60_000);
+    expect(fourHours.reachesTargetBeforeDeparture).toBe(true);
+    expect(
+      estimateSession(leaving(60), { energyMultiplier: 40 }).reachesTargetBeforeDeparture,
+    ).toBe(false);
+    // Read without the multiplier, the simulated ETA would miss a 4-hour departure on the wall clock.
+    expect(estimateSession(leaving(240)).reachesTargetBeforeDeparture).toBe(false);
   });
 
   it('says why it cannot estimate', () => {

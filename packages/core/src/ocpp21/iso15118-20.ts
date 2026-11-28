@@ -5,7 +5,7 @@
  * from the EV model; the ISO 15118 link itself is not simulated.
  */
 import { msUntilSoc, type EvProfile, type EvState } from '../ev.js';
-import { DC_CONNECTOR_TYPES } from '../ocpp201/charging-needs.js';
+import { DC_CONNECTOR_TYPES, departureAt } from '../ocpp201/charging-needs.js';
 import type { ChargingNeedsType, SampledValueType } from './messages.js';
 
 /** DC charging runs at about this voltage; AC at 230 V per phase. */
@@ -23,6 +23,8 @@ export interface ChargingNeeds21Input {
   connectorType?: string;
   /** When the EV was plugged in (ms since the epoch), for the departure time. */
   pluggedAt: number;
+  /** The station's energy multiplier (default 1): `departureMinutes` counts simulated minutes. */
+  energyMultiplier?: number;
 }
 
 const targetOf = (profile: EvProfile) => profile.targetSoc ?? 100;
@@ -48,7 +50,7 @@ export function chargingNeeds21(
     controlMode: profile.controlMode ?? 'ScheduledControl',
     mobilityNeedsMode: 'EVCC',
     ...(profile.departureMinutes !== undefined && {
-      departureTime: new Date(input.pluggedAt + profile.departureMinutes * 60_000).toISOString(),
+      departureTime: departureAt(input.pluggedAt, profile.departureMinutes, input.energyMultiplier),
     }),
     v2xChargingParameters: {
       minChargePower: dc ? DC_MIN_POWER_W : AC_MIN_CURRENT * AC_VOLTAGE * profile.phases,

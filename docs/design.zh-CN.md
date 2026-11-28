@@ -1737,6 +1737,8 @@ M10 之后确定：M11 不开新的功能方向，而是从 M4 到 M7 留下的 
 | T141 | #179 | 桩故障的行为开关：SetNetworkProfile Failed、UnlockConnector UnlockFailed、InstallVerificationFailed、InstallCertificate 和 DeleteCertificate Failed、GetLog Rejected；然后加上 CitrineOS 场景 TC_B_44、TC_G_20、TC_L_08、TC_M_05、TC_M_21 和 TC_N_34 |
 | T142 | #318 | M11 验收 |
 
+- 已实现（T134）：`core/src/ocpp201/charging-needs.ts` 的 `departureAt(pluggedAt, departureMinutes, energyMultiplier)` 给出实际时间上的离开时刻；2.0.1 和 2.1 的 NotifyEVChargingNeeds 按桩的倍率发送它。`estimateSession(record, { energyMultiplier })` 在实际时间上把 ETA 和它比较，起点是算出剩余时间的那一刻（最新采样，或车辆自己的上报）；引擎传入桩的倍率。
+
 行为变化会写进 changelog：回放默认先 boot（T137）；超过 200 个桩时 `serve` 每个桩保留的记录变少（T140）；能量倍率下 `departureMinutes` 按模拟时间计（T134）。
 
 以后再做：从日志校准 EV 配置（#127），ISO 15118-20 计划控制下的等待和 ISO15118Ctrlr 的 2.1 变量（#262），安全方面的 follow-up（#92 到 #96、#177、#178），以及规模和维护方面的（#133、#176、#180）。

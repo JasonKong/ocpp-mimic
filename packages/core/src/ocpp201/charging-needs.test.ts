@@ -1,10 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import { OCPP201_MESSAGE_SET } from '../message-set.js';
-import { chargingNeeds } from './charging-needs.js';
+import { chargingNeeds, departureAt } from './charging-needs.js';
 
 const T0 = Date.parse('2026-11-15T10:00:00Z');
 
 describe('ISO 15118 charging needs', () => {
+  it('counts departureMinutes in simulated minutes under an energy multiplier', () => {
+    // 120 simulated minutes at energy x40 are 3 minutes on the wall clock.
+    expect(departureAt(T0, 120)).toBe('2026-11-15T12:00:00.000Z');
+    expect(departureAt(T0, 120, 40)).toBe('2026-11-15T10:03:00.000Z');
+    const needs = chargingNeeds({
+      profile: {
+        capacityKWh: 60,
+        initialSoc: 30,
+        maxPowerW: 11_000,
+        phases: 3,
+        departureMinutes: 120,
+      },
+      soc: 30,
+      pluggedAt: T0,
+      energyMultiplier: 40,
+    });
+    expect(needs.departureTime).toBe('2026-11-15T10:03:00.000Z');
+  });
+
   it('reports AC parameters for an AC connector, from the EV model', () => {
     const needs = chargingNeeds({
       profile: {

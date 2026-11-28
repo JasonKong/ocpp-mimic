@@ -166,7 +166,7 @@ The TypeScript packages inside the repository are not part of it. While the majo
 
 The station id is appended to the CSMS URL: a station `SIM-001` with CSMS URL `ws://127.0.0.1:9100/ocpp` connects to `ws://127.0.0.1:9100/ocpp/SIM-001`. A station speaks its persona's OCPP version and offers only that subprotocol (`ocpp1.6`, `ocpp2.0.1` or `ocpp2.1`).
 
-**Simulated time.** Timestamps are always real time. A station's **energy multiplier** (default 1) makes energy and SoC grow that many times faster, so a full charge can take minutes instead of hours. The Web UI shows times left in wall-clock time and marks the multiplier.
+**Simulated time.** Timestamps are always real time. A station's **energy multiplier** (default 1) makes energy and SoC grow that many times faster, so a full charge can take minutes instead of hours. The Web UI shows times left in wall-clock time and marks the multiplier. An EV's `departureMinutes` counts simulated minutes too: at ×40, an EV leaving after 240 minutes reports a departure 6 minutes after it was plugged in, and the energy panel compares it with the ETA on the wall clock.
 
 ### How a session starts
 
@@ -387,7 +387,7 @@ Fields every persona can have:
 | `taperSoc` | SoC where the power starts to fall (default 80) |
 | `targetSoc` | SoC where the EV stops (default 100) |
 | `communication` | `basic` (reports no SoC), `dc`, `iso15118` (2.x: sends NotifyEVChargingNeeds) or `iso15118-20` (2.1: the ISO 15118-20 needs and Display values). Without it, SoC is reported when the SoC measurand is configured |
-| `departureMinutes` | ISO 15118: departure time, in minutes after plugging in |
+| `departureMinutes` | ISO 15118: departure time, in minutes after plugging in (simulated minutes under an energy multiplier) |
 | `controlMode` | ISO 15118-20: `ScheduledControl` (default) or `DynamicControl` |
 | `minimumSoc` | ISO 15118-20: the minimum SoC the driver needs |
 | `evccid` | The EV's MAC address, 12 hexadecimal digits, as it tells it over DIN 70121 or ISO 15118: a station with the **Autocharge** switch on identifies the EV by it |

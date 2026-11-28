@@ -196,8 +196,19 @@ function reported(
   return sample === undefined || value === undefined ? undefined : { value, at: sample.at };
 }
 
-/** The third party's view: capacity, target and ETA from the reported values only. */
-export function estimateSession(record: SessionRecord): SessionEstimate {
+/**
+ * The third party's view: capacity, target and ETA from the reported values only. Times to the
+ * target are simulated; under an energy multiplier they pass that much faster on the wall clock,
+ * which the EV's departure is on, so the two are compared there.
+ */
+export function estimateSession(
+  record: SessionRecord,
+  options: { energyMultiplier?: number } = {},
+): SessionEstimate {
+  const multiplier =
+    options.energyMultiplier !== undefined && options.energyMultiplier > 0
+      ? options.energyMultiplier
+      : 1;
   const dc = dcParameters(record);
   const v2x = record.chargingNeeds?.v2xChargingParameters;
   const fullSoc = num(dc?.fullSoC);
@@ -265,8 +276,10 @@ export function estimateSession(record: SessionRecord): SessionEstimate {
     estimate.etaFrom = 'estimate';
   }
   if (estimate.departureTime !== undefined) {
-    estimate.reachesTargetBeforeDeparture =
-      Date.parse(estimate.etaAt) <= Date.parse(estimate.departureTime);
+    // From when the time to the target was worked out: the latest sample, or the EV's own report.
+    const from = Date.parse(estimate.etaAt) - estimate.msToTarget;
+    const wallEta = from + estimate.msToTarget / multiplier;
+    estimate.reachesTargetBeforeDeparture = wallEta <= Date.parse(estimate.departureTime);
   }
   return estimate;
 }

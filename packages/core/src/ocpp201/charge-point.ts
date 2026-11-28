@@ -2369,6 +2369,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       soc: ev.state.soc,
       ...(connectorType !== undefined && { connectorType }),
       pluggedAt,
+      energyMultiplier: energy.multiplier,
     };
     const request = {
       evseId: connectorId,
