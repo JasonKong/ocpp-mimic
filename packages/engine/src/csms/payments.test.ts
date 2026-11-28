@@ -278,7 +278,8 @@ describe('the built-in CSMS taking payments', () => {
         (m) => m.action === 'NotifyWebPaymentStarted',
       ),
     ).toBe(false);
-    expect(await page()).toMatchObject({ valid: true, paid: true, held: 50 });
+    // The page's card holds, and its outcome holds to the capture: there is no account to ask.
+    expect(await page('fail-capture')).toMatchObject({ valid: true, paid: true, held: 50 });
     expect(
       (
         await call('POST', '/api/stations/Q1/remote-start', {
@@ -292,7 +293,8 @@ describe('the built-in CSMS taking payments', () => {
     expect(await eventsOf('Q1')).toEqual(['decline', 'hold']);
     await new Promise((resolve) => setTimeout(resolve, 500));
     await call('POST', '/api/stations/Q1/connectors/1/remote-stop');
-    await until(async () => (await paymentOf('Q1'))?.state === 'captured');
+    await until(async () => (await paymentOf('Q1'))?.state === 'failed');
+    expect((await eventsOf('Q1')).at(-1)).toBe('capture-failed');
   }, 30_000);
 
   for (const ocpp of ['1.6', '2.0.1'] as const) {

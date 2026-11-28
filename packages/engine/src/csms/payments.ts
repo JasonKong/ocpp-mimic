@@ -372,9 +372,13 @@ export function createPayments(options: PaymentsOptions): Payments {
       siteId: string;
       amount: number;
       card: { brand: string; last4: string };
+      /** How the card answers at capture: the QR code's page has no account to ask. */
+      outcome: CardOutcome;
       timer: NodeJS.Timeout;
     }
   >();
+  /** `${stationId} ${n}` → the card outcome a session's hold was made with, for its capture. */
+  const outcomes = new Map<string, CardOutcome>();
 
   const siteOf = (stationId: string) =>
     [...sites.entries()].find(([, site]) => site.stations.includes(stationId));
@@ -419,7 +423,7 @@ export function createPayments(options: PaymentsOptions): Payments {
       });
     }, options.pendingHoldMs ?? 120_000);
     timer.unref();
-    pending.set(key, { siteId, amount: settings.holdAmount, card, timer });
+    pending.set(key, { siteId, amount: settings.holdAmount, card, outcome, timer });
     return { allowed: true, held: settings.holdAmount };
   }
 
@@ -509,6 +513,7 @@ export function createPayments(options: PaymentsOptions): Payments {
         payment.state = 'held';
         payment.heldAmount = ahead.amount;
         payment.card = ahead.card;
+        outcomes.set(key, ahead.outcome);
       } else {
         // Nobody asked before the start (a station that authorized the token itself): hold now.
         const card = account?.card ?? testCard(token ?? `${record.stationId}-${record.n}`);
@@ -627,6 +632,7 @@ export function createPayments(options: PaymentsOptions): Payments {
     payment.endedAt = record.endedAt ?? iso();
     if (payment.state !== 'held' || payment.method === 'terminal') return;
     const outcome =
+      outcomes.get(key) ??
       (payment.idToken !== undefined ? accounts.get(payment.idToken)?.outcome : undefined) ??
       'approve';
     const result = settle(payment, price.inclTax, deliveredWh(record), settings, outcome);
@@ -665,7 +671,9 @@ export function createPayments(options: PaymentsOptions): Payments {
         pending.delete(key);
       }
       for (const [key, payment] of payments) {
-        if (site.stations.includes(payment.stationId)) payments.delete(key);
+        if (!site.stations.includes(payment.stationId)) continue;
+        payments.delete(key);
+        outcomes.delete(key);
       }
       // Their sessions are forgotten too, so a site set up again starts afresh.
       for (const stationId of site.stations) trackers.delete(stationId);
