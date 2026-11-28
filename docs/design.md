@@ -1623,7 +1623,7 @@ This is checked in a browser and by tests.
 - **Payment settings per site**:
   - the tariff (the reference tariff: fixed fee, energy, charging time, idle time, tax, minimum and maximum cost, time-of-day energy prices; NZD by default);
   - the hold amount (50);
-  - what happens when the price outgrows the hold: `recharge` by default, which cancels the hold and charges the whole price at the end as Invisible Urban does; `increment`, which raises the hold as the price nears it; or `stop`, which ends the session at the hold through maxCost;
+  - what happens when the price outgrows the hold: `recharge` by default, which cancels the hold and charges the whole price at the end as Invisible Urban does; `increment`, which raises the hold as the price nears it; or `stop`, which stops the session once the price reaches the hold and charges no more than the hold;
   - a minimum energy below which nothing is charged (0 Wh);
   - an idle grace period before idle time is priced (0 minutes, as Invisible Urban).
 - **Driver accounts**: an idToken (app user, RFID card, EVCCID) has a card with a test outcome: `approve`, `decline`, `requires-action` (like 3-D Secure) or `fail-capture`. An unknown token has a test card that approves.
@@ -1662,6 +1662,8 @@ This is checked in a browser and by tests.
 | T131 | #306 | Payments by way of starting: holds decide starts; free vend and valet are not charged; the 2.1 terminal and QR code money flow |
 | T132 | #307 | The Demo page: payment settings, prices in the bays, the payments panel, test outcomes |
 | T133 | #308 | M10 acceptance |
+
+- Implemented (T130): `engine/src/csms/payments.ts` is the simulated payment provider: settings per site (the default tariff `DEMO-NZD`, hold 50, `recharge`, 0 Wh, 0 minutes), accounts with a test card, outcome and billing (`card`, `free`, `site`), and a payment per session fed by the frames the CSMS sees, through the same session tracker the engine uses. The method comes from the account and the session: NoAuthorization or `billing: free` is not charged, `billing: site` is billed to the site at 0, a 2.1 DirectPayment token is the station's (`terminal`, or `qr` with a remote start) and is settled by the station, and the rest are cards, held at the start. A declined card is `declined` and the CSMS stops the session with RemoteStopTransaction or RequestStopTransaction (on 1.6 once the StartTransaction answer gave the transaction id, retried while the station still refuses it); T131 moves the hold before the start. The running price is `priceSession` with the site's tariff and the idle grace period (new in core's `PricingPlace`), so a capture equals the engine's reference price with the same tariff to the cent; `increment` raises the hold by the hold amount when the price comes within max(5, 10 %) of it, and `stop` stops the session at the hold and captures the hold. At the end `settle` releases (price 0, or under the minimum energy), fails (`fail-capture`), captures within the hold, or cancels and captures the whole price (`recharge`). The control API has `PUT`/`GET`/`DELETE /api/sites/<id>/payments` and `PUT`/`GET /api/accounts/<idToken>`; the engine relays them, keeping payment sites apart from load-management sites of the same id. The core session tracker now keeps a 1.6 status sent just before StartTransaction (the generic stations send Charging first), which a CSMS sees without the hints the engine has; without it the CSMS counted that time as idle.
 
 0.2.0 is released before M10; the payments go into 0.3.0.
 

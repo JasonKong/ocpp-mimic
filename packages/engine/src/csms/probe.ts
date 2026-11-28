@@ -79,16 +79,27 @@ export async function controlVia(
 }
 
 /** A site request (`PUT`, `GET`, `DELETE /api/sites/<id>`) to the built-in CSMS's control API. */
-export async function siteVia(
+export function siteVia(
   csmsUrl: string,
   method: 'PUT' | 'GET' | 'DELETE',
   siteId: string,
   body?: object,
   apiToken?: string,
 ): Promise<{ status: number; body: unknown }> {
+  return requestVia(csmsUrl, method, `/api/sites/${encodeURIComponent(siteId)}`, body, apiToken);
+}
+
+/** Any request to the built-in CSMS's control API, at `path`. */
+export async function requestVia(
+  csmsUrl: string,
+  method: 'PUT' | 'GET' | 'DELETE',
+  path: string,
+  body?: object,
+  apiToken?: string,
+): Promise<{ status: number; body: unknown }> {
   const origin = localControlOrigin(csmsUrl);
   if (origin === undefined) throw new Error('the site does not use a CSMS on this machine');
-  const res = await fetch(`${origin}/api/sites/${encodeURIComponent(siteId)}`, {
+  const res = await fetch(`${origin}${path}`, {
     method,
     headers: {
       ...(body !== undefined && { 'content-type': 'application/json' }),

@@ -433,6 +433,9 @@ CSMS 进程在 WebSocket 端口上同时提供一个小型 HTTP API。场景里�
 | `POST /api/stations/<id>/call` | `{ "action": "Reset", "payload": { "type": "Soft" } }`：发送该桩版本的任意 CSMS 命令 |
 | `PUT /api/sites/<id>` | `{ "capacityW": 22000, "stations": ["CP-1", "CP-2"], "minimumW": 1380 }`：一个站点，CSMS 在它的会话之间分配容量（见下文）；同 id 的站点会被替换 |
 | `GET`、`DELETE /api/sites/<id>` | 站点及其会话、各会话的限值和实测功率、已下发的限值；或者删除站点并清除它下发的限值 |
+| `PUT /api/sites/<id>/payments` | `{ "stations": ["CP-1"], "holdAmount": 50, "overHold": "recharge", "minEnergyWh": 0, "idleGraceMinutes": 0, "tariff": {...} }`：为这些桩的会话启用模拟支付服务（见[支付](#支付)）；除 `stations` 外都可省略 |
+| `GET`、`DELETE /api/sites/<id>/payments` | 每个会话的支付（方式、冻结额、实时价格、状态、扣款额）、支付事件和收入；或者停止在这里收款 |
+| `PUT`、`GET /api/accounts/<idToken>` | `{ "card": { "brand": "Visa", "last4": "4242" }, "outcome": "approve", "billing": "card" }`：司机的测试卡及其表现 |
 | `POST /api/stations/<id>/default-tariff` | 2.1：用参考资费或 `tariff` 发送 SetDefaultTariff，作用于 `evseId`（默认 0，即所有 EVSE） |
 | `POST /api/stations/<id>/transaction-limit` | 2.1：`{ "transactionLimit": { "maxEnergy": 5000 }, "transactionId": "..." }`，随下一个 TransactionEvent 应答下发 |
 | `POST /api/stations/<id>/driver-tariff` | 2.1：`{ "tariff": {...} }`，随 Authorize 应答下发；`null` 表示取消 |
@@ -458,6 +461,36 @@ curl -s -X POST http://127.0.0.1:9100/api/stations/SIM-001/call \
 - 会话开始或结束、车开始或停止取电、收到电表值，以及站点设置变化时，CSMS 都会重新分配。
 
 CSMS 从电表值得知每个会话的取用功率，所以桩要上报 Power.Active.Import：1.6 把它加进 `MeterValuesSampledData`，2.x 加进 `SampledDataCtrlr.TxUpdatedMeasurands`。没有这个值时，CSMS 仍会平分容量、释放暂停车辆的份额，但无法把功率下降的车空出的部分转给别人。桩自己的电源上限（`power.stationW`）在这些限值之内照样生效。
+
+### 支付
+
+很多公共充电 CSMS 自己向司机收钱：会话开始时在司机的卡上冻结一笔钱，结束时按价格扣款，价格超过冻结额时再补扣。OCPP 不承载这些，所以在 1.6 上 CSMS 只能根据电表值和状态计价。内置 CSMS 可以用模拟支付服务扮演这个角色：不会连接任何真实的支付服务，卡都是测试卡。
+
+```bash
+curl -s -X PUT http://127.0.0.1:9100/api/sites/lot/payments \
+  -H 'content-type: application/json' -d '{"stations":["CP-1","CP-2"]}'
+curl -s -X PUT http://127.0.0.1:9100/api/accounts/CARD-02 \
+  -H 'content-type: application/json' -d '{"outcome":"decline"}'
+```
+
+| 设置 | 含义 |
+| --- | --- |
+| `tariff` | 价格，格式同[参考资费](#参考资费)。默认 `DEMO-NZD`：每次 0.50，每 kWh 0.40，占位每分钟 0.20，均含 15 % GST |
+| `holdAmount` | 开始时在司机卡上冻结的金额（默认 50） |
+| `overHold` | 价格超过冻结额时：`recharge`（默认）取消冻结，结束时按全额扣款；`increment` 在价格离冻结额不到 5（或 10 %）时再追加 `holdAmount`；`stop` 在价格到达冻结额时停止会话，只扣冻结额 |
+| `minEnergyWh` | 电量低于此值时不收费，释放冻结（默认 0） |
+| `idleGraceMinutes` | 车停止取电后不计费的占位分钟数（默认 0） |
+
+站点各桩上的每个会话都有一笔支付，按付款方式不同：
+
+- **card**、**app** 或 **autocharge**（RFID 卡、远程启动、EVCCID 或 MAC 地址）：开始时 `held`；结束时 `captured`、`released`（价格为 0，或低于 `minEnergyWh`）或 `failed`（扣款失败：司机欠款）。卡被拒时是 `declined`，CSMS 会停止会话。
+- **free**：NoAuthorization 令牌（免费充电）或 `"billing": "free"` 的账户；`not-charged`，电量照样计价并显示。
+- **site**：`"billing": "site"` 的账户，比如 valet 令牌；记到站点账户，金额为 0，标记为已付。
+- **terminal** 或 **qr**（2.1 DirectPayment）：桩的刷卡终端或支付网页收钱，由桩结算（`settled-by-station`）；CSMS 不再扣款。
+
+账户的 `outcome` 决定卡的表现：`approve`、`decline`、`requires-action`（司机在银行 app 里确认，类似 3-D Secure，然后冻结成功）或 `fail-capture`。没有账户的令牌使用一张会通过的测试 Visa 卡，末四位由令牌算出。车充满时司机会收到“开始计占位费”的通知，和冻结、追加、扣款、释放一起显示在支付事件里。这些事件和 OCPP 帧分开记录。
+
+CSMS 的计价方式和引擎的参考价相同，所以引擎设置同样的资费（`PUT /api/tariff`）时，每笔扣款和会话的 `price.inclTax` 逐分一致。CSMS 从电表值得知电量，想看到价格及时变化，就要让桩足够频繁地上报（1.6 的 `MeterValueSampleInterval`，2.x 的 `SampledDataCtrlr.TxUpdatedInterval`）。
 
 ### 参考资费
 
@@ -926,6 +959,9 @@ ocpp-mimic csms --tls-cert packages/engine/test-pki/server.crt --tls-key package
 | `POST /api/stations/<id>/web-payment` | 2.1，经由内置 CSMS：`{ url, sharedSecret }`，扮演桩二维码背后的支付页面（见 CSMS 的 `web-payment`） |
 | `PUT /api/sites/<id>` | 经由所列桩的内置 CSMS：`{ capacityW, stations, minimumW }`，即[站点负载管理](#站点负载管理) |
 | `GET`、`DELETE /api/sites/<id>` | 通过本引擎设置的站点：查看它的分配，或删除它 |
+| `PUT /api/sites/<id>/payments` | 经由所列桩的内置 CSMS，为它们的会话启用[支付](#支付)：`{ stations, holdAmount, overHold, minEnergyWh, idleGraceMinutes, tariff }` |
+| `GET`、`DELETE /api/sites/<id>/payments` | 通过本引擎设置的支付：每个会话的支付、事件和收入；或者停止支付。和站点的负载管理分开 |
+| `PUT /api/accounts/<idToken>` | `{ site, card, outcome, billing }`：司机的测试卡，存在支付站点 `site` 的 CSMS 里 |
 | `POST /api/stations/<id>/vat-number` | 2.1：`{ vatNumber, evseId }` |
 
 连接器（`<n>` 是连接器编号，2.x 上是 EVSE 编号）：

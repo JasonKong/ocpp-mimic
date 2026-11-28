@@ -268,6 +268,18 @@ describe('reference tariff', () => {
     expect(price.items.find((i) => i.part === 'energy')?.frames).toEqual([3, 8]);
     expect(price.items.find((i) => i.part === 'chargingTime')?.frames).toEqual([5]);
     expect(price.items.find((i) => i.part === 'idleTime')?.frames).toEqual([7]);
+    // A grace period leaves the first idle minutes unpriced; a longer one, all of them.
+    const graced = priceSession(record, TARIFF, '2026-11-15T12:00:00Z', { idleGraceMinutes: 15 });
+    expect(graced.items.find((i) => i.part === 'idleTime')).toMatchObject({
+      quantity: 5,
+      exclTax: 2.5,
+    });
+    expect(graced.inclTax).toBe(9.69);
+    const free = priceSession(record, TARIFF, '2026-11-15T12:00:00Z', { idleGraceMinutes: 30 });
+    expect(free.items.find((i) => i.part === 'idleTime')).toMatchObject({
+      quantity: 0,
+      exclTax: 0,
+    });
   });
 
   it('prices a running session up to now from its first and latest readings', () => {

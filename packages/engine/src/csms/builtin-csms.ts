@@ -44,6 +44,14 @@ import { hmacSha256 } from '../hmac.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { signCsr } from '../x509.js';
 import { createSiteLoad, parseSite, type SiteDefinition, type SiteState } from './site-load.js';
+import {
+  createPayments,
+  parseAccount,
+  parsePaymentSettings,
+  type Account,
+  type PaymentSettings,
+  type PaymentsState,
+} from './payments.js';
 
 /** Returned by a handler to answer with a CALLERROR instead of a CALLRESULT. */
 export class CallErrorReply {
@@ -326,6 +334,11 @@ export interface BuiltinCsms {
   site(id: string): SiteState | undefined;
   /** Removes a site and clears the limits it set; false when there was none. */
   deleteSite(id: string): boolean;
+  /** Takes payments for a site's stations (M10): holds, captures, idle fees. */
+  setPayments(id: string, stations: string[], settings: PaymentSettings): PaymentsState;
+  payments(id: string): PaymentsState | undefined;
+  /** A driver's test card and who pays for the token's sessions. */
+  setAccount(account: Account): Account;
   stats(): BuiltinCsmsStats;
   stop(): Promise<void>;
 }
@@ -469,6 +482,8 @@ interface ConnectionContext {
   pricing?: { tariff: ReferenceTariff; everyMs: number };
   /** Sees each CALL the CSMS sent with its answer, to keep what it set. */
   observe: (chargeBoxId: string, action: string, payload: JsonObject, answer: Frame) => void;
+  /** Sees every frame of a connection, as a session tracker reads it. */
+  frame?: (chargeBoxId: string, ocpp: OcppVersion, frame: SessionFrame) => void;
   /** Sees each station CALL a handler answered, with the answer, once it is on its way. */
   answered?: (
     connection: BuiltinCsmsConnection,
@@ -509,7 +524,7 @@ function createConnection(
   let seq = 0;
   const actionOf = new Map<string, string>();
   const follow = (direction: SessionFrame['direction'], frame: Frame) => {
-    if (tracker === undefined) return;
+    if (tracker === undefined && context.frame === undefined) return;
     const record: SessionFrame = {
       seq: ++seq,
       at: new Date().toISOString(),
@@ -528,7 +543,8 @@ function createConnection(
       if (frame.type === MessageTypeId.CallResult) record.payload = frame.payload;
       else record.errorCode = frame.errorCode;
     }
-    tracker.frame(record);
+    tracker?.frame(record);
+    context.frame?.(chargeBoxId, context.messages.version, record);
   };
   /** The running cost of a transaction, tax included, as the tariff makes it. */
   const costOf = (transactionId: unknown): number | undefined => {
@@ -953,27 +969,29 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       [...protocols].find((protocol) => messageSetForSubprotocol(protocol) !== undefined) ?? false,
   });
   let remoteStartIds = 0;
+  /** A connected station as the site load and payment managers use it: its version, a CALL. */
+  const stationAccess = (chargeBoxId: string) => {
+    const connection = connections.get(chargeBoxId);
+    if (connection === undefined) return undefined;
+    return {
+      ocpp: connection.ocpp,
+      async call(action: string, payload: JsonObject) {
+        const answer = await connection.call(action, payload, 10_000);
+        if (answer.type === MessageTypeId.CallResult) {
+          const status = answer.payload.status;
+          return { ok: true, ...(typeof status === 'string' && { status }) };
+        }
+        return {
+          ok: false,
+          status: answer.type === MessageTypeId.CallError ? answer.errorCode : 'error',
+        };
+      },
+    };
+  };
   /** Sites whose capacity the CSMS shares between their sessions with smart charging. */
-  const siteLoad = createSiteLoad({
-    station(chargeBoxId) {
-      const connection = connections.get(chargeBoxId);
-      if (connection === undefined) return undefined;
-      return {
-        ocpp: connection.ocpp,
-        async call(action, payload) {
-          const answer = await connection.call(action, payload, 10_000);
-          if (answer.type === MessageTypeId.CallResult) {
-            const status = answer.payload.status;
-            return { ok: true, ...(typeof status === 'string' && { status }) };
-          }
-          return {
-            ok: false,
-            status: answer.type === MessageTypeId.CallError ? answer.errorCode : 'error',
-          };
-        },
-      };
-    },
-  });
+  const siteLoad = createSiteLoad({ station: stationAccess });
+  /** The simulated payment provider: holds, captures, idle fees (M10). */
+  const payments = createPayments({ station: stationAccess });
   /** Stations the CSMS starts sessions on as EVs are plugged in (setAutoStart). */
   const autoStarts = new Map<string, AutoStartToken>();
   /** `${chargeBoxId} ${id}` of connectors started that way, until they report another state. */
@@ -1219,6 +1237,38 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       res.writeHead(UNAUTHORIZED.status, UNAUTHORIZED.headers).end(UNAUTHORIZED.body);
       return;
     }
+    // Payments: a site's settings and payments, and drivers' accounts.
+    const sitePayments = /^\/api\/sites\/([^/]+)\/payments$/.exec(url.pathname);
+    const account = /^\/api\/accounts\/([^/]+)$/.exec(url.pathname);
+    if (sitePayments !== null || account !== null) {
+      const id = decodeURIComponent((sitePayments ?? account)?.[1] ?? '');
+      if (req.method === 'GET') {
+        const found = sitePayments !== null ? payments.site(id) : payments.account(id);
+        json(
+          found === undefined ? 404 : 200,
+          found ?? { error: `no ${sitePayments ? 'site' : 'account'} ${id}` },
+        );
+      } else if (req.method === 'DELETE' && sitePayments !== null) {
+        const deleted = payments.deleteSite(id);
+        json(deleted ? 200 : 404, deleted ? { deleted: id } : { error: `no site ${id}` });
+      } else if (req.method === 'PUT') {
+        void readBody(req).then((body) => {
+          if (body === undefined) return json(400, { error: 'the body must be a JSON object' });
+          if (sitePayments !== null) {
+            const parsed = parsePaymentSettings(body);
+            if (typeof parsed === 'string') return json(400, { error: parsed });
+            json(200, payments.setSite(id, parsed.stations, parsed.settings));
+          } else {
+            const parsed = parseAccount(id, body);
+            if (typeof parsed === 'string') return json(400, { error: parsed });
+            json(200, payments.setAccount(parsed));
+          }
+        });
+      } else {
+        json(404, { error: 'not found' });
+      }
+      return;
+    }
     // Sites: PUT creates or replaces one, GET shows its allocation, DELETE removes it.
     const site = /^\/api\/sites\/([^/]+)$/.exec(url.pathname);
     if (site !== null) {
@@ -1295,6 +1345,7 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     keepFrames: options.keepFrames ?? true,
     observe,
     answered,
+    frame: (chargeBoxId, ocpp, frame) => payments.frame(chargeBoxId, ocpp, frame),
     ...(options.tariff !== undefined && {
       pricing: { tariff: options.tariff, everyMs: options.costUpdatedEveryMs ?? 60_000 },
     }),
@@ -1407,6 +1458,9 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
     setSite: (id, site) => siteLoad.setSite(id, site),
     site: (id) => siteLoad.site(id),
     deleteSite: (id) => siteLoad.deleteSite(id),
+    setPayments: (id, stations, settings) => payments.setSite(id, stations, settings),
+    payments: (id) => payments.site(id),
+    setAccount: (account) => payments.setAccount(account),
     async stop() {
       siteLoad.stop();
       for (const client of wss.clients) client.terminate();

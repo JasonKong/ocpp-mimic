@@ -541,6 +541,11 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
 
   const openOn = (evseId: number | undefined) =>
     evseId === undefined ? undefined : open.find((s) => s.evseId === evseId);
+  /**
+   * The latest 1.6 status of a connector no session was open on: a station may report
+   * Charging just before its StartTransaction, and a CSMS sees no hint that opened it earlier.
+   */
+  const statusBefore = new Map<number, { frame: SessionFrame; at: string; status: string }>();
   const byTransaction = (transactionId: unknown) =>
     transactionId === undefined
       ? undefined
@@ -657,6 +662,11 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
         }
         session.startedAt = str(payload.timestamp) ?? frame.at;
         addStep(session, frame);
+        const before = connectorId === undefined ? undefined : statusBefore.get(connectorId);
+        if (connectorId !== undefined) statusBefore.delete(connectorId);
+        if (before !== undefined && session.states.length === 0) {
+          addState(session, before.frame, before.at, before.status);
+        }
         return [session];
       }
       case 'MeterValues': {
@@ -668,11 +678,18 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
         return [session];
       }
       case 'StatusNotification': {
-        const session = openOn(num(payload.evseId) ?? num(payload.connectorId));
-        if (session === undefined) return [];
+        const connectorId = num(payload.evseId) ?? num(payload.connectorId);
+        const session = openOn(connectorId);
+        const at = str(payload.timestamp) ?? frame.at;
+        const status = str(payload.status);
+        if (session === undefined) {
+          if (ocpp === '1.6' && connectorId !== undefined && status !== undefined) {
+            statusBefore.set(connectorId, { frame, at, status });
+          }
+          return [];
+        }
         // 1.6 statuses carry the charging state; 2.0.1 has chargingState in TransactionEvent.
-        if (ocpp === '1.6')
-          addState(session, frame, str(payload.timestamp) ?? frame.at, str(payload.status));
+        if (ocpp === '1.6') addState(session, frame, at, status);
         return [session];
       }
       case 'StopTransaction': {

@@ -1622,7 +1622,7 @@ M9 之后确定。像 Invisible Urban 这样的 CSMS 是自己收司机的钱：
 - **每个站点的支付设置**：
   - 资费：沿用参考资费，包括固定费、电量、充电时长、占位时长、税、最低和最高金额、峰谷电价；默认 NZD；
   - 冻结额：50；
-  - 价格超过冻结额时的策略：默认 `recharge`，即取消冻结、结束时按全额扣款，和 Invisible Urban 一样；也可选 `increment`，价格接近冻结额时追加冻结；或 `stop`，通过 maxCost 在到达冻结额时结束会话；
+  - 价格超过冻结额时的策略：默认 `recharge`，即取消冻结、结束时按全额扣款，和 Invisible Urban 一样；也可选 `increment`，价格接近冻结额时追加冻结；或 `stop`，价格到达冻结额时停止会话，扣款不超过冻结额；
   - 最低电量：低于它不收费，默认 0 Wh；
   - 占位宽限期：开始计占位费之前的时间，默认 0 分钟，和 Invisible Urban 一样。
 - **司机账户**：每个 idToken（App 用户、RFID 卡、EVCCID）对应一张卡及其测试结果：`approve`、`decline`、`requires-action`（类似 3-D Secure）或 `fail-capture`。没有登记的 token 默认用一张会通过的测试卡。
@@ -1661,6 +1661,8 @@ M9 之后确定。像 Invisible Urban 这样的 CSMS 是自己收司机的钱：
 | T131 | #306 | 按启动方式收费：冻结结果决定能否开始；免认证和 valet 不收费；2.1 支付终端和二维码的资金流 |
 | T132 | #307 | 演示页：支付设置、车位价格、支付面板、测试结果 |
 | T133 | #308 | M10 验收 |
+
+- 已实现（T130）：`engine/src/csms/payments.ts` 是模拟支付服务：每个站点的设置（默认资费 `DEMO-NZD`、冻结 50、`recharge`、0 Wh、0 分钟），带测试卡、结果和计费方式（`card`、`free`、`site`）的账户，以及每个会话一笔支付。支付由 CSMS 看到的帧驱动，用的是和引擎相同的会话跟踪器。支付方式由账户和会话决定：NoAuthorization 或 `billing: free` 不收费，`billing: site` 记到站点账户、金额为 0，2.1 的 DirectPayment 令牌属于桩自己收款（`terminal`，远程启动的是 `qr`），由桩结算；其余都按卡处理，开始时冻结。卡被拒时状态为 `declined`，CSMS 用 RemoteStopTransaction 或 RequestStopTransaction 停止会话（1.6 要等 StartTransaction 的应答给出 transaction id，桩仍拒绝时会重试）；T131 会把冻结挪到启动之前。实时价格用 `priceSession` 加站点资费和占位宽限期（core 的 `PricingPlace` 新增），所以资费相同时，扣款和引擎的参考价逐分一致；`increment` 在价格进入冻结额 max(5, 10 %) 范围内时再追加一个冻结额，`stop` 到达冻结额时停止会话并扣冻结额。结束时 `settle` 决定释放（价格为 0，或低于最低电量）、失败（`fail-capture`）、在冻结额内扣款，或取消冻结后全额扣款（`recharge`）。控制 API 有 `PUT`/`GET`/`DELETE /api/sites/<id>/payments` 和 `PUT`/`GET /api/accounts/<idToken>`；引擎转发它们，支付站点和同 id 的负载管理站点分开记录。core 的会话跟踪器现在会保留 1.6 在 StartTransaction 之前发来的状态（generic 桩先发 Charging）：CSMS 没有引擎那样的提示，以前会把这段时间算成占位。
 
 先发布 0.2.0，再做 M10；支付功能放进 0.3.0。
 

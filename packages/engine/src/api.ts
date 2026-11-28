@@ -28,7 +28,7 @@ import {
   type WebPaymentLimits,
   type ReferenceTariff,
 } from '@ocpp-mimic/core';
-import { controlVia, probeCsms, siteVia } from './csms/probe.js';
+import { controlVia, probeCsms, requestVia, siteVia } from './csms/probe.js';
 import { resolveEv } from './evs.js';
 import { exportLog } from './logs/export.js';
 import type { Fleet, StationSnapshot, VirtualStation } from './fleet.js';
@@ -440,8 +440,12 @@ async function relaySite(
   method: 'PUT' | 'GET' | 'DELETE',
   siteId: string,
   body?: object,
+  path?: string,
 ): Promise<unknown> {
-  const answer = await siteVia(csmsUrl, method, siteId, body, context.csmsApiToken);
+  const answer =
+    path === undefined
+      ? await siteVia(csmsUrl, method, siteId, body, context.csmsApiToken)
+      : await requestVia(csmsUrl, method, path, body, context.csmsApiToken);
   if (answer.status !== 200) {
     const message = (answer.body as { error?: unknown } | undefined)?.error;
     throw new HttpError(
@@ -456,6 +460,22 @@ async function relaySite(
 function siteCsmsOf(context: Context, siteId: string | undefined): string {
   const csmsUrl = sitesOf(context).get(siteId ?? '');
   if (csmsUrl === undefined) throw new HttpError(404, `no site ${String(siteId)}`);
+  return csmsUrl;
+}
+
+/** Sites with payments set up through this engine, apart from load management: their CSMS. */
+const paymentSiteCsms = new WeakMap<object, Map<string, string>>();
+const paymentSitesOf = (context: Context) => {
+  let sites = paymentSiteCsms.get(context.fleet);
+  if (sites === undefined) {
+    sites = new Map();
+    paymentSiteCsms.set(context.fleet, sites);
+  }
+  return sites;
+};
+function paymentSiteCsmsOf(context: Context, siteId: string | undefined): string {
+  const csmsUrl = paymentSitesOf(context).get(siteId ?? '');
+  if (csmsUrl === undefined) throw new HttpError(404, `no payments for site ${String(siteId)}`);
   return csmsUrl;
 }
 
@@ -992,6 +1012,52 @@ const routes: Route[] = [
     sitesOf(context).set(siteId, csmsUrl);
     return answer;
   }),
+  // Payments (M10): the built-in CSMS's simulated payment provider for a site's stations.
+  route('PUT', '/api/sites/:param/payments', async (request, context) => {
+    const siteId = request.params[0] ?? '';
+    const body = await request.body();
+    const ids = body.stations;
+    if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => typeof id !== 'string')) {
+      throw new HttpError(400, '"stations" must be a list of station ids');
+    }
+    const stations = (ids as string[]).map((id) => stationOf(context, id));
+    const csmsUrl = stations[0]?.definition.csmsUrl ?? '';
+    if (stations.some((s) => s.definition.csmsUrl !== csmsUrl)) {
+      throw new HttpError(400, "a site's stations must use the same CSMS");
+    }
+    if ((stations[0]?.snapshot().csms ?? (await probeCsms(csmsUrl))) !== 'builtin') {
+      throw new HttpError(
+        409,
+        "the stations' CSMS is not ocpp-mimic's built-in CSMS: payments must come from that CSMS",
+      );
+    }
+    const path = `/api/sites/${encodeURIComponent(siteId)}/payments`;
+    const answer = await relaySite(context, csmsUrl, 'PUT', siteId, body, path);
+    paymentSitesOf(context).set(siteId, csmsUrl);
+    return answer;
+  }),
+  route('GET', '/api/sites/:param/payments', (request, context) => {
+    const siteId = request.params[0] ?? '';
+    const path = `/api/sites/${encodeURIComponent(siteId)}/payments`;
+    return relaySite(context, paymentSiteCsmsOf(context, siteId), 'GET', siteId, undefined, path);
+  }),
+  route('DELETE', '/api/sites/:param/payments', async (request, context) => {
+    const siteId = request.params[0] ?? '';
+    const path = `/api/sites/${encodeURIComponent(siteId)}/payments`;
+    const csmsUrl = paymentSiteCsmsOf(context, siteId);
+    const answer = await relaySite(context, csmsUrl, 'DELETE', siteId, undefined, path);
+    paymentSitesOf(context).delete(siteId);
+    return answer;
+  }),
+  route('PUT', '/api/accounts/:param', async (request, context) => {
+    // A driver's account lives in the CSMS of a site set up through here: `site` names it.
+    const body = await request.body();
+    const siteId = stringField(body, 'site', true);
+    const { site: _site, ...account } = body;
+    const path = `/api/accounts/${encodeURIComponent(request.params[0] ?? '')}`;
+    return relaySite(context, paymentSiteCsmsOf(context, siteId), 'PUT', siteId, account, path);
+  }),
+
   route('GET', '/api/sites/:param', (request, context) =>
     relaySite(context, siteCsmsOf(context, request.params[0]), 'GET', request.params[0] ?? ''),
   ),

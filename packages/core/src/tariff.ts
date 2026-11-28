@@ -356,9 +356,12 @@ function energyByTime(
   });
 }
 
-/** Where a session is priced: the station's time zone for time-of-day prices (default UTC). */
+/** Where and how a session is priced. */
 export interface PricingPlace {
+  /** The station's time zone, for time-of-day prices (default UTC). */
   timeZone?: string;
+  /** Idle minutes not priced, at the start of the idle time (default 0). */
+  idleGraceMinutes?: number;
 }
 
 /** What `tariff` makes of `record`, up to its end or `now` while it runs. */
@@ -390,7 +393,7 @@ export function priceSession(
     const idle = item(
       'idleTime',
       tariff,
-      minutes(durations.suspendedEV + durations.idle),
+      Math.max(0, minutes(durations.suspendedEV + durations.idle) - (place.idleGraceMinutes ?? 0)),
       seqsOf('suspendedEV', 'idle'),
     );
     if (idle !== undefined) items.push(idle);
