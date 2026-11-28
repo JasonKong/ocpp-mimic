@@ -91,6 +91,38 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 curl -sf "$demo/api/sites/smoke" | grep -q '"allocatedW":8000'
+# Payments: a card is held when the CSMS authorizes it and captured at the end; a declined
+# card does not start.
+curl -sf -X POST "$demo/api/stations" -H 'content-type: application/json' \
+  -d "{\"id\":\"DEMO-PAY\",\"persona\":\"generic-dual-1.6\",\"csmsUrl\":\"ws://127.0.0.1:$demo_csms_port/ocpp\"}" > /dev/null
+for _ in $(seq 1 50); do
+  curl -sf "$demo/api/stations/DEMO-PAY" | grep -q '"csms":"builtin"' && break
+  sleep 0.2
+done
+curl -sf -X PUT "$demo/api/sites/smoke-pay/payments" -H 'content-type: application/json' \
+  -d '{"stations":["DEMO-PAY"]}' | grep -q '"holdAmount":50'
+curl -sf -X PUT "$demo/api/accounts/CARD-NO" -H 'content-type: application/json' \
+  -d '{"site":"smoke-pay","outcome":"decline"}' | grep -q '"decline"'
+for c in 1 2; do
+  curl -sf -X POST "$demo/api/stations/DEMO-PAY/connectors/$c/plug" -H 'content-type: application/json' \
+    -d '{"ev":"compact-40kwh"}' > /dev/null
+done
+curl -sf -X POST "$demo/api/stations/DEMO-PAY/connectors/1/id-tag" -H 'content-type: application/json' \
+  -d '{"idTag":"CARD-OK"}' | grep -q '"result":"authorized"'
+curl -sf -X POST "$demo/api/stations/DEMO-PAY/connectors/2/id-tag" -H 'content-type: application/json' \
+  -d '{"idTag":"CARD-NO"}' | grep -q '"result":"rejected"'
+for _ in $(seq 1 50); do
+  curl -sf "$demo/api/sites/smoke-pay/payments" | grep -q '"state":"held"' && break
+  sleep 0.2
+done
+curl -sf "$demo/api/sites/smoke-pay/payments" | grep -q '"kind":"decline"'
+curl -sf -X POST "$demo/api/stations/DEMO-PAY/connectors/1/id-tag" -H 'content-type: application/json' \
+  -d '{"idTag":"CARD-OK"}' > /dev/null
+for _ in $(seq 1 50); do
+  curl -sf "$demo/api/sites/smoke-pay/payments" | grep -q '"state":"captured"' && break
+  sleep 0.2
+done
+curl -sf "$demo/api/sites/smoke-pay/payments" | grep -q '"state":"captured"'
 
 echo "== load"
 "$bin" load samples/load/smoke-100.yaml --personas samples/personas \
