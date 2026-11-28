@@ -1047,7 +1047,7 @@ Options of `serve`:
 | --- | --- |
 | `--port`, `--host` | Where to listen (default 127.0.0.1:7300) |
 | `--store <file>` | SQLite file that keeps stations across restarts |
-| `--record-limit <n>` | Frames and log lines kept per station for the UI and API (default 1000; 0 keeps none) |
+| `--record-limit <n>` | Frames and log lines kept per station for the UI and API (0 keeps none). By default the stations share 200,000: 1000 each up to 200 stations, fewer each above that, so a large fleet's memory stays bounded |
 | `--sessions-per-station <n>` | Sessions kept per station, with their frames (default 20) |
 | `--personas <dir>` | Extra persona directory; repeatable |
 | `--allow-csms <prefix>` | Allow CSMS URLs starting with it; repeatable |

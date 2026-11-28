@@ -193,7 +193,8 @@ Options for serve:
   --store <file>         SQLite file that keeps stations across restarts
                          (default: nothing is kept)
   --record-limit <n>     Messages and log lines kept per station for the
-                         Web UI and API (default 1000; 0 keeps none)
+                         Web UI and API (0 keeps none). Default: 200,000
+                         shared, 1000 per station up to 200 stations
   --sessions-per-station <n>
                          Charging sessions kept per station, with their
                          frames (default 20)

@@ -68,9 +68,22 @@ export interface Recorder {
   subscribe(listener: (entry: RecordEntry) => void): () => void;
 }
 
+/** Entries kept in all by default, shared by the stations. */
+export const DEFAULT_RECORD_BUDGET = 200_000;
+/** The most entries one station keeps under a budget. */
+export const MAX_RECORDS_PER_STATION = 1000;
+
 export interface RecorderOptions {
-  /** Entries kept per station. Default 1000; 0 keeps none (listeners still get every entry). */
+  /**
+   * Entries kept per station; 0 keeps none (listeners still get every entry). Absent, the
+   * stations share `budget`.
+   */
   limit?: number;
+  /**
+   * Entries kept in all when `limit` is absent (default 200,000), shared by the stations that
+   * recorded something: up to 1000 each, fewer as the fleet grows.
+   */
+  budget?: number;
   now?: () => number;
   /**
    * Checks a CALL or CALLRESULT payload of a station (against the schemas of
@@ -87,7 +100,12 @@ export interface RecorderOptions {
 }
 
 export function createRecorder(options: RecorderOptions = {}): Recorder {
-  const limit = options.limit ?? 1000;
+  const budget = options.budget ?? DEFAULT_RECORD_BUDGET;
+  /** Entries a station keeps now: the fixed limit, else its share of the budget. */
+  const capFor = (stations: number) =>
+    options.limit ??
+    Math.max(1, Math.min(MAX_RECORDS_PER_STATION, Math.floor(budget / Math.max(1, stations))));
+  let cap = capFor(0);
   const now = options.now ?? Date.now;
   const buffers = new Map<string, RecordEntry[]>();
   /** `${stationId} ${uniqueId}` → action, for matching responses to requests. */
@@ -110,11 +128,22 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
   }
 
   function push(entry: RecordEntry): void {
-    if (limit > 0) {
-      const buffer = buffers.get(entry.stationId) ?? [];
+    if (cap > 0) {
+      let buffer = buffers.get(entry.stationId);
+      if (buffer === undefined) {
+        buffer = [];
+        buffers.set(entry.stationId, buffer);
+        // One more station shares the budget: the others keep less.
+        const next = capFor(buffers.size);
+        if (next < cap) {
+          for (const other of buffers.values()) {
+            if (other.length > next) other.splice(0, other.length - next);
+          }
+        }
+        cap = next;
+      }
       buffer.push(entry);
-      if (buffer.length > limit) buffer.splice(0, buffer.length - limit);
-      buffers.set(entry.stationId, buffer);
+      if (buffer.length > cap) buffer.splice(0, buffer.length - cap);
     }
     listeners.forEach((listener) => listener(entry));
   }
@@ -228,6 +257,8 @@ export function createRecorder(options: RecorderOptions = {}): Recorder {
 
     forget(stationId) {
       buffers.delete(stationId);
+      // One station fewer: the others may keep more from now on.
+      cap = capFor(buffers.size);
       for (const map of [actions, answeredActions]) {
         for (const key of map.keys()) if (key.startsWith(`${stationId} `)) map.delete(key);
       }

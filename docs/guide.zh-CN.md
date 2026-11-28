@@ -1049,7 +1049,7 @@ curl -s $API/stations/SIM-100/sessions
 | --- | --- |
 | `--port`、`--host` | 监听地址（默认 127.0.0.1:7300） |
 | `--store <文件>` | 重启后保留桩的 SQLite 文件 |
-| `--record-limit <n>` | 每个桩保留给 UI 和 API 的帧和日志行条数（默认 1000；0 表示不保留） |
+| `--record-limit <n>` | 每个桩保留给 UI 和 API 的帧和日志行条数（0 表示不保留）。默认所有桩共享 200,000 条：200 个桩以内每个 1000 条，超过后每个桩分到的更少，大规模车队的内存因此有上限 |
 | `--sessions-per-station <n>` | 每个桩保留的会话数（连同其帧，默认 20） |
 | `--personas <目录>` | 额外的 persona 目录；可重复 |
 | `--allow-csms <前缀>` | 放行以此开头的 CSMS URL；可重复 |

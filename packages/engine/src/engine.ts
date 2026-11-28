@@ -44,7 +44,10 @@ export interface EngineOptions {
   /** Directory with the built Web UI, served at /. */
   webRoot?: string;
   backoff?: Partial<BackoffPolicy>;
-  /** Records the Event Recorder keeps per station (default 1000; 0 keeps none). */
+  /**
+   * Records the Event Recorder keeps per station (0 keeps none). Default: 200,000 shared by the
+   * stations, 1000 each up to 200 stations.
+   */
   recordLimit?: number;
   /** Push metrics to an OpenTelemetry collector. */
   otlp?: OtlpOptions;
