@@ -510,12 +510,21 @@ export async function runScenario(
           await wire.whenOpen(30_000).catch((error: Error) => {
             throw new StepFailure(error.message);
           });
+          // The persona's BootNotification, for a log with none to boot first with.
+          const identity = target.persona.definition.boot as Record<string, unknown> | undefined;
           const outcome = await runReplay({
             wire,
             lines,
             speed: step.speed,
             maxGapMs: step.maxGapMs,
             compare: step.compare,
+            boot: step.boot,
+            ...(identity !== undefined && {
+              bootPayload:
+                target.persona.ocpp === '1.6'
+                  ? identity
+                  : { reason: 'PowerUp', chargingStation: identity },
+            }),
           });
           if (outcome.differences.length > 0) {
             const count = outcome.differences.length;

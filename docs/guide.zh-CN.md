@@ -901,7 +901,7 @@ ocpp-mimic import csms-export.csv --map scenarios/import/csv-mapping.yaml --salt
 
 ### 回放
 
-`ocpp-mimic replay <日志>` 把某个桩录下的帧按顺序重新发给 CSMS，并把 CSMS 的应答和录下的应答对比。时间戳移到当前时间，消息 id 重新生成，交易 id、remoteStartId 和资费 id 映射为 CSMS 新分配的值。
+`ocpp-mimic replay <日志>` 把某个桩录下的帧按顺序重新发给 CSMS，并把 CSMS 的应答和录下的应答对比。时间戳移到当前时间，消息 id 重新生成，交易 id、remoteStartId 和资费 id 映射为 CSMS 新分配的值。日志从会话中间开始、在第一条其他消息之前没有 BootNotification 时，会先 boot：如果日志后面有 BootNotification 就用它，否则用回放桩的 persona 的。这样，在 boot 之前拒绝消息的 CSMS 会像当时那样应答；CSMS 不接受这次 boot 时会记为一处差异。
 
 ```bash
 ocpp-mimic replay scenarios/logs/local-card-session.yaml-1.jsonl --speed 10
@@ -915,6 +915,7 @@ ocpp-mimic replay incident.jsonl --station SIM-0042 --csms ws://127.0.0.1:8081 -
 | `--persona <id>` | 回放用桩的 persona（默认 `generic-<日志的版本>`） |
 | `--speed <n>`、`--max-gap <d>` | 录制间隔除以 n；每次等待的上限（默认 30s） |
 | `--compare status \| strict \| none` | `status`（默认）比较结果、错误码和 status 字段；`strict` 比较整个 payload，易变字段除外 |
+| `--boot auto \| always \| never` | `auto`（默认）在日志从会话中间开始时先 boot；`always` 总是先 boot；`never` 按日志原样发送。场景的 `replay` 步骤也有 `boot` |
 | `--write <文件>` | 把回放写成场景文件（帧内联），可编辑后用 `run` 运行 |
 
 ### 校准

@@ -11,6 +11,7 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 
 ### Changed
 
+- **Replays boot first** when a log starts mid-session: `ocpp-mimic replay` and the `replay` step send the log's own BootNotification, else the persona's, before the first other message (`--boot` / `boot`: `auto` by default, `always` or `never` for the old behaviour).
 - **One price for 2.1 tariffs**: the reference price replays a session through the cost meter a 2.1 station prices with, so the two agree to the cent. As on a station, minCost applies once the session has ended and is taxed by its own rates, and maxCost keeps the taxes accrued before it is reached. Energy between two readings counts only while the EV charges, and an energy item names every reading it came from. The built-in CSMS's payments and running costs use the same price. The Web UI's tariff form is offered only for tariffs it can show.
 
 - Under an energy multiplier, an EV's `departureMinutes` counts simulated minutes, like the rest of the EV model: the departure time in NotifyEVChargingNeeds comes that many times sooner on the wall clock, and the session's estimate compares it with the ETA on the wall clock. Before, the panel could show an ETA well before the departure and still say the target would not be reached.

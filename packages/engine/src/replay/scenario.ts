@@ -4,7 +4,7 @@
  */
 import { logVersions, parseScenario, type LogLine, type Scenario } from '@ocpp-mimic/core';
 import { stringify } from 'yaml';
-import type { CompareMode } from './replay.js';
+import type { CompareMode, ReplayBoot } from './replay.js';
 
 export interface ReplayScenarioOptions {
   /** The log file, absolute. */
@@ -16,6 +16,7 @@ export interface ReplayScenarioOptions {
   speed?: number;
   maxGapMs?: number;
   compare?: CompareMode;
+  boot?: ReplayBoot;
 }
 
 const seconds = (ms: number) => `${Math.round(ms) / 1000}s`;
@@ -48,6 +49,7 @@ export function replayDocument(
           ...(options.maxGapMs !== undefined && { maxGap: seconds(options.maxGapMs) }),
           ...(options.compare !== undefined &&
             options.compare !== 'status' && { compare: options.compare }),
+          ...(options.boot !== undefined && options.boot !== 'auto' && { boot: options.boot }),
         },
       },
     ],

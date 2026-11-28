@@ -240,6 +240,68 @@ describe('replaying a 2.0.1 log', () => {
 });
 
 describe('stationLines', () => {
+  it('boots first when a log starts mid-session, as a CSMS that refuses messages before a boot needs', async () => {
+    // A CSMS that answers SecurityError until the station has booted.
+    const strictCsms = () => {
+      let booted = false;
+      return fakeWire((frame) => {
+        if (frame[2] === 'BootNotification') {
+          booted = true;
+          return [3, frame[1], { status: 'Accepted', currentTime: 'x', interval: 300 }];
+        }
+        if (!booted) return [4, frame[1], 'SecurityError', 'boot first', {}];
+        if (frame[2] === 'StartTransaction')
+          return [3, frame[1], { idTagInfo: { status: 'Accepted' }, transactionId: 9 }];
+        if (frame[2] === 'StopTransaction')
+          return [3, frame[1], { idTagInfo: { status: 'Accepted' } }];
+        return [3, frame[1], {}];
+      });
+    };
+    const midSession = SESSION.slice(2);
+    const persona = { chargePointVendor: 'ocpp-mimic', chargePointModel: 'Generic-AC' };
+    const fast = { sleep: async () => {}, settleMs: 0 };
+    // auto (the default): the persona's BootNotification first, then the log matches.
+    const auto = strictCsms();
+    const booted = await runReplay({
+      wire: auto.wire,
+      lines: midSession,
+      bootPayload: persona,
+      ...fast,
+    });
+    expect(auto.sent.filter((f) => f[0] === 2).map((f) => f[2])).toEqual([
+      'BootNotification',
+      'StartTransaction',
+      'MeterValues',
+      'StopTransaction',
+    ]);
+    expect(auto.sent[0]?.[3]).toEqual(persona);
+    expect(booted).toMatchObject({ boot: 'Accepted', differences: [] });
+    // never: the log as it is, which this CSMS refuses.
+    const never = strictCsms();
+    const refused = await runReplay({
+      wire: never.wire,
+      lines: midSession,
+      boot: 'never',
+      ...fast,
+    });
+    expect(refused.boot).toBeUndefined();
+    expect(refused.differences[0]).toContain('the answer is a CALLERROR');
+    // A log that boots first gets no second boot with auto; always sends the log's own first.
+    const whole = strictCsms();
+    await runReplay({ wire: whole.wire, lines: SESSION, ...fast });
+    expect(whole.sent.filter((f) => f[2] === 'BootNotification')).toHaveLength(1);
+    const always = strictCsms();
+    await runReplay({ wire: always.wire, lines: SESSION, boot: 'always', ...fast });
+    const boots = always.sent.filter((f) => f[2] === 'BootNotification');
+    expect(boots).toHaveLength(2);
+    expect(boots[0]?.[3]).toEqual({ chargePointVendor: 'V', chargePointModel: 'M' });
+    // Nothing to boot with (no BootNotification in the log, no persona's): the log as it is.
+    const none = strictCsms();
+    const unbooted = await runReplay({ wire: none.wire, lines: midSession, ...fast });
+    expect(unbooted.boot).toBeUndefined();
+    expect(none.sent[0]?.[2]).toBe('StartTransaction');
+  });
+
   it('takes the only station, or the one asked for', () => {
     const other = { ...SESSION[0]!, station: 'CP2' };
     expect(stationLines(SESSION)).toMatchObject({ ok: true, station: 'CP1' });

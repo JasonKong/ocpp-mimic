@@ -48,6 +48,7 @@ export async function runReplayCommand(
     ...(command.speed !== undefined && { speed: command.speed }),
     ...(command.maxGapMs !== undefined && { maxGapMs: command.maxGapMs }),
     ...(command.compare !== undefined && { compare: command.compare }),
+    ...(command.boot !== undefined && { boot: command.boot }),
   };
   if (command.write !== undefined) {
     await writeFile(command.write, replayYaml(options));

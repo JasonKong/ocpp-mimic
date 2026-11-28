@@ -1743,6 +1743,8 @@ M10 之后确定：M11 不开新的功能方向，而是从 M4 到 M7 留下的 
 
 - 已实现（T136）：NotifySettlement 改走 outbox（`notifySettlement`），离线时排队，重启后仍保留，并排在交易事件之后。能自己算费用的终端立即结算，排在 Ended 事件之后；不能的仍等 CSMS 应答里的费用。以前，离线结束后又重启的情况会连同应答回调一起丢掉结算。计费器新增 `snapshot()` 和 `restore`：保存的交易带上计费器（`PersistedTransaction201.cost`），恢复的交易（E17）继续计价，停机期间不计费（`paused`）。每个 EVSE 都有一个带 `RoamingEvseId` 的 `WebPaymentsCtrlr`（按 C25 的要求放在 EVSE 层），用来填 `{roamingevseid}`；内置 CSMS 仍从 `{evse}` 读取 EVSE。二维码仍显示为链接。
 
+- 已实现（T137）：`runReplay` 接受 `boot`（`auto`、`always`、`never`，默认 `auto`）和 `bootPayload`。在 `auto` 下，日志的第一个桩端 CALL 不是 BootNotification 时，先发一个：日志里第一个 BootNotification，没有的话用回放桩 persona 的（由 runner 传入：1.6 的 boot 字段，2.x 是 `{ reason: PowerUp, chargingStation }`）。它的状态记入结果（`boot`），不是 Accepted 就算一处差异。没有可用的 boot 时，按日志原样回放。`replay` 步骤有 `boot`，`ocpp-mimic replay` 有 `--boot`，写出的场景会保留非 `auto` 的设置。
+
 行为变化会写进 changelog：回放默认先 boot（T137）；超过 200 个桩时 `serve` 每个桩保留的记录变少（T140）；能量倍率下 `departureMinutes` 按模拟时间计（T134）。
 
 以后再做：从日志校准 EV 配置（#127），ISO 15118-20 计划控制下的等待和 ISO15118Ctrlr 的 2.1 变量（#262），安全方面的 follow-up（#92 到 #96、#177、#178），以及规模和维护方面的（#133、#176、#180）。

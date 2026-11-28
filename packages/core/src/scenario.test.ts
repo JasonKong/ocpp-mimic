@@ -180,6 +180,7 @@ describe('scenario validation', () => {
       speed: 10,
       maxGapMs: 5000,
       compare: 'strict',
+      boot: 'auto',
     });
     expect(parsed.scenario.steps[1]).toMatchObject({
       kind: 'replay',
@@ -196,6 +197,7 @@ describe('scenario validation', () => {
         { replay: { log: 'a', frames: [] } },
         { replay: { frames: [{ at: '0s' }] } },
         { replay: { log: 'a', speed: 0 } },
+        { replay: { log: 'a', boot: 'sometimes' } },
       ],
     });
     expect(bad.ok ? [] : bad.errors).toEqual([
@@ -203,6 +205,7 @@ describe('scenario validation', () => {
       '$.steps[1].replay: give log or frames',
       '$.steps[2].replay.frames[0]: needs sent or received, with an OCPP-J message array',
       '$.steps[3].replay.speed: must be above 0',
+      '$.steps[4].replay.boot: "sometimes" is not one of auto, always, never',
     ]);
   });
 
