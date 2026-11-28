@@ -1025,7 +1025,7 @@ onUnmounted(() => {
                       idle fee {{ money(idleFeeOf(bayPayments.get(bay.key)!), currency) }}
                     </span>
                     <span v-if="bayPayments.get(bay.key)!.capturedAmount !== undefined">
-                      · charged {{ money(bayPayments.get(bay.key)!.capturedAmount ?? 0, currency) }}
+                      charged {{ money(bayPayments.get(bay.key)!.capturedAmount ?? 0, currency) }}
                     </span>
                   </template>
                   <label v-if="outcomeApplies(built.mode)" class="outcome">
@@ -1257,42 +1257,32 @@ onUnmounted(() => {
                 <strong>{{ money(heldNow, currency) }}</strong>
               </div>
             </div>
-            <table v-if="paymentsState.payments.length > 0" class="payments">
-              <thead>
-                <tr>
-                  <th>Bay</th>
-                  <th>Paid by</th>
-                  <th>Price</th>
-                  <th>State</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="p in [...paymentsState.payments].reverse().slice(0, 12)"
-                  :key="`${p.stationId} ${p.n}`"
-                >
-                  <td>{{ chargerLabel(p.stationId) }} · {{ p.evseId ?? 1 }}</td>
-                  <td>
-                    {{ PAYMENT_METHOD_TEXT[p.method] }}
-                    <small v-if="p.card" class="muted">****{{ p.card.last4 }}</small>
-                  </td>
-                  <td class="num">
+            <ul v-if="paymentsState.payments.length > 0" class="payments">
+              <li
+                v-for="p in [...paymentsState.payments].reverse().slice(0, 12)"
+                :key="`${p.stationId} ${p.n}`"
+              >
+                <span class="who">{{ chargerLabel(p.stationId) }} · {{ p.evseId ?? 1 }}</span>
+                <span class="by">
+                  {{ PAYMENT_METHOD_TEXT[p.method] }}
+                  <small v-if="p.card" class="muted">****{{ p.card.last4 }}</small>
+                </span>
+                <span class="amounts">
+                  <span>
                     {{ money(p.price?.inclTax ?? 0, currency) }}
                     <small v-if="p.heldAmount > 0" class="muted">
-                      / {{ money(p.heldAmount, currency) }}
+                      / {{ p.heldAmount.toFixed(2) }}
                     </small>
-                  </td>
-                  <td>
-                    <span class="chip" :class="stateChip(p)">{{
-                      PAYMENT_STATE_TEXT[p.state]
-                    }}</span>
-                    <small v-if="p.capturedAmount !== undefined">
-                      {{ money(p.capturedAmount, currency) }}
-                    </small>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+                  </span>
+                  <span class="chip" :class="stateChip(p)">
+                    {{ PAYMENT_STATE_TEXT[p.state] }}
+                    <template v-if="p.capturedAmount !== undefined">
+                      {{ p.capturedAmount.toFixed(2) }}
+                    </template>
+                  </span>
+                </span>
+              </li>
+            </ul>
             <p v-else class="muted">No sessions paid for yet.</p>
             <h4>Payment events</h4>
             <ol v-if="paymentsState.events.length > 0" class="sent pay-events">
@@ -1557,7 +1547,8 @@ onUnmounted(() => {
 }
 .bay-row {
   display: grid;
-  grid-template-columns: 280px minmax(220px, 1fr);
+  /* The bay's text wraps rather than widening the charging area. */
+  grid-template-columns: 280px minmax(220px, 320px);
   gap: 12px;
   align-items: center;
 }
@@ -1781,6 +1772,7 @@ onUnmounted(() => {
 }
 
 .manager {
+  min-width: 0;
   grid-column: 3;
   align-self: start;
   position: sticky;
@@ -2043,23 +2035,34 @@ onUnmounted(() => {
   font-weight: 600;
 }
 .payments {
-  width: 100%;
-  border-collapse: collapse;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-.payments th {
-  text-align: left;
-  font-weight: 600;
-  color: var(--muted);
-  padding: 2px 4px;
-}
-.payments td {
-  padding: 3px 4px;
+.payments li {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: start;
+  padding: 4px 0;
   border-top: 1px solid var(--border);
-  vertical-align: top;
 }
-.payments .num {
+.payments .who {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.payments .by {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.payments .amounts {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
   white-space: nowrap;
 }
 .pay-events li.notice {

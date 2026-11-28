@@ -294,6 +294,8 @@ A session shows:
    A car that waits at 0 because the limit leaves no room shows **Waiting for power** (SuspendedEVSE).
 
    With payments it shows the **revenue** and the money **held on cards now**, each session's payment (how it was paid, the price against the hold, its state and what was charged), and the **payment events**, apart from the OCPP messages: holds, raised holds, captures, releases, declines, the station's settlements and the drivers' notices that idle fees start.
+
+   ![The Demo page with payments: app sessions held at NZD 50 with their running prices, one captured, one declined, an idle fee after a car is full, and the site manager's revenue, payments and payment events](images/demo-payments.png)
 6. Every OCPP message flies between its charge point and the site manager's side as it happens, and **OCPP messages** lists them, newest first, with the charge point and connector each is about; click one to see its payload.
 
 The page remembers the setup in the browser and picks up the site when it is opened again. App and valet need ocpp-mimic's built-in CSMS; with another CSMS the page says so.
