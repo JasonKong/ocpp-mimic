@@ -1750,6 +1750,8 @@ Each task is checked where its problem showed, with a test or scenario that fail
 
 - Implemented (T139): the usage model has `remoteShare`, `remoteWait` and `remoteStart`. A remote driver plugs in and, after a step, calls `requestRemoteStart`, then checks every second for the transaction; it stays when it comes, and leaves as `turned-away` (`waited: true`) at the deadline. Its session ends by unplugging. The fleet's `requestRemoteStart` calls the system under test's hook (`fillRemoteStart`: placeholders in the url and the body's strings), else the built-in CSMS's `remote-start` with the engine's CSMS token. A number is drawn for it only when `remoteShare` is above 0, so card-only runs keep their seeded sessions.
 
+- Implemented (T140): the recorder takes a `budget` (default 200,000) when no per-station `limit` is given: each station that recorded something keeps up to min(1000, budget / stations). When a new station takes its share, the others are trimmed at once, newest kept; a forgotten station gives the share back. `serve` without `--record-limit` uses it; `--record-limit`, `load` (10) and `bench` keep fixed limits.
+
 Changed behaviour, listed in the changelog: replays boot first by default (T137); `serve` keeps fewer records per station above 200 stations (T140); `departureMinutes` is simulated time under a multiplier (T134).
 
 Left for later: calibrating EV profiles from logs (#127), the ISO 15118-20 scheduled-control wait and ISO15118Ctrlr's 2.1 variables (#262), the security follow-ups (#92 to #96, #177, #178) and the scale and maintenance ones (#133, #176, #180).

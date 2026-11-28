@@ -1,7 +1,38 @@
 import { describe, expect, it } from 'vitest';
-import { createRecorder } from './recorder.js';
+import { createRecorder, DEFAULT_RECORD_BUDGET, MAX_RECORDS_PER_STATION } from './recorder.js';
 
 describe('recorder', () => {
+  it('shares a record budget between the stations, and keeps a fixed limit when given one', () => {
+    const recorder = createRecorder({ budget: 3000 });
+    const fill = (id: string, n: number) => {
+      for (let i = 0; i < n; i++) recorder.log(id, `line ${i}`);
+    };
+    // Up to 1000 each while the budget allows.
+    fill('A', 1500);
+    fill('B', 1500);
+    expect(recorder.query('A')).toHaveLength(1000);
+    expect(recorder.query('B')).toHaveLength(1000);
+    // A fourth station: 3000 / 4 = 750 each, the others trimmed at once, newest kept.
+    fill('C', 10);
+    fill('D', 900);
+    expect(['A', 'B', 'C', 'D'].map((id) => recorder.query(id).length)).toEqual([
+      750, 750, 10, 750,
+    ]);
+    expect(recorder.query('A').at(-1)).toMatchObject({ message: 'line 1499' });
+    // Forgetting a station gives the others room again as they record.
+    recorder.forget('D');
+    fill('A', 500);
+    expect(recorder.query('A')).toHaveLength(1000);
+    // A fixed limit per station ignores the budget.
+    const fixed = createRecorder({ limit: 5, budget: 1 });
+    for (let i = 0; i < 20; i++) fixed.log('X', `x ${i}`);
+    for (let i = 0; i < 20; i++) fixed.log('Y', `y ${i}`);
+    expect([fixed.query('X').length, fixed.query('Y').length]).toEqual([5, 5]);
+    // The default budget: 200,000 shared, 1000 each.
+    expect(DEFAULT_RECORD_BUDGET).toBe(200_000);
+    expect(MAX_RECORDS_PER_STATION).toBe(1000);
+  });
+
   it('keeps nothing with a limit of 0, but still tells listeners and matches answers', () => {
     const recorder = createRecorder({ limit: 0 });
     const seen: string[] = [];
