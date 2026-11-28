@@ -1748,6 +1748,8 @@ Each task is checked where its problem showed, with a test or scenario that fail
 
 - Implemented (T138): the station list's filters live in `apps/web/src/station-filter.ts` (id text, state, group, and now tag), with the bulk actions under them: Start, Stop, Offline and Online through `POST /api/stations/bulk/<action>` and Delete through `DELETE /api/stations/bulk`, each with the ids in view. Delete asks first, naming the count. The list follows the engine's events, so nothing is reloaded. Checked in a browser: tag filter, then stop, start, offline, online and delete on the stations in view.
 
+- Implemented (T139): the usage model has `remoteShare`, `remoteWait` and `remoteStart`. A remote driver plugs in and, after a step, calls `requestRemoteStart`, then checks every second for the transaction; it stays when it comes, and leaves as `turned-away` (`waited: true`) at the deadline. Its session ends by unplugging. The fleet's `requestRemoteStart` calls the system under test's hook (`fillRemoteStart`: placeholders in the url and the body's strings), else the built-in CSMS's `remote-start` with the engine's CSMS token. A number is drawn for it only when `remoteShare` is above 0, so card-only runs keep their seeded sessions.
+
 Changed behaviour, listed in the changelog: replays boot first by default (T137); `serve` keeps fewer records per station above 200 stations (T140); `departureMinutes` is simulated time under a multiplier (T134).
 
 Left for later: calibrating EV profiles from logs (#127), the ISO 15118-20 scheduled-control wait and ISO15118Ctrlr's 2.1 variables (#262), the security follow-ups (#92 to #96, #177, #178) and the scale and maintenance ones (#133, #176, #180).

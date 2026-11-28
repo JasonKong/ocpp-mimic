@@ -12,6 +12,7 @@ import {
   MESSAGE_SETS,
   DEFAULT_RAMP_UP,
   createUsageDriver,
+  fillRemoteStart,
   rampUpDelays,
   resolveUsage,
   seededRandom,
@@ -40,7 +41,7 @@ import {
 import { resolveEv } from './evs.js';
 import { createHttpFileTransfer } from './file-transfer.js';
 import { createCertificateTools } from './x509.js';
-import { probeCsms, type CsmsKind } from './csms/probe.js';
+import { controlVia, probeCsms, type CsmsKind } from './csms/probe.js';
 import type { PersonaRegistry } from './personas.js';
 import type { StateStore, StationDefinition, StationSecurity } from './state-store.js';
 import { createSystemClock, randomIds } from './system-clock.js';
@@ -142,6 +143,8 @@ export interface FleetOptions {
   /** How long changes collect before they are saved together. Default 1 s. */
   saveBatchMs?: number;
   onEvent?: (event: FleetEvent) => void;
+  /** The built-in CSMS's control API token, for the usage model's remote starts. */
+  csmsApiToken?: string;
 }
 
 export interface Fleet {
@@ -509,6 +512,36 @@ export function createFleet(options: FleetOptions): Fleet {
                 return (
                   connector?.transactionId !== undefined ||
                   ['Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(connector?.status ?? '')
+                );
+              },
+              // A remote start as an app asks for it: the system under test's hook, else the
+              // built-in CSMS's remote-start.
+              requestRemoteStart: async (connectorId, idTag) => {
+                const hook = usage.model?.remoteStart;
+                if (hook !== undefined) {
+                  const call = fillRemoteStart(hook, {
+                    station: definition.id,
+                    connector: connectorId,
+                    idTag,
+                  });
+                  const res = await fetch(call.url, {
+                    method: call.method,
+                    headers: call.headers,
+                    body: call.body,
+                    signal: AbortSignal.timeout(10_000),
+                  });
+                  return res.ok;
+                }
+                const answer = await controlVia(
+                  definition.csmsUrl,
+                  definition.id,
+                  'remote-start',
+                  { idToken: { idToken: idTag, type: 'Central' }, evseId: connectorId },
+                  options.csmsApiToken,
+                );
+                return (
+                  answer.status === 200 &&
+                  (answer.body as { status?: unknown } | undefined)?.status === 'Accepted'
                 );
               },
             },
