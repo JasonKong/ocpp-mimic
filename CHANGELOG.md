@@ -4,6 +4,10 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 
 ## [Unreleased]
 
+### Changed
+
+- Under an energy multiplier, an EV's `departureMinutes` counts simulated minutes, like the rest of the EV model: the departure time in NotifyEVChargingNeeds comes that many times sooner on the wall clock, and the session's estimate compares it with the ETA on the wall clock. Before, the panel could show an ETA well before the departure and still say the target would not be reached.
+
 ## [0.3.0] - 2026-11-28
 
 Milestone M10: payments in the built-in CSMS, a simulated payment provider that holds on the driver's test card, prices each session with its idle fee and captures the price, also on the Demo page. The [design](https://github.com/JasonKong/ocpp-mimic/blob/main/docs/design.md#m10-payments) describes it.

@@ -17,6 +17,13 @@ const AC: EvProfile = {
 };
 
 describe('ISO 15118-20 charging needs', () => {
+  it('leave after departureMinutes of simulated time under an energy multiplier', () => {
+    // 90 simulated minutes at energy x30 are 3 minutes on the wall clock.
+    expect(
+      chargingNeeds21({ profile: AC, soc: 30, pluggedAt: T0, energyMultiplier: 30 }).departureTime,
+    ).toBe('2026-11-16T08:03:00.000Z');
+  });
+
   it('give v2xChargingParameters for charging, the control mode and the energy requests (K18.FR.06)', () => {
     // Hand-checked: 50 % of 60 kWh to the target, 10 % to the minimum; 6 A x 230 V x 3 = 4140 W.
     expect(chargingNeeds21({ profile: AC, soc: 30, pluggedAt: T0 })).toEqual({

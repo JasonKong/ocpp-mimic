@@ -24,6 +24,20 @@ export interface ChargingNeedsInput {
   connectorType?: string;
   /** When the EV was plugged in (ms since the epoch), for the departure time. */
   pluggedAt: number;
+  /**
+   * The station's energy multiplier (default 1). `departureMinutes` counts simulated minutes, as
+   * the EV model does, so the departure on the wire is that many minutes divided by it.
+   */
+  energyMultiplier?: number;
+}
+
+/** The wall-clock departure of an EV that leaves after `departureMinutes` simulated minutes. */
+export function departureAt(
+  pluggedAt: number,
+  departureMinutes: number,
+  energyMultiplier = 1,
+): string {
+  return new Date(pluggedAt + (departureMinutes * 60_000) / energyMultiplier).toISOString();
 }
 
 /** The chargingNeeds of NotifyEVChargingNeeds for an ISO 15118 EV. */
@@ -36,9 +50,11 @@ export function chargingNeeds(input: ChargingNeedsInput): Omit<ChargingNeedsType
     profile.departureMinutes === undefined
       ? {}
       : {
-          departureTime: new Date(
-            input.pluggedAt + profile.departureMinutes * 60_000,
-          ).toISOString(),
+          departureTime: departureAt(
+            input.pluggedAt,
+            profile.departureMinutes,
+            input.energyMultiplier,
+          ),
         };
   if (DC_CONNECTOR_TYPES.includes(input.connectorType ?? '')) {
     return {

@@ -168,7 +168,7 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 
 桩 id 会拼在 CSMS URL 后面：id 为 `SIM-001`、CSMS URL 为 `ws://127.0.0.1:9100/ocpp` 的桩连接 `ws://127.0.0.1:9100/ocpp/SIM-001`。桩使用其 persona 的 OCPP 版本，并且只提供这一个子协议（`ocpp1.6`、`ocpp2.0.1` 或 `ocpp2.1`）。
 
-**模拟时间。** 时间戳始终是真实时间。桩的**能量倍率**（默认 1）让电量和 SoC 按倍数加快增长，原本几小时的充电几分钟就能充满。Web UI 显示剩余时间时换算成实际时间，并标出倍率。
+**模拟时间。** 时间戳始终是真实时间。桩的**能量倍率**（默认 1）让电量和 SoC 按倍数加快增长，原本几小时的充电几分钟就能充满。Web UI 显示剩余时间时换算成实际时间，并标出倍率。车辆的 `departureMinutes` 也按模拟分钟计：×40 时，插枪 240 分钟后离开的车，上报的离开时间是插枪后 6 分钟，电量面板在实际时间上把它和 ETA 比较。
 
 ### 会话怎样开始
 
@@ -389,7 +389,7 @@ faults:
 | `taperSoc` | 功率开始下降的 SoC（默认 80） |
 | `targetSoc` | 车辆停止充电的 SoC（默认 100） |
 | `communication` | `basic`（不上报 SoC）、`dc`、`iso15118`（2.x：发送 NotifyEVChargingNeeds）或 `iso15118-20`（2.1：ISO 15118-20 需求和 Display 值）。不设置时，配置了 SoC 测量项就上报 SoC |
-| `departureMinutes` | ISO 15118：出发时间，单位是插枪后的分钟数 |
+| `departureMinutes` | ISO 15118：出发时间，单位是插枪后的分钟数（有能量倍率时按模拟分钟计） |
 | `controlMode` | ISO 15118-20：`ScheduledControl`（默认）或 `DynamicControl` |
 | `minimumSoc` | ISO 15118-20：司机需要的最低 SoC |
 | `evccid` | 车的 MAC 地址，12 位十六进制数字，即车通过 DIN 70121 或 ISO 15118 告诉桩的值：打开 **Autocharge** 开关的桩用它识别车 |

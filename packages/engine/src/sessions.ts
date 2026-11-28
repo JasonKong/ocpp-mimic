@@ -429,10 +429,12 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
         dirty.get(stationId)?.get(n)?.record ??
         backend.get(stationId, n);
       if (record === undefined) return undefined;
-      const estimate = estimateSession(record);
+      const snapshot = options.station(stationId)?.snapshot();
+      const estimate = estimateSession(record, {
+        energyMultiplier: snapshot?.energyMultiplier ?? 1,
+      });
       const truth = sessionTruth(record);
       const gap = estimateGap(estimate, truth);
-      const snapshot = options.station(stationId)?.snapshot();
       // Time-of-day prices follow the station's clock (2.x ClockCtrlr.TimeZone), else UTC.
       const timeZone = (snapshot?.config as Record<string, string> | undefined)?.[
         'ClockCtrlr/TimeZone'
