@@ -967,9 +967,13 @@ const routes: Route[] = [
     const body = await request.body();
     const url = stringField(body, 'url', true);
     const sharedSecret = stringField(body, 'sharedSecret');
+    // The card the driver pays with on the page and its test outcome (payments, M10).
+    const outcome = stringField(body, 'outcome');
     return viaBuiltinCsms(station, context, 'web-payment', 'a web payment', {
       url,
       ...(sharedSecret !== undefined && { sharedSecret }),
+      ...(outcome !== undefined && { outcome }),
+      ...(body.card !== undefined && { card: body.card }),
     });
   }),
 

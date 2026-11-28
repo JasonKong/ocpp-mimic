@@ -1664,6 +1664,8 @@ M9 之后确定。像 Invisible Urban 这样的 CSMS 是自己收司机的钱：
 
 - 已实现（T130）：`engine/src/csms/payments.ts` 是模拟支付服务：每个站点的设置（默认资费 `DEMO-NZD`、冻结 50、`recharge`、0 Wh、0 分钟），带测试卡、结果和计费方式（`card`、`free`、`site`）的账户，以及每个会话一笔支付。支付由 CSMS 看到的帧驱动，用的是和引擎相同的会话跟踪器。支付方式由账户和会话决定：NoAuthorization 或 `billing: free` 不收费，`billing: site` 记到站点账户、金额为 0，2.1 的 DirectPayment 令牌属于桩自己收款（`terminal`，远程启动的是 `qr`），由桩结算；其余都按卡处理，开始时冻结。卡被拒时状态为 `declined`，CSMS 用 RemoteStopTransaction 或 RequestStopTransaction 停止会话（1.6 要等 StartTransaction 的应答给出 transaction id，桩仍拒绝时会重试）；T131 会把冻结挪到启动之前。实时价格用 `priceSession` 加站点资费和占位宽限期（core 的 `PricingPlace` 新增），所以资费相同时，扣款和引擎的参考价逐分一致；`increment` 在价格进入冻结额 max(5, 10 %) 范围内时再追加一个冻结额，`stop` 到达冻结额时停止会话并扣冻结额。结束时 `settle` 决定释放（价格为 0，或低于最低电量）、失败（`fail-capture`）、在冻结额内扣款，或取消冻结后全额扣款（`recharge`）。控制 API 有 `PUT`/`GET`/`DELETE /api/sites/<id>/payments` 和 `PUT`/`GET /api/accounts/<idToken>`；引擎转发它们，支付站点和同 id 的负载管理站点分开记录。core 的会话跟踪器现在会保留 1.6 在 StartTransaction 之前发来的状态（generic 桩先发 Charging）：CSMS 没有引擎那样的提示，以前会把这段时间算成占位。
 
+- 已实现（T131）：冻结挪到启动之前。CSMS 包装了它的 Authorize、StartTransaction 和 TransactionEvent 应答（所有版本，也包括选项里传入的 handler）：支付站点上被接受的令牌都要经过 `authorize` 询问，卡被拒时应答改为 Invalid，桩就不会启动；交易结束时不询问。控制 API 的 `remote-start` 先询问，被拒时回复 `{ status: 'Declined' }`，不向桩发任何消息。`web-payment` 接收页面的 `outcome` 和 `card`：被拒回复 `paid: false`，不发 NotifyWebPaymentStarted；通过则为该 EVSE 冻结。提前做的冻结（`${station} ${token}`，或 `web ${station} ${evse}`）在会话开始时由它的支付接手，两分钟内没有会话就释放。以下情况放行且不新建冻结：令牌正在自己的会话上、令牌已有冻结、NoAuthorization 和 DirectPayment 令牌、free 和 site 账户，以及桩的 valet 令牌（auto start，现在不需要账户也记到站点）。刷卡终端的冻结额取交易的 maxCost，显示为一条冻结事件。不经询问就启动的桩，仍和 T130 一样在开始时冻结，卡被拒就停止。
+
 先发布 0.2.0，再做 M10；支付功能放进 0.3.0。
 
 ## 观测与 UI

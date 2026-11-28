@@ -132,12 +132,20 @@ const deliveredWh = (record: SessionRecord) => {
     : Math.max(0, last - record.meterStartWh);
 };
 
-/** How a session is paid: by the token's account, else by how it started. */
-export function methodOf(record: SessionRecord, account: Account | undefined): PaymentMethod {
+/**
+ * How a session is paid: by the token's account, else by how it started. The
+ * station's valet token (the CSMS's auto start) is billed to the site.
+ */
+export function methodOf(
+  record: SessionRecord,
+  account: Account | undefined,
+  valetToken?: string,
+): PaymentMethod {
   const type = record.idToken?.type;
   if (type === 'NoAuthorization') return 'free';
   if (account?.billing === 'free') return 'free';
   if (account?.billing === 'site') return 'site';
+  if (valetToken !== undefined && record.idToken?.idToken === valetToken) return 'site';
   if (type === 'DirectPayment') return record.remoteStartId === undefined ? 'terminal' : 'qr';
   if (record.source === 'payment') return record.remoteStartId === undefined ? 'terminal' : 'qr';
   if (record.source === 'remote') return 'app';
@@ -297,7 +305,34 @@ export interface PaymentStation {
 
 export interface PaymentsOptions {
   station(chargeBoxId: string): PaymentStation | undefined;
+  /** The token the CSMS starts the station's sessions with on plug-in (valet), if any. */
+  valetToken?: (chargeBoxId: string) => string | undefined;
+  /** How long a hold waits for its session to start before it is released (default 2 min). */
+  pendingHoldMs?: number;
   now?: () => number;
+}
+
+/** What the CSMS asks before letting a token start a session, and where it asks. */
+export interface PaymentCheck {
+  /**
+   * `authorize`: an Authorize; `start`: a StartTransaction or a TransactionEvent with a token;
+   * `remote`: before a remote start (the app); `web`: the QR code's payment page is paid.
+   */
+  via: 'authorize' | 'start' | 'remote' | 'web';
+  idToken?: string;
+  type?: string;
+  evseId?: number;
+  /** `web`: the card the driver pays with on the page, and its test outcome. */
+  card?: { brand: string; last4: string };
+  outcome?: CardOutcome;
+}
+
+/** Whether the token may start: a declined card may not; a card held for may. */
+export interface PaymentAnswer {
+  allowed: boolean;
+  /** Held on the card for the session to come. */
+  held?: number;
+  reason?: string;
 }
 
 export interface Payments {
@@ -306,6 +341,12 @@ export interface Payments {
   site(id: string): PaymentsState | undefined;
   setAccount(account: Account): Account;
   account(idToken: string): Account | undefined;
+  /**
+   * Holds on the driver's card before a session starts (T131): an Authorize, a remote start or
+   * the QR code's page. A station on no payments site, a free or site-billed token, and a token
+   * already held for or charging are allowed without a new hold.
+   */
+  authorize(chargeBoxId: string, check: PaymentCheck): PaymentAnswer;
   /** Sees a frame of a station's connection, in order. */
   frame(chargeBoxId: string, ocpp: OcppVersion, frame: SessionFrame): void;
 }
@@ -319,6 +360,19 @@ export function createPayments(options: PaymentsOptions): Payments {
   /** `${stationId} ${n}` → its payment. */
   const payments = new Map<string, Payment>();
   const events = new Map<string, PaymentEvent[]>();
+  /**
+   * Holds made before their session started, until it does: `${stationId} ${idToken}`, or
+   * `web ${stationId} ${evseId}` for a QR code's page.
+   */
+  const pending = new Map<
+    string,
+    {
+      siteId: string;
+      amount: number;
+      card: { brand: string; last4: string };
+      timer: NodeJS.Timeout;
+    }
+  >();
 
   const siteOf = (stationId: string) =>
     [...sites.entries()].find(([, site]) => site.stations.includes(stationId));
@@ -327,6 +381,62 @@ export function createPayments(options: PaymentsOptions): Payments {
     const list = events.get(siteId) ?? [];
     list.unshift({ at: iso(), ...event });
     events.set(siteId, list.slice(0, 200));
+  }
+
+  const cardText = (card: { brand: string; last4: string }) => `${card.brand} ****${card.last4}`;
+
+  /** A hold before the session: declined, or held until the session takes it (or time runs out). */
+  function holdAhead(
+    siteId: string,
+    settings: PaymentSettings,
+    key: string,
+    at: { stationId: string; evseId?: number },
+    card: { brand: string; last4: string },
+    outcome: CardOutcome,
+  ): PaymentAnswer {
+    if (outcome === 'decline') {
+      note(siteId, { ...at, kind: 'decline', amount: settings.holdAmount, detail: cardText(card) });
+      return { allowed: false, reason: `the card was declined (${cardText(card)})` };
+    }
+    if (outcome === 'requires-action') {
+      note(siteId, {
+        ...at,
+        kind: 'requires-action',
+        detail: 'the driver confirmed in the bank app',
+      });
+    }
+    note(siteId, { ...at, kind: 'hold', amount: settings.holdAmount, detail: cardText(card) });
+    const timer = setTimeout(() => {
+      if (pending.get(key)?.timer !== timer) return;
+      pending.delete(key);
+      note(siteId, {
+        ...at,
+        kind: 'release',
+        amount: settings.holdAmount,
+        detail: 'no session started',
+      });
+    }, options.pendingHoldMs ?? 120_000);
+    timer.unref();
+    pending.set(key, { siteId, amount: settings.holdAmount, card, timer });
+    return { allowed: true, held: settings.holdAmount };
+  }
+
+  /** The hold made for a session before it started, taken by its payment. */
+  function takePending(record: SessionRecord, method: PaymentMethod) {
+    let key: string | undefined;
+    if (method === 'qr') {
+      const exact = `web ${record.stationId} ${record.evseId ?? 0}`;
+      key = pending.has(exact)
+        ? exact
+        : [...pending.keys()].find((k) => k.startsWith(`web ${record.stationId} `));
+    } else if (record.idToken !== undefined) {
+      key = `${record.stationId} ${record.idToken.idToken}`;
+    }
+    const hold = key === undefined ? undefined : pending.get(key);
+    if (key === undefined || hold === undefined) return undefined;
+    clearTimeout(hold.timer);
+    pending.delete(key);
+    return hold;
   }
 
   /** Sessions to stop once their transaction id is known (1.6: it comes in the CSMS's answer). */
@@ -366,9 +476,10 @@ export function createPayments(options: PaymentsOptions): Payments {
     const token = record.idToken?.idToken;
     const account = token === undefined ? undefined : accounts.get(token);
     let payment = payments.get(key);
+    let ahead: ReturnType<typeof takePending>;
     if (payment === undefined) {
       if (record.startedAt === undefined) return;
-      const method = methodOf(record, account);
+      const method = methodOf(record, account, options.valetToken?.(record.stationId));
       payment = {
         stationId: record.stationId,
         n: record.n,
@@ -390,9 +501,14 @@ export function createPayments(options: PaymentsOptions): Payments {
       } else if (method === 'site') {
         payment.state = 'site-account';
       } else if (method === 'terminal') {
+        // The station's terminal holds the money; its amount comes with the transaction's maxCost.
         payment.state = 'held';
-        note(siteId, { ...at, kind: 'notice', detail: "held by the station's payment terminal" });
+      } else if ((ahead = takePending(record, method)) !== undefined) {
+        payment.state = 'held';
+        payment.heldAmount = ahead.amount;
+        payment.card = ahead.card;
       } else {
+        // Nobody asked before the start (a station that authorized the token itself): hold now.
         const card = account?.card ?? testCard(token ?? `${record.stationId}-${record.n}`);
         const outcome = account?.outcome ?? 'approve';
         payment.card = card;
@@ -481,6 +597,16 @@ export function createPayments(options: PaymentsOptions): Payments {
         stopSession(payment);
       }
     }
+    const maxCost = record.limits?.maxCost;
+    if (payment.method === 'terminal' && payment.heldAmount === 0 && maxCost !== undefined) {
+      payment.heldAmount = maxCost;
+      note(siteId, {
+        ...at,
+        kind: 'hold',
+        amount: maxCost,
+        detail: "by the station's payment terminal",
+      });
+    }
     if (
       payment.method === 'terminal' &&
       record.settlement !== undefined &&
@@ -531,6 +657,11 @@ export function createPayments(options: PaymentsOptions): Payments {
       if (site === undefined) return false;
       sites.delete(id);
       events.delete(id);
+      for (const [key, hold] of pending) {
+        if (hold.siteId !== id) continue;
+        clearTimeout(hold.timer);
+        pending.delete(key);
+      }
       for (const [key, payment] of payments) {
         if (site.stations.includes(payment.stationId)) payments.delete(key);
       }
@@ -542,6 +673,45 @@ export function createPayments(options: PaymentsOptions): Payments {
       return account;
     },
     account: (idToken) => accounts.get(idToken),
+    authorize(chargeBoxId, check) {
+      const site = siteOf(chargeBoxId);
+      if (site === undefined) return { allowed: true };
+      const [siteId, { settings }] = site;
+      const at = {
+        stationId: chargeBoxId,
+        ...(check.evseId !== undefined && { evseId: check.evseId }),
+      };
+      if (check.via === 'web') {
+        const key = `web ${chargeBoxId} ${check.evseId ?? 0}`;
+        const waiting = pending.get(key);
+        if (waiting !== undefined) return { allowed: true, held: waiting.amount };
+        const card = check.card ?? testCard(key);
+        return holdAhead(siteId, settings, key, at, card, check.outcome ?? 'approve');
+      }
+      const token = check.idToken;
+      // Free vend, the station's own payment (terminal, QR code), free and site-billed tokens.
+      if (token === undefined || token === '') return { allowed: true };
+      if (check.type === 'NoAuthorization' || check.type === 'DirectPayment') {
+        return { allowed: true };
+      }
+      const account = accounts.get(token);
+      if (account?.billing === 'free' || account?.billing === 'site') return { allowed: true };
+      if (options.valetToken?.(chargeBoxId) === token) return { allowed: true };
+      // The token at its own session (to stop it, or the start after its Authorize).
+      const running = [...payments.values()].find(
+        (p) => p.stationId === chargeBoxId && p.idToken === token && p.endedAt === undefined,
+      );
+      if (running !== undefined) {
+        return running.state === 'declined'
+          ? { allowed: false, reason: 'the card was declined' }
+          : { allowed: true };
+      }
+      const key = `${chargeBoxId} ${token}`;
+      const waiting = pending.get(key);
+      if (waiting !== undefined) return { allowed: true, held: waiting.amount };
+      const card = account?.card ?? testCard(token);
+      return holdAhead(siteId, settings, key, at, card, account?.outcome ?? 'approve');
+    },
     frame(chargeBoxId, ocpp, frame) {
       const site = siteOf(chargeBoxId);
       if (site === undefined) return;

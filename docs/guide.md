@@ -437,7 +437,7 @@ The CSMS process serves a small HTTP API on its WebSocket port. Scenarios reach 
 | `POST /api/stations/<id>/default-tariff` | 2.1: SetDefaultTariff with the reference tariff or `tariff`, on `evseId` (default 0, every EVSE) |
 | `POST /api/stations/<id>/transaction-limit` | 2.1: `{ "transactionLimit": { "maxEnergy": 5000 }, "transactionId": "..." }`, sent with the next TransactionEvent answer |
 | `POST /api/stations/<id>/driver-tariff` | 2.1: `{ "tariff": {...} }` to send with Authorize answers; `null` removes it |
-| `POST /api/stations/<id>/web-payment` | 2.1: `{ "url": "..." }`, the payment page behind a QR code: checks the TOTP code, queues the URL's limits and sends NotifyWebPaymentStarted |
+| `POST /api/stations/<id>/web-payment` | 2.1: `{ "url": "..." }`, the payment page behind a QR code: checks the TOTP code, queues the URL's limits and sends NotifyWebPaymentStarted. On a [payments](#payments) site the page takes the driver's card, `outcome` and `card` as in an account, and holds on it first |
 
 For example, from the shell:
 
@@ -479,12 +479,21 @@ curl -s -X PUT http://127.0.0.1:9100/api/accounts/CARD-02 \
 | `minEnergyWh` | Below this much energy nothing is charged and the hold is released (default 0) |
 | `idleGraceMinutes` | Idle minutes not priced, from when the car stops taking power (default 0) |
 
-Each session on the site's stations gets a payment, by how it was paid:
+The CSMS holds on the driver's card before the session starts, where a payment CSMS would:
 
-- **card**, **app** or **autocharge** (an RFID card, a remote start, an EVCCID or MAC address): `held` at the start; at the end `captured`, `released` (a price of 0, or under `minEnergyWh`) or `failed` (the capture failed: the driver owes it). A declined card is `declined` and the CSMS stops the session.
+| Way | Held | When the card is declined |
+| --- | --- | --- |
+| RFID card, Autocharge | When the CSMS answers Authorize (or StartTransaction, TransactionEvent with the token) | The answer says Invalid, so the station does not start |
+| App | Before the CSMS sends the remote start | `remote-start` answers `{ "status": "Declined" }` and nothing goes to the station |
+| QR code (2.1) | When the payment page is paid: `web-payment` with the page's `outcome` (and `card`) | `web-payment` answers `"paid": false` and sends no NotifyWebPaymentStarted |
+| Bank card (2.1) | By the station's terminal; the CSMS shows the amount from the transaction's maxCost | The terminal declines |
+
+A hold waits two minutes for its session, then is released. Each session on the site's stations gets a payment, by how it was paid:
+
+- **card**, **app**, **autocharge** or **qr**: `held` (the hold made before the start); at the end `captured`, `released` (a price of 0, or under `minEnergyWh`) or `failed` (the capture failed: the driver owes it). A station that starts a session the CSMS was never asked about is held at the start, and stopped if its card is declined.
 - **free**: a NoAuthorization token (free vend) or an account with `"billing": "free"`; `not-charged`, the energy is still priced and shown.
-- **site**: an account with `"billing": "site"`, such as a valet token; billed to the site's account at 0 and marked paid.
-- **terminal** or **qr** (2.1 DirectPayment): the station's terminal or web page holds the money and the station settles it (`settled-by-station`); the CSMS does not charge again.
+- **site**: the station's valet token (its [`auto-start`](#control-api)) or an account with `"billing": "site"`; billed to the site's account at 0 and marked paid.
+- **terminal** (a 2.1 bank card at the station): the station's terminal holds the money and settles it (`settled-by-station`); the CSMS does not charge again.
 
 An account's `outcome` is how its card behaves: `approve`, `decline`, `requires-action` (the driver confirms in the bank app, like 3-D Secure, then the hold goes through) or `fail-capture`. A token without an account has a test Visa that approves, with the last four digits made from the token. When the car is full the driver gets a notice that idle fees start, shown in the payment events with the holds, increments, captures and releases. These events are kept apart from the OCPP frames.
 
@@ -954,7 +963,7 @@ Stations:
 | `GET`, `PATCH /api/stations/<id>/device-model` | 2.x: list variables; set one with `{ component, variable, value }` |
 | `POST /api/stations/<id>/remote-start` | Through the built-in CSMS: `{ evseId, idToken: { idToken, type } }` |
 | `POST /api/stations/<id>/auto-start` | Through the built-in CSMS: `{ idToken: { idToken, type } }` starts a session on every plug-in (valet); `{ idToken: null }` stops that |
-| `POST /api/stations/<id>/web-payment` | 2.1, through the built-in CSMS: `{ url, sharedSecret }`, the payment page behind the station's QR code (see the CSMS's `web-payment`) |
+| `POST /api/stations/<id>/web-payment` | 2.1, through the built-in CSMS: `{ url, sharedSecret, outcome, card }`, the payment page behind the station's QR code (see the CSMS's `web-payment`) |
 | `PUT /api/sites/<id>` | Through the built-in CSMS of the listed stations: `{ capacityW, stations, minimumW }`, [site load management](#site-load-management) |
 | `GET`, `DELETE /api/sites/<id>` | A site set through this engine: its allocation, or remove it |
 | `PUT /api/sites/<id>/payments` | Through the built-in CSMS of the listed stations: [payments](#payments) for their sessions, `{ stations, holdAmount, overHold, minEnergyWh, idleGraceMinutes, tariff }` |
