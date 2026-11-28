@@ -3621,6 +3621,118 @@ describe('a 2.1 station: ad hoc payment (C18 to C25)', () => {
     expect(restored.cp.persistentState().payments).toBeUndefined();
   });
 
+  it('queues settlements while offline and across a restart, after the transaction ends', async () => {
+    // A card canceled while offline: the CSMS hears it after the reconnect.
+    const cancel = terminal(
+      { Authorize: () => ({ idTokenInfo: { status: 'Accepted' } }) },
+      { PaymentCtrlr: { AuthorizeDirectPayment: true } },
+    );
+    await cancel.boot();
+    expect(await pay(cancel, 1)).toBe('authorized');
+    cancel.cp.disconnected();
+    expect(cancel.cp.stopPayment(1)).toBe('canceled');
+    await cancel.settle();
+    expect(settlements(cancel)).toEqual([]);
+    await cancel.boot();
+    await cancel.settle();
+    expect(settlements(cancel)).toEqual([expect.objectContaining({ status: 'Canceled' })]);
+
+    // A transaction ended while offline, then a restart before the reconnect: the end and its
+    // settlement were both queued and saved, and go out in order once the station is back.
+    const h = terminal();
+    await h.boot();
+    await h.csmsCall('SetDefaultTariff', { evseId: 0, tariff: ADHOC });
+    expect(await pay(h, 1, { brand: 'Visa' })).toBe('authorized');
+    h.cp.plugIn(1);
+    await h.advance(5 * 60_000);
+    h.cp.disconnected();
+    expect(h.cp.stopPayment(1)).toBe('stopping');
+    await h.settle();
+    expect(settlements(h)).toEqual([]);
+    const restored = setup({
+      features: ['Core', 'TariffAndCost', 'Payment'],
+      csms: { NotifySettlement: () => ({}) },
+      restore: h.cp.persistentState(),
+      extra: { ocpp: '2.1' },
+    });
+    await restored.boot();
+    await restored.settle();
+    expect(settlements(restored)).toEqual([
+      expect.objectContaining({ status: 'Settled', settlementAmount: 0.68 }),
+    ]);
+    const order = restored
+      .calls()
+      .filter((c) => c.action === 'TransactionEvent' || c.action === 'NotifySettlement')
+      .map((c) => c.action);
+    expect(order.slice(-2)).toEqual(['TransactionEvent', 'NotifySettlement']);
+  });
+
+  it('prices a transaction resumed after a restart for the whole session, not only up to the restart (E17)', async () => {
+    const resume = { TxCtrlr: { ResumptionTimeout: 300, AllowEnergyTransferResumption: true } };
+    const h = terminal({}, resume);
+    await h.boot();
+    await h.csmsCall('SetDefaultTariff', { evseId: 0, tariff: ADHOC });
+    expect(await pay(h, 1, { brand: 'Visa' })).toBe('authorized');
+    h.cp.plugIn(1);
+    await h.advance(60_000);
+    const saved = h.cp.persistentState();
+    expect(saved.transactions[0]?.cost).toBeDefined();
+    const restored = setup({
+      features: ['Core', 'TariffAndCost', 'Payment'],
+      csms: { NotifySettlement: () => ({}) },
+      deviceModel: resume,
+      restore: saved,
+      extra: { ocpp: '2.1' },
+    });
+    // The restart takes no time here: the clock starts again where the save left it.
+    restored.clock.advance(h.clock.now() - restored.clock.now());
+    await restored.boot();
+    await restored.settle();
+    expect(restored.events().at(-1)).toBe('Updated TxResumed');
+    await restored.advance(4 * 60_000);
+    expect(restored.cp.stopPayment(1)).toBe('stopping');
+    await restored.settle();
+    // 7360 W for 1 + 4 minutes = 613.3 Wh: 0.184 + the Visa fee 0.50 = 0.68, as without a restart.
+    expect(settlements(restored)).toEqual([
+      expect.objectContaining({ status: 'Settled', settlementAmount: 0.68 }),
+    ]);
+  });
+
+  it("fills the EVSE's RoamingEvseId into a payment URL that points to an external party (C25.FR.53)", async () => {
+    const hmac: HmacSha256 = (key, message) =>
+      new Uint8Array(createHmac('sha256', key).update(message).digest());
+    const h = setup({
+      features: ['Core', 'WebPayments'],
+      extra: { ocpp: '2.1', hmacSha256: hmac, serialNumber: 'CS-1' },
+    });
+    await h.boot();
+    expect(
+      await h.csmsCall('SetVariables', {
+        setVariableData: [
+          {
+            component: { name: 'WebPaymentsCtrlr' },
+            variable: { name: 'URLTemplate' },
+            attributeValue: 'https://qr.example.com/{roamingevseid}/{totp}/{version}',
+          },
+          {
+            component: { name: 'WebPaymentsCtrlr', evse: { id: 2 } },
+            variable: { name: 'RoamingEvseId' },
+            attributeValue: 'NZ*MIM*E0002',
+          },
+        ],
+      }),
+    ).toMatchObject({
+      setVariableResult: [{ attributeStatus: 'Accepted' }, { attributeStatus: 'Accepted' }],
+    });
+    const qr = h.cp.webPaymentUrl(2);
+    if (!('url' in qr)) throw new Error(qr.error);
+    expect(qr.url).toBe(`https://qr.example.com/NZ*MIM*E0002/${qr.totp}/v1`);
+    // An EVSE without one leaves the placeholder as it is.
+    const other = h.cp.webPaymentUrl(1);
+    if (!('url' in other)) throw new Error(other.error);
+    expect(other.url).toContain('/{roamingevseid}/');
+  });
+
   it('builds the dynamic QR code, waits for the web payment, and starts it with the URL limits (C25)', async () => {
     const hmac: HmacSha256 = (key, message) =>
       new Uint8Array(createHmac('sha256', key).update(message).digest());
