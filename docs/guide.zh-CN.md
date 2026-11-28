@@ -283,10 +283,10 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 
 页头的 **Demo**（或地址 `#/demo`）是一个可以动手操作的小充电站点，用来展示 OCPP 的工作过程，而不是做测试。用 `ocpp-mimic demo` 启动最方便；用 `serve` 的话，还要另外启动内置 CSMS。
 
-1. 设置**站点**：名称、**OCPP 版本**（1.6J、2.0.1 或 2.1）、**会话的启动方式**（[免认证、RFID 卡、App、valet、银行卡、二维码或 Autocharge](#会话怎样开始)；银行卡和二维码只有 2.1 有）、站点的**充电桩**（最多添加 6 台，每台**单口**或**双口**）、**站点容量**（默认 22 kW，或者勾选 **No limit**），以及**电池速度**（即能量倍率；×300 时大多数车一两分钟就能充满）。
-2. 点 **Build the site**。它用 generic persona（双口桩用 `generic-dual-*`）创建桩 `DEMO-CP-1`、`DEMO-CP-2`……（显示为 CP-1、CP-2……），打上 `demo` 标签，连到填写的 CSMS（默认 `ws://127.0.0.1:9100/ocpp`）。再次构建时会先删除带 `demo` 标签的桩。免认证会打开桩的免认证设置，Autocharge 会打开桩的 `autocharge` 开关；valet 会为每个桩打开内置 CSMS 的自动启动，其他方式则把它关掉。2.1 桩会设置一个已知的二维码密钥，CSMS 才能核验支付。设了容量时，桩会上报取用的功率，由内置 CSMS [管理站点负载](#站点负载管理)。
+1. 设置**站点**：名称、**OCPP 版本**（1.6J、2.0.1 或 2.1）、**会话的启动方式**（[免认证、RFID 卡、App、valet、银行卡、二维码或 Autocharge](#会话怎样开始)；银行卡和二维码只有 2.1 有）、站点的**充电桩**（最多添加 6 台，每台**单口**或**双口**）、**站点容量**（默认 22 kW，或者勾选 **No limit**）、CSMS 是否**收款**（**Take payments**，以及**冻结额**、**超过冻结额时**的处理和**占位宽限**分钟数，见[支付](#支付)），以及**电池速度**（即能量倍率；×300 时大多数车一两分钟就能充满）。
+2. 点 **Build the site**。它用 generic persona（双口桩用 `generic-dual-*`）创建桩 `DEMO-CP-1`、`DEMO-CP-2`……（显示为 CP-1、CP-2……），打上 `demo` 标签，连到填写的 CSMS（默认 `ws://127.0.0.1:9100/ocpp`）。再次构建时会先删除带 `demo` 标签的桩。免认证会打开桩的免认证设置，Autocharge 会打开桩的 `autocharge` 开关；valet 会为每个桩打开内置 CSMS 的自动启动，其他方式则把它关掉。2.1 桩会设置一个已知的二维码密钥，CSMS 才能核验支付。设了容量时，桩会上报取用的功率，由内置 CSMS [管理站点负载](#站点负载管理)。开启收款时，内置 CSMS 为站点的桩重新开始收款，为每个车位的司机建一个测试账户（卡、App 用户或车的 EVCCID），免认证的 tag 不收费。
 3. 左侧的**充电区**把每台充电桩画成一根立柱；双口桩有两个插座，标着 1 和 2，各自接到自己的车位。每个车位有自己的车，从 25 kWh 的小车到 75 kWh 的 SUV，初始电量各不相同。点 **Plug in** 插枪。之后按所选方式开始：自动开始（免认证、Autocharge）、点 **Tap card** 刷卡、点 **Start in app** 用 App 启动、点 **Pay by card** 刷银行卡、点 **Scan the QR code and pay** 扫码支付，或者由 CSMS 启动（valet）。**Tap card to stop**、**Stop in app**、**Stop at the terminal**、**Stop on the web page** 和 **Unplug** 结束会话。**Plug in every car**、为每辆车启动（**Tap every card**、**Start every car in the app**、**Pay for every car**、**Scan every QR code**），以及 **Unplug every car** 会同时作用于所有车位。
-4. 车位上显示桩自己上报的状态（2.x 同时显示充电状态），以及车的电量、功率和已充入的电量。车充满后，桩上报 SuspendedEV，功率降为 0，车位标记为 **Full**，并显示车充满后又在车位上停了多久。会话会一直保持，直到拔枪或会话被停止。
+4. 车位上显示桩自己上报的状态（2.x 同时显示充电状态），以及车的电量、功率和已充入的电量。车充满后，桩上报 SuspendedEV，功率降为 0，车位标记为 **Full**，并显示车充满后又在车位上停了多久。会话会一直保持，直到拔枪或会话被停止。开启收款时，车位还会显示支付状态、目前的价格和冻结额、充满后不断增长的占位费，以及结束时扣了多少；**Card** 选择司机测试卡的表现（通过、拒绝、要求确认、扣款失败），适用于 RFID 卡、App、二维码和 Autocharge。被拒的卡不会启动：车位保持插枪状态，页面会说明原因。
 5. 右侧的**站点管理**汇总整个站点：当前功率（以及容量）、站点建好以来的总供电量、正在充电的车数、已充满但仍占位的车数（以及最长占位时间）。设了容量时还会显示：
    - **站点限值**：充电过程中可以拖动修改，就像电网运营方下调限值那样，CSMS 几秒内重新分配；
    - 站点的**功率曲线**，按充电桩分层堆叠，限值画成虚线；
@@ -294,6 +294,8 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
    - **已下发的限值**：CSMS 发出的每条 SetChargingProfile 以及桩的应答。
 
    因为限值没有余量而停在 0 的车显示 **Waiting for power**（SuspendedEVSE）。
+
+   开启收款时还会显示**收入**和**卡上冻结中**的金额、每个会话的支付（付款方式、价格和冻结额、状态、扣款额），以及和 OCPP 消息分开的**支付事件**：冻结、追加冻结、扣款、释放、拒绝、桩的结算，以及告诉司机开始计占位费的通知。
 6. 每条 OCPP 消息发生时，都会在对应的充电桩和站点管理这一侧之间飞过；**OCPP messages** 按从新到旧列出它们，并标出属于哪台桩、哪个连接器，点开一条可以看它的内容。
 
 页面会在浏览器里记住设置，再次打开时接着显示原来的站点。App 和 valet 需要 ocpp-mimic 的内置 CSMS；连其他 CSMS 时页面会给出提示。
@@ -499,7 +501,7 @@ CSMS 在会话开始之前、在支付型 CSMS 会做的地方冻结司机的卡
 
 账户的 `outcome` 决定卡的表现：`approve`、`decline`、`requires-action`（司机在银行 app 里确认，类似 3-D Secure，然后冻结成功）或 `fail-capture`。没有账户的令牌使用一张会通过的测试 Visa 卡，末四位由令牌算出。车充满时司机会收到“开始计占位费”的通知，和冻结、追加、扣款、释放一起显示在支付事件里。这些事件和 OCPP 帧分开记录。
 
-CSMS 的计价方式和引擎的参考价相同，所以引擎设置同样的资费（`PUT /api/tariff`）时，每笔扣款和会话的 `price.inclTax` 逐分一致。CSMS 从电表值得知电量，想看到价格及时变化，就要让桩足够频繁地上报（1.6 的 `MeterValueSampleInterval`，2.x 的 `SampledDataCtrlr.TxUpdatedInterval`）。
+在 2.x 上，CSMS 还会把目前的价格作为 `totalCost` 放进 TransactionEvent 应答（`--tariff` 已经给出时除外），桩的刷卡终端就按 CSMS 收的金额结算。删除站点的支付会清掉它的支付和会话记录，重新设置的站点从头开始。CSMS 的计价方式和引擎的参考价相同，所以引擎设置同样的资费（`PUT /api/tariff`）时，每笔扣款和会话的 `price.inclTax` 逐分一致。CSMS 从电表值得知电量，想看到价格及时变化，就要让桩足够频繁地上报（1.6 的 `MeterValueSampleInterval`，2.x 的 `SampledDataCtrlr.TxUpdatedInterval`）。
 
 ### 参考资费
 

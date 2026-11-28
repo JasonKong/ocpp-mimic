@@ -1006,8 +1006,29 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       const handler = table[action];
       if (handler === undefined) continue;
       table[action] = async (payload, connection) =>
-        paymentAuthorized(action, payload, connection, await handler(payload, connection));
+        withPaymentCost(
+          action,
+          payload,
+          connection,
+          paymentAuthorized(action, payload, connection, await handler(payload, connection)),
+        );
     }
+  }
+  /**
+   * 2.x: a session on a payments site gets its price as totalCost in TransactionEvent answers,
+   * so a station's payment terminal settles what the CSMS charges (unless a tariff gave one).
+   */
+  function withPaymentCost(
+    action: string,
+    payload: JsonObject,
+    connection: BuiltinCsmsConnection,
+    answer: JsonObject | CallErrorReply,
+  ): JsonObject | CallErrorReply {
+    if (action !== 'TransactionEvent' || answer instanceof CallErrorReply) return answer;
+    if (answer.totalCost !== undefined) return answer;
+    const transactionId = (payload.transactionInfo as JsonObject | undefined)?.transactionId;
+    const price = payments.priceOf(connection.chargeBoxId, transactionId);
+    return price === undefined ? answer : { ...answer, totalCost: price };
   }
   function paymentAuthorized(
     action: string,

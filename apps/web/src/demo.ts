@@ -5,10 +5,14 @@
  * engine's API; everything on the wire comes from the real stations.
  */
 import type {
+  CardOutcome,
   ConnectorSnapshot,
   EvProfile,
   FrameRecord,
   OcppVersion,
+  OverHoldPolicy,
+  Payment,
+  PaymentEvent,
   StationSnapshot,
 } from './api.js';
 
@@ -107,7 +111,40 @@ export interface DemoSetup {
   csmsUrl: string;
   /** The site's grid capacity in kW, which the CSMS shares between sessions; null for none. */
   capacityKW: number | null;
+  /** The built-in CSMS takes the drivers' money (M10); null when it does not. */
+  payments: DemoPayments | null;
 }
+
+/** How the demo site's CSMS takes payments, with the CSMS's default tariff. */
+export interface DemoPayments {
+  holdAmount: number;
+  overHold: OverHoldPolicy;
+  idleGraceMinutes: number;
+}
+
+export const DEFAULT_PAYMENTS: DemoPayments = {
+  holdAmount: 50,
+  overHold: 'recharge',
+  idleGraceMinutes: 0,
+};
+
+export const OVER_HOLD_OPTIONS: readonly { id: OverHoldPolicy; label: string }[] = [
+  { id: 'recharge', label: 'Charge it all at the end' },
+  { id: 'increment', label: 'Raise the hold' },
+  { id: 'stop', label: 'Stop at the hold' },
+];
+
+/** What a driver's test card does, for the menu in each bay. */
+export const CARD_OUTCOME_OPTIONS: readonly { id: CardOutcome; label: string }[] = [
+  { id: 'approve', label: 'Approves' },
+  { id: 'decline', label: 'Declines' },
+  { id: 'requires-action', label: 'Asks to confirm' },
+  { id: 'fail-capture', label: 'Fails at capture' },
+];
+
+/** The CSMS's default tariff, as the setup describes it. */
+export const DEMO_TARIFF_TEXT =
+  'NZD 0.50 a session, 0.40 a kWh, 0.20 an idle minute, with 15 % GST';
 
 export const DEFAULT_SETUP: DemoSetup = {
   site: 'Demo site',
@@ -117,6 +154,7 @@ export const DEFAULT_SETUP: DemoSetup = {
   speed: 300,
   csmsUrl: 'ws://127.0.0.1:9100/ocpp',
   capacityKW: 22,
+  payments: null,
 };
 
 /** The id of the demo's site in the built-in CSMS. */
@@ -128,6 +166,7 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 /** A setup from storage, with defaults for whatever is missing or from an older page. */
 export function normalizeSetup(value: unknown): DemoSetup {
   if (!isObject(value)) return { ...DEFAULT_SETUP, chargers: [...DEFAULT_SETUP.chargers] };
+  const amount = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
   const pick = <T>(ok: (v: unknown) => boolean, v: unknown, fallback: T): T =>
     ok(v) ? (v as T) : fallback;
   const chargers = Array.isArray(value.chargers)
@@ -154,6 +193,21 @@ export function normalizeSetup(value: unknown): DemoSetup {
             value.capacityKW,
             DEFAULT_SETUP.capacityKW,
           ),
+    payments: isObject(value.payments)
+      ? {
+          holdAmount: pick(amount, value.payments.holdAmount, DEFAULT_PAYMENTS.holdAmount),
+          overHold: pick(
+            (v) => OVER_HOLD_OPTIONS.some((o) => o.id === v),
+            value.payments.overHold,
+            DEFAULT_PAYMENTS.overHold,
+          ),
+          idleGraceMinutes: pick(
+            amount,
+            value.payments.idleGraceMinutes,
+            DEFAULT_PAYMENTS.idleGraceMinutes,
+          ),
+        }
+      : null,
   };
 }
 
@@ -164,6 +218,31 @@ export const DEMO_TAG = 'demo';
 export const VALET_TOKEN = 'VALET';
 export const cardFor = (bay: number) => `CARD-${String(bay + 1).padStart(4, '0')}`;
 export const appUserFor = (bay: number) => `APP-USER-${String(bay + 1).padStart(2, '0')}`;
+/** The idTag 1.6 stations start free vend sessions with. */
+export const FREE_VEND_TAG = 'HOME';
+
+/**
+ * The token a bay's driver (or car) is known by to the CSMS, whose account the
+ * test card outcome goes on: the card, the app user, the car's EVCCID. Free
+ * vend, valet and the 2.1 payments have none: nobody's card is charged, or
+ * the station or the page takes the card.
+ */
+export function driverToken(mode: StartMode, bay: number): string | undefined {
+  switch (mode) {
+    case 'card':
+      return cardFor(bay);
+    case 'app':
+      return appUserFor(bay);
+    case 'autocharge':
+      return carFor(bay).profile.evccid;
+    default:
+      return undefined;
+  }
+}
+
+/** Whether the driver's card outcome can be picked in a bay: the ways where the CSMS holds. */
+export const outcomeApplies = (mode: StartMode) =>
+  driverToken(mode, 0) !== undefined || mode === 'qr';
 
 /** The generic personas that come with ocpp-mimic, with one port or two. */
 export function demoPersona(ocpp: OcppVersion, ports: ChargerPorts): string {
@@ -204,7 +283,7 @@ export function demoStations(setup: DemoSetup): DemoStationDefinition[] {
           config: {
             MeterValueSampleInterval: String(METER_INTERVAL_S),
             MeterValuesSampledData: MEASURANDS,
-            ...(freeVend && { FreeVendEnabled: 'true', FreeVendIdTag: 'HOME' }),
+            ...(freeVend && { FreeVendEnabled: 'true', FreeVendIdTag: FREE_VEND_TAG }),
           },
         }
       : {
@@ -515,4 +594,68 @@ export function stackedAreas(
     const bottom = lower.map((w, i) => `${x(i)},${y(w)}`).reverse();
     return { id, d: `M${top.join(' L')} L${bottom.join(' L')} Z` };
   });
+}
+
+/** An amount of money, to the cent. */
+export const money = (amount: number, currency = 'NZD') => `${currency} ${amount.toFixed(2)}`;
+
+/** The latest payment of a bay (a station's connector or EVSE), if it had one. */
+export function paymentOfBay(
+  payments: readonly Payment[],
+  stationId: string,
+  connectorId: number,
+): Payment | undefined {
+  return payments
+    .filter((p) => p.stationId === stationId && (p.evseId ?? 1) === connectorId)
+    .reduce<Payment | undefined>(
+      (latest, p) => (latest === undefined || p.n > latest.n ? p : latest),
+      undefined,
+    );
+}
+
+/** The idle fee so far in a payment's price. */
+export const idleFeeOf = (payment: Payment) =>
+  payment.price?.items.find((i) => i.part === 'idleTime')?.inclTax ?? 0;
+
+export const PAYMENT_METHOD_TEXT: Record<Payment['method'], string> = {
+  card: 'RFID card',
+  autocharge: 'Autocharge',
+  app: 'App',
+  qr: 'QR code',
+  terminal: 'Bank card',
+  free: 'Free vend',
+  site: 'Site account',
+};
+
+export const PAYMENT_STATE_TEXT: Record<Payment['state'], string> = {
+  pending: 'Pending',
+  'requires-action': 'Confirming',
+  held: 'Held',
+  captured: 'Captured',
+  released: 'Released',
+  failed: 'Capture failed',
+  declined: 'Declined',
+  'not-charged': 'Not charged',
+  'site-account': 'Site account',
+  'settled-by-station': 'Settled by the station',
+};
+
+/** One line for a payment event, as the site manager reads it. */
+export function paymentEventText(event: PaymentEvent, currency = 'NZD'): string {
+  const amount = event.amount === undefined ? '' : ` ${money(event.amount, currency)}`;
+  const detail = event.detail === undefined ? '' : ` · ${event.detail}`;
+  const what: Record<PaymentEvent['kind'], string> = {
+    hold: 'Held',
+    increment: 'Hold raised to',
+    capture: 'Captured',
+    cancel: 'Hold canceled',
+    release: 'Released',
+    decline: 'Declined',
+    'requires-action': 'Asked the driver to confirm',
+    'capture-failed': 'Capture failed',
+    'stop-at-hold': 'Stopped at the hold',
+    settlement: 'Settled by the station',
+    notice: 'Driver notified',
+  };
+  return `${what[event.kind]}${amount}${detail}`;
 }
