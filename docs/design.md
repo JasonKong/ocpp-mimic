@@ -1707,6 +1707,41 @@ M10's exit criterion G10 is met on main 03518cf, against `ocpp-mimic demo`:
   - the payments overflowed the site manager.
 - **CI**: green on #309 and #311 to #313. The last local check ran 865 unit tests and 218 regression scenarios.
 
+## M11 Hardening
+
+Decided for M11 after M10: no new feature area. M11 takes eight follow-ups from M4 to M7 that make what exists more correct or easier to use, before a new feature milestone (V2X and DER, Plug & Charge, or personas modelled on real chargers) is chosen. They release as 0.4.0.
+
+**Exit criterion G11**
+
+Each task is checked where its problem showed, with a test or scenario that fails without the change:
+
+- under an energy multiplier, the session's ETA and the EV's departure are compared and shown on one clock;
+- the reference price and a 2.1 station's own cost agree to the cent on tariffs with time-of-day, charging-time and idle conditions, and the built-in CSMS's captures still equal the reference price;
+- a settlement made offline reaches the CSMS after the reconnect, and a transaction resumed after a restart is settled for the whole session;
+- a replay of a log that starts mid-session boots first by default, against a CSMS that refuses messages before a boot;
+- the Web UI filters stations by tag and starts, stops, takes offline and deletes the stations in view, checked in a browser;
+- a load plan with remote starts drives them through the built-in CSMS and counts the drivers who waited too long;
+- `serve` with 1,000 stations keeps its records within a total budget, checked on the bench;
+- the CitrineOS suite runs the 2.0.1 test cases left out for lack of station failures, and passes in CI.
+
+**Tasks**
+
+| Task | Issue | Scope |
+| --- | --- | --- |
+| T134 | #283 | One clock for the departure check: `departureMinutes` counts simulated minutes, like the EV model, and the energy panel shows the departure scaled to the wall clock next to the ETA |
+| T135 | #261 | One price for 2.1 tariffs: the reference price replays the reported samples and charging states through the 2.1 cost meter, so it takes every condition the station takes (time of day, charging time, idle time, calendar splits); the built-in CSMS's payments use it too |
+| T136 | #263 | Station payments: NotifySettlement queued while offline; a resumed transaction (E17) keeps its cost meter and settles the whole session; WebPaymentsCtrlr.RoamingEvseId and `{roamingevseid}` (C25.FR.53). The QR code stays a link |
+| T137 | #128 | Replay boots first: `boot: auto \| always \| never` on the `replay` step and `--boot` on `ocpp-mimic replay`, default `auto` (the log's first BootNotification, or the persona's, before the first other CALL when the log has none before it) |
+| T138 | #130 | Web UI: a tag filter next to the group filter, and Start, Stop, Offline, Online and Delete for the stations in view through the bulk API, Delete confirming how many it removes |
+| T139 | #129 | Remote starts in the usage model: `remoteShare` drivers plug in and wait for a remote start, which the load plan asks of the built-in CSMS or through an `http` call to the system under test; those who wait too long count as turned away |
+| T140 | #131 | A record budget for `serve`: by default 200,000 records shared by the fleet (1,000 per station up to 200 stations); `--record-limit` still sets a number per station |
+| T141 | #179 | Behaviour switches for station failures: SetNetworkProfile Failed, UnlockConnector UnlockFailed, InstallVerificationFailed, InstallCertificate and DeleteCertificate Failed, GetLog Rejected; then the CitrineOS scenarios TC_B_44, TC_G_20, TC_L_08, TC_M_05, TC_M_21 and TC_N_34 |
+| T142 | #318 | M11 acceptance |
+
+Changed behaviour, listed in the changelog: replays boot first by default (T137); `serve` keeps fewer records per station above 200 stations (T140); `departureMinutes` is simulated time under a multiplier (T134).
+
+Left for later: calibrating EV profiles from logs (#127), the ISO 15118-20 scheduled-control wait and ISO15118Ctrlr's 2.1 variables (#262), the security follow-ups (#92 to #96, #177, #178) and the scale and maintenance ones (#133, #176, #180).
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
@@ -2014,7 +2049,9 @@ flowchart TB
   G9{{"Exit: ocpp-mimic demo; every version and way to start works on the Demo page in a browser"}}
   M10["<b>M10 · Payments</b><br/>A simulated payment provider in the built-in CSMS: holds, captures, idle fees<br/>Payments by way of starting; a payments panel on the Demo page"]
   G10{{"Exit: every way to start and card outcome holds, prices and captures as designed, to the cent, on the Demo page"}}
-  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7 --> M8 --> G8 --> M9 --> G9 --> M10 --> G10
+  M11["<b>M11 · Hardening</b><br/>One clock for departures, one price for 2.1 tariffs, station payments offline and resumed, replay boots first<br/>Tag filter and bulk actions, remote starts in load plans, a record budget, station failures for CSMS tests"]
+  G11{{"Exit: each fix checked where its problem showed, with a test that fails without it"}}
+  M1 --> G1 --> M2 --> G2 --> M3 --> G3 --> M4 --> G4 --> M5 --> G5 --> M6 --> G6 --> M7 --> G7 --> M8 --> G8 --> M9 --> G9 --> M10 --> G10 --> M11 --> G11
 ```
 
 Each phase ends with an exit criterion; the next phase starts once it is met. The M4 thresholds are set in "M4 scale" and can be adjusted to real needs.
