@@ -6,6 +6,7 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 
 ### Added
 
+- **RoamingEvseId** (2.1): each EVSE's `WebPaymentsCtrlr` has one, filled into a payment URL's `{roamingevseid}` (C25.FR.53).
 - **Every 2.1 tariff condition in the reference tariff**: several prices on every part, with time of day, weekday, dates, EVSE kind, energy, current, power and duration conditions (payment brand and recognition on the fixed fee), and `taxRates` on minCost and maxCost.
 
 ### Changed
@@ -13,6 +14,11 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 - **One price for 2.1 tariffs**: the reference price replays a session through the cost meter a 2.1 station prices with, so the two agree to the cent. As on a station, minCost applies once the session has ended and is taxed by its own rates, and maxCost keeps the taxes accrued before it is reached. Energy between two readings counts only while the EV charges, and an energy item names every reading it came from. The built-in CSMS's payments and running costs use the same price. The Web UI's tariff form is offered only for tariffs it can show.
 
 - Under an energy multiplier, an EV's `departureMinutes` counts simulated minutes, like the rest of the EV model: the departure time in NotifyEVChargingNeeds comes that many times sooner on the wall clock, and the session's estimate compares it with the ETA on the wall clock. Before, the panel could show an ETA well before the departure and still say the target would not be reached.
+
+### Fixed
+
+- A 2.1 station's NotifySettlement queues while offline and across a restart instead of being lost; a terminal with its own cost settles at once, queued after the transaction's end.
+- A 2.1 transaction resumed after a restart keeps its cost and settles the whole session, not only the part before the restart.
 
 ## [0.3.0] - 2026-11-28
 

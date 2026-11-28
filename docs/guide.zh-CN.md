@@ -687,8 +687,8 @@ CSMS 步骤（`csmsCall`、`csmsReply`）只能配合内置 CSMS 使用；测你
 | **资费和桩自己计费** | 功能 `TariffAndCost`。CSMS 下发默认资费（SetDefaultTariff）或司机资费（在 Authorize 应答里），桩自己给会话计价，上报 costDetails、实时费用和最终费用。`ocpp-mimic csms --tariff <文件> --install-tariff` 给每个 2.1 桩下发默认资费。Persona：`tariffs-2.1` |
 | **交易限值** | 在 TransactionEvent 应答里下发 maxEnergy、maxTime、maxSoC、maxCost（CSMS 控制 API 的 `transaction-limit`）。桩回显限值，达到时暂停或结束充电 |
 | **重置或断电后恢复交易** | 把 `TxCtrlr.ResumptionTimeout` 设为大于 0；之后 Reset ImmediateAndResume 和 `powerLoss` 注入都会用 TxResumed 恢复交易 |
-| **支付终端** | 功能 `Payment`：Web UI 的 **Pay by card**，场景的 `presentPaymentCard`。终端预授权一笔金额，交易获得 maxCost，结束时终端结算（NotifySettlement）。可以模拟卡被拒、结算失败。Persona：`payments-2.1` |
-| **网页支付（动态二维码）** | 功能 `WebPayments`：**Payment URL** 显示带 TOTP 码的 URL；CSMS 控制 API 的 `web-payment` 扮演支付页面 |
+| **支付终端** | 功能 `Payment`：Web UI 的 **Pay by card**，场景的 `presentPaymentCard`。终端预授权一笔金额，交易获得 maxCost，结束时终端结算（NotifySettlement）。桩自己能算费用（TariffAndCost）时立即结算，否则等 CSMS 在交易结束的应答里给出费用后再结算。结算消息在离线和重启期间排队等待发送。重启后恢复的交易（TxCtrlr.ResumptionTimeout）保留已算的费用，按整个会话结算。可以模拟卡被拒、结算失败。Persona：`payments-2.1` |
+| **网页支付（动态二维码）** | 功能 `WebPayments`：**Payment URL** 显示带 TOTP 码的 URL；CSMS 控制 API 的 `web-payment` 扮演支付页面。URL 指向外部方时，每个 EVSE 的 `WebPaymentsCtrlr` 有一个 `RoamingEvseId`，用于 `{roamingevseid}` 占位符（C25.FR.53） |
 | **优先充电** | Web UI 的 **Priority on / off**（司机按钮），或 CSMS 发送 UsePriorityCharging |
 | **动态充电配置文件** | Dynamic 类型的 profile，由 UpdateDynamicSchedule 更新，或桩用 PullDynamicScheduleUpdate 拉取 |
 | **ISO 15118-20 车辆数据** | EV 配置设 `communication: iso15118-20`：NotifyEVChargingNeeds 带 2.1 字段，电表值和车辆卡片里有 Display.\* 测量项。Persona：`iso15118-20-2.1` |

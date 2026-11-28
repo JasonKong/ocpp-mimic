@@ -468,6 +468,15 @@ export function standardVariables(input: StandardVariablesInput): VariableDefini
       variable(connector, 'ConnectorType', 'string', ro(input.connectorType ?? 'cType2', true)),
       variable(connector, 'SupplyPhases', 'integer', ro('3')),
     );
+    // C25: a WebPaymentsCtrlr per EVSE carries its roaming EVSE id, for a payment URL that points
+    // to an external party ({roamingevseid}, C25.FR.53); empty until the CSMS sets it.
+    if (input.ocpp === '2.1' && input.features.includes('WebPayments')) {
+      out.push(
+        variable({ name: 'WebPaymentsCtrlr', evse: { id } }, 'RoamingEvseId', 'string', rw(''), {
+          maxLimit: 255,
+        }),
+      );
+    }
   }
   return out;
 }

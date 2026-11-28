@@ -61,6 +61,7 @@ import {
   checkTariff,
   createCostMeter,
   type CostMeter,
+  type CostMeterSnapshot,
   type Tariff21,
   type TariffSituation,
 } from '../ocpp21/tariff-cost.js';
@@ -320,6 +321,8 @@ export interface PersistedTransaction201 {
   chargingState?: ChargingStateEnumType;
   limits?: Record<string, number>;
   ev?: PluggedEv;
+  /** 2.1: the station's own cost so far, to carry it on when the transaction resumes (E17). */
+  cost?: CostMeterSnapshot;
 }
 
 /** A token authorized at a connector, with what the CSMS, list or cache said about it. */
@@ -688,6 +691,18 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     (answer: Ocpp21ResponseOf<'TransactionEvent'> | undefined) => void
   >();
   const restoredAnswers = new Map<string, unknown>();
+
+  /**
+   * NotifySettlement goes through the outbox: a settlement made while offline, or before a restart,
+   * reaches the CSMS once the station is back, in order after the transaction's events.
+   */
+  function notifySettlement(
+    payload: Ocpp21RequestOf<'NotifySettlement'>,
+  ): Promise<RpcOutcome<Ocpp21ResponseOf<'NotifySettlement'>>> {
+    return outbox.enqueue('NotifySettlement', payload as unknown as JsonObject) as Promise<
+      RpcOutcome<Ocpp21ResponseOf<'NotifySettlement'>>
+    >;
+  }
 
   /** Waiting for the queued messages to be delivered (before a reset reboots). */
   let deliveredWaiters: (() => void)[] = [];
@@ -1717,7 +1732,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     payments.delete(payment.idToken.idToken);
     log(`EVSE ${payment.evseId}: payment ${payment.idToken.idToken} canceled and released`);
     if (dmValue('PaymentCtrlr', 'AuthorizeDirectPayment') === 'true') {
-      void sendIfOnline('NotifySettlement', {
+      void notifySettlement({
         pspRef: payment.idToken.idToken,
         status: 'Canceled',
         settlementAmount: 0,
@@ -1774,7 +1789,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     changed();
     if (cost <= 0) {
       log(`transaction ${transactionId}: nothing to pay; ${pspRef} released (C20)`);
-      void sendIfOnline('NotifySettlement', { ...base, status: 'Canceled', settlementAmount: 0 });
+      void notifySettlement({ ...base, status: 'Canceled', settlementAmount: 0 });
       return;
     }
     if (dmValue('PaymentCtrlr', 'SettlementByCSMS') === 'true') {
@@ -1787,7 +1802,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     const server = dmValue('PaymentCtrlr', 'ReceiptServerUrl').replace(/\/+$/, '');
     // The terminal's receipt, unless the CSMS gives it (C21.FR.03, .04); none when it failed (C22).
     const receipt = status === 'Settled' && dmValue('PaymentCtrlr', 'ReceiptByCSMS') !== 'true';
-    void sendIfOnline('NotifySettlement', {
+    void notifySettlement({
       ...base,
       status,
       settlementAmount: cost,
@@ -1805,7 +1820,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         vatNumber: payment.vat.number,
         ...(payment.vat.company !== undefined && { vatCompany: payment.vat.company }),
       }),
-    })?.then((outcome) => {
+    }).then((outcome) => {
       if (outcome.ok && outcome.payload.receiptUrl !== undefined) {
         log(`transaction ${transactionId}: receipt at ${outcome.payload.receiptUrl}`);
       }
@@ -1887,6 +1902,8 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     const supported = dmValue('WebPaymentsCtrlr', 'URLParameters')
       .split(',')
       .filter((p) => p !== '');
+    // The EVSE's own WebPaymentsCtrlr: its roaming EVSE id (C25.FR.53).
+    const roamingEvseId = deviceModel.get(`WebPaymentsCtrlr@${evseId}`, 'RoamingEvseId') ?? '';
     const url = paymentUrlOf(
       dmValue('WebPaymentsCtrlr', 'URLTemplate'),
       {
@@ -1894,6 +1911,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
         evseId,
         totp,
         version: dmValue('WebPaymentsCtrlr', 'TOTPVersion') || 'v1',
+        ...(roamingEvseId !== '' && { roamingEvseId }),
       },
       limits,
       supported,
@@ -2261,22 +2279,26 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       'Transaction.End',
     );
     updatePower(connectorId);
-    // A card paid for it: the terminal settles once the CSMS has the end (C20, C21).
+    // A card paid for it: the terminal settles its own cost at once, queued after the end; without
+    // one, once the CSMS has the end and answers with its cost (C20, C21).
     const payment = paymentOf(tx.idToken);
+    const ownCost = () => {
+      const own = tx.cost?.details(true).totalCost.total;
+      return own?.inclTax ?? own?.exclTax;
+    };
+    const settleOnAnswer = payment !== undefined && tx.cost === undefined;
     sendEvent(connectorId, tx, 'Ended', trigger, {
       stoppedReason: tx.stoppedReason ?? stoppedReason,
       ...(idToken !== undefined && { idToken }),
       meterValue: [...tx.endedValues, ...(final === undefined ? [] : [final])],
-      ...(payment !== undefined && {
-        onAnswer: (response) => {
-          const own = tx.cost?.details(true).totalCost.total;
-          settlePayment(payment, tx.id, response, {
-            own: own?.inclTax ?? own?.exclTax,
-            csms: tx.csmsCost,
-          });
-        },
+      ...(settleOnAnswer && {
+        onAnswer: (response) =>
+          settlePayment(payment, tx.id, response, { own: ownCost(), csms: tx.csmsCost }),
       }),
     });
+    if (payment !== undefined && !settleOnAnswer) {
+      settlePayment(payment, tx.id, undefined, { own: ownCost(), csms: tx.csmsCost });
+    }
     applyDevice({ type: 'TransactionEnded', connectorId });
     updateLock(connectorId);
     changed();
@@ -2617,6 +2639,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     updateLock(connectorId);
     sendEvent(connectorId, tx, 'Updated', 'TxResumed');
     schedulePeriodic(connectorId, tx);
+    if (tx.cost !== undefined) scheduleCost(connectorId, tx);
     checkTxLimits(connectorId, tx);
     log(`connector ${connectorId}: transaction ${tx.id} resumed`);
   }
@@ -3519,6 +3542,15 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       wasCharging: saved.chargingState === 'Charging',
       endedValues: [],
     };
+    // Its own cost carries on: the time the station was down is not priced (E17).
+    if (saved.cost !== undefined) {
+      tx.cost = createCostMeter({
+        tariff: saved.cost.tariff,
+        place: saved.cost.place,
+        start: saved.cost.last,
+        restore: saved.cost,
+      });
+    }
     transactions.set(connectorId, tx);
     station = reduce(
       station,
@@ -4009,6 +4041,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
             ...(tx.limits !== undefined && { limits: { ...tx.limits } as Record<string, number> }),
           }),
           ...(v21 && evOf(connectorId) !== undefined && { ev: evOf(connectorId) as PluggedEv }),
+          ...(tx.cost !== undefined && { cost: tx.cost.snapshot() }),
         })),
         authCache,
         localList,

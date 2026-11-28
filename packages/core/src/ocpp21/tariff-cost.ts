@@ -46,7 +46,8 @@ export interface TariffSituation {
   charging: boolean;
   /**
    * Neither charging nor idle time: the time is not priced. The reference price uses it for time
-   * the station withholds power (SuspendedEVSE) and for an idle grace period; a station never does.
+   * the station withholds power (SuspendedEVSE) and for an idle grace period; a station for the
+   * time it was down before it resumed a transaction (E17).
    */
   paused?: boolean;
 }
@@ -289,7 +290,7 @@ export function stackedTax(net: number, rates: Rates): number {
 
 const cents = (value: number) => Math.round(value * 100) / 100;
 
-type Dimension =
+export type Dimension =
   'fixed' | 'energy' | 'chargingTime' | 'idleTime' | 'reservationTime' | 'reservationFixed';
 const DIMENSIONS: readonly Dimension[] = [
   'fixed',
@@ -300,13 +301,13 @@ const DIMENSIONS: readonly Dimension[] = [
   'reservationFixed',
 ];
 
-interface Amount {
+export interface Amount {
   exclTax: number;
   inclTax: number;
   rates?: Rates;
 }
 
-interface Period {
+export interface Period {
   startPeriod: number;
   tariffId: string;
   /** The prices chosen: changes start a new period. */
@@ -330,6 +331,23 @@ export interface CostMeterOptions {
   start: TariffSituation;
   /** When the reservation the transaction used was made (I12.FR.06 to .08). */
   reservedAt?: number;
+  /**
+   * A meter saved with `snapshot()`, carried on (a transaction resumed after a restart, E17):
+   * its tariff, amounts and periods; the time since it was saved is not priced.
+   */
+  restore?: CostMeterSnapshot;
+}
+
+/** A cost meter's state, as plain JSON, for a transaction saved before a restart. */
+export interface CostMeterSnapshot {
+  tariff: Tariff21;
+  place: TariffPlace;
+  last: TariffSituation;
+  amounts: [Dimension, Amount][];
+  usage: { energyWh: number; chargingS: number; idleS: number; reservationS: number };
+  periods: Period[];
+  capped: boolean;
+  reservedAt?: number;
 }
 
 export interface CostMeter {
@@ -347,16 +365,25 @@ export interface CostMeter {
   nextChange(): number | undefined;
   /** The charging periods so far, with the prices chosen in each. */
   periods(): CostPeriod[];
+  /** The meter's state, to carry it on after a restart (`restore`). */
+  snapshot(): CostMeterSnapshot;
 }
 
 export function createCostMeter(options: CostMeterOptions): CostMeter {
-  const { place } = options;
-  let tariff = options.tariff;
-  let last = options.start;
-  const amounts = new Map<Dimension, Amount>();
-  const usage = { energyWh: 0, chargingS: 0, idleS: 0, reservationS: 0 };
-  const periods: Period[] = [];
-  let capped = false;
+  const saved = options.restore;
+  const place = saved?.place ?? options.place;
+  let tariff = saved?.tariff ?? options.tariff;
+  // Restored: the time since the save is not priced (the station was down).
+  let last: TariffSituation =
+    saved === undefined ? options.start : { ...saved.last, charging: false, paused: true };
+  const amounts = new Map<Dimension, Amount>(saved?.amounts ?? []);
+  const usage =
+    saved === undefined
+      ? { energyWh: 0, chargingS: 0, idleS: 0, reservationS: 0 }
+      : { ...saved.usage };
+  const periods: Period[] = saved === undefined ? [] : saved.periods.map((p) => ({ ...p }));
+  let capped = saved?.capped ?? false;
+  const reservedAt = saved?.reservedAt ?? options.reservedAt;
 
   const add = (dimension: Dimension, exclTax: number, rates: Rates) => {
     const current = amounts.get(dimension) ?? { exclTax: 0, inclTax: 0 };
@@ -376,13 +403,14 @@ export function createCostMeter(options: CostMeterOptions): CostMeter {
     return { exclTax, inclTax };
   };
 
-  // The fixed fee, chosen once at the start (I12.FR.30).
-  const fixed = tariff.fixedFee?.prices.find((p) =>
-    fixedConditionsHold(p.conditions, last.at, place),
-  );
+  // The fixed fee, chosen once at the start (I12.FR.30); a restored meter has it already.
+  const fixed =
+    saved === undefined
+      ? tariff.fixedFee?.prices.find((p) => fixedConditionsHold(p.conditions, last.at, place))
+      : undefined;
   if (fixed !== undefined) add('fixed', fixed.priceFixed, tariff.fixedFee?.taxRates);
   // Reservation time and fee, when a reservation was used (I12.FR.06 to .08).
-  if (options.reservedAt !== undefined) {
+  if (saved === undefined && options.reservedAt !== undefined) {
     const reservedS = Math.max(0, (last.at - options.reservedAt) / 1000);
     usage.reservationS = reservedS;
     const time = tariff.reservationTime?.prices.find((p) =>
@@ -522,7 +550,7 @@ export function createCostMeter(options: CostMeterOptions): CostMeter {
         energy: Math.round(usage.energyWh * 1000) / 1000,
         chargingTime: Math.round(usage.chargingS),
         idleTime: Math.round(usage.idleS),
-        ...(options.reservedAt !== undefined && {
+        ...(reservedAt !== undefined && {
           reservationTime: Math.round(usage.reservationS),
         }),
       };
@@ -573,5 +601,15 @@ export function createCostMeter(options: CostMeterOptions): CostMeter {
     },
     nextChange: () => nextCalendarChange(tariff, last.at, place),
     periods: () => periods.map(({ key: _key, ...period }) => ({ ...period })),
+    snapshot: () => ({
+      tariff,
+      place,
+      last: { ...last },
+      amounts: [...amounts.entries()].map(([d, a]) => [d, { ...a }] as [Dimension, Amount]),
+      usage: { ...usage },
+      periods: periods.map((p) => ({ ...p })),
+      capped,
+      ...(reservedAt !== undefined && { reservedAt }),
+    }),
   };
 }
