@@ -148,6 +148,146 @@ describe('the built-in CSMS taking payments', () => {
     }
   }
 
+  async function setUp() {
+    csms = await startBuiltinCsms();
+    engine = createEngine({ port: 0 });
+    const { url } = await engine.start();
+    const call = async (method: string, path: string, body?: unknown) => {
+      const res = await fetch(`${url}${path}`, {
+        method,
+        ...(body !== undefined && {
+          body: JSON.stringify(body),
+          headers: { 'content-type': 'application/json' },
+        }),
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- loosely typed JSON keeps the assertions short
+      return { status: res.status, body: (await res.json()) as Record<string, any> };
+    };
+    const payments = async () => (await call('GET', '/api/sites/lot/payments')).body;
+    const paymentOf = async (id: string) =>
+      (await payments()).payments.find((p: { stationId: string }) => p.stationId === id) as
+        Record<string, unknown> | undefined;
+    const eventsOf = async (id: string) =>
+      (await payments()).events
+        .filter((e: { stationId: string }) => e.stationId === id)
+        .map((e: { kind: string }) => e.kind)
+        .reverse() as string[];
+    return { csmsUrl: csms.url, call, paymentOf, eventsOf };
+  }
+
+  for (const ocpp of ['1.6', '2.0.1'] as const) {
+    it(`holds before an app's ${ocpp} remote start, declines without starting, bills valet to the site`, async () => {
+      const { csmsUrl, call, paymentOf, eventsOf } = await setUp();
+      for (const id of ['A1', 'A2', 'A3', 'A4']) {
+        await call('POST', '/api/stations', { id, persona: `generic-${ocpp}`, csmsUrl });
+      }
+      for (const id of ['A1', 'A2', 'A3', 'A4']) {
+        await until(async () => (await call('GET', `/api/stations/${id}`)).body.csms === 'builtin');
+      }
+      await call('PUT', '/api/sites/lot/payments', { stations: ['A1', 'A2', 'A3', 'A4'] });
+      await call('PUT', '/api/accounts/APP-DECLINE', { site: 'lot', outcome: 'decline' });
+      await call('PUT', '/api/accounts/APP-3DS', { site: 'lot', outcome: 'requires-action' });
+      expect(
+        (await call('POST', '/api/stations/A3/auto-start', { idToken: { idToken: 'VALET' } }))
+          .status,
+      ).toBe(200);
+      for (const id of ['A1', 'A2', 'A3', 'A4']) {
+        await call('POST', `/api/stations/${id}/connectors/1/plug`, { ev: 'compact-40kwh' });
+      }
+      const app = (id: string, idToken: string) =>
+        call('POST', `/api/stations/${id}/remote-start`, {
+          idToken: { idToken, type: 'Central' },
+          evseId: 1,
+        });
+      expect((await app('A1', 'APP-OK')).body.status).toBe('Accepted');
+      // Declined before the remote start: no RequestStart or RemoteStart goes to the station.
+      expect((await app('A2', 'APP-DECLINE')).body).toMatchObject({ status: 'Declined' });
+      expect((await app('A4', 'APP-3DS')).body.status).toBe('Accepted');
+      await until(async () => (await paymentOf('A1'))?.state === 'held');
+      expect(await paymentOf('A1')).toMatchObject({ method: 'app', heldAmount: 50 });
+      // One hold, made before the start and taken over by the session.
+      expect(await eventsOf('A1')).toEqual(['hold']);
+      await until(async () => (await paymentOf('A4'))?.state === 'held');
+      expect(await eventsOf('A4')).toEqual(['requires-action', 'hold']);
+      await until(async () => (await paymentOf('A3'))?.state === 'site-account');
+      expect(await paymentOf('A3')).toMatchObject({ method: 'site', heldAmount: 0 });
+      expect(await eventsOf('A2')).toEqual(['decline']);
+      expect(await paymentOf('A2')).toBeUndefined();
+      const messages = (await call('GET', '/api/stations/A2/messages')).body.entries as {
+        action?: string;
+      }[];
+      expect(
+        messages.some(
+          (m) => m.action === 'RemoteStartTransaction' || m.action === 'RequestStartTransaction',
+        ),
+      ).toBe(false);
+    }, 30_000);
+  }
+
+  it('shows the 2.1 terminal hold and settlement, and holds when the QR code page is paid', async () => {
+    const { csmsUrl, call, paymentOf, eventsOf } = await setUp();
+    const secret = 'payments-test-secret';
+    for (const id of ['T1', 'Q1']) {
+      await call('POST', '/api/stations', {
+        id,
+        persona: 'generic-2.1',
+        csmsUrl,
+        energyMultiplier: 600,
+        deviceModel: { WebPaymentsCtrlr: { SharedSecret: secret } },
+      });
+    }
+    for (const id of ['T1', 'Q1']) {
+      await until(async () => (await call('GET', `/api/stations/${id}`)).body.csms === 'builtin');
+    }
+    await call('PUT', '/api/sites/lot/payments', { stations: ['T1', 'Q1'] });
+    for (const id of ['T1', 'Q1']) {
+      await call('POST', `/api/stations/${id}/connectors/1/plug`, { ev: 'compact-40kwh' });
+    }
+    // The bank card at the station's terminal: the station holds and settles, the CSMS shows it.
+    expect(
+      (await call('POST', '/api/stations/T1/connectors/1/payment', { brand: 'Visa' })).body.result,
+    ).toBe('authorized');
+    await until(async () => (await paymentOf('T1'))?.heldAmount === 50);
+    expect(await paymentOf('T1')).toMatchObject({ method: 'terminal', state: 'held' });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await call('POST', '/api/stations/T1/connectors/1/payment/stop');
+    await until(async () => (await paymentOf('T1'))?.state === 'settled-by-station');
+    expect(await eventsOf('T1')).toEqual(['hold', 'settlement']);
+
+    // The QR code: a declined card on the page sends no NotifyWebPaymentStarted.
+    const page = async (outcome?: string) => {
+      const { url } = (await call('GET', '/api/stations/Q1/connectors/1/payment-url')).body;
+      return (
+        await call('POST', '/api/stations/Q1/web-payment', {
+          url,
+          sharedSecret: secret,
+          ...(outcome !== undefined && { outcome }),
+        })
+      ).body;
+    };
+    expect(await page('decline')).toMatchObject({ valid: true, paid: false });
+    expect(
+      ((await call('GET', '/api/stations/Q1/messages')).body.entries as { action?: string }[]).some(
+        (m) => m.action === 'NotifyWebPaymentStarted',
+      ),
+    ).toBe(false);
+    expect(await page()).toMatchObject({ valid: true, paid: true, held: 50 });
+    expect(
+      (
+        await call('POST', '/api/stations/Q1/remote-start', {
+          idToken: { idToken: 'PSP-0001', type: 'DirectPayment' },
+          evseId: 1,
+        })
+      ).body.status,
+    ).toBe('Accepted');
+    await until(async () => (await paymentOf('Q1'))?.state === 'held');
+    expect(await paymentOf('Q1')).toMatchObject({ method: 'qr', heldAmount: 50 });
+    expect(await eventsOf('Q1')).toEqual(['decline', 'hold']);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await call('POST', '/api/stations/Q1/connectors/1/remote-stop');
+    await until(async () => (await paymentOf('Q1'))?.state === 'captured');
+  }, 30_000);
+
   for (const ocpp of ['1.6', '2.0.1'] as const) {
     it(`holds, prices and captures ${ocpp} sessions as the reference price, by account and policy`, async () => {
       csms = await startBuiltinCsms();
@@ -222,11 +362,16 @@ describe('the built-in CSMS taking payments', () => {
         ) as Record<string, unknown> | undefined;
       await until(async () => (await paymentOf('lot', 'P1'))?.state === 'held');
       expect(await paymentOf('lot', 'P1')).toMatchObject({ method: 'card', heldAmount: 50 });
-      // A declined card: no hold, and the CSMS stops the session.
-      await until(async () => (await paymentOf('lot', 'P2'))?.state === 'declined');
-      await until(
-        async () =>
-          (await call('GET', '/api/stations/P2')).body.connectors[0].transactionId === undefined,
+      // A declined card: Authorize is answered Invalid, so nothing starts and nothing is held.
+      await until(async () =>
+        (await call('GET', '/api/sites/lot/payments')).body.events.some(
+          (e: { kind: string; stationId: string }) => e.kind === 'decline' && e.stationId === 'P2',
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(await paymentOf('lot', 'P2')).toBeUndefined();
+      expect((await call('GET', '/api/stations/P2')).body.connectors[0].transactionId).toBe(
+        undefined,
       );
       await until(async () => (await paymentOf('lot', 'P3'))?.state === 'not-charged');
       // The tight session stops itself at its hold and is charged the hold.

@@ -439,7 +439,7 @@ CSMS 进程在 WebSocket 端口上同时提供一个小型 HTTP API。场景里�
 | `POST /api/stations/<id>/default-tariff` | 2.1：用参考资费或 `tariff` 发送 SetDefaultTariff，作用于 `evseId`（默认 0，即所有 EVSE） |
 | `POST /api/stations/<id>/transaction-limit` | 2.1：`{ "transactionLimit": { "maxEnergy": 5000 }, "transactionId": "..." }`，随下一个 TransactionEvent 应答下发 |
 | `POST /api/stations/<id>/driver-tariff` | 2.1：`{ "tariff": {...} }`，随 Authorize 应答下发；`null` 表示取消 |
-| `POST /api/stations/<id>/web-payment` | 2.1：`{ "url": "..." }`，扮演二维码背后的支付页面：校验 TOTP 码，记下 URL 里的限值，发送 NotifyWebPaymentStarted |
+| `POST /api/stations/<id>/web-payment` | 2.1：`{ "url": "..." }`，扮演二维码背后的支付页面：校验 TOTP 码，记下 URL 里的限值，发送 NotifyWebPaymentStarted。在启用[支付](#支付)的站点上，页面会收司机的卡（`outcome` 和 `card` 同账户），先冻结 |
 
 例如在 shell 里：
 
@@ -481,12 +481,21 @@ curl -s -X PUT http://127.0.0.1:9100/api/accounts/CARD-02 \
 | `minEnergyWh` | 电量低于此值时不收费，释放冻结（默认 0） |
 | `idleGraceMinutes` | 车停止取电后不计费的占位分钟数（默认 0） |
 
-站点各桩上的每个会话都有一笔支付，按付款方式不同：
+CSMS 在会话开始之前、在支付型 CSMS 会做的地方冻结司机的卡：
 
-- **card**、**app** 或 **autocharge**（RFID 卡、远程启动、EVCCID 或 MAC 地址）：开始时 `held`；结束时 `captured`、`released`（价格为 0，或低于 `minEnergyWh`）或 `failed`（扣款失败：司机欠款）。卡被拒时是 `declined`，CSMS 会停止会话。
+| 方式 | 何时冻结 | 卡被拒时 |
+| --- | --- | --- |
+| RFID 卡、Autocharge | CSMS 应答 Authorize 时（或带令牌的 StartTransaction、TransactionEvent） | 应答为 Invalid，桩不会启动 |
+| App | CSMS 发出远程启动之前 | `remote-start` 回复 `{ "status": "Declined" }`，不向桩发送任何消息 |
+| 二维码（2.1） | 支付页面付款时：`web-payment` 带上页面的 `outcome`（和 `card`） | `web-payment` 回复 `"paid": false`，不发送 NotifyWebPaymentStarted |
+| 银行卡（2.1） | 由桩的刷卡终端冻结；CSMS 从交易的 maxCost 显示金额 | 终端拒绝 |
+
+冻结后等待会话两分钟，超时就释放。站点各桩上的每个会话都有一笔支付，按付款方式不同：
+
+- **card**、**app**、**autocharge** 或 **qr**：`held`（启动前做的冻结）；结束时 `captured`、`released`（价格为 0，或低于 `minEnergyWh`）或 `failed`（扣款失败：司机欠款）。如果桩没有经过 CSMS 就启动了会话，则在开始时冻结，卡被拒就停止会话。
 - **free**：NoAuthorization 令牌（免费充电）或 `"billing": "free"` 的账户；`not-charged`，电量照样计价并显示。
-- **site**：`"billing": "site"` 的账户，比如 valet 令牌；记到站点账户，金额为 0，标记为已付。
-- **terminal** 或 **qr**（2.1 DirectPayment）：桩的刷卡终端或支付网页收钱，由桩结算（`settled-by-station`）；CSMS 不再扣款。
+- **site**：桩的 valet 令牌（它的 [`auto-start`](#控制-api)）或 `"billing": "site"` 的账户；记到站点账户，金额为 0，标记为已付。
+- **terminal**（2.1 在桩上刷银行卡）：桩的刷卡终端收钱并结算（`settled-by-station`）；CSMS 不再扣款。
 
 账户的 `outcome` 决定卡的表现：`approve`、`decline`、`requires-action`（司机在银行 app 里确认，类似 3-D Secure，然后冻结成功）或 `fail-capture`。没有账户的令牌使用一张会通过的测试 Visa 卡，末四位由令牌算出。车充满时司机会收到“开始计占位费”的通知，和冻结、追加、扣款、释放一起显示在支付事件里。这些事件和 OCPP 帧分开记录。
 
@@ -956,7 +965,7 @@ ocpp-mimic csms --tls-cert packages/engine/test-pki/server.crt --tls-key package
 | `GET`、`PATCH /api/stations/<id>/device-model` | 2.x：列出变量；用 `{ component, variable, value }` 设置一个变量 |
 | `POST /api/stations/<id>/remote-start` | 经由内置 CSMS：`{ evseId, idToken: { idToken, type } }` |
 | `POST /api/stations/<id>/auto-start` | 经由内置 CSMS：`{ idToken: { idToken, type } }` 让每次插枪都启动会话（valet）；`{ idToken: null }` 关闭 |
-| `POST /api/stations/<id>/web-payment` | 2.1，经由内置 CSMS：`{ url, sharedSecret }`，扮演桩二维码背后的支付页面（见 CSMS 的 `web-payment`） |
+| `POST /api/stations/<id>/web-payment` | 2.1，经由内置 CSMS：`{ url, sharedSecret, outcome, card }`，扮演桩二维码背后的支付页面（见 CSMS 的 `web-payment`） |
 | `PUT /api/sites/<id>` | 经由所列桩的内置 CSMS：`{ capacityW, stations, minimumW }`，即[站点负载管理](#站点负载管理) |
 | `GET`、`DELETE /api/sites/<id>` | 通过本引擎设置的站点：查看它的分配，或删除它 |
 | `PUT /api/sites/<id>/payments` | 经由所列桩的内置 CSMS，为它们的会话启用[支付](#支付)：`{ stations, holdAmount, overHold, minEnergyWh, idleGraceMinutes, tariff }` |

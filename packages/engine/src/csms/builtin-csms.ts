@@ -45,8 +45,10 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { signCsr } from '../x509.js';
 import { createSiteLoad, parseSite, type SiteDefinition, type SiteState } from './site-load.js';
 import {
+  CARD_OUTCOMES,
   createPayments,
   parseAccount,
+  type CardOutcome,
   parsePaymentSettings,
   type Account,
   type PaymentSettings,
@@ -990,10 +992,47 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
   };
   /** Sites whose capacity the CSMS shares between their sessions with smart charging. */
   const siteLoad = createSiteLoad({ station: stationAccess });
-  /** The simulated payment provider: holds, captures, idle fees (M10). */
-  const payments = createPayments({ station: stationAccess });
   /** Stations the CSMS starts sessions on as EVs are plugged in (setAutoStart). */
   const autoStarts = new Map<string, AutoStartToken>();
+  /** The simulated payment provider: holds, captures, idle fees (M10). */
+  const payments = createPayments({
+    station: stationAccess,
+    valetToken: (chargeBoxId) => autoStarts.get(chargeBoxId)?.idToken,
+  });
+  // A card the payment provider declines is not authorized, so its session does not start:
+  // Authorize, StartTransaction and TransactionEvent answers say Invalid (M10, T131).
+  for (const table of Object.values(handlersFor)) {
+    for (const action of ['Authorize', 'StartTransaction', 'TransactionEvent']) {
+      const handler = table[action];
+      if (handler === undefined) continue;
+      table[action] = async (payload, connection) =>
+        paymentAuthorized(action, payload, connection, await handler(payload, connection));
+    }
+  }
+  function paymentAuthorized(
+    action: string,
+    payload: JsonObject,
+    connection: BuiltinCsmsConnection,
+    answer: JsonObject | CallErrorReply,
+  ): JsonObject | CallErrorReply {
+    if (answer instanceof CallErrorReply) return answer;
+    const v16 = connection.ocpp === '1.6';
+    const field = v16 ? 'idTagInfo' : 'idTokenInfo';
+    const info = answer[field] as JsonObject | undefined;
+    // Only accepted tokens are asked about, and never the end of a transaction.
+    if (info?.status !== 'Accepted' || payload.eventType === 'Ended') return answer;
+    const token = v16 ? undefined : (payload.idToken as JsonObject | undefined);
+    const evseId = v16
+      ? payload.connectorId
+      : ((payload.evse as JsonObject | undefined)?.id ?? payload.evseId);
+    const check = payments.authorize(connection.chargeBoxId, {
+      via: action === 'Authorize' ? 'authorize' : 'start',
+      idToken: String(v16 ? payload.idTag : token?.idToken),
+      ...(typeof token?.type === 'string' && { type: token.type }),
+      ...(typeof evseId === 'number' && { evseId }),
+    });
+    return check.allowed ? answer : { ...answer, [field]: { ...info, status: 'Invalid' } };
+  }
   /** `${chargeBoxId} ${id}` of connectors started that way, until they report another state. */
   const autoStarted = new Set<string>();
   /** The control API's commands, `POST /api/stations/:id/<command>`. */
@@ -1008,6 +1047,14 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
       if (evseId !== undefined && !(Number.isInteger(evseId) && Number(evseId) > 0)) {
         return [400, { error: '"evseId" must be a whole number from 1' }];
       }
+      // The app holds on the driver's card first; a declined card is not started (M10).
+      const check = payments.authorize(connection.chargeBoxId, {
+        via: 'remote',
+        idToken: token.idToken,
+        ...(typeof token.type === 'string' && { type: token.type }),
+        ...(evseId !== undefined && { evseId: Number(evseId) }),
+      });
+      if (!check.allowed) return [200, { status: 'Declined', reason: check.reason }];
       const remoteStartId = ++remoteStartIds;
       const [action, payload]: [string, JsonObject] =
         connection.ocpp === '1.6'
@@ -1129,6 +1176,32 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
         hmacSha256,
       );
       if (!valid) return [200, { valid: false, reason: 'the code is not valid now' }];
+      // The page takes the driver's card: held, or declined without NotifyWebPaymentStarted (M10).
+      const card = body.card as Record<string, unknown> | undefined;
+      if (
+        card !== undefined &&
+        (typeof card !== 'object' ||
+          card === null ||
+          typeof card.brand !== 'string' ||
+          !/^\d{4}$/.test(String(card.last4)))
+      ) {
+        return [400, { error: '"card" must be { brand, last4 } with four digits' }];
+      }
+      if (
+        body.outcome !== undefined &&
+        !(CARD_OUTCOMES as readonly unknown[]).includes(body.outcome)
+      ) {
+        return [400, { error: `"outcome" must be one of ${CARD_OUTCOMES.join(', ')}` }];
+      }
+      const paid = payments.authorize(connection.chargeBoxId, {
+        via: 'web',
+        evseId,
+        ...(card !== undefined && {
+          card: { brand: String(card.brand), last4: String(card.last4) },
+        }),
+        ...(body.outcome !== undefined && { outcome: body.outcome as CardOutcome }),
+      });
+      if (!paid.allowed) return [200, { valid: true, paid: false, evseId, reason: paid.reason }];
       if (Object.keys(parsed.limits).length > 0) {
         state.limit = { transactionLimit: parsed.limits as JsonObject };
       }
@@ -1137,7 +1210,12 @@ export async function startBuiltinCsms(options: BuiltinCsmsOptions = {}): Promis
         connection,
         'NotifyWebPaymentStarted',
         { evseId, timeout },
-        { valid: true, evseId, limits: parsed.limits },
+        {
+          valid: true,
+          evseId,
+          limits: parsed.limits,
+          ...(paid.held !== undefined && { paid: true, held: paid.held }),
+        },
       );
     },
   };
