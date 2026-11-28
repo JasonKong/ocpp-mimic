@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ManualClock } from './clock.js';
 import {
   createUsageDriver,
+  fillRemoteStart,
   seededRandom,
   stationSeed,
   usageModel,
@@ -93,6 +94,8 @@ describe('usage model', () => {
       cardFirst: 0.3,
       stopByCard: 0.7,
       stepMs: { min: 5_000, max: 30_000 },
+      remoteShare: 0,
+      remoteWaitMs: 120_000,
     });
     expect(
       usageProblems({
@@ -102,10 +105,16 @@ describe('usage model', () => {
         idTags: { count: 0.5 },
         stopBy: { card: 0, unplug: 0 },
         steps: { min: '0s', max: '1s' },
+        remoteShare: 1.5,
+        remoteWait: '0s',
+        remoteStart: { url: 'ftp://csms' },
       }).map((issue) => issue.path),
     ).toEqual([
       '$.sessionsPerHour',
       '$.cardFirst',
+      '$.remoteShare',
+      '$.remoteWait',
+      '$.remoteStart.url',
       '$.idTags.count',
       '$.stay',
       '$.steps',
@@ -193,5 +202,77 @@ describe('usage model', () => {
     station.plugged.set(1, undefined); // someone else plugs in by hand
     await run(clock, 3_600_000);
     expect(events.some((e) => e.type === 'turned-away')).toBe(true);
+  });
+
+  it('has drivers wait for a remote start, and leave when it does not come in time', async () => {
+    const clock = new ManualClock(0);
+    const station = fakeStation(1);
+    const asked: string[] = [];
+    // The CSMS starts the first request 3 s after it, and never the second.
+    let requests = 0;
+    station.actions.requestRemoteStart = async (c, idTag) => {
+      asked.push(idTag);
+      requests += 1;
+      if (requests === 1) {
+        clock.setTimer(3000, () => {
+          station.transactions.add(c);
+          station.log.push(`remote start ${c}`);
+        });
+      }
+      return true;
+    };
+    const events: UsageEvent[] = [];
+    const model = usageModel({
+      sessionsPerHour: 60,
+      stay: { min: '5m', max: '5m' },
+      steps: { min: '1s', max: '1s' },
+      remoteShare: 1,
+      remoteWait: '30s',
+    });
+    const driver = createUsageDriver({
+      clock,
+      random: seededRandom(7),
+      model,
+      actions: station.actions,
+      onEvent: (event) => events.push(event),
+    });
+    driver.start();
+    await run(clock, 3 * 3_600_000);
+    driver.stop();
+    expect(events.find((e) => e.type === 'arrived')).toMatchObject({ remote: true });
+    // No card for an app session: plug, the remote start, and leaving by unplugging.
+    expect(station.log.slice(0, 3)).toEqual(['plug 1', 'remote start 1', 'unplug 1']);
+    expect(station.log).not.toContain('card 1');
+    expect(events.filter((e) => e.type === 'left')[0]).toMatchObject({ by: 'unplug' });
+    // The next driver's start never comes: turned away after waiting 30 s.
+    expect(events).toContainEqual({ type: 'turned-away', connectorId: 1, waited: true });
+    expect(asked.length).toBeGreaterThan(1);
+    // Card-only models draw no number for it, so their sessions stay as they were.
+    expect(usageModel({ sessionsPerHour: 1 }).remoteShare).toBe(0);
+  });
+
+  it('fills a remote start hook for the system under test', () => {
+    expect(
+      fillRemoteStart(
+        { url: 'http://csms.test/api/{station}/start?c={connector}', method: 'POST' },
+        { station: 'CP 1', connector: 2, idTag: 'APP-7' },
+      ),
+    ).toEqual({
+      url: 'http://csms.test/api/CP%201/start?c=2',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ stationId: 'CP 1', connectorId: 2, idTag: 'APP-7' }),
+    });
+    expect(
+      fillRemoteStart(
+        {
+          url: 'http://csms.test/start',
+          method: 'PUT',
+          headers: { authorization: 'Bearer test' },
+          body: { chargePoint: '{station}', evse: { id: '{connector}' }, token: ['{idTag}'] },
+        },
+        { station: 'CP1', connector: 1, idTag: 'APP-7' },
+      ).body,
+    ).toBe(JSON.stringify({ chargePoint: 'CP1', evse: { id: '1' }, token: ['APP-7'] }));
   });
 });

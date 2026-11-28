@@ -1747,6 +1747,8 @@ M10 之后确定：M11 不开新的功能方向，而是从 M4 到 M7 留下的 
 
 - 已实现（T138）：桩列表的筛选放在 `apps/web/src/station-filter.ts`（id 文本、状态、分组，新增 tag），筛选框下方是批量操作：Start、Stop、Offline、Online 通过 `POST /api/stations/bulk/<action>`，Delete 通过 `DELETE /api/stations/bulk`，都带上当前显示的 id。Delete 会先确认并说明数量。列表跟随引擎的事件更新，无需重新加载。已在浏览器里检查：按 tag 筛选后，对显示的桩执行停止、启动、下线、上线和删除。
 
+- 已实现（T139）：用量模型新增 `remoteShare`、`remoteWait` 和 `remoteStart`。远程启动的司机插枪，过一个步长后调用 `requestRemoteStart`，然后每秒检查一次交易；交易开始就留下，到期就以 `turned-away`（`waited: true`）离开；会话以拔枪结束。车队的 `requestRemoteStart` 调用被测系统的钩子（`fillRemoteStart` 替换 url 和 body 字符串里的占位符），没有钩子时调用内置 CSMS 的 `remote-start`，带上引擎的 CSMS 令牌。只有 `remoteShare` 大于 0 时才会为此抽随机数，所以只刷卡的运行保持原来的种子会话。
+
 行为变化会写进 changelog：回放默认先 boot（T137）；超过 200 个桩时 `serve` 每个桩保留的记录变少（T140）；能量倍率下 `departureMinutes` 按模拟时间计（T134）。
 
 以后再做：从日志校准 EV 配置（#127），ISO 15118-20 计划控制下的等待和 ISO15118Ctrlr 的 2.1 变量（#262），安全方面的 follow-up（#92 到 #96、#177、#178），以及规模和维护方面的（#133、#176、#180）。

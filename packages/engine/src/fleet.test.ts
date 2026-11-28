@@ -216,6 +216,42 @@ describe('fleet', () => {
     expect(second?.running).toBe(false);
   });
 
+  it(
+    'has the built-in CSMS start remote sessions for the usage model',
+    { timeout: 20_000 },
+    async () => {
+      csms = await startBuiltinCsms();
+      const fleet = await fleetWith();
+      const usage = {
+        sessionsPerHour: 3600,
+        stay: { min: '1500ms', max: '2s' },
+        steps: { min: '50ms', max: '100ms' },
+        evs: { 'test-5kwh': 1 },
+        idTags: { unknownShare: 0 },
+        remoteShare: 1,
+        remoteWait: '5s',
+      };
+      fleet.add({ id: 'APP-16', persona: 'generic-1.6', csmsUrl: csms.url, usage, seed: 2 });
+      fleet.add({ id: 'APP-201', persona: 'generic-2.0.1', csmsUrl: csms.url, usage, seed: 2 });
+      const v16 = await csms.waitForConnection('APP-16');
+      const v201 = await csms.waitForConnection('APP-201');
+      // Every driver starts in the app: the CSMS's remote start, then the transaction.
+      const started16 = await v16.waitForCall('StartTransaction', 10_000);
+      expect(started16.payload).toMatchObject({ idTag: expect.stringMatching(/^LOAD-\d{4}$/) });
+      for (;;) {
+        const event = await v201.waitForCall('TransactionEvent', 10_000);
+        if (
+          event.payload.eventType !== 'Started' &&
+          event.payload.triggerReason !== 'RemoteStart'
+        ) {
+          continue;
+        }
+        expect(event.payload).toMatchObject({ idToken: { type: 'Central' } });
+        break;
+      }
+    },
+  );
+
   it('runs the usage model on a 2.0.1 station next to a 1.6 one', { timeout: 20_000 }, async () => {
     csms = await startBuiltinCsms();
     const fleet = await fleetWith();

@@ -767,6 +767,9 @@ usage:
 | `cardFirst` | 先刷卡再插枪的司机比例 |
 | `stopBy` | 离开时刷卡结束还是直接拔枪的比例 |
 | `steps` | 刷卡和插枪之间、拔枪之前的等待时间 |
+| `remoteShare` | 用 App 启动的司机比例：插枪后等待远程启动而不刷卡，离开时直接拔枪（默认 0） |
+| `remoteWait` | 这类司机等交易开始的时间，超时就离开，计为被拒（默认 2m） |
+| `remoteStart` | 谁发远程启动。不填时由内置 CSMS 发送（桩连的是内置 CSMS 时）。也可以写 `{ url, method, headers, body }` 调用你的被测系统，url 和 body 里的字符串会替换 `{station}`、`{connector}`、`{idTag}`（默认 body 是 `{ stationId, connectorId, idTag }`） |
 
 每个桩的随机选择由本次运行的 `seed` 和桩 id 决定，所以只要 CSMS 应答相同，同一次运行就能复现。
 
@@ -868,7 +871,7 @@ pnpm bench --stations 1000 --duration 10m --rate 10 --out bench-results/run
 | `ocpp_mimic_frames_total`、`ocpp_mimic_frame_bytes_total` | 流量，按方向和 OCPP 版本 |
 | `ocpp_mimic_connections_total`、`ocpp_mimic_disconnects_total` | 建立和失败的连接；按原因统计的断线 |
 | `ocpp_mimic_transactions_total` | 开始、结束和被拒绝的交易 |
-| `ocpp_mimic_sessions_turned_away_total` | 使用模型里到达时没有空闲连接器的会话 |
+| `ocpp_mimic_sessions_turned_away_total` | 使用模型里到达时没有空闲连接器，或远程启动没在 `remoteWait` 内到来的会话 |
 | `ocpp_mimic_energy_wh_total` | 已充电量 |
 | `ocpp_mimic_offline_queue_messages` | 离线期间排队的消息 |
 | `ocpp_mimic_work_lateness_seconds`、`ocpp_mimic_eventloop_delay_seconds` | 定时任务的延迟；引擎事件循环延迟 |

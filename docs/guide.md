@@ -765,6 +765,9 @@ usage:
 | `cardFirst` | Share of drivers who present the card before plugging in |
 | `stopBy` | Share who end with the card, and who just unplug |
 | `steps` | Waits between card and plug, and before unplugging |
+| `remoteShare` | Share of drivers who start in an app: they plug in and wait for a remote start instead of presenting a card, and leave by unplugging (default 0) |
+| `remoteWait` | How long such a driver waits for the transaction before leaving, counted as turned away (default 2m) |
+| `remoteStart` | Who sends the remote start. Absent, the built-in CSMS does, when it is the station's CSMS. Otherwise `{ url, method, headers, body }` calls your system under test, with `{station}`, `{connector}` and `{idTag}` filled in the url and the body's strings (default body `{ stationId, connectorId, idTag }`) |
 
 Each station's random choices come from the run's `seed` and its id, so a run repeats when the CSMS answers the same way.
 
@@ -866,7 +869,7 @@ Options: `--stations`, `--duration`, `--rate`, `--persona` (default `load-ac-1.6
 | `ocpp_mimic_frames_total`, `ocpp_mimic_frame_bytes_total` | Traffic, by direction and OCPP version |
 | `ocpp_mimic_connections_total`, `ocpp_mimic_disconnects_total` | Connections opened and failed; disconnects by cause |
 | `ocpp_mimic_transactions_total` | Transactions started, stopped and refused |
-| `ocpp_mimic_sessions_turned_away_total` | Usage-model arrivals that found no free connector |
+| `ocpp_mimic_sessions_turned_away_total` | Usage-model arrivals that found no free connector, or whose remote start did not come within `remoteWait` |
 | `ocpp_mimic_energy_wh_total` | Energy delivered |
 | `ocpp_mimic_offline_queue_messages` | Messages waiting while offline |
 | `ocpp_mimic_work_lateness_seconds`, `ocpp_mimic_eventloop_delay_seconds` | How late scheduled work runs; engine event-loop delay |

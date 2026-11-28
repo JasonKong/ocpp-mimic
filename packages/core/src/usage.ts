@@ -8,8 +8,10 @@
 import type { Clock, TimerHandle } from './clock.js';
 import { durationSchema, parseDuration } from './duration.js';
 import {
+  anyValue,
   number,
   object,
+  oneOf,
   record,
   string,
   validate,
@@ -34,6 +36,18 @@ const usageFields = {
   cardFirst: share,
   stopBy: object({}, { card: number(), unplug: number() }),
   steps: object({ min: durationSchema, max: durationSchema }),
+  /** Share of drivers who plug in and wait for a remote start (an app) instead of a card. */
+  remoteShare: share,
+  /** How long such a driver waits for the transaction before leaving (default 2m). */
+  remoteWait: durationSchema,
+  /**
+   * Who sends the remote start: absent, the built-in CSMS; else an http call to the system
+   * under test, with {station}, {connector} and {idTag} filled in the url and the body's strings.
+   */
+  remoteStart: object(
+    { url: string() },
+    { method: oneOf(['POST', 'PUT']), headers: record(string()), body: anyValue() },
+  ),
 };
 
 /** A persona's `usage`: a complete model. */
@@ -86,6 +100,48 @@ export interface UsageModel {
   stopByCard: number;
   /** A driver's wait between card and plug, before giving up, and before unplugging. */
   stepMs: { min: number; max: number };
+  /** Share of drivers who wait for a remote start, and how long. */
+  remoteShare: number;
+  remoteWaitMs: number;
+  /** The system under test's remote start; absent, the built-in CSMS's. */
+  remoteStart?: RemoteStartHook;
+}
+
+/** An http call that asks the system under test for a remote start. */
+export interface RemoteStartHook {
+  url: string;
+  method: 'POST' | 'PUT';
+  headers?: Record<string, string>;
+  body?: unknown;
+}
+
+/** A hook's url, headers and body with {station}, {connector} and {idTag} filled in. */
+export function fillRemoteStart(
+  hook: RemoteStartHook,
+  values: { station: string; connector: number; idTag: string },
+): { url: string; method: 'POST' | 'PUT'; headers: Record<string, string>; body: string } {
+  const fill = (text: string, encode: (s: string) => string) =>
+    text.replace(/\{(station|connector|idTag)\}/g, (_, name: keyof typeof values) =>
+      encode(String(values[name])),
+    );
+  const deep = (value: unknown): unknown =>
+    typeof value === 'string'
+      ? fill(value, (s) => s)
+      : Array.isArray(value)
+        ? value.map(deep)
+        : value !== null && typeof value === 'object'
+          ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, deep(v)]))
+          : value;
+  const body =
+    hook.body === undefined
+      ? { stationId: values.station, connectorId: values.connector, idTag: values.idTag }
+      : deep(hook.body);
+  return {
+    url: fill(hook.url, encodeURIComponent),
+    method: hook.method,
+    headers: { 'content-type': 'application/json', ...hook.headers },
+    body: JSON.stringify(body),
+  };
 }
 
 /** Checks ranges the schema cannot; `path` prefixes the problems. */
@@ -99,6 +155,14 @@ export function usageProblems(definition: UsageDefinition, path = '$'): Validati
   };
   inShare(definition.idTags?.unknownShare, 'idTags.unknownShare');
   inShare(definition.cardFirst, 'cardFirst');
+  inShare(definition.remoteShare, 'remoteShare');
+  if (definition.remoteWait !== undefined && !((parseDuration(definition.remoteWait) ?? 0) > 0)) {
+    problem('remoteWait', 'must be above 0');
+  }
+  const url = definition.remoteStart?.url;
+  if (url !== undefined && !/^https?:\/\/\S+$/.test(url)) {
+    problem('remoteStart.url', 'must be an http:// or https:// URL');
+  }
   const count = definition.idTags?.count;
   if (count !== undefined && !(Number.isInteger(count) && count >= 1)) {
     problem('idTags.count', 'must be a whole number from 1');
@@ -141,6 +205,18 @@ export function usageModel(definition: UsageDefinition): UsageModel {
       min: parseDuration(definition.steps?.min ?? '5s') ?? 5_000,
       max: parseDuration(definition.steps?.max ?? '30s') ?? 30_000,
     },
+    remoteShare: definition.remoteShare ?? 0,
+    remoteWaitMs: parseDuration(definition.remoteWait ?? '2m') ?? 120_000,
+    ...(definition.remoteStart !== undefined && {
+      remoteStart: {
+        url: definition.remoteStart.url,
+        method: definition.remoteStart.method ?? 'POST',
+        ...(definition.remoteStart.headers !== undefined && {
+          headers: definition.remoteStart.headers,
+        }),
+        ...(definition.remoteStart.body !== undefined && { body: definition.remoteStart.body }),
+      },
+    }),
   };
 }
 
@@ -179,11 +255,14 @@ export interface UsageActions {
   isPluggedIn(connectorId: number): boolean;
   /** Whether a transaction runs on the connector, so a card would stop it. */
   hasTransaction(connectorId: number): boolean;
+  /** Asks for a remote start for the driver (an app); without it, every driver uses a card. */
+  requestRemoteStart?(connectorId: number, idTag: string): Promise<boolean>;
 }
 
 export type UsageEvent =
-  | { type: 'arrived'; connectorId: number; idTag: string; ev?: string }
-  | { type: 'turned-away'; connectorId: number }
+  | { type: 'arrived'; connectorId: number; idTag: string; ev?: string; remote?: true }
+  /** The connector was taken, or (`waited`) the remote start did not come in time. */
+  | { type: 'turned-away'; connectorId: number; waited?: true }
   | { type: 'refused'; connectorId: number; idTag: string }
   | { type: 'left'; connectorId: number; by: 'card' | 'unplug' };
 
@@ -257,8 +336,39 @@ export function createUsageDriver(options: UsageDriverOptions): UsageDriver {
     const cardFirst = random() < model.cardFirst;
     const stayMs = between(model.stayMs);
     const byCard = random() < model.stopByCard;
-    emit({ type: 'arrived', connectorId, idTag, ...(ev !== undefined && { ev }) });
-    const stay = () => later(connectorId, stayMs, () => end(connectorId, idTag, byCard));
+    // Drawn only when the model has remote drivers, so card-only runs keep their sequences.
+    const remote =
+      model.remoteShare > 0 &&
+      actions.requestRemoteStart !== undefined &&
+      random() < model.remoteShare;
+    emit({
+      type: 'arrived',
+      connectorId,
+      idTag,
+      ...(ev !== undefined && { ev }),
+      ...(remote && { remote: true as const }),
+    });
+    const stay = () => later(connectorId, stayMs, () => end(connectorId, idTag, byCard && !remote));
+    if (remote) {
+      // Plug in, ask the app for a start, and wait for the transaction; leave when it is late.
+      actions.plugIn(connectorId, ev);
+      later(connectorId, between(model.stepMs), () => {
+        const deadline = clock.now() + model.remoteWaitMs;
+        void actions.requestRemoteStart?.(connectorId, idTag).catch(() => false);
+        const check = () => {
+          if (actions.hasTransaction(connectorId)) {
+            stay();
+          } else if (clock.now() >= deadline) {
+            emit({ type: 'turned-away', connectorId, waited: true });
+            leave(connectorId);
+          } else {
+            later(connectorId, Math.min(1000, deadline - clock.now()), check);
+          }
+        };
+        later(connectorId, Math.min(1000, model.remoteWaitMs), check);
+      });
+      return;
+    }
     const authorize = (then: () => void) => {
       void actions.presentIdTag(connectorId, idTag).then((result) => {
         if (!running) return;

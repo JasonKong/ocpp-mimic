@@ -81,9 +81,11 @@ export interface Engine {
 function usageLine(event: UsageEvent): string {
   switch (event.type) {
     case 'arrived':
-      return `usage: a driver arrives at connector ${event.connectorId} with ${event.idTag}${event.ev === undefined ? '' : ` and EV ${event.ev}`}`;
+      return `usage: a driver arrives at connector ${event.connectorId} with ${event.idTag}${event.ev === undefined ? '' : ` and EV ${event.ev}`}${event.remote === true ? ', starting in the app' : ''}`;
     case 'turned-away':
-      return `usage: connector ${event.connectorId} is not free; the driver leaves`;
+      return event.waited === true
+        ? `usage: the remote start at connector ${event.connectorId} did not come in time; the driver leaves`
+        : `usage: connector ${event.connectorId} is not free; the driver leaves`;
     case 'refused':
       return `usage: ${event.idTag} is refused at connector ${event.connectorId}; the driver gives up`;
     case 'left':
@@ -345,6 +347,7 @@ export function createEngine(options: EngineOptions = {}): Engine {
         ...(store !== undefined && { store }),
         ...(options.allowedCsms !== undefined && { allowedCsms: options.allowedCsms }),
         ...(options.backoff !== undefined && { backoff: options.backoff }),
+        ...(options.csmsApiToken !== undefined && { csmsApiToken: options.csmsApiToken }),
         onEvent: (event) => {
           if (event.type === 'frame') {
             // Frames are recorded on the wire, after the Fault Injector.
