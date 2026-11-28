@@ -347,6 +347,8 @@ export interface Payments {
    * already held for or charging are allowed without a new hold.
    */
   authorize(chargeBoxId: string, check: PaymentCheck): PaymentAnswer;
+  /** The price so far of a transaction on a payments site, tax included, for its cost messages. */
+  priceOf(chargeBoxId: string, transactionId: unknown): number | undefined;
   /** Sees a frame of a station's connection, in order. */
   frame(chargeBoxId: string, ocpp: OcppVersion, frame: SessionFrame): void;
 }
@@ -356,7 +358,7 @@ export function createPayments(options: PaymentsOptions): Payments {
   const iso = () => new Date(now()).toISOString();
   const sites = new Map<string, { stations: string[]; settings: PaymentSettings }>();
   const accounts = new Map<string, Account>();
-  const trackers = new Map<string, SessionTracker>();
+  const trackers = new Map<string, { ocpp: OcppVersion; tracker: SessionTracker }>();
   /** `${stationId} ${n}` → its payment. */
   const payments = new Map<string, Payment>();
   const events = new Map<string, PaymentEvent[]>();
@@ -370,9 +372,13 @@ export function createPayments(options: PaymentsOptions): Payments {
       siteId: string;
       amount: number;
       card: { brand: string; last4: string };
+      /** How the card answers at capture: the QR code's page has no account to ask. */
+      outcome: CardOutcome;
       timer: NodeJS.Timeout;
     }
   >();
+  /** `${stationId} ${n}` → the card outcome a session's hold was made with, for its capture. */
+  const outcomes = new Map<string, CardOutcome>();
 
   const siteOf = (stationId: string) =>
     [...sites.entries()].find(([, site]) => site.stations.includes(stationId));
@@ -417,7 +423,7 @@ export function createPayments(options: PaymentsOptions): Payments {
       });
     }, options.pendingHoldMs ?? 120_000);
     timer.unref();
-    pending.set(key, { siteId, amount: settings.holdAmount, card, timer });
+    pending.set(key, { siteId, amount: settings.holdAmount, card, outcome, timer });
     return { allowed: true, held: settings.holdAmount };
   }
 
@@ -507,6 +513,7 @@ export function createPayments(options: PaymentsOptions): Payments {
         payment.state = 'held';
         payment.heldAmount = ahead.amount;
         payment.card = ahead.card;
+        outcomes.set(key, ahead.outcome);
       } else {
         // Nobody asked before the start (a station that authorized the token itself): hold now.
         const card = account?.card ?? testCard(token ?? `${record.stationId}-${record.n}`);
@@ -625,6 +632,7 @@ export function createPayments(options: PaymentsOptions): Payments {
     payment.endedAt = record.endedAt ?? iso();
     if (payment.state !== 'held' || payment.method === 'terminal') return;
     const outcome =
+      outcomes.get(key) ??
       (payment.idToken !== undefined ? accounts.get(payment.idToken)?.outcome : undefined) ??
       'approve';
     const result = settle(payment, price.inclTax, deliveredWh(record), settings, outcome);
@@ -663,7 +671,14 @@ export function createPayments(options: PaymentsOptions): Payments {
         pending.delete(key);
       }
       for (const [key, payment] of payments) {
-        if (site.stations.includes(payment.stationId)) payments.delete(key);
+        if (!site.stations.includes(payment.stationId)) continue;
+        payments.delete(key);
+        outcomes.delete(key);
+      }
+      // Their sessions are forgotten too, so a site set up again starts afresh.
+      for (const stationId of site.stations) trackers.delete(stationId);
+      for (const key of stopWhenKnown) {
+        if (site.stations.includes(key.split(' ')[0] ?? '')) stopWhenKnown.delete(key);
       }
       return true;
     },
@@ -673,6 +688,13 @@ export function createPayments(options: PaymentsOptions): Payments {
       return account;
     },
     account: (idToken) => accounts.get(idToken),
+    priceOf(chargeBoxId, transactionId) {
+      if (transactionId === undefined || siteOf(chargeBoxId) === undefined) return undefined;
+      const payment = [...payments.values()].find(
+        (p) => p.stationId === chargeBoxId && String(p.transactionId) === String(transactionId),
+      );
+      return payment?.price?.inclTax;
+    },
     authorize(chargeBoxId, check) {
       const site = siteOf(chargeBoxId);
       if (site === undefined) return { allowed: true };
@@ -715,10 +737,11 @@ export function createPayments(options: PaymentsOptions): Payments {
     frame(chargeBoxId, ocpp, frame) {
       const site = siteOf(chargeBoxId);
       if (site === undefined) return;
-      let tracker = trackers.get(chargeBoxId);
-      if (tracker === undefined) {
+      // A station that comes back on another version is another station to follow.
+      let tracker = trackers.get(chargeBoxId)?.tracker;
+      if (tracker === undefined || trackers.get(chargeBoxId)?.ocpp !== ocpp) {
         tracker = createSessionTracker({ stationId: chargeBoxId, ocpp });
-        trackers.set(chargeBoxId, tracker);
+        trackers.set(chargeBoxId, { ocpp, tracker });
       }
       for (const touch of tracker.frame(frame)) {
         follow(site[0], site[1].settings, touch.session);

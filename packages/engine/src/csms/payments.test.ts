@@ -253,6 +253,13 @@ describe('the built-in CSMS taking payments', () => {
     await call('POST', '/api/stations/T1/connectors/1/payment/stop');
     await until(async () => (await paymentOf('T1'))?.state === 'settled-by-station');
     expect(await eventsOf('T1')).toEqual(['hold', 'settlement']);
+    // The terminal settles the price the CSMS sent as totalCost.
+    const settled = (await paymentOf('T1')) as {
+      capturedAmount: number;
+      price: { inclTax: number };
+    };
+    expect(settled.capturedAmount).toBeGreaterThan(0.5);
+    expect(settled.capturedAmount).toBe(settled.price.inclTax);
 
     // The QR code: a declined card on the page sends no NotifyWebPaymentStarted.
     const page = async (outcome?: string) => {
@@ -271,7 +278,8 @@ describe('the built-in CSMS taking payments', () => {
         (m) => m.action === 'NotifyWebPaymentStarted',
       ),
     ).toBe(false);
-    expect(await page()).toMatchObject({ valid: true, paid: true, held: 50 });
+    // The page's card holds, and its outcome holds to the capture: there is no account to ask.
+    expect(await page('fail-capture')).toMatchObject({ valid: true, paid: true, held: 50 });
     expect(
       (
         await call('POST', '/api/stations/Q1/remote-start', {
@@ -285,7 +293,8 @@ describe('the built-in CSMS taking payments', () => {
     expect(await eventsOf('Q1')).toEqual(['decline', 'hold']);
     await new Promise((resolve) => setTimeout(resolve, 500));
     await call('POST', '/api/stations/Q1/connectors/1/remote-stop');
-    await until(async () => (await paymentOf('Q1'))?.state === 'captured');
+    await until(async () => (await paymentOf('Q1'))?.state === 'failed');
+    expect((await eventsOf('Q1')).at(-1)).toBe('capture-failed');
   }, 30_000);
 
   for (const ocpp of ['1.6', '2.0.1'] as const) {
@@ -419,6 +428,10 @@ describe('the built-in CSMS taking payments', () => {
       expect((await call('PUT', '/api/accounts/X', { site: 'nowhere' })).status).toBe(404);
       expect((await call('DELETE', '/api/sites/lot/payments')).status).toBe(200);
       expect((await call('GET', '/api/sites/lot/payments')).status).toBe(404);
+      // Set up again, the site starts afresh.
+      expect(
+        (await call('PUT', '/api/sites/lot/payments', { stations: ['P1'] })).body,
+      ).toMatchObject({ payments: [], events: [], revenue: 0 });
     }, 30_000);
   }
 });

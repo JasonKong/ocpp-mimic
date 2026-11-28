@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { ConnectorSnapshot, FrameRecord, StationSnapshot } from './api.js';
+import type { ConnectorSnapshot, FrameRecord, Payment, StationSnapshot } from './api.js';
 import {
   bayView,
+  DEFAULT_PAYMENTS,
+  driverToken,
+  idleFeeOf,
+  money,
+  outcomeApplies,
+  paymentEventText,
+  paymentOfBay,
   carFor,
   chargerLabel,
   clockText,
@@ -148,6 +155,72 @@ describe('the demo site', () => {
     expect(normalizeSetup({ capacityKW: null }).capacityKW).toBeNull();
     expect(normalizeSetup({ capacityKW: 11.5 }).capacityKW).toBe(11.5);
     expect(normalizeSetup({}).capacityKW).toBe(22);
+    // Payments are off unless stored on, with defaults for what an older page lacks.
+    expect(normalizeSetup({}).payments).toBeNull();
+    expect(normalizeSetup({ payments: {} }).payments).toEqual(DEFAULT_PAYMENTS);
+    expect(
+      normalizeSetup({ payments: { holdAmount: 20, overHold: 'stop', idleGraceMinutes: -1 } })
+        .payments,
+    ).toEqual({ holdAmount: 20, overHold: 'stop', idleGraceMinutes: 0 });
+    expect(normalizeSetup({ payments: { overHold: 'later' } }).payments?.overHold).toBe('recharge');
+  });
+
+  it("knows each bay's driver token, whose test card the CSMS holds on", () => {
+    expect(driverToken('card', 0)).toBe('CARD-0001');
+    expect(driverToken('app', 2)).toBe('APP-USER-03');
+    expect(driverToken('autocharge', 1)).toBe(carFor(1).profile.evccid);
+    // Nobody's card: free vend, valet; and the station or the page takes the card on 2.1.
+    for (const mode of ['free-vend', 'valet', 'payment', 'qr'] as const) {
+      expect(driverToken(mode, 0)).toBeUndefined();
+    }
+    expect(['card', 'app', 'autocharge', 'qr'].every((m) => outcomeApplies(m as never))).toBe(true);
+    expect(outcomeApplies('valet')).toBe(false);
+    expect(outcomeApplies('payment')).toBe(false);
+  });
+
+  it("finds a bay's latest payment and writes payment events for the site manager", () => {
+    const payment = (patch: Partial<Payment>): Payment => ({
+      stationId: 'DEMO-CP-1',
+      n: 1,
+      evseId: 1,
+      method: 'card',
+      state: 'captured',
+      heldAmount: 50,
+      ...patch,
+    });
+    const list = [
+      payment({ n: 1 }),
+      payment({ n: 3, state: 'held' }),
+      payment({ n: 2, evseId: 2 }),
+      payment({ stationId: 'DEMO-CP-2', n: 4 }),
+    ];
+    expect(paymentOfBay(list, 'DEMO-CP-1', 1)?.n).toBe(3);
+    expect(paymentOfBay(list, 'DEMO-CP-1', 2)?.n).toBe(2);
+    expect(paymentOfBay(list, 'DEMO-CP-3', 1)).toBeUndefined();
+    expect(money(3.5)).toBe('NZD 3.50');
+    expect(
+      idleFeeOf(
+        payment({
+          price: {
+            items: [
+              { part: 'energy', quantity: 5, unit: 'kWh', unitPrice: 0.4, inclTax: 2.3 },
+              { part: 'idleTime', quantity: 4, unit: 'min', unitPrice: 0.2, inclTax: 0.92 },
+            ],
+            exclTax: 2.8,
+            tax: 0.42,
+            inclTax: 3.22,
+            currency: 'NZD',
+          },
+        }),
+      ),
+    ).toBe(0.92);
+    const at = '2026-11-28T00:00:00Z';
+    expect(
+      paymentEventText({ at, stationId: 'X', kind: 'hold', amount: 50, detail: 'Visa ****4242' }),
+    ).toBe('Held NZD 50.00 · Visa ****4242');
+    expect(
+      paymentEventText({ at, stationId: 'X', kind: 'notice', detail: 'full: idle fees start now' }),
+    ).toBe('Driver notified · full: idle fees start now');
   });
 
   it('adds up the site: power, energy since the build, charging and full cars', () => {

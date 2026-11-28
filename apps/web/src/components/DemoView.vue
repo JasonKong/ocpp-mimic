@@ -3,9 +3,12 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import {
   api,
   connectEvents,
+  type CardOutcome,
   type EventsConnection,
   type FrameRecord,
   type OcppVersion,
+  type Payment,
+  type PaymentsState,
   type PersonaInfo,
   type SiteState,
   type StationSnapshot,
@@ -13,21 +16,34 @@ import {
 import {
   appUserFor,
   bayView,
+  CARD_OUTCOME_OPTIONS,
   carFor,
   cardFor,
   chargerLabel,
   clockText,
   createPortTracker,
+  DEFAULT_PAYMENTS,
   DEMO_SITE_ID,
+  DEMO_TARIFF_TEXT,
   DEMO_WEB_PAYMENT_SECRET,
   DEMO_SPEEDS,
   DEMO_TAG,
   DEMO_VERSIONS,
   demoStations,
+  driverToken,
   frameLabel,
+  FREE_VEND_TAG,
+  idleFeeOf,
   MAX_CHARGERS,
   modeAvailable,
+  money,
   normalizeSetup,
+  outcomeApplies,
+  OVER_HOLD_OPTIONS,
+  PAYMENT_METHOD_TEXT,
+  PAYMENT_STATE_TEXT,
+  paymentEventText,
+  paymentOfBay,
   siteTotals,
   stackedAreas,
   START_MODES,
@@ -57,7 +73,11 @@ function remember(value: DemoSetup) {
     // Without storage the page still works; it only forgets the setup on reload.
   }
 }
-const copy = (value: DemoSetup): DemoSetup => ({ ...value, chargers: [...value.chargers] });
+const copy = (value: DemoSetup): DemoSetup => ({
+  ...value,
+  chargers: [...value.chargers],
+  payments: value.payments === null ? null : { ...value.payments },
+});
 
 /** The settings being chosen, and the ones the site was built with. */
 const setup = reactive<DemoSetup>(stored() ?? normalizeSetup(undefined));
@@ -69,6 +89,10 @@ const error = ref<string | undefined>();
 const now = ref(Date.now());
 /** The site in the built-in CSMS, the limit being dragged, and the power over time. */
 const siteState = ref<SiteState | undefined>();
+/** The CSMS's payments for the site (M10), when the site takes them. */
+const paymentsState = ref<PaymentsState | undefined>();
+/** What each bay's driver card does (by bay index), for the CSMS's test accounts. */
+const outcomes = reactive(new Map<number, CardOutcome>());
 const liveCapacityKW = ref(0);
 const samples = ref<PowerSample[]>([]);
 const MAX_SAMPLES = 150;
@@ -294,12 +318,82 @@ async function build() {
         // There was no site, or the CSMS is not the built-in one.
       });
     }
+    // Payments are the CSMS's too: holds, prices and captures for the site's sessions,
+    // afresh for the new stations.
+    paymentsState.value = undefined;
+    await api.deletePayments(DEMO_SITE_ID).catch(() => {
+      // There were no payments, or the CSMS is not the built-in one.
+    });
+    if (next.payments !== null) {
+      paymentsState.value = await api.setPayments(DEMO_SITE_ID, {
+        stations: ids,
+        ...next.payments,
+      });
+      await setAccounts(next);
+    }
     built.value = next;
     remember(next);
     events?.subscribe(ids);
     await load(ids);
   });
   busy.value = false;
+}
+
+/** The drivers' test cards: each bay's outcome, and free vend's tag not charged. */
+async function setAccounts(next: DemoSetup) {
+  const bayCount = next.chargers.reduce((n, ports) => n + (ports === 'dual' ? 2 : 1), 0);
+  for (let i = 0; i < bayCount; i++) {
+    const token = driverToken(next.mode, i);
+    if (token === undefined) continue;
+    await api.setAccount(token, { site: DEMO_SITE_ID, outcome: outcomes.get(i) ?? 'approve' });
+  }
+  if (next.mode === 'free-vend' && next.ocpp === '1.6') {
+    await api.setAccount(FREE_VEND_TAG, { site: DEMO_SITE_ID, billing: 'free' });
+  }
+}
+
+/** A bay's driver gets another test card outcome; the CSMS's account follows. */
+async function setOutcome(bay: Bay, outcome: CardOutcome) {
+  outcomes.set(bay.index, outcome);
+  const current = built.value;
+  const token = current === undefined ? undefined : driverToken(current.mode, bay.index);
+  if (current?.payments == null || token === undefined) return;
+  await guard(() => api.setAccount(token, { site: DEMO_SITE_ID, outcome }));
+}
+
+async function refreshPayments() {
+  if (built.value?.payments == null) return;
+  try {
+    paymentsState.value = await api.payments(DEMO_SITE_ID);
+  } catch {
+    // The CSMS restarted; the panel shows what it last knew.
+  }
+}
+
+const currency = computed(() => paymentsState.value?.settings.tariff.currency ?? 'NZD');
+/** Each bay's latest payment, while a car is in it. */
+const bayPayments = computed(() => {
+  const list = paymentsState.value?.payments ?? [];
+  const map = new Map<string, Payment>();
+  for (const bay of bays.value) {
+    const payment = bay.view.plugged
+      ? paymentOfBay(list, bay.stationId, bay.connectorId)
+      : undefined;
+    if (payment !== undefined) map.set(bay.key, payment);
+  }
+  return map;
+});
+const heldNow = computed(() =>
+  (paymentsState.value?.payments ?? [])
+    .filter((p) => p.state === 'held')
+    .reduce((sum, p) => sum + p.heldAmount, 0),
+);
+const GOOD_STATES = new Set<Payment['state']>(['captured', 'settled-by-station', 'held']);
+const BAD_STATES = new Set<Payment['state']>(['declined', 'failed']);
+const stateChip = (payment: Payment) =>
+  GOOD_STATES.has(payment.state) ? 'good' : BAD_STATES.has(payment.state) ? 'bad' : 'plain';
+function togglePayments() {
+  setup.payments = setup.payments === null ? { ...DEFAULT_PAYMENTS } : null;
 }
 
 /** A new site limit, as a grid operator might set one: the CSMS re-allocates at once. */
@@ -355,7 +449,11 @@ async function appStart(bay: Bay) {
       { idToken: appUserFor(bay.index), type: 'Central' },
       bay.connectorId,
     );
-    if (answer.status !== 'Accepted') error.value = `${answer.action}: ${answer.status}`;
+    if (answer.status === 'Declined') {
+      error.value = `${appUserFor(bay.index)}: ${answer.reason ?? 'the card was declined'}`;
+    } else if (answer.status !== 'Accepted') {
+      error.value = `${answer.action}: ${answer.status}`;
+    }
   });
 }
 /** 2.1: a bank card at the charge point's payment terminal. */
@@ -377,9 +475,18 @@ const stopAtTerminal = (bay: Bay) =>
 async function scanAndPay(bay: Bay) {
   await guard(async () => {
     const { url } = await api.paymentUrl(bay.stationId, bay.connectorId);
-    const checked = await api.webPayment(bay.stationId, url, DEMO_WEB_PAYMENT_SECRET);
+    const checked = await api.webPayment(
+      bay.stationId,
+      url,
+      DEMO_WEB_PAYMENT_SECRET,
+      built.value?.payments == null ? undefined : (outcomes.get(bay.index) ?? 'approve'),
+    );
     if (checked.valid === false) {
       error.value = `QR code: ${checked.reason ?? 'not valid'}`;
+      return;
+    }
+    if (checked.paid === false) {
+      error.value = `QR code page: ${checked.reason ?? 'the card was declined'}`;
       return;
     }
     const answer = await api.remoteStart(
@@ -593,6 +700,7 @@ onMounted(async () => {
     if (ticks % 2 === 0) {
       samplePower();
       void refreshSite();
+      void refreshPayments();
     }
   }, 1000);
   await guard(async () => {
@@ -607,6 +715,7 @@ onMounted(async () => {
     events?.subscribe(ids);
     await load(ids);
     await refreshSite();
+    await refreshPayments();
   });
 });
 
@@ -688,6 +797,51 @@ onUnmounted(() => {
         <button v-if="setup.chargers.length < MAX_CHARGERS" @click="addCharger">
           Add a charge point
         </button>
+      </div>
+      <div class="row payments-row">
+        <label class="label">
+          <input type="checkbox" :checked="setup.payments !== null" @change="togglePayments" />
+          Take payments
+        </label>
+        <template v-if="setup.payments">
+          <label class="label">
+            Hold
+            <input
+              v-model.number="setup.payments.holdAmount"
+              class="amount-input"
+              type="number"
+              min="0"
+              step="5"
+              aria-label="Amount held on the card"
+            />
+            NZD
+          </label>
+          <label class="label">
+            Past the hold
+            <select v-model="setup.payments.overHold" aria-label="When the price passes the hold">
+              <option v-for="o in OVER_HOLD_OPTIONS" :key="o.id" :value="o.id">
+                {{ o.label }}
+              </option>
+            </select>
+          </label>
+          <label class="label">
+            Idle grace
+            <input
+              v-model.number="setup.payments.idleGraceMinutes"
+              class="amount-input"
+              type="number"
+              min="0"
+              step="1"
+              aria-label="Idle minutes not charged"
+            />
+            min
+          </label>
+          <span class="muted">{{ DEMO_TARIFF_TEXT }}</span>
+        </template>
+        <span v-else class="muted">
+          The CSMS holds on the driver's card, prices each session and captures the price, with test
+          cards only
+        </span>
       </div>
       <div class="row">
         <label class="label">
@@ -856,6 +1010,39 @@ onUnmounted(() => {
                   <template v-if="bay.view.plugged"> · {{ bay.car.name }}</template>
                   <span v-if="waitingText(bay)" class="muted"> — {{ waitingText(bay) }}</span>
                 </p>
+                <div v-if="built.payments && bay.view.plugged" class="pay-line">
+                  <template v-if="bayPayments.get(bay.key)">
+                    <span class="chip" :class="stateChip(bayPayments.get(bay.key)!)">
+                      {{ PAYMENT_STATE_TEXT[bayPayments.get(bay.key)!.state] }}
+                    </span>
+                    <strong>
+                      {{ money(bayPayments.get(bay.key)!.price?.inclTax ?? 0, currency) }}
+                    </strong>
+                    <span v-if="bayPayments.get(bay.key)!.heldAmount > 0" class="muted">
+                      of {{ money(bayPayments.get(bay.key)!.heldAmount, currency) }} held
+                    </span>
+                    <span v-if="idleFeeOf(bayPayments.get(bay.key)!) > 0" class="idle-fee">
+                      idle fee {{ money(idleFeeOf(bayPayments.get(bay.key)!), currency) }}
+                    </span>
+                    <span v-if="bayPayments.get(bay.key)!.capturedAmount !== undefined">
+                      charged {{ money(bayPayments.get(bay.key)!.capturedAmount ?? 0, currency) }}
+                    </span>
+                  </template>
+                  <label v-if="outcomeApplies(built.mode)" class="outcome">
+                    Card
+                    <select
+                      :value="outcomes.get(bay.index) ?? 'approve'"
+                      :aria-label="`Test card outcome for ${chargerLabel(bay.stationId)} ${bay.connectorId}`"
+                      @change="
+                        setOutcome(bay, ($event.target as HTMLSelectElement).value as CardOutcome)
+                      "
+                    >
+                      <option v-for="o in CARD_OUTCOME_OPTIONS" :key="o.id" :value="o.id">
+                        {{ o.label }}
+                      </option>
+                    </select>
+                  </label>
+                </div>
                 <div class="actions">
                   <button v-if="bay.view.phase === 'empty'" class="primary" @click="plug(bay)">
                     Plug in
@@ -1057,6 +1244,63 @@ onUnmounted(() => {
                 </span>
               </li>
             </ol>
+          </template>
+          <template v-if="built.payments && paymentsState">
+            <h4>Payments</h4>
+            <div class="metrics">
+              <div class="metric">
+                <span>Revenue</span>
+                <strong>{{ money(paymentsState.revenue, currency) }}</strong>
+              </div>
+              <div class="metric">
+                <span>Held on cards now</span>
+                <strong>{{ money(heldNow, currency) }}</strong>
+              </div>
+            </div>
+            <ul v-if="paymentsState.payments.length > 0" class="payments">
+              <li
+                v-for="p in [...paymentsState.payments].reverse().slice(0, 12)"
+                :key="`${p.stationId} ${p.n}`"
+              >
+                <span class="who">{{ chargerLabel(p.stationId) }} · {{ p.evseId ?? 1 }}</span>
+                <span class="by">
+                  {{ PAYMENT_METHOD_TEXT[p.method] }}
+                  <small v-if="p.card" class="muted">****{{ p.card.last4 }}</small>
+                </span>
+                <span class="amounts">
+                  <span>
+                    {{ money(p.price?.inclTax ?? 0, currency) }}
+                    <small v-if="p.heldAmount > 0" class="muted">
+                      / {{ p.heldAmount.toFixed(2) }}
+                    </small>
+                  </span>
+                  <span class="chip" :class="stateChip(p)">
+                    {{ PAYMENT_STATE_TEXT[p.state] }}
+                    <template v-if="p.capturedAmount !== undefined">
+                      {{ p.capturedAmount.toFixed(2) }}
+                    </template>
+                  </span>
+                </span>
+              </li>
+            </ul>
+            <p v-else class="muted">No sessions paid for yet.</p>
+            <h4>Payment events</h4>
+            <ol v-if="paymentsState.events.length > 0" class="sent pay-events">
+              <li
+                v-for="(event, i) in paymentsState.events.slice(0, 10)"
+                :key="i"
+                :class="{
+                  notice: event.kind === 'notice',
+                  bad: event.kind === 'decline' || event.kind === 'capture-failed',
+                }"
+              >
+                <span class="time">{{ timeOf(event.at) }}</span>
+                {{ chargerLabel(event.stationId)
+                }}<template v-if="event.evseId !== undefined"> · {{ event.evseId }}</template> —
+                {{ paymentEventText(event, currency) }}
+              </li>
+            </ol>
+            <p v-else class="muted">Holds, captures and the drivers' notices show here.</p>
           </template>
           <p class="csms-line">
             <span class="muted">CSMS</span> <code>{{ built.csmsUrl }}</code>
@@ -1303,7 +1547,8 @@ onUnmounted(() => {
 }
 .bay-row {
   display: grid;
-  grid-template-columns: 280px minmax(220px, 1fr);
+  /* The bay's text wraps rather than widening the charging area. */
+  grid-template-columns: 280px minmax(220px, 320px);
   gap: 12px;
   align-items: center;
 }
@@ -1527,6 +1772,7 @@ onUnmounted(() => {
 }
 
 .manager {
+  min-width: 0;
   grid-column: 3;
   align-self: start;
   position: sticky;
@@ -1760,6 +2006,69 @@ onUnmounted(() => {
 }
 .chip.bad {
   background: var(--bad-bg);
+  color: var(--bad);
+}
+.chip.plain {
+  background: var(--hover);
+  color: var(--muted);
+}
+.amount-input {
+  width: 64px;
+}
+.pay-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.pay-line .outcome {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+.idle-fee {
+  color: var(--warn);
+  font-weight: 600;
+}
+.payments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.payments li {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: start;
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+}
+.payments .who {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.payments .by {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.payments .amounts {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  white-space: nowrap;
+}
+.pay-events li.notice {
+  color: var(--warn);
+}
+.pay-events li.bad {
   color: var(--bad);
 }
 .feed pre {

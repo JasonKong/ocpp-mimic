@@ -595,7 +595,7 @@ export const api = {
     }),
   /** Has the built-in CSMS start a session on the station (only when it is the station's CSMS). */
   remoteStart: (id: string, idToken: SessionIdToken, evseId?: number) =>
-    request<{ action: string; status: string; remoteStartId?: number }>(
+    request<{ action?: string; status: string; remoteStartId?: number; reason?: string }>(
       'POST',
       `${station(id)}/remote-start`,
       { idToken, ...(evseId !== undefined && { evseId }) },
@@ -604,12 +604,31 @@ export const api = {
   remoteStop: (id: string, c: number) =>
     request<{ action: string; status: string }>('POST', `${connector(id, c)}/remote-stop`),
   /** 2.1: the payment page behind the QR code, as the built-in CSMS plays it (C25). */
-  webPayment: (id: string, url: string, sharedSecret?: string) =>
-    request<{ action: string; valid?: boolean; reason?: string; evseId?: number }>(
-      'POST',
-      `${station(id)}/web-payment`,
-      { url, ...(sharedSecret !== undefined && { sharedSecret }) },
-    ),
+  webPayment: (id: string, url: string, sharedSecret?: string, outcome?: CardOutcome) =>
+    request<{
+      action?: string;
+      valid?: boolean;
+      reason?: string;
+      evseId?: number;
+      paid?: boolean;
+      held?: number;
+    }>('POST', `${station(id)}/web-payment`, {
+      url,
+      ...(sharedSecret !== undefined && { sharedSecret }),
+      ...(outcome !== undefined && { outcome }),
+    }),
+  /** Payments (M10): the built-in CSMS's simulated payment provider for a site's stations. */
+  setPayments: (id: string, settings: PaymentSettingsInput) =>
+    request<PaymentsState>('PUT', `/api/sites/${encodeURIComponent(id)}/payments`, settings),
+  payments: (id: string) =>
+    request<PaymentsState>('GET', `/api/sites/${encodeURIComponent(id)}/payments`),
+  deletePayments: (id: string) =>
+    request<{ deleted: string }>('DELETE', `/api/sites/${encodeURIComponent(id)}/payments`),
+  /** A driver's test card, in the CSMS of the payments site `site`. */
+  setAccount: (
+    idToken: string,
+    account: { site: string; outcome?: CardOutcome; billing?: 'card' | 'free' | 'site' },
+  ) => request<unknown>('PUT', `/api/accounts/${encodeURIComponent(idToken)}`, account),
   /** Site load management through the built-in CSMS of the site's stations. */
   setSite: (id: string, site: { capacityW: number; stations: string[]; minimumW?: number }) =>
     request<SiteState>('PUT', `/api/sites/${encodeURIComponent(id)}`, site),
@@ -643,6 +662,93 @@ export interface SiteState {
     state: 'charging' | 'ev-suspended' | 'waiting';
   }[];
   sent: { at: string; stationId: string; evseId: number; limitW: number; status: string }[];
+}
+
+/** How a test card answers: approve, decline the hold, ask the driver to confirm, fail at capture. */
+export type CardOutcome = 'approve' | 'decline' | 'requires-action' | 'fail-capture';
+export type OverHoldPolicy = 'recharge' | 'increment' | 'stop';
+
+/** What PUT /api/sites/<id>/payments takes. */
+export interface PaymentSettingsInput {
+  stations: string[];
+  holdAmount?: number;
+  overHold?: OverHoldPolicy;
+  minEnergyWh?: number;
+  idleGraceMinutes?: number;
+  tariff?: ReferenceTariff;
+}
+
+export interface PaymentPriceItem {
+  part: 'fixedFee' | 'energy' | 'chargingTime' | 'idleTime';
+  quantity: number;
+  unit: string;
+  unitPrice: number;
+  inclTax: number;
+}
+
+/** A session's payment, as the built-in CSMS's payment provider keeps it. */
+export interface Payment {
+  stationId: string;
+  n: number;
+  evseId?: number;
+  transactionId?: number | string;
+  idToken?: string;
+  method: 'card' | 'autocharge' | 'app' | 'qr' | 'terminal' | 'free' | 'site';
+  card?: { brand: string; last4: string };
+  state:
+    | 'pending'
+    | 'requires-action'
+    | 'held'
+    | 'captured'
+    | 'released'
+    | 'failed'
+    | 'declined'
+    | 'not-charged'
+    | 'site-account'
+    | 'settled-by-station';
+  heldAmount: number;
+  price?: {
+    items: PaymentPriceItem[];
+    exclTax: number;
+    tax: number;
+    inclTax: number;
+    currency: string;
+  };
+  capturedAmount?: number;
+  startedAt?: string;
+  endedAt?: string;
+  stoppedAtHold?: true;
+  idleNoticed?: true;
+}
+
+export interface PaymentEvent {
+  at: string;
+  stationId: string;
+  evseId?: number;
+  kind:
+    | 'hold'
+    | 'increment'
+    | 'capture'
+    | 'cancel'
+    | 'release'
+    | 'decline'
+    | 'requires-action'
+    | 'capture-failed'
+    | 'stop-at-hold'
+    | 'settlement'
+    | 'notice';
+  amount?: number;
+  detail?: string;
+}
+
+/** What GET /api/sites/<id>/payments answers with. */
+export interface PaymentsState {
+  id: string;
+  stations: string[];
+  settings: Required<Omit<PaymentSettingsInput, 'stations'>>;
+  payments: Payment[];
+  events: PaymentEvent[];
+  revenue: number;
 }
 
 /** Where a session's frames export as the recorder's JSONL. */
