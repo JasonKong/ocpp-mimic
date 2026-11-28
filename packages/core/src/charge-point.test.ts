@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createChargePoint,
+  DEFAULT_BEHAVIOUR,
   type ChargePointBehaviour,
   type ChargePointTiming,
   type PersistedChargePoint,
@@ -2253,6 +2254,11 @@ describe('test switches', () => {
       refuseRemoteStart: false,
       cableLock: true,
       autocharge: false,
+      failUnlock: false,
+      failCertificates: false,
+      refuseLogs: false,
+      failNetworkProfile: false,
+      failLock: false,
     });
     h.cp.setBehaviour({ cableLock: false });
     expect(h.cp.snapshot().connectors[0]?.locked).toBe(false);
@@ -2286,17 +2292,27 @@ describe('persistence across restarts', () => {
       refuseRemoteStart: true,
       cableLock: false,
       autocharge: false,
+      failUnlock: false,
+      failCertificates: false,
+      refuseLogs: false,
+      failNetworkProfile: false,
+      failLock: false,
     });
     expect(setup({ restore: saved }).cp.snapshot().behaviour).toEqual({
       refuseRemoteStart: true,
       cableLock: false,
       autocharge: false,
+      failUnlock: false,
+      failCertificates: false,
+      refuseLogs: false,
+      failNetworkProfile: false,
+      failLock: false,
     });
 
     const { behaviour: _dropped, ...older } = saved;
     expect(
       setup({ restore: older, behaviour: { cableLock: true } }).cp.snapshot().behaviour,
-    ).toEqual({ refuseRemoteStart: false, cableLock: true, autocharge: false });
+    ).toEqual({ ...DEFAULT_BEHAVIOUR, cableLock: true });
   });
 
   it('ends a running transaction with PowerLoss at the time of the last save', async () => {

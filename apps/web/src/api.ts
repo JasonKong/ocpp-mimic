@@ -70,6 +70,12 @@ export interface Behaviour {
   cableLock: boolean;
   /** An EV that tells its EVCCID is identified by it as it is plugged in. */
   autocharge?: boolean;
+  /** Station failures a CSMS test may need. */
+  failUnlock?: boolean;
+  failCertificates?: boolean;
+  refuseLogs?: boolean;
+  failNetworkProfile?: boolean;
+  failLock?: boolean;
 }
 
 export interface StationSnapshot {

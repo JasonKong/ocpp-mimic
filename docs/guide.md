@@ -232,6 +232,12 @@ Below the header:
 - **Refuse remote starts**: answer every remote start with Rejected.
 - **Lock the cable while charging**: a locked cable cannot be unplugged until the transaction ends or the CSMS unlocks it.
 - **Autocharge**: an EV whose profile has an `evccid` (its MAC address) is identified by it as it is plugged in, as if it presented a card with that id: the idTag on 1.6, a MacAddress token on 2.0.1, an EVCCID token on 2.1.
+- **Fail on purpose**: station failures some CSMS test cases need.
+  - **Unlock**: UnlockConnector answers UnlockFailed.
+  - **Certificates**: InstallCertificate and DeleteCertificate answer Failed.
+  - **Logs**: GetLog answers Rejected.
+  - **Network profile** (2.x): SetNetworkProfile answers Failed.
+  - **Cable lock** (2.x): a cable plugged in cannot be locked. The station reports NotifyEvent ConnectorPlugRetentionLock Problem and does not charge until the cable is out (G05).
 - **Energy ×**: the energy multiplier.
 
 Each connector (each EVSE on a 2.x station) has a card with its status, charging state (2.x), transaction id, power, energy, SoC and, when a limit is in force, the limit. Its controls:
@@ -371,7 +377,7 @@ Fields every persona can have:
 | `deviceModel` | 2.x: Device Model values, component → variable → value (or an object with `actual`, `mutability`, `dataType`, `unit`, `valuesList`, ... for a variable of your own) |
 | `connectorStatus` | 2.1: `NotifyEvent` (default) or `StatusNotification`, how connector availability is reported |
 | `timing` | `startTransactionDelay`, `actionDelay`, `resetDowntime: { soft, hard }`, `bootRetry`, and `commandDelays` per CSMS command (how long the station takes to answer) |
-| `firmware` | `downloadTime`, `installTime`, `uploadTime`; `download`, `install`, `upload`, `signature`: `succeed` or `fail`; `transfer: simulated` (default) or `real` (really download and upload over HTTP(S)) |
+| `firmware` | `downloadTime`, `installTime`, `uploadTime`; `download`, `install`, `upload`, `signature`, `installVerification` (the installed firmware's check: InstallVerificationFailed): `succeed` or `fail`; `transfer: simulated` (default) or `real` (really download and upload over HTTP(S)) |
 | `evs` | Named EV profiles (below) |
 | `usage` | The usage model for stations that charge on their own (see [Fleets](#9-fleets-load-tests-and-metrics)) |
 | `faults` | The fault catalogue offered in the Web UI: `name`, `errorCode`, `info`, `vendorErrorCode` |
@@ -612,7 +618,7 @@ Station actions:
 | `offline` | `mode`: `clean` or `half-open` | Simulated outage |
 | `online` | | End the outage |
 | `stopStation`, `startStation` | | Disconnect or reconnect |
-| `setBehaviour` | `refuseRemoteStart`, `cableLock`, `autocharge` | Test switches |
+| `setBehaviour` | `refuseRemoteStart`, `cableLock`, `failUnlock`, `failCertificates`, `refuseLogs`, `failNetworkProfile`, `failLock` | Test switches (a station's `behaviour` takes them too) |
 | `inject`, `clearInjections` | `type`, parameters, `for` | Fault injection |
 | `wait` | a duration | Pause |
 | `charge` | `connector`, `duration` | Wait, and fail unless a transaction runs at the start and the end |
@@ -973,7 +979,7 @@ Stations:
 | `GET`, `DELETE /api/stations/<id>` | One station's state; delete it |
 | `POST /api/stations/<id>/{start,stop,online}` | Start, stop, end an outage |
 | `POST /api/stations/<id>/offline` | `{ "mode": "clean" \| "half-open" }` |
-| `PATCH /api/stations/<id>/behaviour` | `{ "refuseRemoteStart": true, "cableLock": false, "autocharge": true }` |
+| `PATCH /api/stations/<id>/behaviour` | `{ "refuseRemoteStart": true, "cableLock": false, "autocharge": true }`, and the failures `failUnlock`, `failCertificates`, `refuseLogs`, `failNetworkProfile`, `failLock` |
 | `PATCH /api/stations/<id>/energy-multiplier` | `{ "energyMultiplier": 60 }` |
 | `PATCH /api/stations/<id>/usage` | `{ "enabled": true }` |
 | `GET`, `POST`, `DELETE /api/stations/<id>/injections` | Fault injections |

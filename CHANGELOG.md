@@ -6,6 +6,7 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 
 ### Added
 
+- **Station failures for CSMS tests**: behaviour switches `failUnlock`, `failCertificates`, `refuseLogs`, `failNetworkProfile` and `failLock` (a cable that cannot be locked, G05), and the persona's `firmware.installVerification: fail`; in scenarios, the API and the Web UI. The CitrineOS suite gains TC_B_44, TC_G_20, TC_L_08, TC_M_05, TC_M_21 and TC_N_34.
 - **Remote starts in the usage model**: `remoteShare` drivers plug in and wait for a remote start from the built-in CSMS or your system under test (`remoteStart`), and leave after `remoteWait`, counted as turned away.
 - **Web UI**: a tag filter in the station list, and Start, Stop, Offline, Online and Delete for the stations in view (Delete asks first, naming how many).
 - **RoamingEvseId** (2.1): each EVSE's `WebPaymentsCtrlr` has one, filled into a payment URL's `{roamingevseid}` (C25.FR.53).

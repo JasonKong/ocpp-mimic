@@ -105,6 +105,46 @@ function toggle(name: keyof Behaviour, event: Event) {
   emit('action', 'behaviour', undefined, { [name]: (event.target as HTMLInputElement).checked });
 }
 
+/** Station failures a CSMS test may need (behaviour switches), with the versions that have them. */
+const FAILURES: {
+  id: 'failUnlock' | 'failCertificates' | 'refuseLogs' | 'failNetworkProfile' | 'failLock';
+  label: string;
+  title: string;
+  versions: string[];
+}[] = [
+  {
+    id: 'failUnlock',
+    label: 'Unlock',
+    title: 'UnlockConnector answers UnlockFailed',
+    versions: ['1.6', '2.0.1', '2.1'],
+  },
+  {
+    id: 'failCertificates',
+    label: 'Certificates',
+    title: 'InstallCertificate and DeleteCertificate answer Failed',
+    versions: ['1.6', '2.0.1', '2.1'],
+  },
+  {
+    id: 'refuseLogs',
+    label: 'Logs',
+    title: 'GetLog answers Rejected',
+    versions: ['1.6', '2.0.1', '2.1'],
+  },
+  {
+    id: 'failNetworkProfile',
+    label: 'Network profile',
+    title: 'SetNetworkProfile answers Failed',
+    versions: ['2.0.1', '2.1'],
+  },
+  {
+    id: 'failLock',
+    label: 'Cable lock',
+    title:
+      'A cable plugged in cannot be locked: NotifyEvent ConnectorPlugRetentionLock Problem, no charging',
+    versions: ['2.0.1', '2.1'],
+  },
+];
+
 /** Fault injections offered in the UI, with example parameters (`key=value`, space-separated). */
 const INJECTIONS = [
   { type: 'powerLoss', label: 'Power loss', example: 'off=10s' },
@@ -245,6 +285,19 @@ function inject() {
           @change="toggle('autocharge', $event)"
         />
         Autocharge
+      </label>
+      <span class="muted">Fail on purpose:</span>
+      <label
+        v-for="f in FAILURES.filter((x) => x.versions.includes(station.ocpp))"
+        :key="f.id"
+        :title="f.title"
+      >
+        <input
+          type="checkbox"
+          :checked="station.behaviour[f.id] === true"
+          @change="toggle(f.id, $event)"
+        />
+        {{ f.label }}
       </label>
       <label title="Energy and SoC advance this many times faster; timestamps stay real">
         Energy ×

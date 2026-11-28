@@ -742,6 +742,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
     now,
     log,
     changed,
+    behaviour: () => behaviour,
     get: (component, variable) => deviceModel.get(component, variable),
     set: (component, variable, value) => deviceModel.set(component, variable, value),
     send: sendIfOnline,
@@ -928,6 +929,33 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
 
   // ---- Faults ---------------------------------------------------------------
 
+  /** Connectors whose cable could not be locked (behaviour failLock): no charging until unplugged (G05). */
+  const lockFailed = new Set<number>();
+
+  /** G05: the connector failed to lock the cable: ConnectorPlugRetentionLock Problem (FR.02). */
+  function notifyLockProblem(connectorId: number, problem: boolean): void {
+    const payload: Ocpp21RequestOf<'NotifyEvent'> = {
+      generatedAt: timestamp(),
+      seqNo: 0,
+      eventData: [
+        {
+          eventId: ++eventId,
+          timestamp: timestamp(),
+          trigger: 'Delta',
+          actualValue: String(problem),
+          eventNotificationType: 'HardWiredNotification',
+          component: {
+            name: 'ConnectorPlugRetentionLock',
+            evse: { id: connectorId, connectorId: 1 },
+          },
+          variable: { name: 'Problem' },
+        },
+      ],
+    };
+    if (online()) void sendIfOnline('NotifyEvent', payload);
+    else void outbox.enqueue('NotifyEvent', payload);
+  }
+
   /**
    * Reports a fault, or its end, as NotifyEvent for the Problem variable of
    * the connector (or the station for connectorId 0): techCode is the
@@ -1026,6 +1054,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       transactions.get(connectorId)?.limitReached !== true &&
       transactions.get(connectorId)?.limitHit === undefined &&
       transactions.get(connectorId)?.resumeHold !== true &&
+      !lockFailed.has(connectorId) &&
       !poweredDown &&
       !evsesDown.has(connectorId)
     );
@@ -3028,6 +3057,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       if (transactions.has(request.evseId) && authorizations.has(request.evseId)) {
         return { status: 'OngoingAuthorizedTransaction' };
       }
+      if (behaviour.failUnlock) return { status: 'UnlockFailed' };
       later(commandDelay('UnlockConnector'), () => {
         if (findConnector(station, request.evseId)?.locked === true) {
           applyDevice({ type: 'Unlock', connectorId: request.evseId });
@@ -3691,6 +3721,12 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       // Throws a RangeError for an unusable profile, before anything changes.
       if (ev !== undefined) energy.plugEv(connectorId, ev);
       if (applyDevice({ type: 'Plug', connectorId }).error !== undefined) return;
+      if (behaviour.failLock) {
+        // The cable cannot be locked: reported, and no charging until it is unplugged (G05).
+        lockFailed.add(connectorId);
+        log(`connector ${connectorId}: the cable could not be locked`);
+        notifyLockProblem(connectorId, true);
+      }
       needsDue.set(connectorId, now());
       pluggedAtOf.set(connectorId, now());
       stopTimer(connectTimers.get(connectorId));
@@ -3742,6 +3778,7 @@ export function createChargePoint201(options: ChargePoint201Options): ChargePoin
       needsDue.delete(connectorId);
       needsWaiting.delete(connectorId);
       pluggedAtOf.delete(connectorId);
+      if (lockFailed.delete(connectorId)) notifyLockProblem(connectorId, false);
       if (
         transactions.has(connectorId) &&
         dmValue('TxCtrlr', 'StopTxOnEVSideDisconnect') !== 'false'

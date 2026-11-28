@@ -15,6 +15,8 @@ export interface FirmwareSettings {
   upload: StepOutcome;
   /** Whether a simulated signed firmware image passes its signature check. */
   signature: StepOutcome;
+  /** Whether the installed firmware passes its verification (else InstallVerificationFailed). */
+  installVerification: StepOutcome;
 }
 
 export const DEFAULT_FIRMWARE_SETTINGS: FirmwareSettings = {
@@ -25,6 +27,7 @@ export const DEFAULT_FIRMWARE_SETTINGS: FirmwareSettings = {
   install: 'succeed',
   upload: 'succeed',
   signature: 'succeed',
+  installVerification: 'succeed',
 };
 
 /**
