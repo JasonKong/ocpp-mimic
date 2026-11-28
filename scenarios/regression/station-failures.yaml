@@ -1,0 +1,142 @@
+# Station failures a CSMS test may need: behaviour switches (T141) and a firmware
+# whose installation fails its verification.
+name: Behaviour switches make 2.0.1 commands fail on purpose
+station: { id: REG201-FAIL, persona: regression-2.0.1 }
+steps:
+  - setBehaviour:
+      { failUnlock: true, failNetworkProfile: true, refuseLogs: true, failCertificates: true }
+  - csmsCall:
+      action: UnlockConnector
+      payload: { evseId: 1, connectorId: 1 }
+      answer: { status: UnlockFailed }
+  - csmsCall:
+      action: SetNetworkProfile
+      payload:
+        configurationSlot: 1
+        connectionData:
+          ocppVersion: OCPP20
+          ocppTransport: JSON
+          ocppCsmsUrl: 'ws://localhost:9100/ocpp'
+          messageTimeout: 30
+          securityProfile: 0
+          ocppInterface: Wired0
+      answer: { status: Failed }
+  - csmsCall:
+      action: GetLog
+      payload:
+        {
+          logType: DiagnosticsLog,
+          requestId: 7,
+          log: { remoteLocation: 'ftp://logs.example.com/' },
+        }
+      answer: { status: Rejected }
+  - csmsCall:
+      action: DeleteCertificate
+      payload:
+        certificateHashData:
+          { hashAlgorithm: SHA256, issuerNameHash: aa, issuerKeyHash: bb, serialNumber: '01' }
+      answer: { status: Failed }
+  # Switched off, the same commands work again.
+  - setBehaviour: { failUnlock: false, refuseLogs: false }
+  - csmsCall:
+      action: UnlockConnector
+      payload: { evseId: 1, connectorId: 1 }
+      answer: { status: Unlocked }
+  - csmsCall:
+      action: GetLog
+      payload:
+        {
+          logType: DiagnosticsLog,
+          requestId: 8,
+          log: { remoteLocation: 'ftp://logs.example.com/' },
+        }
+      answer: { status: Accepted }
+---
+name: TC_G_20_CS A cable that cannot be locked is reported and does not charge (G05)
+station: { id: REG201-LOCK, persona: regression-2.0.1, behaviour: { failLock: true } }
+steps:
+  - presentCard: { idToken: TAG-LOCK, type: ISO14443, result: authorized }
+  - plugIn: { ev: compact-40kwh }
+  - expect:
+      sent: NotifyEvent
+      payload:
+        eventData:
+          - trigger: Delta
+            actualValue: 'true'
+            component: { name: ConnectorPlugRetentionLock, evse: { id: 1, connectorId: 1 } }
+            variable: { name: Problem }
+  # No charging (G05.FR.01): the connector draws nothing.
+  - wait: 2s
+  - expectConnector: { powerW: 0 }
+  - unplug: {}
+  - expect:
+      sent: NotifyEvent
+      payload:
+        eventData:
+          - { actualValue: 'false', component: { name: ConnectorPlugRetentionLock } }
+---
+name: TC_L_08_CS The installed firmware fails its verification
+station:
+  id: REG201-FW-VERIFY
+  persona: firmware-verification-fails-2.0.1
+  security: { manufacturerRoot: 'test-pki:ca.crt' }
+vars:
+  signer: |
+    -----BEGIN CERTIFICATE-----
+    MIIDWTCCAkGgAwIBAgIJANpl6eJKs6qVMA0GCSqGSIb3DQEBCwUAMDIxEzARBgNV
+    BAoMCm9jcHAtbWltaWMxGzAZBgNVBAMMEm9jcHAtbWltaWMgVGVzdCBDQTAeFw0y
+    NjExMTQwODM4MTFaFw00NjExMDkwODM4MTFaMDIxEzARBgNVBAoMCm9jcHAtbWlt
+    aWMxGzAZBgNVBAMMEm9jcHAtbWltaWMtdGVzdC1jcDCCASIwDQYJKoZIhvcNAQEB
+    BQADggEPADCCAQoCggEBAN6I+NGA1+retm1S4nowAKGLUK/5RVnShvlY0xQh6Drp
+    T7hKw35PAJDzuhNnoUzX38aLpBlPKv6iRG+yxJliCcO8/O9oUdE7EZLmO6uX8pnB
+    kDh0ePZDUzxEqxOa8kcl8cPDQqmEhuaY4xYe0palTfYc/HIIq4ZGPMh/BCo/uIKy
+    f98QPHkHsPVusvgM5HNgwYlgsIkEo0zMiUyGGWuMRWz1S4cBsZLKq03Kp2dKEd5M
+    kip0n3dm9qoVgS9eZx9NKCcWf6TzQen33BODCYOAVXOfpUfGdFGmwEVgQUXkGti0
+    4E8/+Q5hLaoa3CW5lPtlwpvgJLgRQdGQK3Rs48KCKOMCAwEAAaNyMHAwCQYDVR0T
+    BAIwADAOBgNVHQ8BAf8EBAMCBaAwEwYDVR0lBAwwCgYIKwYBBQUHAwIwHQYDVR0O
+    BBYEFB5b/9tnBfTff5j3Ri+RUFl0CCPfMB8GA1UdIwQYMBaAFEpiHVbhiwpBXr0O
+    JNRVWsVny3DTMA0GCSqGSIb3DQEBCwUAA4IBAQAzqarRB+DQimUpUSSetDP5elLp
+    jSCexpo+yShSk+QtoZmjXEeFXS8KQ4iO3YIykb3xSopONmCHokGnFUvJR/XqptNf
+    8i8wLn6jtwC8HccSnA4O0zwPhwAt5iMupsWFa8uuISwTySYXAZ6lfIcYZFhkvJrY
+    VMhHS71bJPAr9nsfQmb9lyDw15P0rHHy2AFAzSW7/dXIhfJaRuAeKaiWWUL7DDKs
+    mTY6kyvSMMAWwaHNoVW7RC0Tsm6hT64Cm4H4QtfbrX1dcMHObwpczis17HonKnYY
+    FL4HbuetfXOl/1nTdnHLobDKk7V+moH2FFQcdPCiiKzmhtw3EPQGEzPSl31Q
+    -----END CERTIFICATE-----
+steps:
+  - csmsCall:
+      action: UpdateFirmware
+      payload:
+        requestId: 21
+        firmware:
+          location: 'ftp://fw.example.com/fw-4.0.0.bin'
+          retrieveDateTime: '2020-01-01T00:00:00Z'
+          signingCertificate: '{{signer}}'
+          signature: c2lnbmF0dXJl
+      answer: { status: Accepted }
+  - expect: { sent: FirmwareStatusNotification, payload: { status: Downloaded, requestId: 21 } }
+  - expect:
+      { sent: FirmwareStatusNotification, payload: { status: SignatureVerified, requestId: 21 } }
+  - expect: { sent: FirmwareStatusNotification, payload: { status: Installing, requestId: 21 } }
+  - expect:
+      sent: FirmwareStatusNotification
+      payload: { status: InstallVerificationFailed, requestId: 21 }
+      within: 15s
+  - expectNo: { sent: BootNotification, within: 2s }
+---
+name: Behaviour switches make 1.6 commands fail on purpose
+station: { id: REG16-FAIL, persona: regression-1.6 }
+steps:
+  - setBehaviour: { failUnlock: true, refuseLogs: true }
+  - csmsCall:
+      action: UnlockConnector
+      payload: { connectorId: 1 }
+      answer: { status: UnlockFailed }
+  - csmsCall:
+      action: GetLog
+      payload:
+        {
+          logType: DiagnosticsLog,
+          requestId: 3,
+          log: { remoteLocation: 'ftp://logs.example.com/' },
+        }
+      answer: { status: Rejected }

@@ -234,6 +234,12 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 - **Refuse remote starts**：所有远程启动都回复 Rejected。
 - **Lock the cable while charging**：锁枪后不能拔枪，直到交易结束或 CSMS 解锁。
 - **Autocharge**：EV 配置里有 `evccid`（车的 MAC 地址）时，插枪就用它来识别，就像刷了一张卡号为它的卡：1.6 作为 idTag，2.0.1 作为 MacAddress 类型的 token，2.1 作为 EVCCID 类型的 token。
+- **Fail on purpose**：一些 CSMS 测试用例需要的桩故障。
+  - **Unlock**：UnlockConnector 回复 UnlockFailed。
+  - **Certificates**：InstallCertificate 和 DeleteCertificate 回复 Failed。
+  - **Logs**：GetLog 回复 Rejected。
+  - **Network profile**（2.x）：SetNetworkProfile 回复 Failed。
+  - **Cable lock**（2.x）：插入的枪锁不住，桩发送 NotifyEvent ConnectorPlugRetentionLock Problem，并且在拔枪之前不充电（G05）。
 - **Energy ×**：能量倍率。
 
 每个连接器（2.x 桩上是每个 EVSE）有一张卡片，显示状态、充电状态（2.x）、交易 id、功率、电量、SoC，有限值生效时还显示限值。操作：
@@ -373,7 +379,7 @@ faults:
 | `deviceModel` | 2.x：Device Model 取值，组件 → 变量 → 值（自定义变量可以写成对象，含 `actual`、`mutability`、`dataType`、`unit`、`valuesList` 等） |
 | `connectorStatus` | 2.1：连接器可用性的上报方式，`NotifyEvent`（默认）或 `StatusNotification` |
 | `timing` | `startTransactionDelay`、`actionDelay`、`resetDowntime: { soft, hard }`、`bootRetry`，以及按 CSMS 命令分别设置的 `commandDelays`（桩多久才回复） |
-| `firmware` | `downloadTime`、`installTime`、`uploadTime`；`download`、`install`、`upload`、`signature` 取 `succeed` 或 `fail`；`transfer: simulated`（默认）或 `real`（真的通过 HTTP(S) 下载和上传） |
+| `firmware` | `downloadTime`、`installTime`、`uploadTime`；`download`、`install`、`upload`、`signature`、`installVerification`（安装后固件的校验，失败时报 InstallVerificationFailed）取 `succeed` 或 `fail`；`transfer: simulated`（默认）或 `real`（真的通过 HTTP(S) 下载和上传） |
 | `evs` | 命名的 EV 配置（见下） |
 | `usage` | 自动充电的使用模型（见[批量桩](#9-批量桩压测和指标)） |
 | `faults` | Web UI 里可选的故障目录：`name`、`errorCode`、`info`、`vendorErrorCode` |
@@ -614,7 +620,7 @@ ocpp-mimic run my-tests/ --csms ws://127.0.0.1:8081 --var APP=http://127.0.0.1:3
 | `offline` | `mode`：`clean` 或 `half-open` | 模拟断线 |
 | `online` | | 结束断线 |
 | `stopStation`、`startStation` | | 断开或重新连接 |
-| `setBehaviour` | `refuseRemoteStart`、`cableLock`、`autocharge` | 测试开关 |
+| `setBehaviour` | `refuseRemoteStart`、`cableLock`、`failUnlock`、`failCertificates`、`refuseLogs`、`failNetworkProfile`、`failLock` | 测试开关（桩的 `behaviour` 也可以设置） |
 | `inject`、`clearInjections` | `type`、参数、`for` | 故障注入 |
 | `wait` | 时长 | 暂停 |
 | `charge` | `connector`、`duration` | 等待；开始和结束时都必须有交易在进行，否则失败 |
@@ -975,7 +981,7 @@ ocpp-mimic csms --tls-cert packages/engine/test-pki/server.crt --tls-key package
 | `GET`、`DELETE /api/stations/<id>` | 查看一个桩的状态；删除它 |
 | `POST /api/stations/<id>/{start,stop,online}` | 启动、停止、结束断线 |
 | `POST /api/stations/<id>/offline` | `{ "mode": "clean" \| "half-open" }` |
-| `PATCH /api/stations/<id>/behaviour` | `{ "refuseRemoteStart": true, "cableLock": false, "autocharge": true }` |
+| `PATCH /api/stations/<id>/behaviour` | `{ "refuseRemoteStart": true, "cableLock": false, "autocharge": true }`，以及故障开关 `failUnlock`、`failCertificates`、`refuseLogs`、`failNetworkProfile`、`failLock` |
 | `PATCH /api/stations/<id>/energy-multiplier` | `{ "energyMultiplier": 60 }` |
 | `PATCH /api/stations/<id>/usage` | `{ "enabled": true }` |
 | `GET`、`POST`、`DELETE /api/stations/<id>/injections` | 故障注入 |

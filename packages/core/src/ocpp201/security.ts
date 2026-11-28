@@ -9,6 +9,7 @@
  * Pure, like the station: X.509 work comes from the injected
  * CertificateTools, transfers from the injected FileTransfer.
  */
+import type { ChargePointBehaviour } from '../charge-point.js';
 import type { ChargePointCertificate, CertificateTools } from '../certificates.js';
 import { sameCertificate } from '../certificates.js';
 import {
@@ -116,6 +117,11 @@ export interface Security201Options {
   now(): number;
   log(message: string): void;
   changed(): void;
+  /** The station's behaviour switches now, for the failures a CSMS test may ask for. */
+  behaviour?: () => Pick<
+    ChargePointBehaviour,
+    'failCertificates' | 'refuseLogs' | 'failNetworkProfile'
+  >;
   /** Reads and writes Device Model values. */
   get(component: string, variable: string): string | undefined;
   set(component: string, variable: string, value: string): void;
@@ -469,6 +475,7 @@ export function createSecurity201(options: Security201Options): Security201 {
     await delay(settings.installMs);
     if (current.cancelled) return;
     if (settings.install === 'fail') return finish('InstallationFailed');
+    if (settings.installVerification === 'fail') return finish('InstallVerificationFailed');
     firmwareVersion = firmwareVersionFrom(firmware.location, firmwareVersion);
     // The new firmware reports Installed after the reboot (L01.FR.32 a).
     installedPendingReport = requestId;
@@ -520,7 +527,9 @@ export function createSecurity201(options: Security201Options): Security201 {
 
   const handlers: Handlers = {
     InstallCertificate(request) {
-      if (tools === undefined) return { status: 'Failed' };
+      if (tools === undefined || options.behaviour?.().failCertificates === true) {
+        return { status: 'Failed' };
+      }
       const type = request.certificateType;
       const info = tools.inspect(request.certificate);
       if (info === undefined || now() < info.validFrom || now() > info.validTo) {
@@ -573,7 +582,9 @@ export function createSecurity201(options: Security201Options): Security201 {
     },
 
     DeleteCertificate(request) {
-      if (tools === undefined) return { status: 'Failed' };
+      if (tools === undefined || options.behaviour?.().failCertificates === true) {
+        return { status: 'Failed' };
+      }
       const matches = sameAs(request.certificateHashData);
       // The station's own certificate cannot be deleted with OCPP (M04.FR.06).
       if (own !== undefined && matches(own.certificate)) return { status: 'Failed' };
@@ -638,6 +649,10 @@ export function createSecurity201(options: Security201Options): Security201 {
     },
 
     SetNetworkProfile(request) {
+      if (options.behaviour?.().failNetworkProfile === true) {
+        log('SetNetworkProfile failed (behaviour switch failNetworkProfile)');
+        return { status: 'Failed' };
+      }
       const { configurationSlot, connectionData } = request;
       const slot = String(configurationSlot);
       const reject = (reason: string) => {
@@ -699,6 +714,7 @@ export function createSecurity201(options: Security201Options): Security201 {
     },
 
     GetLog(request) {
+      if (options.behaviour?.().refuseLogs === true) return { status: 'Rejected' };
       const kind =
         request.logType === 'SecurityLog'
           ? 'security'

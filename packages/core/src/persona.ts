@@ -99,6 +99,7 @@ const commonFields = {
       install: oneOf(['succeed', 'fail']),
       upload: oneOf(['succeed', 'fail']),
       signature: oneOf(['succeed', 'fail']),
+      installVerification: oneOf(['succeed', 'fail']),
       transfer: oneOf(['simulated', 'real']),
     },
   ),
@@ -354,6 +355,9 @@ function firmwareFrom(
     ...(firmware.install !== undefined && { install: firmware.install }),
     ...(firmware.upload !== undefined && { upload: firmware.upload }),
     ...(firmware.signature !== undefined && { signature: firmware.signature }),
+    ...(firmware.installVerification !== undefined && {
+      installVerification: firmware.installVerification,
+    }),
   };
 }
 

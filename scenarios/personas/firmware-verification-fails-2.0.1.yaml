@@ -1,0 +1,7 @@
+# regression-2.0.1 whose installed firmware fails its verification, to test how
+# a CSMS reports InstallVerificationFailed (TC_L_08).
+persona: firmware-verification-fails-2.0.1
+extends: regression-2.0.1
+description: regression-2.0.1 whose installed firmware fails its verification
+firmware:
+  installVerification: fail

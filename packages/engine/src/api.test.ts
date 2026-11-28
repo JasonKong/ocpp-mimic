@@ -573,6 +573,11 @@ describe('engine API', () => {
       refuseRemoteStart: false,
       cableLock: true,
       autocharge: false,
+      failUnlock: false,
+      failCertificates: false,
+      refuseLogs: false,
+      failNetworkProfile: false,
+      failLock: false,
     });
     expect((await api('PATCH', '/api/stations/SIM-1/behaviour', { lock: true })).status).toBe(400);
     expect((await api('PATCH', '/api/stations/SIM-1/behaviour', { cableLock: 'yes' })).status).toBe(

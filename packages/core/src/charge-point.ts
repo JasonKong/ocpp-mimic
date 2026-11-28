@@ -159,12 +159,30 @@ export interface ChargePointBehaviour {
    * card with that id, so no card or app is needed.
    */
   autocharge: boolean;
+  /** Station failures a CSMS test may need: UnlockConnector answers UnlockFailed (F05). */
+  failUnlock: boolean;
+  /** InstallCertificate and DeleteCertificate answer Failed (M05, M04). */
+  failCertificates: boolean;
+  /** GetLog answers Rejected (N01). */
+  refuseLogs: boolean;
+  /** 2.x: SetNetworkProfile answers Failed (B09). */
+  failNetworkProfile: boolean;
+  /**
+   * 2.x: the connector cannot lock a cable plugged in: the station reports
+   * ConnectorPlugRetentionLock Problem with NotifyEvent and does not charge (G05).
+   */
+  failLock: boolean;
 }
 
 export const DEFAULT_BEHAVIOUR: ChargePointBehaviour = {
   refuseRemoteStart: false,
   cableLock: false,
   autocharge: false,
+  failUnlock: false,
+  failCertificates: false,
+  refuseLogs: false,
+  failNetworkProfile: false,
+  failLock: false,
 };
 
 export type ChargePointEvent =
@@ -1120,6 +1138,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
     await delay(firmwareSettings.installMs);
     if (update.cancelled) return;
     if (firmwareSettings.install === 'fail') return done('InstallationFailed');
+    if (firmwareSettings.installVerification === 'fail') return done('InstallVerificationFailed');
     firmwareVersion = firmwareVersionFrom(firmware.location, firmwareVersion);
     signedInstalledPendingReport = requestId;
     reportSigned('InstallRebooting', requestId);
@@ -1990,6 +2009,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
     },
 
     InstallCertificate(request) {
+      if (behaviour.failCertificates) return { status: 'Failed' };
       return { status: installCertificate(request) };
     },
 
@@ -2004,6 +2024,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
     },
 
     DeleteCertificate(request) {
+      if (behaviour.failCertificates) return { status: 'Failed' };
       return { status: deleteCertificate(request.certificateHashData) };
     },
 
@@ -2026,6 +2047,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
     },
 
     GetLog(request) {
+      if (behaviour.refuseLogs) return { status: 'Rejected' };
       const cancelled = logUpload !== undefined;
       if (logUpload !== undefined) logUpload.cancelled = true;
       const filename = diagnosticsFileName(
@@ -2039,6 +2061,7 @@ export function createChargePoint(options: ChargePointOptions): ChargePoint16 {
     UnlockConnector(request) {
       if (findConnector(station, request.connectorId) === undefined)
         return { status: 'NotSupported' };
+      if (behaviour.failUnlock) return { status: 'UnlockFailed' };
       if (transactions.has(request.connectorId)) {
         later(delayFor('UnlockConnector'), () =>
           endTransaction(request.connectorId, 'UnlockCommand'),

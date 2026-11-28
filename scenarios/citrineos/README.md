@@ -47,6 +47,7 @@ or per group of related ones, as far as CitrineOS's REST API can start them:
 | `security.yaml`       | B_42, L_01, L_05 to L_07, L_10, M_01 to M_04, M_12, M_13, M_16 to M_20, N_25, N_35, N_36                           |
 | `smart-charging.yaml` | K_01, K_03 to K_06, K_08, K_10, K_19, K_29 to K_37, K_43, K_44, K_60, K_70                                         |
 | `reservation.yaml`    | H_01, H_07, H_08, H_14, H_15, H_17, H_19, H_20, H_22                                                               |
+| `failures.yaml`       | B_44, G_20, L_08, M_05, M_21, N_34: station failures from behaviour switches and a persona (T141)                  |
 
 `transactions.yaml` also has a scenario beyond the five profiles: a station with an ISO 15118 EV sends NotifyEVChargingNeeds (T82); it only checks that CitrineOS takes the message.
 

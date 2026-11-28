@@ -1751,6 +1751,8 @@ M10 之后确定：M11 不开新的功能方向，而是从 M4 到 M7 留下的 
 
 - 已实现（T140）：没有设定每个桩的 `limit` 时，记录器使用 `budget`（默认 200,000）：每个有记录的桩最多保留 min(1000, budget / 桩数) 条。新桩分走一份时，其他桩立即裁剪，保留最新的；被删除的桩把份额还回去。`serve` 不带 `--record-limit` 时使用它；`--record-limit`、`load`（10）和 `bench` 仍是固定上限。
 
+- 已实现（T141）：五个模拟桩故障的行为开关。`failUnlock`（UnlockConnector 回复 UnlockFailed）、`failCertificates`（InstallCertificate 和 DeleteCertificate 回复 Failed）、`refuseLogs`（GetLog 回复 Rejected）在 1.6 和 2.x 上都有。`failNetworkProfile`（SetNetworkProfile 回复 Failed）和 `failLock`（G05：插枪时发送 NotifyEvent ConnectorPlugRetentionLock Problem true，拔枪前不充电，拔枪后发 false）只在 2.x 上有。persona 的 `firmware.installVerification: fail` 在 Installing 之后报 InstallVerificationFailed，适用于 1.6 签名固件和 2.x。场景（`setBehaviour`、桩的 `behaviour`）、API 和 Web UI（"Fail on purpose"）都可以设置这些开关。Part 6 中 TC_G_20 是锁枪失败，不是 UnlockConnector，所以修正了 issue 里的列表。`scenarios/regression/station-failures.yaml` 用内置 CSMS 覆盖它们，`scenarios/citrineos/failures.yaml` 对 CitrineOS 覆盖 TC_B_44、TC_G_20、TC_L_08、TC_M_05、TC_M_21 和 TC_N_34（本地 6 个全部通过）。
+
 行为变化会写进 changelog：回放默认先 boot（T137）；超过 200 个桩时 `serve` 每个桩保留的记录变少（T140）；能量倍率下 `departureMinutes` 按模拟时间计（T134）。
 
 以后再做：从日志校准 EV 配置（#127），ISO 15118-20 计划控制下的等待和 ISO15118Ctrlr 的 2.1 变量（#262），安全方面的 follow-up（#92 到 #96、#177、#178），以及规模和维护方面的（#133、#176、#180）。

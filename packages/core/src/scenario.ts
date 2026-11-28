@@ -43,7 +43,7 @@ export interface ScenarioStation {
   config?: Record<string, string>;
   /** 2.0.1 Device Model values on top of the persona's: component → variable → value. */
   deviceModel?: Record<string, Record<string, string>>;
-  behaviour?: { refuseRemoteStart?: boolean; cableLock?: boolean };
+  behaviour?: BehaviourSwitches;
   energyMultiplier?: number;
   /** Security Profile and certificate files (paths relative to the scenario file). */
   security?: {
@@ -165,7 +165,7 @@ export type ScenarioStep =
   | (ActionBase & { kind: 'online' | 'stopStation' | 'startStation' })
   | (ActionBase & {
       kind: 'setBehaviour';
-      behaviour: { refuseRemoteStart?: boolean; cableLock?: boolean };
+      behaviour: BehaviourSwitches;
     })
   | (StepBase & { kind: 'wait'; durationMs: number })
   | (StepBase & { kind: 'charge'; connector: number; durationMs: number })
@@ -318,7 +318,21 @@ const saveSchema: Schema<SaveMap> = {
     }
   },
 };
-const behaviourSchema = object({}, { refuseRemoteStart: boolean(), cableLock: boolean() });
+/** The behaviour switches a scenario can set: every one but Autocharge, set on the EV side. */
+const BEHAVIOUR_SWITCHES = [
+  'refuseRemoteStart',
+  'cableLock',
+  'failUnlock',
+  'failCertificates',
+  'refuseLogs',
+  'failNetworkProfile',
+  'failLock',
+] as const;
+export type BehaviourSwitches = Partial<Record<(typeof BEHAVIOUR_SWITCHES)[number], boolean>>;
+const switchFields = Object.fromEntries(BEHAVIOUR_SWITCHES.map((name) => [name, boolean()])) as {
+  [K in (typeof BEHAVIOUR_SWITCHES)[number]]: ReturnType<typeof boolean>;
+};
+const behaviourSchema = object({}, switchFields);
 const action = { expectError: string(), station: nonEmpty };
 const fromSchema = oneOf(['last', 'step', 'start']);
 /** Action names of either version; the runner checks them against each station's version. */
@@ -518,7 +532,7 @@ const ARGUMENTS = {
   online: object({}, action),
   stopStation: object({}, action),
   startStation: object({}, action),
-  setBehaviour: object({}, { refuseRemoteStart: boolean(), cableLock: boolean(), ...action }),
+  setBehaviour: object({}, { ...switchFields, ...action }),
   charge: object({ duration: durationSchema }, { connector, station: nonEmpty }),
   expect: object(
     {},
@@ -898,7 +912,7 @@ function parseStep(
     case 'clearInjections':
       return { kind: argsKind, ...named, ...pick(args, ['station'] as const) } as ScenarioStep;
     case 'setBehaviour': {
-      const behaviour = pick(args, ['refuseRemoteStart', 'cableLock'] as const);
+      const behaviour = pick(args, BEHAVIOUR_SWITCHES);
       if (Object.keys(behaviour).length === 0) {
         issues.push({
           path: at,
