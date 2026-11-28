@@ -5,7 +5,7 @@ An OCPP charge point simulator: a headless engine runs many virtual charge point
 - **[User guide](docs/guide.md)** ([中文版](docs/guide.zh-CN.md)): installing, the Web UI, personas, scenarios, the built-in CSMS, OCPP 2.1 features, load tests, logs and the API.
 - **[Design](docs/design.md)** ([中文版](docs/design.zh-CN.md)): how it works and why, milestone by milestone.
 
-> Status: M1 to M10 are done; [0.3.0](https://github.com/JasonKong/ocpp-mimic/releases/tag/v0.3.0) is the latest release:
+> Status: M1 to M11 are done; [0.3.0](https://github.com/JasonKong/ocpp-mimic/releases/tag/v0.3.0) is the latest release, and M11 comes in the next:
 >
 > - OCPP 1.6J with every feature profile and the Security Whitepaper; scenarios and CI; fault injection.
 > - Scale: 1,000 stations on one machine, load tests, metrics, log import, replay and calibration.
@@ -15,6 +15,7 @@ An OCPP charge point simulator: a headless engine runs many virtual charge point
 > - A release (M8): an npm package and a Docker image, an API token, the Business Source License 1.1.
 > - A demo (M9): `ocpp-mimic demo` and the Web UI's Demo page, a charging site to play with: seven ways to start a session, single and dual charge points sharing a supply, and the built-in CSMS's site load management.
 > - Payments (M10): the built-in CSMS takes the drivers' money with a simulated payment provider. It holds on a test card before the session starts, prices the session with its idle fee, and captures, releases or fails the payment, on the Demo page too.
+> - Hardening (M11, not released yet): one clock for departures, one price for 2.1 tariffs, station payments offline and resumed, replays that boot first, a tag filter and bulk actions in the Web UI, remote starts in load plans, a record budget for `serve`, and station failures for CSMS tests.
 
 ## Install
 
