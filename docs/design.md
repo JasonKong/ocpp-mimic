@@ -1758,6 +1758,35 @@ Changed behaviour, listed in the changelog: replays boot first by default (T137)
 
 Left for later: calibrating EV profiles from logs (#127), the ISO 15118-20 scheduled-control wait and ISO15118Ctrlr's 2.1 variables (#262), the security follow-ups (#92 to #96, #177, #178) and the scale and maintenance ones (#133, #176, #180).
 
+**Accepted (M11)**
+
+M11's exit criterion G11 is met on main 0893d55:
+
+- **One clock (T134).** A 2.0.1 station at energy ×40 with an ISO 15118 EV leaving after 240 minutes reported its departure 6 minutes after plug-in. The energy panel showed "05:42 · in 11 min" next to "departure 05:36: will not reach the target", both on the wall clock. Before, the ETA was 475 simulated minutes, set against a departure 240 wall minutes away. A test with the multiplier fails without the change.
+- **One price (T135).** A 2.1 station on a manual clock charged through a tariff with time-of-day, energy, charging-time and idle conditions, crossing every one of them and using every price. Its own cost equaled the reference price, incl. and excl. tax. The payment end-to-end tests still capture the engine's price to the cent.
+- **Station payments (T136).** By tests:
+  - a card canceled offline was reported after the reconnect;
+  - a transaction ended offline and then restarted sent its Ended event and its settlement after the boot, in that order;
+  - a transaction resumed after a restart settled 0.68 for the whole session, where it used to settle the 0.54 saved at the restart;
+  - RoamingEvseId filled the URL for its EVSE.
+- **Replays boot first (T137).**
+  - Against a scripted CSMS that answers SecurityError until a boot, `auto` booted with the persona's fields and matched the log, while `never` got CALLERRORs.
+  - CitrineOS v2.1.0 accepts messages before a boot. Against it, a mid-session log replayed with `auto` sent the persona's BootNotification first, which CitrineOS logged; `never` sent none; both matched.
+- **Web UI (T138).** In a browser on the final build:
+  - the tag filter showed the 2 stations tagged `acc`;
+  - Stop, Start and Delete acted on those 2 only, and Delete asked "Delete 2 stations?";
+  - Offline and Online were checked on the branch build.
+- **Remote starts (T139).** A load plan of 15 stations ran for 60 s against `ocpp-mimic csms`:
+  - "app" drivers got their remote starts from the built-in CSMS: 40 arrivals, 1 turned away;
+  - "late" drivers asked a hook that never answers: 30 arrivals, 27 turned away after their 5 s wait, and 3 still waiting at the end.
+- **Record budget (T140).**
+  - The bench on main (run 46112975692: 1,000 load-ac-2.1 stations, store and tariffs on, 10 minutes) peaked at 470.5 MB RSS, against 467.9 MB in M7's run 43837390601. In 10 minutes a station records about 30 messages, under both limits.
+  - So the budget was checked with the bench tool and records that pile up: 1,000 stations charging, with meter values every 2 s, for 8 minutes (about 500,000 frames).
+    - With the default budget: 388.4 MB RSS, heap 183 MB.
+    - With 1000 records per station, as before: 546.7 MB RSS, heap 319 MB.
+- **Station failures (T141).** The CitrineOS workflow on main (run 46112933512) passed 67 scenarios, 6 more than before: TC_B_44, TC_G_20, TC_L_08, TC_M_05, TC_M_21 and TC_N_34. Regression has 222 scenarios with `station-failures.yaml`.
+- **CI**: green on #320 to #327. The last local check ran 880 unit tests and 222 regression scenarios.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.

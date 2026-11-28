@@ -27,7 +27,7 @@ on:
         type: boolean
         default: false
       record_limit:
-        description: Records kept per station (empty for the default, 1000)
+        description: Records kept per station (empty for the default, 200,000 shared, 1000 each up to 200 stations)
         default: ''
       tariff:
         description: Tariffs on (scenarios/load/tariff.json for the CSMS and 2.1 stations)
