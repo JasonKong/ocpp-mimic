@@ -1604,7 +1604,7 @@ M9's exit criterion G9 is met on main 25aa1ae, against `ocpp-mimic demo`:
 
 ## M10 Payments
 
-Decided for M10 after M9: a CSMS like Invisible Urban's takes the driver's money itself. It holds an amount on the driver's card before a session (a Stripe PaymentIntent with manual capture, 50 by default), captures the actual price after it, and re-charges in full when the price outgrew the hold. The price is a tariff of energy, charging time, a connection fee and an idle fee, counted from SuspendedEV. OCPP carries none of this money: on 1.6 the CSMS prices from meter values and statuses alone. M10 adds a simulated payment provider to the built-in CSMS, so the Demo page shows where the money is at each step and who moved it, next to the 2.1 payments the station handles itself (the terminal and the QR code). Nothing reaches a real payment provider. Cards are a made-up brand and last four digits. Refunds, invoices, payouts and currency conversion stay out.
+Decided for M10 after M9: many public charging CSMSs take the driver's money themselves. A typical one holds an amount on the driver's card before a session (an authorization captured later), captures the actual price after it, and charges again in full when the price outgrew the hold. The price is a tariff of energy, charging time, a connection fee and an idle fee, counted from SuspendedEV. OCPP carries none of this money: on 1.6 the CSMS prices from meter values and statuses alone. M10 adds a simulated payment provider to the built-in CSMS, so the Demo page shows where the money is at each step and who moved it, next to the 2.1 payments the station handles itself (the terminal and the QR code). Nothing reaches a real payment provider. Cards are a made-up brand and last four digits. Refunds, invoices, payouts and currency conversion stay out.
 
 **Exit criterion G10**
 
@@ -1623,9 +1623,9 @@ This is checked in a browser and by tests.
 - **Payment settings per site**:
   - the tariff (the reference tariff: fixed fee, energy, charging time, idle time, tax, minimum and maximum cost, time-of-day energy prices; NZD by default);
   - the hold amount (50);
-  - what happens when the price outgrows the hold: `recharge` by default, which cancels the hold and charges the whole price at the end as Invisible Urban does; `increment`, which raises the hold as the price nears it; or `stop`, which stops the session once the price reaches the hold and charges no more than the hold;
+  - what happens when the price outgrows the hold: `recharge` by default, which cancels the hold and charges the whole price at the end; `increment`, which raises the hold as the price nears it; or `stop`, which stops the session once the price reaches the hold and charges no more than the hold;
   - a minimum energy below which nothing is charged (0 Wh);
-  - an idle grace period before idle time is priced (0 minutes, as Invisible Urban).
+  - an idle grace period before idle time is priced (0 minutes).
 - **Driver accounts**: an idToken (app user, RFID card, EVCCID) has a card with a test outcome: `approve`, `decline`, `requires-action` (like 3-D Secure) or `fail-capture`. An unknown token has a test card that approves.
 - **A payment per session**: pending, held (and incremented), then captured, released (below the minimum energy, or a price of 0) or failed (the capture failed: a debt). A decline at the hold is `declined` and the session does not start.
 - **Pricing**: the running price comes from meter values and statuses on 1.6 and 2.x. 2.x stations also get it in TransactionEvent answers and CostUpdated, as before; 1.6 has no cost messages. Holds, increments, captures and releases are payment events, kept apart from OCPP frames.
@@ -1637,7 +1637,7 @@ This is checked in a browser and by tests.
 | App | Before the remote start | No remote start; the app shows the decline or asks for confirmation | Captured by the CSMS |
 | RFID card, Autocharge | When answering Authorize | Authorize is answered Invalid, so the station does not start | Captured by the CSMS |
 | Free vend | No | — | Not charged; the energy is recorded |
-| Valet | No | — | Billed to the site's account at 0, marked paid (as Invisible Urban) |
+| Valet | No | — | Billed to the site's account at 0, marked paid |
 | Bank card (2.1) | By the station's terminal (AuthorizationAmount) | The terminal declines | The station's NotifySettlement; the CSMS shows it and does not charge again |
 | QR code (2.1) | When the web page is paid | The page declines; no NotifyWebPaymentStarted | Captured by the CSMS |
 
