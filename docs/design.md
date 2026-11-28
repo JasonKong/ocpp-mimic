@@ -1671,6 +1671,42 @@ This is checked in a browser and by tests.
 
 0.2.0 is released before M10; the payments go into 0.3.0.
 
+**Accepted (M10)**
+
+M10's exit criterion G10 is met on main 03518cf, against `ocpp-mimic demo`:
+
+- **Every way to start and every card outcome, on every version that has it.** 55 runs went through the engine API the Demo page uses, with the engine's reference tariff set to the CSMS's. Each run used one station and a small car that filled up and then stood idle for a few seconds:
+  - **RFID card, app and Autocharge** on 1.6, 2.0.1 and 2.1, and the **QR code** on 2.1, each with the four outcomes:
+    - a decline kept the session from starting: no transaction, no payment, one decline event (Authorize answered Invalid, a Declined remote start, or a page answered `paid: false`);
+    - approve and requires-action were held (requires-action first), priced with their idle time, and captured at the engine's reference price to the cent;
+    - fail-capture ended failed, with nothing captured.
+  - **Free vend** on the three versions was not charged, **valet** was billed to the site account, and the **2.1 bank card** showed the terminal's hold of 50 and its settlement at the CSMS's price.
+  - **The over-hold policies** ran on 1.6 and 2.0.1 with a hold of 1:
+    - recharge canceled the hold and captured the whole price;
+    - increment raised the hold as the price neared it and captured the price;
+    - stop stopped the session at the hold and captured the hold.
+
+    An idle grace of 1 minute priced no idle time.
+
+  55 of 55 passed. On 1.6 an Autocharge session shows as a card payment, since a 1.6 idTag carries no token type.
+- **In the browser**, on the Demo page with five cars:
+  - during T132:
+    - app on 1.6, with a declined card and one that asks to confirm;
+    - QR code on 2.1, with a declined page;
+    - valet;
+    - free vend on 1.6 and 2.0.1;
+    - bank card on 2.1;
+  - on main:
+    - RFID card on 2.0.1, stopping at a hold of 5: three sessions captured 5.00 each, one capture failed, and the declined card never started;
+    - Autocharge on 1.6, raising the hold with a 1-minute grace: the holds rose from 5 to 30, the idle fee started after the grace minute, and the unplugs captured 46.99 in all.
+
+  These runs found the four problems T132 fixed before it merged:
+  - the last site's payment showed after a rebuild;
+  - the terminal settled 0;
+  - a QR code page's fail-capture card was captured;
+  - the payments overflowed the site manager.
+- **CI**: green on #309 and #311 to #313. The last local check ran 865 unit tests and 218 regression scenarios.
+
 ## Observability and UI
 
 The UI is one client of the engine API; everything it does can also be done through the REST / WebSocket API and the CLI.
