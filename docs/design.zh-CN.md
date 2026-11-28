@@ -1745,6 +1745,8 @@ M10 之后确定：M11 不开新的功能方向，而是从 M4 到 M7 留下的 
 
 - 已实现（T137）：`runReplay` 接受 `boot`（`auto`、`always`、`never`，默认 `auto`）和 `bootPayload`。在 `auto` 下，日志的第一个桩端 CALL 不是 BootNotification 时，先发一个：日志里第一个 BootNotification，没有的话用回放桩 persona 的（由 runner 传入：1.6 的 boot 字段，2.x 是 `{ reason: PowerUp, chargingStation }`）。它的状态记入结果（`boot`），不是 Accepted 就算一处差异。没有可用的 boot 时，按日志原样回放。`replay` 步骤有 `boot`，`ocpp-mimic replay` 有 `--boot`，写出的场景会保留非 `auto` 的设置。
 
+- 已实现（T138）：桩列表的筛选放在 `apps/web/src/station-filter.ts`（id 文本、状态、分组，新增 tag），筛选框下方是批量操作：Start、Stop、Offline、Online 通过 `POST /api/stations/bulk/<action>`，Delete 通过 `DELETE /api/stations/bulk`，都带上当前显示的 id。Delete 会先确认并说明数量。列表跟随引擎的事件更新，无需重新加载。已在浏览器里检查：按 tag 筛选后，对显示的桩执行停止、启动、下线、上线和删除。
+
 行为变化会写进 changelog：回放默认先 boot（T137）；超过 200 个桩时 `serve` 每个桩保留的记录变少（T140）；能量倍率下 `departureMinutes` 按模拟时间计（T134）。
 
 以后再做：从日志校准 EV 配置（#127），ISO 15118-20 计划控制下的等待和 ISO15118Ctrlr 的 2.1 变量（#262），安全方面的 follow-up（#92 到 #96、#177、#178），以及规模和维护方面的（#133、#176、#180）。

@@ -19,6 +19,7 @@ import {
   type StationSummary,
 } from './api.js';
 import { formatRoute, parseRoute } from './sessions.js';
+import { deleteQuestion, type BulkAction } from './station-filter.js';
 import SessionsView from './components/SessionsView.vue';
 import DemoView from './components/DemoView.vue';
 import DeviceModelBrowser from './components/DeviceModelBrowser.vue';
@@ -292,6 +293,23 @@ async function create(station: NewStation) {
   });
 }
 
+/** A bulk action on the stations in view; deleting asks first, naming how many. */
+async function bulk(action: BulkAction, ids: string[]) {
+  if (ids.length === 0) return;
+  if (action === 'delete' && !window.confirm(deleteQuestion(ids.length))) return;
+  await guard(async () => {
+    if (action === 'delete') {
+      await api.deleteStations({ ids });
+      if (selectedId.value !== undefined && ids.includes(selectedId.value)) {
+        selectedId.value = undefined;
+      }
+    } else {
+      await api.bulk(action, ids);
+    }
+    // The list follows the engine's events: started, stopped and removed stations show there.
+  });
+}
+
 async function act(name: string, connectorId?: number, value?: unknown) {
   const station = selected.value;
   if (station === undefined) return;
@@ -435,6 +453,7 @@ onUnmounted(() => {
         :selected-id="selectedId"
         @select="select"
         @create="create"
+        @bulk="bulk"
       />
       <div class="content">
         <FleetOverview :stations="stationList" />
