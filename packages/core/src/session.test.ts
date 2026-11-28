@@ -8,6 +8,7 @@ import { ManualClock } from './clock.js';
 import { sequentialIds } from './ids.js';
 import { createChargePoint201, type ChargePoint201 } from './ocpp201/charge-point.js';
 import { parseFrame, type JsonObject } from './ocppj.js';
+import { priceSession, type ReferenceTariff } from './tariff.js';
 import {
   chargingStateLabel,
   createSessionTracker,
@@ -864,6 +865,66 @@ describe('2.1 vehicle readings', () => {
 });
 
 describe('2.1 station cost and limits', () => {
+  it('agrees with the reference price to the cent on a tariff with time, duration and energy conditions', async () => {
+    // Cheaper energy from 10:05 (UTC, the station's zone), dearer again past 800 Wh, free charging
+    // for the first 2 minutes and a free first idle minute: a session from 10:00 crosses them all.
+    const gst = [{ type: 'GST', tax: 15 }];
+    const tariff: ReferenceTariff = {
+      tariffId: 'COND',
+      currency: 'NZD',
+      fixedFee: { prices: [{ priceFixed: 0.5 }], taxRates: gst },
+      energy: {
+        prices: [
+          { priceKwh: 0.6, conditions: { minEnergy: 800, startTimeOfDay: '10:05' } },
+          { priceKwh: 0.2, conditions: { startTimeOfDay: '10:05', endTimeOfDay: '22:00' } },
+          { priceKwh: 0.4 },
+        ],
+        taxRates: gst,
+      },
+      chargingTime: {
+        prices: [{ priceMinute: 0, conditions: { maxChargingTime: 120 } }, { priceMinute: 0.05 }],
+      },
+      idleTime: {
+        prices: [{ priceMinute: 0, conditions: { maxIdleTime: 60 } }, { priceMinute: 0.5 }],
+        taxRates: gst,
+      },
+    };
+    const h = harness({
+      ocpp: '2.1',
+      features: ['Core', 'TariffAndCost'],
+      deviceModel: { SampledDataCtrlr: { TxUpdatedInterval: 10 } },
+      csms: { SetDefaultTariff: () => ({ status: 'Accepted' }) },
+    });
+    await h.boot();
+    await h.csmsCall('SetDefaultTariff', { evseId: 0, tariff: tariff as unknown as JsonObject });
+    expect(await h.present(1, 'AA000001', 'ISO14443')).toBe('authorized');
+    // About 1 kWh to full at 7.4 kW with the taper: full at 10:13:20, then parked until 10:16.
+    h.cp.plugIn(1, {
+      profile: { capacityKWh: 2, initialSoc: 50, maxPowerW: 7400, phases: 1 },
+    });
+    await h.advance(16 * 60_000);
+    h.cp.unplug(1);
+    await h.settle();
+    const record = h.list()[0];
+    expect(record?.stationCost).toMatchObject({ final: true, typeOfCost: 'NormalCost' });
+    const price = priceSession(record!, tariff, record!.endedAt ?? '');
+    expect(price.inclTax).toBe(record?.stationCost?.totalCost);
+    expect(price.exclTax).toBe(record?.stationCost?.exclTax);
+    // Every price was used: energy before 10:05, after it, and past 800 Wh; both charging and
+    // both idle prices.
+    const used = price.items.filter((i) => i.quantity > 0).map((i) => [i.part, i.unitPrice]);
+    expect(used).toEqual([
+      ['fixedFee', 0.5],
+      ['energy', 0.6],
+      ['energy', 0.2],
+      ['energy', 0.4],
+      ['chargingTime', 0],
+      ['chargingTime', 0.05],
+      ['idleTime', 0],
+      ['idleTime', 0.5],
+    ]);
+  });
+
   it("keeps the station's own cost and the transaction's limits as it reported them", async () => {
     const h = harness({
       ocpp: '2.1',

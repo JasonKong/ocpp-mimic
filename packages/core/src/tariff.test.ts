@@ -122,7 +122,7 @@ describe('reference tariff', () => {
         tariffId: '',
         currency: 'dollars',
         energy: { prices: [{ priceKwh: -1 }, { priceKwh: 2 }] },
-        idleTime: { prices: [{ priceMinute: 1, conditions: { startTimeOfDay: '22:00' } }] },
+        idleTime: { prices: [{ priceMinute: 1, conditions: { paymentBrand: 'Visa' } }] },
         chargingTime: { prices: [{ priceMinute: 1 }], taxRates: [{ tax: 15 }] },
         reservationTime: { prices: [] },
         surcharge: 1,
@@ -136,12 +136,12 @@ describe('reference tariff', () => {
       'unknown field surcharge',
       'energy.prices: priceKwh must be a number of at least 0',
       'chargingTime.taxRates: each needs a type, a tax of at least 0 and an optional stack',
-      'idleTime.prices: conditions are not supported',
+      "idleTime.prices: condition paymentBrand is not one of idleTime's",
       'minCost must not be above maxCost',
     ]);
   });
 
-  it('takes energy prices by time of day before a last price without conditions', () => {
+  it('takes every 2.1 condition, on every part, and checks their values', () => {
     const offPeak = {
       ...TARIFF,
       energy: {
@@ -159,18 +159,35 @@ describe('reference tariff', () => {
           prices: [
             {
               priceKwh: 0.2,
-              conditions: { startTimeOfDay: '9pm', minPower: 1, dayOfWeek: ['Funday'] },
+              conditions: { startTimeOfDay: '9pm', minPower: -1, dayOfWeek: ['Funday'] },
             },
-            { priceKwh: 0.3, conditions: { dayOfWeek: ['Monday'] } },
+            { priceKwh: 0.3, conditions: { dayOfWeek: ['Monday'], evseKind: 'Wireless' } },
           ],
         },
       }),
     ).toEqual([
-      'energy.prices: condition minPower is not supported (time of day, weekday, dates)',
       'energy.prices: startTimeOfDay must be HH:MM',
       'energy.prices: dayOfWeek must list days such as Monday',
-      'the last energy price must have no conditions',
+      'energy.prices: minPower must be a number of at least 0',
+      'energy.prices: evseKind must be AC or DC',
     ]);
+    // Charging and idle time by duration, a fixed fee by payment brand, a last price with conditions.
+    expect(
+      tariffProblems({
+        ...TARIFF,
+        fixedFee: {
+          prices: [{ priceFixed: 0, conditions: { paymentBrand: 'Visa' } }, { priceFixed: 1 }],
+        },
+        chargingTime: { prices: [{ priceMinute: 0.05, conditions: { minChargingTime: 3600 } }] },
+        idleTime: {
+          prices: [
+            { priceMinute: 0, conditions: { maxIdleTime: 600 } },
+            { priceMinute: 0.5, conditions: { minIdleTime: 600, maxPower: 100 } },
+          ],
+        },
+        minCost: { exclTax: 2, taxRates: [{ type: 'GST', tax: 15 }] },
+      }),
+    ).toEqual([]);
   });
 
   it('prices energy by the time of each stretch between readings, in the station time zone', () => {
@@ -265,7 +282,8 @@ describe('reference tariff', () => {
     expect(price.adjusted).toBeUndefined();
     // Every item points to the frames it used.
     expect(price.items.find((i) => i.part === 'fixedFee')?.frames).toEqual([3]);
-    expect(price.items.find((i) => i.part === 'energy')?.frames).toEqual([3, 8]);
+    // Energy names every reading it came from: the start, the meter values, the stop.
+    expect(price.items.find((i) => i.part === 'energy')?.frames).toEqual([3, 6, 8]);
     expect(price.items.find((i) => i.part === 'chargingTime')?.frames).toEqual([5]);
     expect(price.items.find((i) => i.part === 'idleTime')?.frames).toEqual([7]);
     // A grace period leaves the first idle minutes unpriced; a longer one, all of them.
@@ -312,14 +330,29 @@ describe('reference tariff', () => {
       { ...TARIFF, minCost: { exclTax: 30 } },
       '2026-11-15T12:00:00Z',
     );
-    expect(low).toMatchObject({ exclTax: 30, adjusted: 'minCost' });
-    expect(low.tax).toBe(Math.round(((0.65 * 30) / 16.54) * 100) / 100);
+    // As on a 2.1 station: minCost replaces the total at the end, taxed by its own rates (I12.FR.38).
+    expect(low).toMatchObject({ exclTax: 30, tax: 0, inclTax: 30, adjusted: 'minCost' });
+    const taxedMin = priceSession(
+      record,
+      { ...TARIFF, minCost: { exclTax: 30, taxRates: [{ type: 'GST', tax: 15 }] } },
+      '2026-11-15T12:00:00Z',
+    );
+    expect(taxedMin).toMatchObject({ exclTax: 30, tax: 4.5, inclTax: 34.5 });
+    // A running session is not raised to minCost yet.
+    const running: SessionRecord = { ...record, state: 'running' };
+    delete running.endedAt;
+    expect(
+      priceSession(running, { ...TARIFF, minCost: { exclTax: 30 } }, '2026-11-15T10:30:00Z')
+        .adjusted,
+    ).toBeUndefined();
+    // maxCost stops the price where it is reached: here in the idle time, after all the energy
+    // and its tax (I12.FR.39, .40).
     const high = priceSession(
       record,
       { ...TARIFF, maxCost: { exclTax: 10 } },
       '2026-11-15T12:00:00Z',
     );
-    expect(high).toMatchObject({ exclTax: 10, tax: 0.39, inclTax: 10.39, adjusted: 'maxCost' });
+    expect(high).toMatchObject({ exclTax: 10, tax: 0.65, inclTax: 10.65, adjusted: 'maxCost' });
   });
 
   it('charges nothing for a session that never started', () => {

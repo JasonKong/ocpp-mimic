@@ -44,6 +44,11 @@ export interface TariffSituation {
   idleS: number;
   /** Energy flows: the time counts as charging time, else as idle time. */
   charging: boolean;
+  /**
+   * Neither charging nor idle time: the time is not priced. The reference price uses it for time
+   * the station withholds power (SuspendedEVSE) and for an idle grace period; a station never does.
+   */
+  paused?: boolean;
 }
 
 export interface TariffPlace {
@@ -266,7 +271,7 @@ export function checkTariff(
 // ---- The cost of a transaction ---------------------------------------------------
 
 /** Tax at stacked rates, unrounded: each stack also taxes the taxes below it (I12.FR.13). */
-function taxOf(net: number, rates: Rates): number {
+export function stackedTax(net: number, rates: Rates): number {
   if (rates === undefined) return 0;
   const stacks = [...new Set(rates.map((r) => r.stack ?? 0))].sort((a, b) => a - b);
   let base = net;
@@ -306,10 +311,17 @@ interface Period {
   tariffId: string;
   /** The prices chosen: changes start a new period. */
   key: string;
+  /** The index of the price chosen in each dimension, when one applied. */
+  energy?: number;
+  chargingTime?: number;
+  idleTime?: number;
   energyWh: number;
   chargingS: number;
   idleS: number;
 }
+
+/** A charging period with the price chosen in each dimension (an index into its prices). */
+export type CostPeriod = Readonly<Omit<Period, 'key'>>;
 
 export interface CostMeterOptions {
   tariff: Tariff21;
@@ -333,6 +345,8 @@ export interface CostMeter {
   details(final: boolean): Bare<CostDetailsType>;
   /** When a calendar condition next changes, to price up to it exactly. */
   nextChange(): number | undefined;
+  /** The charging periods so far, with the prices chosen in each. */
+  periods(): CostPeriod[];
 }
 
 export function createCostMeter(options: CostMeterOptions): CostMeter {
@@ -348,7 +362,7 @@ export function createCostMeter(options: CostMeterOptions): CostMeter {
     const current = amounts.get(dimension) ?? { exclTax: 0, inclTax: 0 };
     amounts.set(dimension, {
       exclTax: current.exclTax + exclTax,
-      inclTax: current.inclTax + exclTax + taxOf(exclTax, rates),
+      inclTax: current.inclTax + exclTax + stackedTax(exclTax, rates),
       ...(rates !== undefined && { rates }),
     });
   };
@@ -408,6 +422,9 @@ export function createCostMeter(options: CostMeterOptions): CostMeter {
         startPeriod: last.at,
         tariffId: tariff.tariffId,
         key: pick.key,
+        ...(pick.energy !== undefined && { energy: pick.energy }),
+        ...(pick.charging !== undefined && { chargingTime: pick.charging }),
+        ...(pick.idle !== undefined && { idleTime: pick.idle }),
         energyWh: 0,
         chargingS: 0,
         idleS: 0,
@@ -415,7 +432,7 @@ export function createCostMeter(options: CostMeterOptions): CostMeter {
       periods.push(period);
     }
     const chargingS = last.charging ? dtS : 0;
-    const idleS = last.charging ? 0 : dtS;
+    const idleS = last.charging || last.paused === true ? 0 : dtS;
     usage.energyWh += dWh;
     usage.chargingS += chargingS;
     usage.idleS += idleS;
@@ -439,7 +456,10 @@ export function createCostMeter(options: CostMeterOptions): CostMeter {
       accruals.push(['idleTime', (idleS / 60) * price, tariff.idleTime.taxRates]);
     }
     const deltaExcl = accruals.reduce((sum, [, excl]) => sum + excl, 0);
-    const deltaIncl = accruals.reduce((sum, [, excl, rates]) => sum + excl + taxOf(excl, rates), 0);
+    const deltaIncl = accruals.reduce(
+      (sum, [, excl, rates]) => sum + excl + stackedTax(excl, rates),
+      0,
+    );
     // maxCost: the part of this accrual that reaches it, then nothing more (I12.FR.39, .40).
     let share = 1;
     const max = tariff.maxCost;
@@ -478,7 +498,7 @@ export function createCostMeter(options: CostMeterOptions): CostMeter {
   function minCostTotal() {
     const min = tariff.minCost ?? {};
     const exclTax = min.exclTax ?? min.inclTax ?? 0;
-    const inclTax = min.inclTax ?? exclTax + taxOf(exclTax, min.taxRates);
+    const inclTax = min.inclTax ?? exclTax + stackedTax(exclTax, min.taxRates);
     return { exclTax: cents(exclTax), inclTax: cents(inclTax) };
   }
 
@@ -552,5 +572,6 @@ export function createCostMeter(options: CostMeterOptions): CostMeter {
       };
     },
     nextChange: () => nextCalendarChange(tariff, last.at, place),
+    periods: () => periods.map(({ key: _key, ...period }) => ({ ...period })),
   };
 }

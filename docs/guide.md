@@ -520,7 +520,17 @@ On 2.x the CSMS also sends the price so far as `totalCost` in TransactionEvent a
 }
 ```
 
-Energy may have several prices with time-of-day, weekday or date conditions before a last price without conditions, for off-peak rates. The other parts take one price each. The built-in CSMS evaluates times in UTC; the reference price uses the station's time zone (`ClockCtrlr.TimeZone` on 2.x, UTC otherwise).
+Every part may have several prices with 2.1 conditions, and the first whose conditions hold applies:
+
+- time of day, weekday, dates and `evseKind` on any part;
+- `minEnergy`/`maxEnergy` (Wh), `minCurrent`/`maxCurrent` (A), `minPower`/`maxPower` (W) and `minTime`/`maxTime`, `minChargingTime`/`maxChargingTime`, `minIdleTime`/`maxIdleTime` (s) on energy, charging time and idle time;
+- `paymentBrand` and `paymentRecognition` on the fixed fee.
+
+When no price of a part holds, that part costs nothing for the time, as on a 2.1 station. minCost replaces a lower total once the session has ended, taxed by its own `taxRates`; maxCost stops the price where it is reached.
+
+The reference price replays the session's readings, power, current and charging states through the cost meter a 2.1 station prices with, so on a 2.1 tariff it agrees with the station's own cost to the cent. Energy between two readings counts only while the EV charges. One difference: time the station withholds power (SuspendedEVSE) is not billed in the reference price, which a 2.1 station counts as idle time.
+
+The built-in CSMS evaluates times in UTC; the reference price uses the station's time zone (`ClockCtrlr.TimeZone` on 2.x, UTC otherwise). The Web UI's tariff form shows one price per part with an off-peak energy price. Set a tariff with other conditions with `PUT /api/tariff`; the price card then shows it without the form.
 
 ## 6. Scenarios
 

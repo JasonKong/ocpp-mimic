@@ -1739,6 +1739,8 @@ M10 之后确定：M11 不开新的功能方向，而是从 M4 到 M7 留下的 
 
 - 已实现（T134）：`core/src/ocpp201/charging-needs.ts` 的 `departureAt(pluggedAt, departureMinutes, energyMultiplier)` 给出实际时间上的离开时刻；2.0.1 和 2.1 的 NotifyEVChargingNeeds 按桩的倍率发送它。`estimateSession(record, { energyMultiplier })` 在实际时间上把 ETA 和它比较，起点是算出剩余时间的那一刻（最新采样，或车辆自己的上报）；引擎传入桩的倍率。
 
+- 已实现（T135）：`priceSession`（`core/src/tariff.ts`）用 `createCostMeter` 回放会话：读数（两次读数之间的电量只算在充电的时间里）、功率、电流和充电状态，在每个读数、状态变化、日历变化和占位宽限结束时推进。计费器新增 `paused` 时间（既不算充电也不算占位：SuspendedEVSE 和宽限期，桩自己从不使用）和 `periods()`（每个计费时段选中的价格），明细由此生成：每个部分用到的每个价格一项，电量项列出它用到的每个读数。总价取计费器的结果，所以 minCost 在结束时生效、按它自己的税率计税，maxCost 保留达到它之前已计的税。参考资费的每个部分都接受所有 2.1 条件和多个价格，minCost 和 maxCost 可以带 `taxRates`。一个测试在手动时钟下让 2.1 桩按带时段、电量、充电时长和占位条件的资费充电，每个条件都跨过，桩自己算的费用和参考价含税、不含税都一致。Web UI 的资费表单只对它能表示的资费提供（`fitsForm`）。
+
 行为变化会写进 changelog：回放默认先 boot（T137）；超过 200 个桩时 `serve` 每个桩保留的记录变少（T140）；能量倍率下 `departureMinutes` 按模拟时间计（T134）。
 
 以后再做：从日志校准 EV 配置（#127），ISO 15118-20 计划控制下的等待和 ISO15118Ctrlr 的 2.1 变量（#262），安全方面的 follow-up（#92 到 #96、#177、#178），以及规模和维护方面的（#133、#176、#180）。

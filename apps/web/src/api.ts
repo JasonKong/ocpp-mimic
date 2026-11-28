@@ -438,16 +438,28 @@ export interface SessionEstimate {
 export interface ReferenceTariff {
   tariffId: string;
   currency: string;
-  fixedFee?: { prices: { priceFixed: number }[]; taxRates?: TaxRate[] };
-  energy?: {
-    prices: { priceKwh: number; conditions?: TimeConditions }[];
+  fixedFee?: {
+    prices: { priceFixed: number; conditions?: TariffConditions }[];
     taxRates?: TaxRate[];
   };
-  chargingTime?: { prices: { priceMinute: number }[]; taxRates?: TaxRate[] };
-  idleTime?: { prices: { priceMinute: number }[]; taxRates?: TaxRate[] };
-  minCost?: { exclTax?: number; inclTax?: number };
-  maxCost?: { exclTax?: number; inclTax?: number };
+  energy?: {
+    prices: { priceKwh: number; conditions?: TariffConditions }[];
+    taxRates?: TaxRate[];
+  };
+  chargingTime?: {
+    prices: { priceMinute: number; conditions?: TariffConditions }[];
+    taxRates?: TaxRate[];
+  };
+  idleTime?: {
+    prices: { priceMinute: number; conditions?: TariffConditions }[];
+    taxRates?: TaxRate[];
+  };
+  minCost?: { exclTax?: number; inclTax?: number; taxRates?: TaxRate[] };
+  maxCost?: { exclTax?: number; inclTax?: number; taxRates?: TaxRate[] };
 }
+
+/** Any 2.1 price condition: the calendar ones, and amounts such as minEnergy or maxIdleTime. */
+export type TariffConditions = TimeConditions & Record<string, unknown>;
 
 /** When an energy price applies (2.1 TariffConditions, local time). */
 export interface TimeConditions {
