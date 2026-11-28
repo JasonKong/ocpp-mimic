@@ -387,6 +387,8 @@ describe('parseCommand', () => {
         '5s',
         '--compare',
         'strict',
+        '--boot',
+        'never',
         '--write',
         'r.yaml',
       ]),
@@ -398,6 +400,7 @@ describe('parseCommand', () => {
       speed: 10,
       maxGapMs: 5000,
       compare: 'strict',
+      boot: 'never',
       write: 'r.yaml',
       personas: [],
       allowCsms: [],
@@ -407,6 +410,7 @@ describe('parseCommand', () => {
       ['--speed', '0'],
       ['--max-gap', 'soon'],
       ['--compare', 'loose'],
+      ['--boot', 'sometimes'],
     ]) {
       expect(parseCommand(['replay', 'l.jsonl', ...bad])).toMatchObject({ kind: 'error' });
     }

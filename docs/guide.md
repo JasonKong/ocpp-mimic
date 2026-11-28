@@ -899,7 +899,7 @@ Keep real logs out of the repository: mask them and store them where your own da
 
 ### Replay
 
-`ocpp-mimic replay <log>` sends a station's recorded frames to a CSMS again, in order, and compares the CSMS's answers with the recorded ones. Timestamps move to the present, message ids are fresh, and transaction ids, remoteStartIds and tariff ids map to the ones the CSMS assigns.
+`ocpp-mimic replay <log>` sends a station's recorded frames to a CSMS again, in order, and compares the CSMS's answers with the recorded ones. Timestamps move to the present, message ids are fresh, and transaction ids, remoteStartIds and tariff ids map to the ones the CSMS assigns. A log that starts mid-session, with no BootNotification before its first other message, boots first: with the log's own BootNotification if it has one later, else the replaying persona's. A CSMS that refuses messages before a boot then answers as it did, and a boot it does not accept shows as a difference.
 
 ```bash
 ocpp-mimic replay scenarios/logs/local-card-session.yaml-1.jsonl --speed 10
@@ -913,6 +913,7 @@ ocpp-mimic replay incident.jsonl --station SIM-0042 --csms ws://127.0.0.1:8081 -
 | `--persona <id>` | Persona of the replaying station (default `generic-<the log's version>`) |
 | `--speed <n>`, `--max-gap <d>` | Divide the recorded gaps by n; cap each wait (default 30s) |
 | `--compare status \| strict \| none` | `status` (default) compares results, error codes and status fields; `strict` whole payloads except volatile fields |
+| `--boot auto \| always \| never` | `auto` (default) boots first when the log starts mid-session; `always` boots first in any case; `never` sends the log as it is. A scenario's `replay` step takes `boot` too |
 | `--write <file>` | Write the replay as a scenario, frames inline, to edit and run with `run` |
 
 ### Calibration

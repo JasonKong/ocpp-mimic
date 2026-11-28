@@ -15,6 +15,13 @@ import type { StationWire } from '../fleet.js';
 
 export type CompareMode = 'status' | 'strict' | 'none';
 
+/**
+ * Whether a BootNotification goes out before the log's first other CALL: `auto` when the log has
+ * none before it (it starts mid-session), `always`, or `never` (the log as it is).
+ */
+export type ReplayBoot = 'auto' | 'always' | 'never';
+export const REPLAY_BOOTS: readonly ReplayBoot[] = ['auto', 'always', 'never'];
+
 export interface ReplayOptions {
   wire: StationWire;
   /** One station's log lines, in order. */
@@ -24,6 +31,10 @@ export interface ReplayOptions {
   /** Longest wait between two frames sent, after `speed`. Default 30 s. */
   maxGapMs?: number;
   compare?: CompareMode;
+  /** A BootNotification first. Default `auto`. */
+  boot?: ReplayBoot;
+  /** The BootNotification to send when the log has none: the replay station's persona's. */
+  bootPayload?: Record<string, unknown>;
   /** How long to wait for each answer from the CSMS. Default 30 s. */
   answerTimeoutMs?: number;
   /** How long to wait for CALLs from the CSMS after the last frame. Default 1 s. */
@@ -35,6 +46,8 @@ export interface ReplayOptions {
 export interface ReplayResult {
   /** Charge-point CALLs sent, and how many the CSMS answered. */
   sent: number;
+  /** The status of the BootNotification sent before the log's frames, when one was. */
+  boot?: string;
   answered: number;
   /** CSMS CALLs: answered with a recorded answer, without one, and recorded but never seen. */
   csmsCalls: { matched: number; unmatched: string[]; missing: string[] };
@@ -321,7 +334,54 @@ export async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
     wire.send(JSON.stringify(reply));
   });
 
+  /** Sends a CALL with a fresh id and waits for the CSMS's answer. */
+  const call = (action: string, payload: Json) => {
+    const id = `replay-${++nextId}`;
+    const answer = new Promise<unknown[] | undefined>((resolve) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        resolve(undefined);
+      }, answerTimeoutMs);
+      pending.set(id, (reply) => {
+        clearTimeout(timer);
+        pending.delete(id);
+        resolve(reply);
+      });
+    });
+    wire.send(JSON.stringify([2, id, action, payload]));
+    result.sent += 1;
+    return answer;
+  };
+
   try {
+    // A log that starts mid-session: boot first, with the log's own BootNotification if it has
+    // one later, else the persona's (a CSMS may refuse other messages before a boot).
+    const stationCalls = lines.filter(
+      (line) => line.direction === 'cp-to-csms' && line.frame?.[0] === 2,
+    );
+    const bootsFirst = stationCalls[0]?.frame?.[2] === 'BootNotification';
+    const mode = options.boot ?? 'auto';
+    if (stationCalls.length > 0 && (mode === 'always' || (mode === 'auto' && !bootsFirst))) {
+      const logged = stationCalls.find((line) => line.frame?.[2] === 'BootNotification')?.frame;
+      const payload =
+        (logged?.[3] as Json | undefined) ?? (options.bootPayload as Json | undefined);
+      // Nothing to boot with (no BootNotification in the log, no persona's): the log as it is.
+      if (payload !== undefined) {
+        const reply = await call('BootNotification', shiftTimestamps(payload, offsetMs));
+        if (reply === undefined) {
+          result.differences.push(
+            `BootNotification sent first: no answer within ${answerTimeoutMs} ms`,
+          );
+        } else {
+          result.answered += 1;
+          const status = reply[0] === 3 ? (reply[2] as { status?: unknown })?.status : 'CALLERROR';
+          result.boot = String(status);
+          if (status !== 'Accepted') {
+            result.differences.push(`BootNotification sent first: ${String(status)}`);
+          }
+        }
+      }
+    }
     let previousAt: number | undefined;
     for (const line of lines) {
       if (line.direction !== 'cp-to-csms') continue;

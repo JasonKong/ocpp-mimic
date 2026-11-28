@@ -235,6 +235,8 @@ export type ScenarioStep =
       speed: number;
       maxGapMs: number;
       compare: 'status' | 'strict' | 'none';
+      /** A BootNotification before a log that starts mid-session (auto), always, or never. */
+      boot: 'auto' | 'always' | 'never';
     })
   | (StepBase & {
       kind: 'http';
@@ -609,6 +611,7 @@ const replaySchema = object(
     speed: number(),
     maxGap: durationSchema,
     compare: oneOf(['status', 'strict', 'none']),
+    boot: oneOf(['auto', 'always', 'never']),
   },
 );
 
@@ -726,6 +729,7 @@ function parseStep(
       speed: (v.speed as number | undefined) ?? 1,
       maxGapMs: durationMs(v.maxGap, 30_000),
       compare: (v.compare as 'status' | 'strict' | 'none' | undefined) ?? 'status',
+      boot: (v.boot as 'auto' | 'always' | 'never' | undefined) ?? 'auto',
     } as ScenarioStep;
   }
   if (kind === 'inject') {

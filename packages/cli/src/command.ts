@@ -65,6 +65,8 @@ export interface ReplayCommand {
   speed?: number;
   maxGapMs?: number;
   compare?: 'status' | 'strict' | 'none';
+  /** A BootNotification before a log that starts mid-session (default auto). */
+  boot?: 'auto' | 'always' | 'never';
   /** Write the scenario (frames inline) here instead of running it. */
   write?: string;
   personas: string[];
@@ -241,6 +243,8 @@ Options for replay:
   --speed <n>            Divide the recorded gaps by <n> (default 1)
   --max-gap <d>          Longest wait between two frames (default 30s)
   --compare <mode>       status (default), strict or none
+  --boot <mode>          auto (default): boot first when the log starts
+                         mid-session; always; or never
   --write <file>         Write the scenario, frames inline, instead of running
 
 Options for calibrate:
@@ -324,6 +328,7 @@ const OPTIONS = {
   speed: { type: 'string' },
   'max-gap': { type: 'string' },
   compare: { type: 'string' },
+  boot: { type: 'string' },
   write: { type: 'string' },
   'record-limit': { type: 'string' },
   'sessions-per-station': { type: 'string' },
@@ -387,6 +392,7 @@ export const COMMANDS = {
     'speed',
     'max-gap',
     'compare',
+    'boot',
     'write',
     'personas',
     'allow-csms',
@@ -637,6 +643,10 @@ function parseReplay(rest: string[], values: Values): Command {
   if (compare !== undefined && compare !== 'status' && compare !== 'strict' && compare !== 'none') {
     return error(`--compare must be status, strict or none, got ${compare}`);
   }
+  const boot = values.boot;
+  if (boot !== undefined && boot !== 'auto' && boot !== 'always' && boot !== 'never') {
+    return error(`--boot must be auto, always or never, got ${boot}`);
+  }
   return {
     kind: 'replay',
     log,
@@ -646,6 +656,7 @@ function parseReplay(rest: string[], values: Values): Command {
     ...(speed !== undefined && { speed }),
     ...(maxGapMs !== undefined && { maxGapMs }),
     ...(compare !== undefined && { compare }),
+    ...(boot !== undefined && { boot }),
     ...(values.write !== undefined && { write: values.write }),
     personas: values.personas ?? [],
     allowCsms: values['allow-csms'] ?? [],
