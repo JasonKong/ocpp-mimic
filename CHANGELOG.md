@@ -4,6 +4,10 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-28
+
+Milestone M11: hardening. One clock for an EV's departure, one price for 2.1 tariffs, station payments that survive going offline and restarts, replays that boot first, a tag filter and bulk actions in the Web UI, remote starts in load plans, a record budget for `serve`, and station failures for CSMS tests. The [design](https://github.com/JasonKong/ocpp-mimic/blob/main/docs/design.md#m11-hardening) describes them.
+
 ### Added
 
 - **Station failures for CSMS tests**: behaviour switches `failUnlock`, `failCertificates`, `refuseLogs`, `failNetworkProfile` and `failLock` (a cable that cannot be locked, G05), and the persona's `firmware.installVerification: fail`; in scenarios, the API and the Web UI. The CitrineOS suite gains TC_B_44, TC_G_20, TC_L_08, TC_M_05, TC_M_21 and TC_N_34.
@@ -17,7 +21,6 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 - **A record budget for `serve`**: without `--record-limit`, the stations share 200,000 frames and log lines (1000 each up to 200 stations), so a large fleet keeps fewer per station instead of growing without bound.
 - **Replays boot first** when a log starts mid-session: `ocpp-mimic replay` and the `replay` step send the log's own BootNotification, else the persona's, before the first other message (`--boot` / `boot`: `auto` by default, `always` or `never` for the old behaviour).
 - **One price for 2.1 tariffs**: the reference price replays a session through the cost meter a 2.1 station prices with, so the two agree to the cent. As on a station, minCost applies once the session has ended and is taxed by its own rates, and maxCost keeps the taxes accrued before it is reached. Energy between two readings counts only while the EV charges, and an energy item names every reading it came from. The built-in CSMS's payments and running costs use the same price. The Web UI's tariff form is offered only for tariffs it can show.
-
 - Under an energy multiplier, an EV's `departureMinutes` counts simulated minutes, like the rest of the EV model: the departure time in NotifyEVChargingNeeds comes that many times sooner on the wall clock, and the session's estimate compares it with the ETA on the wall clock. Before, the panel could show an ETA well before the departure and still say the target would not be reached.
 
 ### Fixed
