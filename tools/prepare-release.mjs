@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Prepares a release: sets VERSION and every package manifest to <version>,
-// and turns CHANGELOG.md's Unreleased section into "## [<version>] - <date>"
-// with a fresh, empty Unreleased above it.
+// Prepares a release: sets VERSION, every package manifest and the README's
+// image tag to <version>, and turns CHANGELOG.md's Unreleased section into
+// "## [<version>] - <date>" with a fresh, empty Unreleased above it.
 // Usage: node tools/prepare-release.mjs <version> [--date YYYY-MM-DD]
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -38,6 +38,13 @@ for (const manifest of [
 ]) {
   edit(manifest, (s) => s.replace(/"version": "[^"]+"/, `"version": "${version}"`));
 }
+// The README's docker run names the release's image.
+edit('README.md', (s) =>
+  s.replace(
+    /ghcr\.io\/jasonkong\/ocpp-mimic:\d+\.\d+\.\d+[0-9A-Za-z.-]*/g,
+    `ghcr.io/jasonkong/ocpp-mimic:${version}`,
+  ),
+);
 edit('CHANGELOG.md', (s) => {
   if (!s.includes('\n## [Unreleased]\n')) throw new Error('CHANGELOG.md has no Unreleased section');
   return s.replace('\n## [Unreleased]\n', `\n## [Unreleased]\n\n## [${version}] - ${date}\n`);

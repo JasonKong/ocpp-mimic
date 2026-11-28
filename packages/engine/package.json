@@ -1,6 +1,6 @@
 {
   "name": "@ocpp-mimic/engine",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "BUSL-1.1",
   "private": true,
   "description": "Runtime that hosts the virtual charge points and serves the HTTP / WebSocket API.",

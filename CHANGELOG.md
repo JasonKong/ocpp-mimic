@@ -4,10 +4,13 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-28
+
+Milestone M10: payments in the built-in CSMS, a simulated payment provider that holds on the driver's test card, prices each session with its idle fee and captures the price, also on the Demo page. The [design](https://github.com/JasonKong/ocpp-mimic/blob/main/docs/design.md#m10-payments) describes it.
+
 ### Added
 
 - **Payments** in the built-in CSMS: a simulated payment provider for a site's stations. It holds an amount on the driver's test card before a session starts, where a payment CSMS would (when answering Authorize, before an app's remote start, when the QR code's page is paid), so a declined card does not start; it prices the session as it runs (with an idle grace period), and captures, releases or fails the payment at the end. When the price outgrows the hold it re-charges the whole price (`recharge`, the default), raises the hold (`increment`) or stops the session at the hold (`stop`). Free vend and valet sessions (the station's auto-start token, or a site-billed account) are not charged, and the 2.1 payment terminal's hold and settlement are shown as the station's. `PUT`, `GET` and `DELETE /api/sites/<id>/payments` and `PUT /api/accounts/<idToken>` on its control API and on the engine. With the same tariff, each captured amount equals the engine's reference price.
-
 - **Demo page payments**: **Take payments** in the setup (hold, what happens past the hold, idle grace); each bay shows its payment, price against the hold and idle fee, with a menu for the driver's test card outcome; the site manager shows revenue, the money held, the payments and the payment events.
 
 ### Fixed
