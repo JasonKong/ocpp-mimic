@@ -1,7 +1,6 @@
 /**
- * A simulated payment provider for the built-in CSMS (M10): what a CSMS such
- * as Invisible Urban's does with the driver's money, which OCPP never
- * carries. A site's payment settings say how its sessions are priced (the
+ * A simulated payment provider for the built-in CSMS (M10): what a CSMS that
+ * charges drivers itself does with their money, which OCPP never carries. A site's payment settings say how its sessions are priced (the
  * reference tariff, an idle grace period) and paid: an amount held on the
  * driver's card when a session starts, the price captured when it ends, and
  * what happens when the price outgrows the hold. Drivers' cards are made up,

@@ -76,7 +76,7 @@ describe('payment rules', () => {
       captured: 17.19,
       events: [{ kind: 'capture', amount: 17.19 }],
     });
-    // Over the hold: Invisible Urban cancels the hold and charges the whole price.
+    // Over the hold (recharge): the hold is canceled and the whole price charged.
     expect(settle({ heldAmount: 50 }, 62.5, 5000, settings, 'approve')).toMatchObject({
       captured: 62.5,
       events: [
