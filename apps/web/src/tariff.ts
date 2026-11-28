@@ -25,6 +25,41 @@ export interface TariffForm {
 
 const str = (value: number | undefined) => (value === undefined ? '' : String(value));
 
+/**
+ * Whether the form can show a tariff without losing anything: one price per part (energy may
+ * have an off-peak price for a time of day first), one tax rate for every part, and minCost and
+ * maxCost before tax. A tariff with other 2.1 conditions is set with PUT /api/tariff.
+ */
+export function fitsForm(tariff: ReferenceTariff): boolean {
+  const single = (part?: { prices: { conditions?: object }[] }) =>
+    part === undefined || (part.prices.length === 1 && part.prices[0]?.conditions === undefined);
+  const energy = tariff.energy?.prices ?? [];
+  const offPeak = energy.length === 2 ? energy[0]?.conditions : undefined;
+  const energyFits =
+    energy.length <= 1
+      ? energy[0]?.conditions === undefined
+      : energy.length === 2 &&
+        energy[1]?.conditions === undefined &&
+        offPeak !== undefined &&
+        Object.keys(offPeak).every((k) => k === 'startTimeOfDay' || k === 'endTimeOfDay');
+  const rates = [tariff.fixedFee, tariff.energy, tariff.chargingTime, tariff.idleTime]
+    .map((p) => p?.taxRates ?? [])
+    .filter((r) => r.length > 0);
+  const oneRate =
+    rates.every((r) => r.length === 1) && new Set(rates.map((r) => JSON.stringify(r[0]))).size <= 1;
+  const cost = (c?: { inclTax?: number; taxRates?: unknown }) =>
+    c === undefined || (c.inclTax === undefined && c.taxRates === undefined);
+  return (
+    single(tariff.fixedFee) &&
+    single(tariff.chargingTime) &&
+    single(tariff.idleTime) &&
+    energyFits &&
+    oneRate &&
+    cost(tariff.minCost) &&
+    cost(tariff.maxCost)
+  );
+}
+
 export function tariffToForm(tariff: ReferenceTariff): TariffForm {
   const prices = tariff.energy?.prices ?? [];
   const timed = prices.length > 1 ? prices[0] : undefined;

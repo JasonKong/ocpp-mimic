@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ReferenceTariff } from './api.js';
-import { formatMoney, formToTariff, tariffToForm } from './tariff.js';
+import { fitsForm, formatMoney, formToTariff, tariffToForm } from './tariff.js';
 
 const TARIFF: ReferenceTariff = {
   tariffId: 'reference',
@@ -81,5 +81,47 @@ describe('the tariff form', () => {
     expect(formToTariff({ ...form, priceKwh: '' })).toEqual({
       problem: 'An off-peak price needs the price per kWh too',
     });
+  });
+
+  it('says which tariffs the form can show without losing anything', () => {
+    const simple: ReferenceTariff = {
+      tariffId: 't',
+      currency: 'NZD',
+      fixedFee: { prices: [{ priceFixed: 1 }], taxRates: [{ type: 'GST', tax: 15 }] },
+      energy: {
+        prices: [
+          { priceKwh: 0.2, conditions: { startTimeOfDay: '21:00', endTimeOfDay: '07:00' } },
+          { priceKwh: 0.4 },
+        ],
+        taxRates: [{ type: 'GST', tax: 15 }],
+      },
+      idleTime: { prices: [{ priceMinute: 0.5 }] },
+      maxCost: { exclTax: 80 },
+    };
+    expect(fitsForm(simple)).toBe(true);
+    // Any other 2.1 condition, a second price, different tax rates or a minCost with tax: no.
+    expect(
+      fitsForm({
+        ...simple,
+        idleTime: {
+          prices: [{ priceMinute: 0, conditions: { maxIdleTime: 600 } }, { priceMinute: 0.5 }],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      fitsForm({
+        ...simple,
+        energy: { prices: [{ priceKwh: 0.2, conditions: { minEnergy: 1000 } }, { priceKwh: 0.4 }] },
+      }),
+    ).toBe(false);
+    expect(
+      fitsForm({
+        ...simple,
+        idleTime: { prices: [{ priceMinute: 0.5 }], taxRates: [{ type: 'VAT', tax: 20 }] },
+      }),
+    ).toBe(false);
+    expect(
+      fitsForm({ ...simple, minCost: { exclTax: 2, taxRates: [{ type: 'GST', tax: 15 }] } }),
+    ).toBe(false);
   });
 });

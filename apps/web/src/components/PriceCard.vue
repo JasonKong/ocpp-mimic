@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import type { OcppVersion, ReferenceTariff, SessionDetail } from '../api.js';
 import { formatTime } from '../format.js';
-import { formatMoney, formToTariff, tariffToForm, type TariffForm } from '../tariff.js';
+import { fitsForm, formatMoney, formToTariff, tariffToForm, type TariffForm } from '../tariff.js';
 import { versionInfo } from '../versions.js';
 
 /**
@@ -43,6 +43,8 @@ const difference = computed(() =>
 const info = computed(() => versionInfo(props.version));
 
 const editing = ref(false);
+/** A tariff with more than the form shows (other 2.1 conditions) is not edited here. */
+const editable = computed(() => props.tariff === undefined || fitsForm(props.tariff));
 const form = ref<TariffForm | undefined>();
 const problem = ref<string | undefined>();
 watch(
@@ -69,9 +71,13 @@ function save() {
   <section class="price-card">
     <header>
       <h4>Price</h4>
-      <button class="link" @click="editing = !editing">
+      <button v-if="editable" class="link" @click="editing = !editing">
         {{ editing ? 'Close the tariff' : 'Edit the reference tariff' }}
       </button>
+      <span v-else class="muted"
+        >The reference tariff has 2.1 conditions the form cannot show: change it with
+        <code>PUT /api/tariff</code></span
+      >
     </header>
 
     <form v-if="editing && form" class="tariff" @submit.prevent="save">

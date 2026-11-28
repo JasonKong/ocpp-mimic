@@ -522,7 +522,17 @@ CSMS 在会话开始之前、在支付型 CSMS 会做的地方冻结司机的卡
 }
 ```
 
-电量部分可以先写几个带时段、星期或日期条件的价格，最后一个价格不带条件，用来表示谷时电价。其他部分每项只有一个价格。内置 CSMS 按 UTC 计算时段；参考价格按桩的时区计算（2.x 是 `ClockCtrlr.TimeZone`，否则是 UTC）。
+每个部分都可以有多个带 2.1 条件的价格，第一个条件成立的价格生效：
+
+- 时段、星期、日期和 `evseKind`，适用于所有部分；
+- `minEnergy`/`maxEnergy`（Wh）、`minCurrent`/`maxCurrent`（A）、`minPower`/`maxPower`（W），以及 `minTime`/`maxTime`、`minChargingTime`/`maxChargingTime`、`minIdleTime`/`maxIdleTime`（秒），适用于电量、充电时长和占位时长；
+- `paymentBrand` 和 `paymentRecognition`，适用于固定费用。
+
+某个部分没有任何价格的条件成立时，这段时间这部分不收费，和 2.1 桩一样。minCost 在会话结束后替换较低的总价，按它自己的 `taxRates` 计税；maxCost 让价格停在达到它的那一刻。
+
+参考价格把会话上报的电量读数、功率、电流和充电状态，用 2.1 桩自己的计费器回放一遍，所以在 2.1 资费上和桩自己算的费用逐分一致。两次读数之间的电量只算在车辆充电的时间里。有一处不同：桩不给电的时间（SuspendedEVSE）参考价格不收费，而 2.1 桩会算作占位时间。
+
+内置 CSMS 按 UTC 计算时段；参考价格按桩的时区计算（2.x 是 `ClockCtrlr.TimeZone`，否则是 UTC）。Web UI 的资费表单每个部分显示一个价格，外加一个谷时电价；带其他条件的资费请用 `PUT /api/tariff` 设置，价格卡片会照样显示它，只是不再提供表单。
 
 ## 6. 场景
 
