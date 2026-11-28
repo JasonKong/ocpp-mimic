@@ -194,7 +194,7 @@ ocpp-mimic serve --host 0.0.0.0 --personas scenarios/personas
 
 ### 桩列表和 Add 表单
 
-左栏列出所有桩，显示 OCPP 版本标识、连接状态和各连接器状态。可以按 id 搜索，按状态（Connected、Connecting、Offline、Stopped）或分组筛选。
+左栏列出所有桩，显示 OCPP 版本标识、连接状态和各连接器状态。可以按 id 搜索，按状态（Connected、Connecting、Offline、Stopped）、分组或 tag 筛选。筛选框下方的 **Start**、**Stop**、**Offline**、**Online** 和 **Delete** 通过引擎的批量 API 作用于当前显示的所有桩；Delete 会先确认，并说明要删除几个桩。
 
 **Add** 打开创建表单：
 

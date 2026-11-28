@@ -1746,6 +1746,8 @@ Each task is checked where its problem showed, with a test or scenario that fail
 
 - Implemented (T137): `runReplay` takes `boot` (`auto`, `always`, `never`; default `auto`) and `bootPayload`. With `auto`, a log whose first charge-point CALL is not a BootNotification gets one first: the log's own first BootNotification, else the replay station's persona's (the runner passes it: the 1.6 boot fields, or `{ reason: PowerUp, chargingStation }` on 2.x). Its status goes into the result (`boot`), and anything but Accepted is a difference. Without anything to boot with, the log replays as it is. The `replay` step has `boot`, `ocpp-mimic replay` has `--boot`, and a written scenario keeps a boot other than `auto`.
 
+- Implemented (T138): the station list's filters live in `apps/web/src/station-filter.ts` (id text, state, group, and now tag), with the bulk actions under them: Start, Stop, Offline and Online through `POST /api/stations/bulk/<action>` and Delete through `DELETE /api/stations/bulk`, each with the ids in view. Delete asks first, naming the count. The list follows the engine's events, so nothing is reloaded. Checked in a browser: tag filter, then stop, start, offline, online and delete on the stations in view.
+
 Changed behaviour, listed in the changelog: replays boot first by default (T137); `serve` keeps fewer records per station above 200 stations (T140); `departureMinutes` is simulated time under a multiplier (T134).
 
 Left for later: calibrating EV profiles from logs (#127), the ISO 15118-20 scheduled-control wait and ISO15118Ctrlr's 2.1 variables (#262), the security follow-ups (#92 to #96, #177, #178) and the scale and maintenance ones (#133, #176, #180).

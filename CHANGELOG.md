@@ -6,6 +6,7 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 
 ### Added
 
+- **Web UI**: a tag filter in the station list, and Start, Stop, Offline, Online and Delete for the stations in view (Delete asks first, naming how many).
 - **RoamingEvseId** (2.1): each EVSE's `WebPaymentsCtrlr` has one, filled into a payment URL's `{roamingevseid}` (C25.FR.53).
 - **Every 2.1 tariff condition in the reference tariff**: several prices on every part, with time of day, weekday, dates, EVSE kind, energy, current, power and duration conditions (payment brand and recognition on the fixed fee), and `taxRates` on minCost and maxCost.
 

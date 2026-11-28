@@ -545,9 +545,12 @@ export const api = {
       'GET',
       `/api/stations?view=summary&tag=${encodeURIComponent(filter.tag)}`,
     ),
-  /** Deletes every station with the tag. */
-  deleteStations: (selector: { tag: string }) =>
+  /** Deletes every station with the tag, or the stations named. */
+  deleteStations: (selector: { tag: string } | { ids: string[] }) =>
     request<{ deleted: number }>('DELETE', '/api/stations/bulk', selector),
+  /** Starts, stops, takes offline or brings online the stations named. */
+  bulk: (action: 'start' | 'stop' | 'offline' | 'online', ids: string[]) =>
+    request<{ stations: number; ids: string[] }>('POST', `/api/stations/bulk/${action}`, { ids }),
   unplug: (id: string, c: number) => request<StationSnapshot>('POST', `${connector(id, c)}/unplug`),
   idTag: (id: string, c: number, idTag: string, type?: string) =>
     request<{ result: string; station: StationSnapshot }>('POST', `${connector(id, c)}/id-tag`, {

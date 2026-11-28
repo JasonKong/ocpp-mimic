@@ -192,7 +192,7 @@ When the EV is full it stops drawing power: the connector goes to SuspendedEV (1
 
 ### Station list and the Add form
 
-The left column lists the stations with their OCPP version badge, connection state and connector states. Search by id, and filter by state (Connected, Connecting, Offline, Stopped) or by group.
+The left column lists the stations with their OCPP version badge, connection state and connector states. Search by id, and filter by state (Connected, Connecting, Offline, Stopped), group or tag. **Start**, **Stop**, **Offline**, **Online** and **Delete** under the filters act on every station in view, through the engine's bulk API; Delete first asks, naming how many stations it removes.
 
 **Add** opens the form:
 

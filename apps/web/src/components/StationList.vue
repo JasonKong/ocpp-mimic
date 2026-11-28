@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue';
 import type { NewStation, PersonaInfo, StationSummary } from '../api.js';
+import {
+  BULK_ACTIONS,
+  filterStations,
+  stationGroups,
+  stationTags,
+  type BulkAction,
+} from '../station-filter.js';
 import { isCharging } from '../versions.js';
 import VersionBadge from './VersionBadge.vue';
 
@@ -12,6 +19,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [id: string];
   create: [station: NewStation];
+  /** A bulk action on the stations the filters leave in view. */
+  bulk: [action: BulkAction, ids: string[]];
 }>();
 
 const showForm = ref(false);
@@ -26,6 +35,7 @@ const form = reactive({
 const search = ref('');
 const state = ref('');
 const group = ref('');
+const tag = ref('');
 
 function localStorageGet(key: string): string | undefined {
   try {
@@ -54,19 +64,23 @@ function submit() {
   showForm.value = false;
 }
 
-const groups = computed(() =>
-  [...new Set(props.stations.flatMap((s) => (s.group === undefined ? [] : [s.group])))].sort(),
-);
+const groups = computed(() => stationGroups(props.stations));
+const tags = computed(() => stationTags(props.stations));
 
-const filtered = computed(() => {
-  const text = search.value.trim().toLowerCase();
-  return props.stations.filter(
-    (s) =>
-      (text === '' || s.id.toLowerCase().includes(text)) &&
-      (state.value === '' || s.state === state.value) &&
-      (group.value === '' || s.group === group.value),
+const filtered = computed(() =>
+  filterStations(props.stations, {
+    text: search.value,
+    state: state.value,
+    group: group.value,
+    tag: tag.value,
+  }),
+);
+const bulk = (action: BulkAction) =>
+  emit(
+    'bulk',
+    action,
+    filtered.value.map((s) => s.id),
   );
-});
 
 // Only the rows in view are rendered, so a list of thousands stays fast.
 const ROW = 36;
@@ -156,6 +170,21 @@ function meta(station: StationSummary): string {
         <option value="">All groups</option>
         <option v-for="name in groups" :key="name" :value="name">{{ name }}</option>
       </select>
+      <select v-if="tags.length > 0" v-model="tag" aria-label="Tag">
+        <option value="">All tags</option>
+        <option v-for="name in tags" :key="name" :value="name">{{ name }}</option>
+      </select>
+    </div>
+    <div v-if="filtered.length > 0" class="bulk" aria-label="Act on the stations in view">
+      <span class="muted">{{ filtered.length }} in view</span>
+      <button
+        v-for="a in BULK_ACTIONS"
+        :key="a.id"
+        :class="{ danger: a.id === 'delete' }"
+        @click="bulk(a.id)"
+      >
+        {{ a.label }}
+      </button>
     </div>
 
     <div
@@ -214,6 +243,21 @@ label {
   gap: 4px;
   font-size: 12px;
   color: var(--muted);
+}
+.bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  padding: 0 12px 8px;
+  font-size: 12px;
+}
+.bulk button {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.bulk .danger {
+  color: var(--bad);
 }
 .filters {
   display: flex;

@@ -227,6 +227,8 @@ describe('the 2.0.1 views', () => {
     expect(shown).toContain('SIM-2 2.0.1 Charging 1');
     expect(html).toContain('class="version-badge v16"');
     expect(html).toContain('class="version-badge v201"');
+    // The bulk actions act on the stations in view.
+    expect(shown).toContain('2 in view Start Stop Offline Online Delete');
   });
 
   it('counts charging 2.0.1 EVSEs in the fleet overview by their charging state', async () => {
