@@ -335,6 +335,50 @@ describe('1.6 sessions', () => {
     expect(h.steps(h.list()[0])).toEqual(['Authorize', 'Authorize.conf Blocked']);
   });
 
+  it('keeps a Charging status sent just before StartTransaction, from frames alone', () => {
+    // A CSMS has no hints: the session opens with StartTransaction, after the status.
+    const tracker = createSessionTracker({ stationId: 'CP-1', ocpp: '1.6' });
+    let seq = 0;
+    const at = (s: number) => new Date(T0 + s * 1000).toISOString();
+    const call = (s: number, uniqueId: string, action: string, payload: JsonObject) =>
+      tracker.frame({
+        seq: ++seq,
+        at: at(s),
+        direction: 'cp-to-csms',
+        messageType: 2,
+        uniqueId,
+        action,
+        payload,
+      });
+    const result = (s: number, uniqueId: string, action: string, payload: JsonObject) =>
+      tracker.frame({
+        seq: ++seq,
+        at: at(s),
+        direction: 'csms-to-cp',
+        messageType: 3,
+        uniqueId,
+        action,
+        payload,
+      });
+    call(0, 's1', 'StatusNotification', {
+      connectorId: 1,
+      status: 'Charging',
+      errorCode: 'NoError',
+    });
+    result(0, 's1', 'StatusNotification', {});
+    call(0, 't1', 'StartTransaction', {
+      connectorId: 1,
+      idTag: 'TAG',
+      meterStart: 0,
+      timestamp: at(0),
+    });
+    result(0, 't1', 'StartTransaction', { idTagInfo: { status: 'Accepted' }, transactionId: 7 });
+    call(60, 'x1', 'StopTransaction', { transactionId: 7, meterStop: 7000, timestamp: at(60) });
+    const [touch] = result(60, 'x1', 'StopTransaction', {});
+    expect(touch?.session.states).toEqual([{ at: at(0), state: 'charging', seq: 1 }]);
+    expect(stateDurations(touch!.session, at(60))).toMatchObject({ charging: 60_000, idle: 0 });
+  });
+
   it('numbers sessions per station and tracks two connectors apart', async () => {
     const h = harness({ ocpp: '1.6' });
     await h.boot();

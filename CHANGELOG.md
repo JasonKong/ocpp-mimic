@@ -4,6 +4,14 @@ Every user-visible change to ocpp-mimic is listed here, newest first. The format
 
 ## [Unreleased]
 
+### Added
+
+- **Payments** in the built-in CSMS: a simulated payment provider for a site's stations. It holds an amount on the driver's test card when a session starts, prices the session as it runs (with an idle grace period), and captures, releases or fails the payment at the end; a declined card stops the session. When the price outgrows the hold it re-charges the whole price (`recharge`, the default), raises the hold (`increment`) or stops the session at the hold (`stop`). Free vend and site-billed (valet) sessions are not charged, and 2.1 terminal and QR code payments are settled by the station. `PUT`, `GET` and `DELETE /api/sites/<id>/payments` and `PUT /api/accounts/<idToken>` on its control API and on the engine. With the same tariff, each captured amount equals the engine's reference price.
+
+### Fixed
+
+- A 1.6 status sent just before StartTransaction (such as Charging) now counts for the session when only the frames are seen, as by a CSMS, instead of the time being counted as idle.
+
 ## [0.2.0] - 2026-11-28
 
 Milestone M9: a demo of a charging site, more ways to start a session, chargers that share a supply, and site load management in the built-in CSMS. The [design](https://github.com/JasonKong/ocpp-mimic/blob/main/docs/design.md#m9-demo) describes them.

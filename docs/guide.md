@@ -431,6 +431,9 @@ The CSMS process serves a small HTTP API on its WebSocket port. Scenarios reach 
 | `POST /api/stations/<id>/call` | `{ "action": "Reset", "payload": { "type": "Soft" } }`: any CSMS command of the station's version |
 | `PUT /api/sites/<id>` | `{ "capacityW": 22000, "stations": ["CP-1", "CP-2"], "minimumW": 1380 }`: a site whose capacity the CSMS shares between its sessions (see below); replaces one with the same id |
 | `GET`, `DELETE /api/sites/<id>` | The site with its sessions, their limits and measured power, and the limits sent; or remove it and clear its limits |
+| `PUT /api/sites/<id>/payments` | `{ "stations": ["CP-1"], "holdAmount": 50, "overHold": "recharge", "minEnergyWh": 0, "idleGraceMinutes": 0, "tariff": {...} }`: the simulated payment provider for these stations' sessions (see [Payments](#payments)); all but `stations` are optional |
+| `GET`, `DELETE /api/sites/<id>/payments` | Each session's payment (method, hold, running price, state, captured amount), the payment events and the revenue; or stop taking payments there |
+| `PUT`, `GET /api/accounts/<idToken>` | `{ "card": { "brand": "Visa", "last4": "4242" }, "outcome": "approve", "billing": "card" }`: a driver's test card and how it behaves |
 | `POST /api/stations/<id>/default-tariff` | 2.1: SetDefaultTariff with the reference tariff or `tariff`, on `evseId` (default 0, every EVSE) |
 | `POST /api/stations/<id>/transaction-limit` | 2.1: `{ "transactionLimit": { "maxEnergy": 5000 }, "transactionId": "..." }`, sent with the next TransactionEvent answer |
 | `POST /api/stations/<id>/driver-tariff` | 2.1: `{ "tariff": {...} }` to send with Authorize answers; `null` removes it |
@@ -456,6 +459,36 @@ A site is a grid connection with a capacity and the stations behind it. The buil
 - The CSMS re-allocates when a session starts or ends, when a car stops or starts taking power, when meter values come in, and when the site changes.
 
 The CSMS learns what each session draws from its meter values, so the stations should report Power.Active.Import: on 1.6 add it to `MeterValuesSampledData`, on 2.x to `SampledDataCtrlr.TxUpdatedMeasurands`. Without it the CSMS still shares the capacity equally and frees a suspended car's share, but cannot pass on what a tapering car leaves. A station's own supply (`power.stationW`) still applies inside its limits.
+
+### Payments
+
+Many public charging CSMSs take the driver's money themselves: it holds an amount on the driver's card when a session starts, captures the price at the end, and charges again when the price outgrew the hold. OCPP carries none of this, so on 1.6 the CSMS prices from meter values and statuses alone. The built-in CSMS can play that part with a simulated payment provider: nothing reaches a real one, and the cards are test cards.
+
+```bash
+curl -s -X PUT http://127.0.0.1:9100/api/sites/lot/payments \
+  -H 'content-type: application/json' -d '{"stations":["CP-1","CP-2"]}'
+curl -s -X PUT http://127.0.0.1:9100/api/accounts/CARD-02 \
+  -H 'content-type: application/json' -d '{"outcome":"decline"}'
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `tariff` | The price, in the [reference tariff](#the-reference-tariff) format. Default `DEMO-NZD`: 0.50 per session, 0.40 per kWh and 0.20 per idle minute, each with 15 % GST |
+| `holdAmount` | Held on the driver's card at the start (default 50) |
+| `overHold` | When the price outgrows the hold: `recharge` (default) cancels the hold and charges the whole price at the end; `increment` raises the hold by `holdAmount` whenever the price comes within 5 (or 10 %) of it; `stop` stops the session once the price reaches the hold and charges the hold |
+| `minEnergyWh` | Below this much energy nothing is charged and the hold is released (default 0) |
+| `idleGraceMinutes` | Idle minutes not priced, from when the car stops taking power (default 0) |
+
+Each session on the site's stations gets a payment, by how it was paid:
+
+- **card**, **app** or **autocharge** (an RFID card, a remote start, an EVCCID or MAC address): `held` at the start; at the end `captured`, `released` (a price of 0, or under `minEnergyWh`) or `failed` (the capture failed: the driver owes it). A declined card is `declined` and the CSMS stops the session.
+- **free**: a NoAuthorization token (free vend) or an account with `"billing": "free"`; `not-charged`, the energy is still priced and shown.
+- **site**: an account with `"billing": "site"`, such as a valet token; billed to the site's account at 0 and marked paid.
+- **terminal** or **qr** (2.1 DirectPayment): the station's terminal or web page holds the money and the station settles it (`settled-by-station`); the CSMS does not charge again.
+
+An account's `outcome` is how its card behaves: `approve`, `decline`, `requires-action` (the driver confirms in the bank app, like 3-D Secure, then the hold goes through) or `fail-capture`. A token without an account has a test Visa that approves, with the last four digits made from the token. When the car is full the driver gets a notice that idle fees start, shown in the payment events with the holds, increments, captures and releases. These events are kept apart from the OCPP frames.
+
+The CSMS prices sessions as the engine's reference price does, so with the same tariff in the engine (`PUT /api/tariff`) each captured amount equals the session's `price.inclTax` to the cent. The CSMS learns energy from the meter values, so sample them often enough for the price you want to watch (`MeterValueSampleInterval` on 1.6, `SampledDataCtrlr.TxUpdatedInterval` on 2.x).
 
 ### The reference tariff
 
@@ -924,6 +957,9 @@ Stations:
 | `POST /api/stations/<id>/web-payment` | 2.1, through the built-in CSMS: `{ url, sharedSecret }`, the payment page behind the station's QR code (see the CSMS's `web-payment`) |
 | `PUT /api/sites/<id>` | Through the built-in CSMS of the listed stations: `{ capacityW, stations, minimumW }`, [site load management](#site-load-management) |
 | `GET`, `DELETE /api/sites/<id>` | A site set through this engine: its allocation, or remove it |
+| `PUT /api/sites/<id>/payments` | Through the built-in CSMS of the listed stations: [payments](#payments) for their sessions, `{ stations, holdAmount, overHold, minEnergyWh, idleGraceMinutes, tariff }` |
+| `GET`, `DELETE /api/sites/<id>/payments` | Payments set through this engine: each session's payment, the events and the revenue; or stop them. Apart from the site's load management |
+| `PUT /api/accounts/<idToken>` | `{ site, card, outcome, billing }`: a driver's test card, in the CSMS of the payments site `site` |
 | `POST /api/stations/<id>/vat-number` | 2.1: `{ vatNumber, evseId }` |
 
 Connectors (`<n>` is the connector, or the EVSE on 2.x):
